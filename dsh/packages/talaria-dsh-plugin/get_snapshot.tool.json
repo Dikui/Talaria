@@ -1,0 +1,49 @@
+{
+  "description": "获取指定标的在给定截止时点的确定性历史 K 线快照。",
+  "inputSchema": {
+    "additionalProperties": false,
+    "description": "创建快照的请求。``cutoff_ts`` 为空时使用服务端当前时间。",
+    "properties": {
+      "cutoff_ts": {
+        "default": null,
+        "oneOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Cutoff Ts"
+      },
+      "instrument_id": {
+        "title": "Instrument Id",
+        "type": "string"
+      },
+      "mode": {
+        "default": "HISTORICAL_PIT",
+        "description": "快照的时间语义。",
+        "enum": [
+          "HISTORICAL_PIT",
+          "OBSERVED_REPLAY"
+        ],
+        "title": "SnapshotMode",
+        "type": "string"
+      },
+      "timeframes": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Timeframes",
+        "type": "array"
+      }
+    },
+    "required": [
+      "instrument_id",
+      "timeframes"
+    ],
+    "title": "SnapshotRequest",
+    "type": "object"
+  },
+  "name": "get_snapshot"
+}

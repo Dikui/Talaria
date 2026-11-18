@@ -5,19 +5,34 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import secrets
+import shutil
 import signal
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Sequence
 
 import uvicorn
 
+from talaria.cli.dsh_host import (
+    DshHost,
+    DshHostError,
+    DshHostInfo,
+    bridge_descriptor_path,
+    remove_bridge_descriptor,
+    resolve_dsh_bin,
+    write_bridge_descriptor,
+)
 from talaria.foundation.contracts_io import check_contracts, repo_root, write_contracts
 from talaria.workbench_api.settings import AppSettings
 
 DEFAULT_DATA_DIR = Path(".talaria")
 DEFAULT_PORT = 8765
+DEFAULT_DSH_PORT = 8766
+DEFAULT_DSH_PROFILE = "talaria-desk"
 
 
 def repo_dist_dir() -> Path:
@@ -58,12 +73,7 @@ def _cmd_contract_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_up(args: argparse.Namespace) -> int:
-    if not args.solo:
-        print(
-            "DSH 协同模式将在 M2 提供，请使用 --solo",
-            file=sys.stderr,
-        )
-        return 2
+    dual = not args.solo
     try:
         host = validate_loopback_host(args.host)
     except ValueError as exc:
@@ -72,6 +82,22 @@ def _cmd_up(args: argparse.Namespace) -> int:
     if not 1 <= args.port <= 65535:
         print(f"端口必须在 1..65535 之间：{args.port}", file=sys.stderr)
         return 2
+
+    dsh_bin = None
+    dsh_start_error: str | None = None
+    if dual:
+        if not 1 <= args.dsh_port <= 65535:
+            print(f"DSH 端口必须在 1..65535 之间：{args.dsh_port}", file=sys.stderr)
+            return 2
+        if args.dsh_port == args.port:
+            print("DSH 端口不能与 Talaria 守护进程端口相同", file=sys.stderr)
+            return 2
+        try:
+            dsh_bin = resolve_dsh_bin(args.dsh_bin)
+        except DshHostError as exc:
+            # 宿主缺失不应阻塞看盘快通道：守护进程照常启动，仅标记协同离线。
+            dsh_start_error = str(exc)
+            dsh_bin = args.dsh_bin or "dsh"
 
     data_dir = Path(args.data_dir).expanduser().resolve()
     fixture_dir = (
@@ -91,6 +117,8 @@ def _cmd_up(args: argparse.Namespace) -> int:
     if args.replay_speed <= 0:
         print(f"回放速度必须为正数：{args.replay_speed}", file=sys.stderr)
         return 2
+
+    token = secrets.token_urlsafe(32) if dual else None
     settings = AppSettings(
         data_dir=data_dir,
         dist_dir=dist_dir,
@@ -99,10 +127,31 @@ def _cmd_up(args: argparse.Namespace) -> int:
         replay_speed=args.replay_speed,
         bybit_base_url=args.bybit_base_url,
         backfill_bars=args.backfill_bars,
+        token=token,
     )
+    bridge_path = bridge_descriptor_path(data_dir)
+    dsh_host: DshHost | None = None
+    if dual:
+        assert dsh_bin is not None and token is not None
+        dsh_host = DshHost(
+            dsh_bin=dsh_bin,
+            profile=args.dsh_profile,
+            host=host,
+            port=args.dsh_port,
+            bridge_path=bridge_path,
+            log_dir=data_dir / "logs",
+            startup_timeout=args.dsh_startup_timeout,
+            on_offline=_report_host_offline,
+        )
+        if dsh_start_error is not None:
+            dsh_host.mark_unavailable(dsh_start_error)
+
     from talaria.workbench_api.app import create_app
 
-    app = create_app(settings)
+    app = create_app(
+        settings,
+        collaboration_status=dsh_host.status_payload if dsh_host else None,
+    )
     server = uvicorn.Server(
         uvicorn.Config(app, host=host, port=args.port, log_level="info")
     )
@@ -128,17 +177,162 @@ def _cmd_up(args: argparse.Namespace) -> int:
     }
     worker = threading.Thread(target=run_server, name="talaria-uvicorn", daemon=False)
     worker.start()
+    host_started = False
     try:
+        deadline = time.monotonic() + 20
+        while (
+            not server.started
+            and worker.is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+        if not server.started:
+            print(
+                "Talaria 守护进程启动失败；请检查端口占用与日志。",
+                file=sys.stderr,
+            )
+            return 2 if exit_code == 0 else exit_code
+
+        if dsh_host is not None and token is not None:
+            write_bridge_descriptor(
+                bridge_path,
+                base_url=f"http://{host}:{args.port}",
+                token=token,
+                daemon_pid=os.getpid(),
+            )
+            if dsh_start_error is None:
+                try:
+                    info = dsh_host.start()
+                    host_started = True
+                except DshHostError as exc:
+                    dsh_host.mark_unavailable(str(exc))
+                    print(
+                        f"警告：{exc}\n"
+                        "Talaria 守护进程继续提供图表快通道；"
+                        "可修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
+                        file=sys.stderr,
+                    )
+                    info = dsh_host.info()
+            else:
+                dsh_host.mark_unavailable(dsh_start_error)
+                print(
+                    f"警告：{dsh_start_error}\n"
+                    "Talaria 守护进程继续提供图表快通道；"
+                    "修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
+                    file=sys.stderr,
+                )
+                info = dsh_host.info()
+            _print_ready(host, args.port, info, bridge_path)
+
         while worker.is_alive():
             worker.join(timeout=0.2)
     except KeyboardInterrupt:  # pragma: no cover - 主线程信号由 stop_server 接管
         server.should_exit = True
     finally:
         server.should_exit = True
+        if host_started and dsh_host is not None:
+            dsh_host.stop()
+        remove_bridge_descriptor(bridge_path)
         worker.join(timeout=10)
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
     return exit_code
+
+
+def _report_host_offline(info: DshHostInfo) -> None:
+    print(
+        f"警告：{info.detail}；Talaria 守护进程继续提供图表快通道。\n"
+        f"DSH 日志：{info.log_path}",
+        file=sys.stderr,
+    )
+
+
+def _print_ready(host: str, port: int, info: DshHostInfo, bridge_path: Path) -> None:
+    print(f"Talaria 看盘：http://{host}:{port}/desk", file=sys.stderr)
+    if info.state == "online" and info.url:
+        print(f"DSH 协同宿主：{info.url}", file=sys.stderr)
+    else:
+        print(f"DSH 协同宿主：离线（{info.detail}）", file=sys.stderr)
+    print(f"DSH 日志：{info.log_path}", file=sys.stderr)
+    print(f"桥接凭据：{bridge_path}（0600）", file=sys.stderr)
+
+
+def _cmd_dsh_install(args: argparse.Namespace) -> int:
+    """可重复地把仓库内插件安装到指定的 DSH Profile。"""
+    repo = repo_root()
+    plugin_dir = repo / "dsh" / "packages" / "talaria-dsh-plugin"
+    if not (plugin_dir / "package.json").is_file():
+        print(f"插件包不存在：{plugin_dir}", file=sys.stderr)
+        return 2
+    canonical_tool = repo / "contracts" / "schemas" / "dsh-tools" / "get_snapshot.tool.json"
+    if canonical_tool.is_file():
+        shutil.copyfile(canonical_tool, plugin_dir / "get_snapshot.tool.json")
+    canonical_patch = repo / "dsh" / "profiles" / "talaria-desk.patch.yml"
+    if canonical_patch.is_file():
+        shutil.copyfile(canonical_patch, plugin_dir / "talaria-desk.patch.yml")
+    try:
+        dsh = resolve_dsh_bin(args.dsh_bin)
+    except DshHostError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    pnpm = shutil.which("pnpm")
+    if pnpm is None:
+        print("未找到 pnpm；请先安装 Node.js 24 与 pnpm 11。", file=sys.stderr)
+        return 2
+    build = subprocess.run(
+        [pnpm, "-C", str(repo / "dsh"), "--filter", "@talaria/dsh-plugin", "build"],
+        check=False,
+    )
+    if build.returncode != 0:
+        print("DSH 插件构建失败；请修复后重试。", file=sys.stderr)
+        return build.returncode
+    profile_dir = Path(
+        os.environ.get("DSH_HOME", str(Path.home() / ".dsh"))
+    ) / "profiles" / args.dsh_profile
+    if not profile_dir.is_dir():
+        init = subprocess.run(
+            [
+                dsh,
+                "--profile",
+                args.dsh_profile,
+                "--from-default-profile",
+                "web",
+                "--dump-config",
+            ],
+            stdout=subprocess.DEVNULL,
+            check=False,
+        )
+        if init.returncode != 0:
+            print(
+                f"初始化 DSH Profile 失败：{profile_dir}\n"
+                "请检查 dsh --version 是否为 0.2.2-rc.3。",
+                file=sys.stderr,
+            )
+            return 2
+    add = subprocess.run(
+        [
+            dsh,
+            "plugin",
+            "--profile",
+            args.dsh_profile,
+            "add",
+            f"file:{plugin_dir}",
+        ],
+        check=False,
+    )
+    if add.returncode != 0:
+        print(
+            "安装 @talaria/dsh-plugin 失败。可手动执行：\n"
+            f"  dsh plugin --profile {args.dsh_profile} add file:{plugin_dir}",
+            file=sys.stderr,
+        )
+        return add.returncode
+    print(
+        f"已安装 Profile：{profile_dir}\n"
+        f"启动：talaria up --dsh-profile {args.dsh_profile}",
+        file=sys.stderr,
+    )
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -146,7 +340,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     up = subparsers.add_parser("up", help="启动本地看盘守护进程")
-    up.add_argument("--solo", action="store_true", help="单机模式（M1 唯一支持的模式）")
+    up.add_argument(
+        "--solo", action="store_true", help="只启动 Python 守护进程，不启动 DSH 宿主"
+    )
     up.add_argument("--host", default="127.0.0.1", help="绑定地址，只允许回环 IP")
     up.add_argument("--port", type=int, default=DEFAULT_PORT, help="监听端口")
     up.add_argument(
@@ -178,7 +374,44 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="回放速度倍率（默认 1.0，必须为正数）",
     )
+    up.add_argument(
+        "--dsh-bin",
+        default=os.environ.get("TALARIA_DSH_BIN"),
+        help="DSH 可执行文件路径（默认从 PATH 查找 dsh）",
+    )
+    up.add_argument(
+        "--dsh-port",
+        type=int,
+        default=DEFAULT_DSH_PORT,
+        help=f"DSH Web 端口（默认 {DEFAULT_DSH_PORT}）",
+    )
+    up.add_argument(
+        "--dsh-profile",
+        default=DEFAULT_DSH_PROFILE,
+        help=f"DSH Profile 名称（默认 {DEFAULT_DSH_PROFILE}）",
+    )
+    up.add_argument(
+        "--dsh-startup-timeout",
+        type=float,
+        default=40.0,
+        help="DSH 启动与健康探针超时秒数（默认 40）",
+    )
     up.set_defaults(func=_cmd_up)
+
+    install = subparsers.add_parser(
+        "dsh-install", help="构建并安装 @talaria/dsh-plugin 到 DSH Profile"
+    )
+    install.add_argument(
+        "--dsh-bin",
+        default=os.environ.get("TALARIA_DSH_BIN"),
+        help="DSH 可执行文件路径",
+    )
+    install.add_argument(
+        "--dsh-profile",
+        default=DEFAULT_DSH_PROFILE,
+        help=f"DSH Profile 名称（默认 {DEFAULT_DSH_PROFILE}）",
+    )
+    install.set_defaults(func=_cmd_dsh_install)
 
     check = subparsers.add_parser(
         "contract-check", help="检查契约生成物是否零漂移"

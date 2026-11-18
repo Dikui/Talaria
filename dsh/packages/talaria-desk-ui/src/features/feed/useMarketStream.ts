@@ -2,6 +2,7 @@ import { useEffect, useReducer, useRef, useState } from "react";
 
 import type { FeedHealthEvent, KlineEvent, OrderBookEvent } from "@talaria/contracts";
 
+import { getApiBaseUrl } from "../../lib/api";
 import { parseDeskMessage } from "./messages";
 import {
   feedReducer,
@@ -24,6 +25,10 @@ const RECONNECT_MAX_MS = 8_000;
 
 /** WS 地址由当前页面推导，兼容 http/https 与端口代理。 */
 export function deskSocketUrl(): string {
+  const base = getApiBaseUrl();
+  if (base) {
+    return `${base.replace(/^http/, "ws")}/ws/desk`;
+  }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws/desk`;
 }

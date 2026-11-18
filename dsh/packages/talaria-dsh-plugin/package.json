@@ -1,0 +1,42 @@
+{
+  "name": "@talaria/dsh-plugin",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "bridge.js",
+    "guard.js",
+    "get_snapshot.tool.json",
+    "client/index.js",
+    "talaria-desk.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./talaria-desk.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": false,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  },
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs",
+    "test": "node --test test/*.test.mjs",
+    "build": "node scripts/build-client.mjs"
+  },
+  "devDependencies": {
+    "@talaria/desk-ui": "workspace:*",
+    "@vitejs/plugin-react": "^5.0.4",
+    "vite": "^7.3.8"
+  }
+}

@@ -162,6 +162,46 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+_DSH_SCHEMA_KEYS = {
+    "additionalProperties",
+    "const",
+    "default",
+    "description",
+    "enum",
+    "examples",
+    "items",
+    "oneOf",
+    "properties",
+    "required",
+    "title",
+    "type",
+}
+
+
+def _to_dsh_subset(node: Any) -> Any:
+    """收敛到 DSH 0.2.2-rc.3 实际校验的 Schema 子集。
+
+    该版本只接受 type/oneOf/properties/required/additionalProperties/items/
+    enum/const 与 description/title/default/examples；``anyOf`` 必须改写为
+    ``oneOf``，``minItems``/``minLength`` 等关键字必须移除。
+    """
+    if isinstance(node, dict):
+        result: dict[str, Any] = {}
+        for key, value in node.items():
+            if key == "anyOf":
+                result["oneOf"] = [_to_dsh_subset(item) for item in value]
+            elif key == "properties":
+                result[key] = {name: _to_dsh_subset(schema) for name, schema in value.items()}
+            elif key == "additionalProperties" and isinstance(value, dict):
+                result[key] = True
+            elif key in _DSH_SCHEMA_KEYS:
+                result[key] = _to_dsh_subset(value)
+        return result
+    if isinstance(node, list):
+        return [_to_dsh_subset(item) for item in node]
+    return node
+
+
 def _ts_type(annotation: Any, prop: dict[str, Any]) -> str:
     if get_origin(annotation) is Annotated:
         base, *metadata = get_args(annotation)
@@ -240,7 +280,7 @@ def render_contracts(root: Path | None = None) -> dict[Path, str]:
     for filename, model in SCHEMA_MODELS.items():
         artifacts[SCHEMA_DIR / f"{filename}.schema.json"] = _dump_json(_schema_for(model))
 
-    tool_schema = _inline_refs(_schema_for(SnapshotRequest))
+    tool_schema = _to_dsh_subset(_inline_refs(_schema_for(SnapshotRequest)))
     tool_payload = {
         "name": "get_snapshot",
         "description": "获取指定标的在给定截止时点的确定性历史 K 线快照。",

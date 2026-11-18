@@ -383,7 +383,7 @@ interface DataLoader {
 
 | 位置 | 现状 / 问题 | 建议回改 |
 |---|---|---|
-| `docs/architecture.md:403`（§5.3 第 ③ 项） | 声称 `dsh --dump-config` 可快照“权限与单调执行守卫”；实测 dump 中 guard 计数为 0，守卫是运行时注册的函数 | **必须回改**：拆成“权限/插件配置快照”+“守卫行为测试”；或删除“守卫快照”表述，避免契约门禁给出虚假保证 |
+| `docs/architecture.md:403`（§5.3 第 ③ 项） | 声称 `dsh --dump-config` 可快照“权限与单调执行守卫”；实测 dump 中 guard 计数为 0，守卫是运行时注册的函数 | 已于 09 回改：拆成“权限/插件配置快照”+“守卫行为测试”；09 实现 `talaria-desk` 的快照与 node 守卫行为测试 |
 | `docs/architecture.md:310`（§3.6 用量采集通道） | 要求 `dsh-bridge` 每轮结束上报 `(session_id, turn_id, 输入/缓存/输出)`；但 `turn/end` 无 usage 字段，`deriveTurnTokenUsage` 非公开 API，`turn` 是会话内序号 | 建议补一句：bridge 需折叠 turn 内 attempt 事件；幂等键为 `(session_id, turn)`；`undefined` 不得按 0 入账 |
 | `docs/architecture.md:377`、`:380`（§5.1） | 写“官方 `deepseek-harness-sdk`（stdio）”，未锁版本，也未说明 SDK 自带 runtime rc.2 与桌面 rc.3 的差异 | 建议补：SDK `0.2.2rc2` + `dsh_bin` 指向 `0.2.2-rc.3`；显式 `dsh_home`；升级需重验 |
 | `docs/adr/0001-dual-plane-dsh-and-python-core.md:7` | 仅写 `0.2.x` Developer Preview，无精确锁定 | 建议校准：注明本报告锁定的 rc.3 / SDK rc.2 组合；不改变 ADR 结论 |
@@ -500,7 +500,21 @@ curl -s https://api.github.com/repos/fortunato/pymarket-structure | jq -r '.lice
 
 ---
 
-## 9. 参考入口
+## 9. 09 实测补充（2026-11-19，`talaria up` 预研）
+
+09 在 `dsh 0.2.2-rc.3` 上实际挂载了 Web 宿主、客户端插槽、受控桥与 guard，补充以下一手结论：
+
+1. **客户端插槽无需独立 `ui-slots` 包**：rc.3 安装包自带 `ctx.slots.inject/register` 与 `ctx.sidebarRightTabs.register`；看盘面板挂到 `sidebar.right.pane.tab`，由 `ctx.sidebarRight.openTab(kind)` 打开，宿主右侧栏即出现“Talaria 看盘”页签。
+2. **客户端模块加载协议**：构建产物必须包成 `window.__ModuleLoader__.load({ id, factory(require){...} })`，`react`/`react-jsx-runtime` 由浏览器模块表提供；依赖图里带 `process.env.NODE_ENV` 的库（如 klinecharts）需在 factory 内补 `process` 兜底，否则客户端报 `process is not defined`。
+3. **工具 Schema 子集比文档更窄**：`assertSupportedJsonSchema` 只接受 `type / oneOf / properties / required / additionalProperties / items / enum / const` 与 `description / title / default / examples`；`anyOf`、`minItems`、`minLength`、`minimum` 均拒绝，对象型 `additionalProperties` 必须是布尔。09 在 `contracts_io.py` 增加 `_to_dsh_subset`（`anyOf→oneOf`、递归裁剪、对象 `additionalProperties→true`）并让 `contract-check` 固化。
+4. **`dsh.bundle.patch` 会自动叠加**：插件包声明 `dsh.bundle.patch` 后，`dsh --profile talaria-desk` 已自动应用该补丁；启动命令不得再传 `--patch`，否则会产生重复 `preset-talaria-desk` / `talaria-desk-plugin` 行（09 首版踩过，已移除 `--patch` 并加 dump 单测）。
+5. **宿主自定义 HTTP 路由**：`ctx.webServer.register({ kind: 'exact', path: '/talaria/bootstrap', handler })` 在 rc.3 可用；浏览器面板通过该路由取得 Python 回环基址与 Bearer Token，再经 CORS 白名单直连守护进程。
+6. **guard 可注册但不可由 dump 证明**：`ctx.tools.guard(fn)` 在真实宿主编译/激活通过（无 `entry did not activate`），但 dump 中仍为 0；09 的守卫行为测试用 node 单测构造 fake `Session`（`header.isSeeded`、`inheritedEventCount`、`eventAt`），未跑真实模型会话的 fork 重放。
+7. **`dsh web --profile` 不存在**：启动自定义 Profile 用 `dsh --profile talaria-desk`；`dsh web` 只是内置 web Profile 的便捷入口。`--no-open` 可禁止拉浏览器，入口 URL 带一次性 `?token=`。
+
+---
+
+## 10. 参考入口
 
 - DSH 仓库：<https://github.com/deepseek-ai/deepseek-harness>
 - DSH releases：<https://github.com/deepseek-ai/deepseek-harness/releases>

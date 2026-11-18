@@ -20,7 +20,14 @@ export function resolveInitialTheme(): Theme {
   return prefersDark() ? "dark" : "light";
 }
 
-export function applyTheme(theme: Theme): void {
-  document.documentElement.dataset.theme = theme;
-  document.documentElement.style.colorScheme = theme;
+/**
+ * 独立页面把主题写到 ``documentElement``；嵌入 DSH 时只写到工作台根节点，
+ * 避免覆盖宿主自己的主题。
+ */
+export function applyTheme(
+  theme: Theme,
+  target: HTMLElement = document.documentElement,
+): void {
+  target.dataset.theme = theme;
+  target.style.colorScheme = theme;
 }

@@ -14,9 +14,10 @@ import contextlib
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable, Mapping
 
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from talaria import __version__
@@ -137,7 +138,10 @@ async def _send_loop(websocket: WebSocket, queue: asyncio.Queue[dict[str, object
         return
 
 
-def create_app(settings: AppSettings) -> FastAPI:
+def create_app(
+    settings: AppSettings,
+    collaboration_status: Callable[[], Mapping[str, object]] | None = None,
+) -> FastAPI:
     token = settings.token or secrets.token_urlsafe(32)
 
     @asynccontextmanager
@@ -231,8 +235,16 @@ def create_app(settings: AppSettings) -> FastAPI:
             cold_store.close()
 
     app = FastAPI(title="Talaria 分析工作台", version=__version__, lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^http://(127\.0\.0\.1|localhost)(:\d+)?$",
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+        max_age=600,
+    )
     app.state.token = token
     app.state.settings = settings
+    app.state.collaboration_status = collaboration_status
 
     @app.middleware("http")
     async def require_bearer(request: Request, call_next):
@@ -269,6 +281,19 @@ def create_app(settings: AppSettings) -> FastAPI:
     def health(request: Request) -> dict[str, object]:
         active = service(request)
         return {"ok": True, "version": __version__, "feed_mode": active.feed_mode}
+
+    @app.get("/api/collaboration")
+    def collaboration(request: Request) -> Mapping[str, object]:
+        provider = request.app.state.collaboration_status
+        if provider is None:
+            return {
+                "mode": "solo",
+                "host": "disabled",
+                "url": None,
+                "detail": "单机模式未启动 DSH 协同宿主",
+                "message": "单机模式：图表由 Python 守护进程直接提供，不依赖 DSH 宿主。",
+            }
+        return provider()
 
     @app.get("/api/feed/health", response_model=FeedHealthReport)
     def feed_health(request: Request) -> FeedHealthReport:

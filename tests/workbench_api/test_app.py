@@ -57,6 +57,28 @@ def test_health_reports_version_and_fixture_mode(client) -> None:
     assert response.json() == {"ok": True, "version": "0.0.2", "feed_mode": "fixture"}
 
 
+def test_collaboration_reports_solo_without_host(client) -> None:
+    payload = client.get("/api/collaboration").json()
+    assert payload["mode"] == "solo"
+    assert payload["host"] == "disabled"
+    assert "单机模式" in payload["message"]
+
+
+def test_collaboration_uses_injected_host_status(
+    tmp_path, fixture_dir, dist_dir
+) -> None:
+    def status() -> dict[str, object]:
+        return {"mode": "dual", "host": "offline", "message": "快通道正常"}
+
+    app = create_app(
+        _app_settings(tmp_path, fixture_dir, dist=dist_dir),
+        collaboration_status=status,
+    )
+    with TestClient(app) as client:
+        payload = client.get("/api/collaboration").json()
+    assert payload == {"mode": "dual", "host": "offline", "message": "快通道正常"}
+
+
 def test_instruments_returns_four_specs_with_decimal_strings(client) -> None:
     response = client.get("/api/instruments")
     assert response.status_code == 200
