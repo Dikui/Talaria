@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "ScannerConditionKind": {
+      "description": "任务单要求的五类数值异动。",
+      "enum": [
+        "LIQUIDITY_ANOMALY",
+        "VOLATILITY_EXPANSION",
+        "FUNDING_EXTREME",
+        "OI_DIVERGENCE",
+        "KEY_LEVEL_EVENT"
+      ],
+      "title": "ScannerConditionKind",
+      "type": "string"
+    },
+    "ScannerFocusItem": {
+      "additionalProperties": false,
+      "description": "SCANNER_FOCUS 系统分组中的一行，由最近的 Trigger 聚合而来。",
+      "properties": {
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "kinds": {
+          "items": {
+            "$ref": "#/$defs/ScannerConditionKind"
+          },
+          "title": "Kinds",
+          "type": "array"
+        },
+        "last_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Snapshot Id"
+        },
+        "last_timeframe": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Timeframe"
+        },
+        "last_title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Title"
+        },
+        "last_trigger_ts": {
+          "title": "Last Trigger Ts",
+          "type": "integer"
+        },
+        "severity": {
+          "$ref": "#/$defs/ScannerSeverity"
+        },
+        "trigger_count": {
+          "title": "Trigger Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "last_trigger_ts",
+        "trigger_count",
+        "severity"
+      ],
+      "title": "ScannerFocusItem",
+      "type": "object"
+    },
+    "ScannerSeverity": {
+      "description": "异动严重度；仅用于展示排序，不触发模型。",
+      "enum": [
+        "INFO",
+        "WARNING",
+        "CRITICAL"
+      ],
+      "title": "ScannerSeverity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "焦点分组视图；``instrument_ids`` 可直接与 watchlist 分组对照。",
+  "properties": {
+    "generated_ts": {
+      "title": "Generated Ts",
+      "type": "integer"
+    },
+    "group_id": {
+      "title": "Group Id",
+      "type": "string"
+    },
+    "instrument_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Instrument Ids",
+      "type": "array"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/ScannerFocusItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    }
+  },
+  "required": [
+    "group_id",
+    "name",
+    "items",
+    "instrument_ids",
+    "generated_ts"
+  ],
+  "title": "ScannerFocusResponse",
+  "type": "object"
+}

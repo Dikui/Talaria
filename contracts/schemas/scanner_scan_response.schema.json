@@ -1,0 +1,181 @@
+{
+  "$defs": {
+    "ScannerConditionKind": {
+      "description": "任务单要求的五类数值异动。",
+      "enum": [
+        "LIQUIDITY_ANOMALY",
+        "VOLATILITY_EXPANSION",
+        "FUNDING_EXTREME",
+        "OI_DIVERGENCE",
+        "KEY_LEVEL_EVENT"
+      ],
+      "title": "ScannerConditionKind",
+      "type": "string"
+    },
+    "ScannerEvidence": {
+      "additionalProperties": false,
+      "description": "一条可复核的数值证据，值与阈值一律用十进制字符串。",
+      "properties": {
+        "metric": {
+          "title": "Metric",
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        },
+        "value": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric",
+        "value"
+      ],
+      "title": "ScannerEvidence",
+      "type": "object"
+    },
+    "ScannerSeverity": {
+      "description": "异动严重度；仅用于展示排序，不触发模型。",
+      "enum": [
+        "INFO",
+        "WARNING",
+        "CRITICAL"
+      ],
+      "title": "ScannerSeverity",
+      "type": "string"
+    },
+    "ScannerTrigger": {
+      "additionalProperties": false,
+      "description": "一次数值异动命中；``snapshot_id`` 指向冻结后的 Evidence Snapshot。",
+      "properties": {
+        "created_ts": {
+          "title": "Created Ts",
+          "type": "integer"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/ScannerEvidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ScannerConditionKind"
+        },
+        "route": {
+          "$ref": "#/$defs/ScannerTriggerRoute",
+          "default": "LOCAL"
+        },
+        "severity": {
+          "$ref": "#/$defs/ScannerSeverity"
+        },
+        "snapshot_id": {
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "timeframe": {
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "trigger_id": {
+          "title": "Trigger Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger_id",
+        "instrument_id",
+        "timeframe",
+        "kind",
+        "severity",
+        "title",
+        "summary",
+        "created_ts",
+        "snapshot_id"
+      ],
+      "title": "ScannerTrigger",
+      "type": "object"
+    },
+    "ScannerTriggerRoute": {
+      "description": "触发路由；本任务只落地 ``LOCAL``。",
+      "enum": [
+        "LOCAL",
+        "CO_PILOT_CONSULT"
+      ],
+      "title": "ScannerTriggerRoute",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次扫描的结果与范围，便于复现。",
+  "properties": {
+    "generated_ts": {
+      "title": "Generated Ts",
+      "type": "integer"
+    },
+    "scanned_instruments": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Scanned Instruments",
+      "type": "array"
+    },
+    "triggers": {
+      "items": {
+        "$ref": "#/$defs/ScannerTrigger"
+      },
+      "title": "Triggers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "triggers",
+    "scanned_instruments",
+    "generated_ts"
+  ],
+  "title": "ScannerScanResponse",
+  "type": "object"
+}

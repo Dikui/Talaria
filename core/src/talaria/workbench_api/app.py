@@ -18,7 +18,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import AsyncIterator, Callable, Mapping
 
-from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -71,6 +71,15 @@ from talaria.foundation.key_levels import (
     VwapAnchor,
 )
 from talaria.foundation.market import InstrumentSpec
+from talaria.foundation.scanner import (
+    ScannerConditionKind,
+    ScannerFocusResponse,
+    ScannerScanRequest,
+    ScannerScanResponse,
+    ScannerSeverity,
+    ScannerTrigger,
+    ScannerTriggerListResponse,
+)
 from talaria.foundation.snapshot import (
     ChartPage,
     ErrorResponse,
@@ -104,6 +113,7 @@ from talaria.workbench_api.alert_service import AlertService
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.key_level_feedback import KeyLevelFeedbackService
 from talaria.workbench_api.service import WorkbenchService
+from talaria.workbench_api.scanner_service import HISTORY_LIMIT, ScannerService
 from talaria.workbench_api.settings import AppSettings
 from talaria.workbench_api.state_store import StateWriterQueue
 from talaria.workbench_api.subscriptions import RealtimeSubscriptionScheduler
@@ -227,6 +237,23 @@ async def _alert_tick_loop(alert_service: AlertService) -> None:
             raise
         except Exception:
             logger.exception("预警冷却/过期推进失败")
+
+
+def _broadcast_scanner(app: FastAPI, trigger: ScannerTrigger) -> None:
+    payload = {"type": "scanner", "data": trigger.model_dump(mode="json")}
+    for queue in list(app.state.ws_queues.values()):
+        _enqueue(queue, payload)
+
+
+async def _scanner_tick_loop(scanner_service: ScannerService) -> None:
+    while True:
+        await asyncio.sleep(3)
+        try:
+            await scanner_service.scan()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("数值扫描 tick 失败")
 
 
 def create_app(
@@ -370,6 +397,76 @@ def create_app(
         )
         app.state.subscription_scheduler = scheduler
         app.state.watchlist = watchlist
+
+        async def _scanner_changed() -> None:
+            with contextlib.suppress(TalariaError):
+                await watchlist.rebalance()
+
+        def _freeze_scanner_snapshot(
+            instrument_id: str, timeframe: str, now: int
+        ) -> str:
+            meta = builder.build(
+                instrument=instruments_by_id[instrument_id],
+                request=SnapshotRequest(
+                    instrument_id=instrument_id,
+                    timeframes=[timeframe],
+                    cutoff_ts=now,
+                ),
+            )
+            return meta.snapshot_id
+
+        scanner_service = ScannerService(
+            state_writer=state_writer,
+            instruments=instruments,
+            now_ms=settings.now_ms,
+            freeze_snapshot=_freeze_scanner_snapshot,
+            publish=lambda trigger: _broadcast_scanner(app, trigger),
+            on_change=_scanner_changed,
+        )
+        if settings.fixture_dir is not None and feed_mode is None:
+            # 离线样本没有实时流；启动时用同一 connector 回填一轮，扫描与 UI
+            # 才能在没有网络的演示/验收环境里产出可回看的异动。
+            for spec in instruments:
+                try:
+                    raw_bars = connector.fetch_bars(
+                        symbol=spec.symbol, timeframe="1m", limit=240
+                    )
+                    scanner_service.seed_bars(
+                        spec.instrument_id,
+                        "1m",
+                        [bar.to_compact() for bar in raw_bars],
+                    )
+                except Exception:
+                    logger.warning("扫描器回填 K 线失败：%s", spec.instrument_id)
+                points = []
+                try:
+                    points.extend(
+                        connector.fetch_funding_settlements(
+                            symbol=spec.symbol, limit=120
+                        )
+                    )
+                except Exception:
+                    logger.warning("扫描器回填资金费率失败：%s", spec.instrument_id)
+                try:
+                    points.extend(
+                        connector.fetch_open_interest(
+                            symbol=spec.symbol, timeframe="5m", limit=120
+                        )
+                    )
+                except Exception:
+                    logger.warning("扫描器回填持仓量失败：%s", spec.instrument_id)
+                if points:
+                    scanner_service.seed_derivatives(
+                        spec.instrument_id,
+                        [point.to_point(spec.instrument_id) for point in points],
+                    )
+        app.state.scanner_service = scanner_service
+        remove_scanner_listener = (
+            supervisor.add_listener(scanner_service.handle_event)
+            if supervisor is not None
+            else None
+        )
+        scanner_ticker = asyncio.create_task(_scanner_tick_loop(scanner_service))
         await alert_service.start()
         app.state.alert_service = alert_service
         remove_alert_listener = (
@@ -382,9 +479,15 @@ def create_app(
         try:
             yield
         finally:
+            scanner_ticker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await scanner_ticker
             alert_ticker.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await alert_ticker
+            if remove_scanner_listener is not None:
+                remove_scanner_listener()
+            scanner_service.close()
             if remove_alert_listener is not None:
                 remove_alert_listener()
             await alert_service.close()
@@ -652,6 +755,54 @@ def create_app(
     async def dismiss_alert(alert_id: str, request: Request) -> AlertRecord:
         return await request.app.state.alert_service.patch_alert(
             alert_id, AlertPatch(enabled=False)
+        )
+
+    @app.get("/api/scanner/triggers", response_model=ScannerTriggerListResponse)
+    def list_scanner_triggers(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=200),
+        instrument_id: str | None = Query(default=None),
+        kind: ScannerConditionKind | None = Query(default=None),
+        severity: ScannerSeverity | None = Query(default=None),
+        snapshot_id: str | None = Query(default=None),
+    ) -> ScannerTriggerListResponse:
+        scanner: ScannerService = request.app.state.scanner_service
+        matches = scanner.list_triggers(
+            limit=HISTORY_LIMIT,
+            instrument_id=instrument_id,
+            kind=kind,
+            severity=severity,
+            snapshot_id=snapshot_id,
+        )
+        return ScannerTriggerListResponse(
+            triggers=matches[:limit],
+            total=len(matches),
+            generated_ts=request.app.state.settings.now_ms(),
+        )
+
+    @app.get("/api/scanner/focus", response_model=ScannerFocusResponse)
+    def get_scanner_focus(request: Request) -> ScannerFocusResponse:
+        scanner: ScannerService = request.app.state.scanner_service
+        return scanner.focus(request.app.state.settings.now_ms())
+
+    @app.post("/api/scanner/scan", response_model=ScannerScanResponse)
+    async def scan_now(
+        request: Request, payload: ScannerScanRequest | None = None
+    ) -> ScannerScanResponse:
+        scanner: ScannerService = request.app.state.scanner_service
+        requested = (
+            list(dict.fromkeys(payload.instrument_ids))
+            if payload is not None and payload.instrument_ids is not None
+            else scanner.universe
+        )
+        try:
+            triggers = await scanner.scan(requested)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return ScannerScanResponse(
+            triggers=triggers,
+            scanned_instruments=requested,
+            generated_ts=request.app.state.settings.now_ms(),
         )
 
     @app.post("/api/snapshots", response_model=SnapshotMeta)

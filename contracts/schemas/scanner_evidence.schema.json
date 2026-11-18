@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "一条可复核的数值证据，值与阈值一律用十进制字符串。",
+  "properties": {
+    "metric": {
+      "title": "Metric",
+      "type": "string"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "threshold": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Threshold"
+    },
+    "value": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Value",
+      "type": "string"
+    }
+  },
+  "required": [
+    "metric",
+    "value"
+  ],
+  "title": "ScannerEvidence",
+  "type": "object"
+}

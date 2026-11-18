@@ -77,6 +77,29 @@ describe("parseDeskMessage", () => {
     });
   });
 
+  it("解析扫描器触发消息并按 trigger_id 字段校验", () => {
+    const data = {
+      trigger_id: "scn_1",
+      instrument_id: INSTRUMENT,
+      timeframe: "1m",
+      kind: "LIQUIDITY_ANOMALY",
+      severity: "WARNING",
+      title: "流动性异常",
+      summary: "成交额放大",
+      tags: ["流动性"],
+      created_ts: 1_763_596_800_000,
+      snapshot_id: "snap_1",
+      route: "LOCAL",
+    };
+    expect(parseDeskMessage(JSON.stringify({ type: "scanner", data }))).toEqual({
+      type: "scanner",
+      data,
+    });
+    expect(
+      parseDeskMessage(JSON.stringify({ type: "scanner", data: { summary: "x" } })),
+    ).toBeNull();
+  });
+
   it("解析 levels 投影，拒绝缺失 levels 的载荷", () => {
     const parsed = parseDeskMessage(
       JSON.stringify({

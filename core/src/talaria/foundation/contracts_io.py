@@ -83,6 +83,18 @@ from talaria.foundation.key_levels import (
     KeyLevelStatus,
 )
 from talaria.foundation.market import InstrumentSpec
+from talaria.foundation.scanner import (
+    ScannerConditionKind,
+    ScannerEvidence,
+    ScannerFocusItem,
+    ScannerFocusResponse,
+    ScannerScanRequest,
+    ScannerScanResponse,
+    ScannerSeverity,
+    ScannerTrigger,
+    ScannerTriggerListResponse,
+    ScannerTriggerRoute,
+)
 from talaria.foundation.snapshot import (
     ChartPage,
     ErrorResponse,
@@ -160,6 +172,13 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "alert_list_response": AlertListResponse,
     "alert_trigger_record": AlertTriggerRecord,
     "alert_trigger_list_response": AlertTriggerListResponse,
+    "scanner_evidence": ScannerEvidence,
+    "scanner_trigger": ScannerTrigger,
+    "scanner_trigger_list_response": ScannerTriggerListResponse,
+    "scanner_focus_item": ScannerFocusItem,
+    "scanner_focus_response": ScannerFocusResponse,
+    "scanner_scan_request": ScannerScanRequest,
+    "scanner_scan_response": ScannerScanResponse,
 }
 
 #: 枚举的固定输出顺序。
@@ -184,6 +203,9 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     AlertDirection,
     AlertOverlayMode,
     AlertStatus,
+    ScannerConditionKind,
+    ScannerSeverity,
+    ScannerTriggerRoute,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
