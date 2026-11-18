@@ -1,0 +1,60 @@
+#!/bin/sh
+# 先用 safe-push 扫描未推送的提交，有阻断项（任务单、代理工作目录、密钥等）就拒绝推送。
+# 再看版本号：推送到默认分支时，前两位（主版本、次版本）变化才运行全量测试；只升修订号或不改版本时直接放行。
+# 由 setup-dikui-skills 生成：按项目修改下面几行。
+DEFAULT_BRANCH='main'
+VERSION_FILE='VERSION'
+FULL_TEST='if [ -d tests ] || [ -f pyproject.toml ] || [ -f core/pyproject.toml ]; then uv run pytest; else echo "pre-push：当前尚无测试目录，跳过全量测试" >&2; fi'
+# safe-push 的 scan.sh；留空时依次在 Claude、Codex、Grok 的插件目录里找最新版。
+SAFE_PUSH_SCAN=''
+
+set -eu
+zero=0000000000000000000000000000000000000000
+
+newest() { ls -d "$@" 2>/dev/null | sort -V | tail -n 1; }
+scan=$SAFE_PUSH_SCAN
+# 每处同时找平铺布局和旧版的 engineering/ 布局，sort -V 取版本最新的一个。
+[ -n "$scan" ] || scan=$(newest "$HOME"/.claude/plugins/cache/*/gungnir/*/safe-push/scripts/scan.sh "$HOME"/.claude/plugins/cache/*/gungnir/*/engineering/safe-push/scripts/scan.sh)
+[ -n "$scan" ] || scan=$(newest "$HOME"/.codex/plugins/cache/*/gungnir/*/safe-push/scripts/scan.sh "$HOME"/.codex/plugins/cache/*/gungnir/*/engineering/safe-push/scripts/scan.sh)
+[ -n "$scan" ] || scan=$(newest "$HOME"/.grok/installed-plugins/*/skills/safe-push/scripts/scan.sh "$HOME"/.grok/installed-plugins/*/skills/engineering/safe-push/scripts/scan.sh)
+if [ -z "$scan" ] || [ ! -f "$scan" ]; then
+  echo "pre-push：找不到 safe-push 扫描脚本，跳过扫描；安装 Gungnir 插件或在钩子里设置 SAFE_PUSH_SCAN" >&2
+else
+  # stdin 是待推送的 ref 列表，留给下面的循环。
+  report=$(bash "$scan" --unpushed < /dev/null) && code=0 || code=$?
+  case "$code" in
+    0) ;;
+    1) printf '%s\n' "$report" >&2
+       echo "pre-push：safe-push 扫描发现阻断项，已拒绝推送；移出这些内容后再推送" >&2
+       exit 1 ;;
+    *) echo "pre-push：safe-push 扫描出错（退出码 $code），已拒绝推送；请手动核对未推送的提交" >&2
+       exit 1 ;;
+  esac
+fi
+
+# <提交> → x.y.z；VERSION 文件取全文，其他文件取第一处 version 键。读不到时为空。
+version_at() {
+  git show "$1:$VERSION_FILE" 2>/dev/null | {
+    if [ "$(basename "$VERSION_FILE")" = VERSION ]; then cat; else grep -m1 -E '^[[:space:]]*"?version"?[[:space:]]*[:=]'; fi
+  } | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true
+}
+
+while read -r _ local_sha remote_ref remote_sha; do
+  [ "$remote_ref" = "refs/heads/$DEFAULT_BRANCH" ] || continue
+  [ "$local_sha" = "$zero" ] && continue
+  # 远端有本地没有的提交时推送反正会被拒；先停下，免得白跑全量。
+  if [ "$remote_sha" != "$zero" ] && ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    echo "pre-push：远端 $DEFAULT_BRANCH 有本地没有的提交，先拉取合并再推送" >&2
+    exit 1
+  fi
+  new=$(version_at "$local_sha")
+  old=''
+  [ "$remote_sha" = "$zero" ] || old=$(version_at "$remote_sha")
+  [ -n "$new" ] && [ "${new%.*}" = "${old%.*}" ] && continue
+  echo "pre-push：版本 ${old:-无} → ${new:-无}，前两位变化，运行全量测试：$FULL_TEST" >&2
+  if [ "$local_sha" != "$(git rev-parse HEAD)" ]; then
+    echo "pre-push：推送的提交不是当前 HEAD，检出它后再推送，全量测试才测得到这份代码" >&2
+    exit 1
+  fi
+  sh -c "$FULL_TEST"
+done
