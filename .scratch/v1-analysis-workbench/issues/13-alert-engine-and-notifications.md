@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0005](../../../docs/adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 引擎面向 `MarketEventFeed` 运行，同一套触发与冷却代码适配实时热流与冷库事件回放；支持 `METRIC_THRESHOLD`、`INDICATOR_SIGNAL`（复用 Python 算子）与 `OVERLAY_CROSS`（画线几何插值触碰或收盘突破，改线后按最新锚点生效、无需重建预警）。条件类型可扩展。
 - [x] 状态机 `ARMED → COOLDOWN / EXPIRED`：触发时冻结快照生成带 `snapshot_id` 的 `Trigger`；单次预警转 `EXPIRED`，重复预警冷却到期恢复 `ARMED`；`Instrument` 处于 `STALE` 时挂起，恢复瞬间不误报。
@@ -59,3 +59,10 @@
 - `OVERLAY_CROSS` 的画线几何按当前窗口时间插值，尚未处理画线被软删除后重新恢复的版本切换语义（恢复后按最新版本几何生效）。
 - 前端触发通知历史每次轮询刷新最近 50 条，未做分页；规则列表一次加载全部规则。
 - 修复了 `styles.css` 中既有的未闭合 `@media (max-width: 720px)` 块（该 bug 会把其后的宿主徽标、关键位与新增预警样式全部吞进移动端媒体查询）。
+
+### Lead 验收
+
+- 合并 `1c3545e Merge branch 'ticket-13-alert-engine'`（自动合并，无冲突；11/12 已先合入）。main 重跑 `uv run pytest -q` → 381 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 114 passed（16 files）；`pnpm -C dsh build` 通过（仅 chunk 体积告警）。
+- 目视截图：1440 浅色触发 toast + 规则列表、1440 深色长备注换行、390 规则列表与通知卡、画线属性“挂预警”入口与预填表单均符合验收；创建入口在 390 隐藏。
+- 代码审查：`AlertEngine` 纯逻辑、可注入时钟/历史/冻结回调；`handle_event` 对 STALE 挂起并在恢复时重置基线；触发冻结快照失败时 snapshot_id 为空且记录告警；`AlertService` 写路径全部经 `StateWriterQueue`；草案确认前不触发；活跃预警注入调度器。
+- 接受已知限制：触发历史仅最近 50 条无分页；画线软删恢复按最新几何；视窗外画线不出现在管理列表但预警按几何生效。
