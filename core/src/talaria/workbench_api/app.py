@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -23,6 +24,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from talaria import __version__
 from talaria.feed.supervisor import FeedSupervisor
+from talaria.foundation.alerts import (
+    AlertCreate,
+    AlertListResponse,
+    AlertPatch,
+    AlertRecord,
+    AlertStatus,
+    AlertTriggerListResponse,
+    AlertTriggerRecord,
+)
 from talaria.foundation.drawings import (
     ChartView,
     DrawingClearResponse,
@@ -87,6 +97,7 @@ from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.replay import ReplayFeed
+from talaria.workbench_api.alert_service import AlertService
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.key_level_feedback import KeyLevelFeedbackService
 from talaria.workbench_api.service import WorkbenchService
@@ -94,6 +105,8 @@ from talaria.workbench_api.settings import AppSettings
 from talaria.workbench_api.state_store import StateWriterQueue
 from talaria.workbench_api.subscriptions import RealtimeSubscriptionScheduler
 from talaria.workbench_api.watchlist import WatchlistService
+
+logger = logging.getLogger(__name__)
 
 AUTH_SCHEME = "Bearer"
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -104,6 +117,7 @@ ERROR_STATUS: dict[str, int] = {
     "INSTRUMENT_NOT_FOUND": 404,
     "SNAPSHOT_NOT_FOUND": 404,
     "DRAWING_NOT_FOUND": 404,
+    "ALERT_NOT_FOUND": 404,
     "FEED_UNAVAILABLE": 503,
     "NOT_IMPLEMENTED": 501,
     "INTERNAL": 500,
@@ -195,6 +209,23 @@ async def _send_loop(websocket: WebSocket, queue: asyncio.Queue[dict[str, object
         return
 
 
+def _broadcast_alert(app: FastAPI, trigger: AlertTriggerRecord) -> None:
+    payload = {"type": "alert", "data": trigger.model_dump(mode="json")}
+    for queue in list(app.state.ws_queues.values()):
+        _enqueue(queue, payload)
+
+
+async def _alert_tick_loop(alert_service: AlertService) -> None:
+    while True:
+        await asyncio.sleep(1)
+        try:
+            await alert_service.tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("预警冷却/过期推进失败")
+
+
 def create_app(
     settings: AppSettings,
     collaboration_status: Callable[[], Mapping[str, object]] | None = None,
@@ -255,6 +286,7 @@ def create_app(
             builder=builder,
             feed_mode=feed_mode,
         )
+        instruments_by_id = {spec.instrument_id: spec for spec in instruments}
         app.state.ws_subscribers = {}
         app.state.level_sets = {}
         app.state.ws_queues = {}
@@ -293,6 +325,37 @@ def create_app(
             if supervisor is not None
             else None
         )
+
+        async def _alert_changed() -> None:
+            with contextlib.suppress(TalariaError):
+                await watchlist.rebalance()
+
+        def _freeze_alert_snapshot(alert: AlertRecord, now: int) -> str:
+            meta = builder.build(
+                instrument=instruments_by_id[alert.instrument_id],
+                request=SnapshotRequest(
+                    instrument_id=alert.instrument_id,
+                    timeframes=[alert.timeframe],
+                    cutoff_ts=now,
+                ),
+            )
+            return meta.snapshot_id
+
+        def bar_history(instrument_id: str, timeframe: str):
+            assert supervisor is not None
+            return supervisor.recent_bars(
+                instrument_id=instrument_id, timeframe=timeframe
+            )
+
+        alert_service = AlertService(
+            state_writer=state_writer,
+            instruments=instruments,
+            now_ms=settings.now_ms,
+            bar_history=bar_history if supervisor is not None else None,
+            freeze_snapshot=_freeze_alert_snapshot,
+            on_change=_alert_changed,
+            on_trigger=lambda trigger: _broadcast_alert(app, trigger),
+        )
         watchlist = WatchlistService(
             state_writer=state_writer,
             instruments=instruments,
@@ -300,12 +363,28 @@ def create_app(
             supervisor=supervisor,
             scheduler=scheduler,
             now_ms=settings.now_ms,
+            alerted_instruments=alert_service.active_instrument_ids,
         )
         app.state.subscription_scheduler = scheduler
         app.state.watchlist = watchlist
+        await alert_service.start()
+        app.state.alert_service = alert_service
+        remove_alert_listener = (
+            supervisor.add_listener(alert_service.handle_event)
+            if supervisor is not None
+            else None
+        )
+        alert_ticker = asyncio.create_task(_alert_tick_loop(alert_service))
+        await watchlist.rebalance()
         try:
             yield
         finally:
+            alert_ticker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await alert_ticker
+            if remove_alert_listener is not None:
+                remove_alert_listener()
+            await alert_service.close()
             if remove_hot_listener is not None:
                 remove_hot_listener()
             if supervisor is not None:
@@ -321,7 +400,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^http://(127\.0\.0\.1|localhost)(:\d+)?$",
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
         max_age=600,
     )
@@ -523,6 +602,54 @@ def create_app(
         request: Request, instrument_id: str
     ) -> Watchlist:
         return await request.app.state.watchlist.remove_item(instrument_id)
+
+    @app.get("/api/alerts", response_model=AlertListResponse)
+    async def list_alerts(
+        request: Request,
+        status: AlertStatus | None = Query(default=None, description="按状态过滤"),
+    ) -> AlertListResponse:
+        alerts = await request.app.state.alert_service.list_alerts(status)
+        return AlertListResponse(alerts=alerts)
+
+    @app.post("/api/alerts", response_model=AlertRecord, status_code=201)
+    async def create_alert(payload: AlertCreate, request: Request) -> AlertRecord:
+        return await request.app.state.alert_service.create_alert(payload)
+
+    @app.get("/api/alerts/triggers", response_model=AlertTriggerListResponse)
+    async def list_alert_triggers(
+        request: Request,
+        alert_id: str | None = Query(default=None),
+        instrument_id: str | None = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> AlertTriggerListResponse:
+        triggers = await request.app.state.alert_service.list_triggers(
+            alert_id=alert_id, instrument_id=instrument_id, limit=limit
+        )
+        return AlertTriggerListResponse(triggers=triggers)
+
+    @app.get("/api/alerts/{alert_id}", response_model=AlertRecord)
+    async def get_alert(alert_id: str, request: Request) -> AlertRecord:
+        return await request.app.state.alert_service.get_alert(alert_id)
+
+    @app.patch("/api/alerts/{alert_id}", response_model=AlertRecord)
+    async def patch_alert(
+        alert_id: str, payload: AlertPatch, request: Request
+    ) -> AlertRecord:
+        return await request.app.state.alert_service.patch_alert(alert_id, payload)
+
+    @app.delete("/api/alerts/{alert_id}", response_model=AlertRecord)
+    async def delete_alert(alert_id: str, request: Request) -> AlertRecord:
+        return await request.app.state.alert_service.delete_alert(alert_id)
+
+    @app.post("/api/alerts/{alert_id}/confirm", response_model=AlertRecord)
+    async def confirm_alert(alert_id: str, request: Request) -> AlertRecord:
+        return await request.app.state.alert_service.confirm_alert(alert_id)
+
+    @app.post("/api/alerts/{alert_id}/dismiss", response_model=AlertRecord)
+    async def dismiss_alert(alert_id: str, request: Request) -> AlertRecord:
+        return await request.app.state.alert_service.patch_alert(
+            alert_id, AlertPatch(enabled=False)
+        )
 
     @app.post("/api/snapshots", response_model=SnapshotMeta)
     async def create_snapshot(

@@ -1,4 +1,10 @@
 import type {
+  AlertCreate,
+  AlertListResponse,
+  AlertPatch,
+  AlertRecord,
+  AlertStatus,
+  AlertTriggerListResponse,
   ChartPage,
   ChartView,
   DerivativeBundle,
@@ -152,11 +158,15 @@ export const api = {
   createSnapshot(
     instrumentId: string,
     timeframes: string[],
+    cutoffTs?: number | null,
   ): Promise<SnapshotMeta> {
     return postJson<SnapshotMeta>("/api/snapshots", {
       instrument_id: instrumentId,
       timeframes,
       mode: "HISTORICAL_PIT",
+      ...(cutoffTs === undefined || cutoffTs === null
+        ? {}
+        : { cutoff_ts: cutoffTs }),
     });
   },
 
@@ -326,6 +336,62 @@ export const api = {
       level_id: levelId,
       ignored,
     });
+  },
+
+  alerts(status?: AlertStatus): Promise<AlertListResponse> {
+    const query =
+      status === undefined ? "" : `?status=${encodeURIComponent(status)}`;
+    return getJson<AlertListResponse>(`/api/alerts${query}`);
+  },
+
+  alertTriggers(
+    options: { alertId?: string; instrumentId?: string; limit?: number } = {},
+  ): Promise<AlertTriggerListResponse> {
+    const params = new URLSearchParams();
+    if (options.alertId !== undefined) {
+      params.set("alert_id", options.alertId);
+    }
+    if (options.instrumentId !== undefined) {
+      params.set("instrument_id", options.instrumentId);
+    }
+    if (options.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    const suffix = params.toString();
+    return getJson<AlertTriggerListResponse>(
+      `/api/alerts/triggers${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+
+  createAlert(payload: AlertCreate): Promise<AlertRecord> {
+    return postJson<AlertRecord>("/api/alerts", payload);
+  },
+
+  patchAlert(alertId: string, patch: AlertPatch): Promise<AlertRecord> {
+    return patchJson<AlertRecord>(
+      `/api/alerts/${encodeURIComponent(alertId)}`,
+      patch,
+    );
+  },
+
+  deleteAlert(alertId: string): Promise<AlertRecord> {
+    return deleteJson<AlertRecord>(
+      `/api/alerts/${encodeURIComponent(alertId)}`,
+    );
+  },
+
+  confirmAlert(alertId: string): Promise<AlertRecord> {
+    return postJson<AlertRecord>(
+      `/api/alerts/${encodeURIComponent(alertId)}/confirm`,
+      undefined,
+    );
+  },
+
+  dismissAlert(alertId: string): Promise<AlertRecord> {
+    return postJson<AlertRecord>(
+      `/api/alerts/${encodeURIComponent(alertId)}/dismiss`,
+      undefined,
+    );
   },
 
   watchlist(): Promise<Watchlist> {

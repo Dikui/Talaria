@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 
 import type {
+  AlertTriggerRecord,
   DerivativeTickEvent,
   FeedHealthEvent,
   KlineEvent,
@@ -24,6 +25,7 @@ export interface MarketStream extends FeedState {
   hello: FeedHello | null;
   book: OrderBookEvent | null;
   derivatives: DerivativeTickEvent | null;
+  alert: AlertTriggerRecord | null;
 }
 
 const RECONNECT_BASE_MS = 500;

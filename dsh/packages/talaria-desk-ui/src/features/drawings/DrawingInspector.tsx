@@ -8,11 +8,17 @@ import type { DrawingsController } from "./useDrawings";
 export interface DrawingInspectorProps {
   controller: DrawingsController;
   timeframe: string;
+  /** 画线属性浮层的一键挂预警入口；文本标签没有价格几何，不提供。 */
+  onAttachAlert?: (drawing: DrawingRecord) => void;
 }
 
 const WIDTHS = [1, 2, 3] as const;
 
-export function DrawingInspector({ controller, timeframe }: DrawingInspectorProps) {
+export function DrawingInspector({
+  controller,
+  timeframe,
+  onAttachAlert,
+}: DrawingInspectorProps) {
   const { selected, updateSelected, deleteDrawing } = controller;
   const [text, setText] = useState(selected?.text ?? "");
   const [showVersions, setShowVersions] = useState(false);
@@ -152,6 +158,16 @@ export function DrawingInspector({ controller, timeframe }: DrawingInspectorProp
       </label>
 
       <div className="drawing-inspector-actions">
+        {onAttachAlert !== undefined && selected.kind !== "TEXT_LABEL" && (
+          <button
+            type="button"
+            className="primary-button"
+            data-testid="drawing-attach-alert"
+            onClick={() => onAttachAlert(selected)}
+          >
+            挂预警
+          </button>
+        )}
         <button
           type="button"
           className="ghost-button"
