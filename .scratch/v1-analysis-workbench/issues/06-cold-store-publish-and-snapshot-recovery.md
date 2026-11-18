@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)（§2 冷热存储与 SQLite 分库）、[ADR-0006](../../../docs/adr/0006-single-position-round-per-subaccount-and-isolated-ledgers.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 冷库发布遵循“原始报文内容哈希归档 → 临时批次完整性 / 单调性 / 精度质检 → 不可变列式文件原子切换 → 冷库清单库短事务提交游标与版本”；在每一步注入中断，读取侧都看不到半成品批次。
 - [x] 冻结快照时，热流中未归入冷库的切片即时物化落盘并登记到实时快照库；列式读取只扫描快照清单显式列出的文件，禁止目录通配符。
@@ -35,3 +35,13 @@
 - `workbench_api/app.py` lifespan 创建 `ColdStore(data_dir)`，为配置中的全部 instrument/timeframe 构建 publisher，注入 `SnapshotBuilder`；退出时在 supervisor、`SnapshotStore`、`StateWriterQueue` 关闭之后关闭冷库并执行 `wal_checkpoint(TRUNCATE)`。
 - 验证：`uv run pytest -q` → 187 passed, 1 deselected；`uv run talaria contract-check` → 契约生成物零漂移。新增测试覆盖游标/排序/去重/空柱、旧批次与重叠批次拒绝、builder 可见柱过滤与发布失败降级、fixture daemon 快照生成冷库 generation、二次快照不重复、重启后按 manifest 读回冷柱、退出后无 `*-wal`。CLI 冒烟（fixture + `--solo`）确认 `data_manifest.sqlite` 与 1 个 BTC 1m generation、900 根真实柱；SIGTERM 后 WAL 为 0，重启后 `snapshot_id` 仍 200。
 - 上面“daemon 尚未接入实时批次发布”的已知限制已被本次提交取代；冷库仍以快照构建为发布触发点，不做独立后台采集循环。
+
+
+## Lead 验收
+
+2026-11-19 合并 `v1-analysis-workbench` 任务单 06，合并提交 `188b353 Merge branch 'ticket-06-cold-store'`（分支末提交 `3309cef`）。
+
+- 合并 `workbench_api/app.py` 时与 04 的指标路由/`live=1` 接线冲突；手工保留两者：04 的 `GET /api/snapshots/{id}/indicators`、`POST /api/operators/compute` 与 06 的 `ColdStore`/`ColdPublisher`/`HotStreamBuffer`/`StateWriterQueue` 生命周期共存。
+- 合并后主分支验证：`uv run pytest -q` → 237 passed, 1 deselected（04+06 合计，仅 Starlette/httpx 弃用 warning）；`uv run talaria contract-check` → 零漂移；`pnpm -C dsh typecheck` 通过；`pnpm -C dsh --filter @talaria/desk-ui test` → 42 passed；`pnpm -C dsh build` 通过（JS 490.62 kB / CSS 13.55 kB）。
+- 冷库现在真正接入 daemon：快照构建时按周期发布可见柱到 `data/cold/...` 与 `data/data_manifest.sqlite`，append-only 游标拒绝旧/重叠批次，快照失败不阻塞；退出顺序 supervisor→SnapshotStore→StateWriterQueue→ColdStore，`wal_checkpoint(TRUNCATE)`。
+- 接受已知限制：冷库发布仍以快照构建为触发点，无独立后台采集循环；已发布 timestamp 的迟到 revision 不回溯（append-only 游标）；“原始报文”按标准化 `bar_record` 归档，非 Bybit HTTP 原始响应。
