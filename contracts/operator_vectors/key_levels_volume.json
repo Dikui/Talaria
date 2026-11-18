@@ -1,0 +1,973 @@
+{
+  "operator": "key_level_volume",
+  "method_version": "key-levels@2",
+  "instrument_id": "BTC-USDT-PERP",
+  "timeframe": "1m",
+  "cases": [
+    {
+      "name": "volume_profile_poc_vah_val",
+      "cutoff_ts": 1699920180000,
+      "params": {
+        "volume_profile_bins": 4,
+        "value_area_ratio": 0.7
+      },
+      "bars": [
+        {
+          "timestamp": 1699920000000,
+          "open": "100",
+          "high": "100",
+          "low": "100",
+          "close": "100",
+          "volume": "1",
+          "turnover": "100",
+          "status": "NORMAL",
+          "ts_available": 1699920060000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920060000,
+          "open": "110",
+          "high": "110",
+          "low": "110",
+          "close": "110",
+          "volume": "5",
+          "turnover": "550",
+          "status": "NORMAL",
+          "ts_available": 1699920120000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920120000,
+          "open": "120",
+          "high": "120",
+          "low": "120",
+          "close": "120",
+          "volume": "2",
+          "turnover": "240",
+          "status": "NORMAL",
+          "ts_available": 1699920180000,
+          "precision": "SECOND_VERIFIED"
+        }
+      ],
+      "derivative_points": [],
+      "include_kinds": [
+        "POC",
+        "VAH",
+        "VAL"
+      ],
+      "expected": {
+        "levels": [
+          {
+            "kind": "POC",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "112.500000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.674,
+            "status": "ACTIVE",
+            "ts_available": 1699920180000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "4",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "source": "volume_profile"
+            }
+          },
+          {
+            "kind": "VAL",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "110.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.575,
+            "status": "ACTIVE",
+            "ts_available": 1699920180000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "4",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "source": "volume_profile"
+            }
+          },
+          {
+            "kind": "VAH",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "120.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.552,
+            "status": "ACTIVE",
+            "ts_available": 1699920180000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "4",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "source": "volume_profile"
+            }
+          }
+        ],
+        "notes": [
+          "该快照没有可用的持仓量数据，清算密集区为空。"
+        ]
+      }
+    },
+    {
+      "name": "anchored_vwap_snapshot_zero_volume",
+      "cutoff_ts": 1699920180000,
+      "params": {
+        "vwap_anchor": "SNAPSHOT",
+        "vwap_band_sigmas": "1,2"
+      },
+      "bars": [
+        {
+          "timestamp": 1699920000000,
+          "open": "100",
+          "high": "100",
+          "low": "100",
+          "close": "100",
+          "volume": "1",
+          "turnover": "100",
+          "status": "NORMAL",
+          "ts_available": 1699920060000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920060000,
+          "open": "120",
+          "high": "120",
+          "low": "120",
+          "close": "120",
+          "volume": "1",
+          "turnover": "120",
+          "status": "NORMAL",
+          "ts_available": 1699920120000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920120000,
+          "open": "130",
+          "high": "130",
+          "low": "130",
+          "close": "130",
+          "volume": "0",
+          "turnover": "0",
+          "status": "NORMAL",
+          "ts_available": 1699920180000,
+          "precision": "SECOND_VERIFIED"
+        }
+      ],
+      "derivative_points": [],
+      "include_kinds": [
+        "ANCHORED_VWAP"
+      ],
+      "expected": {
+        "levels": [
+          {
+            "kind": "ANCHORED_VWAP",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "110.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.425,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "snapshot",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "band_sigma": "0",
+              "source": "anchored_vwap"
+            }
+          },
+          {
+            "kind": "ANCHORED_VWAP",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "100.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.375,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "snapshot",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "band_sigma": "-1",
+              "source": "anchored_vwap"
+            }
+          },
+          {
+            "kind": "ANCHORED_VWAP",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "120.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.375,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "snapshot",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "band_sigma": "1",
+              "source": "anchored_vwap"
+            }
+          },
+          {
+            "kind": "ANCHORED_VWAP",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "130.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.325,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "snapshot",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "band_sigma": "2",
+              "source": "anchored_vwap"
+            }
+          },
+          {
+            "kind": "ANCHORED_VWAP",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "90.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.325,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "snapshot",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "band_sigma": "-2",
+              "source": "anchored_vwap"
+            }
+          }
+        ],
+        "notes": [
+          "该快照没有可用的持仓量数据，清算密集区为空。"
+        ]
+      }
+    },
+    {
+      "name": "anchored_vwap_timestamp",
+      "cutoff_ts": 1699920180000,
+      "params": {
+        "vwap_anchor": "TIMESTAMP",
+        "vwap_anchor_ts": 1699920060000,
+        "vwap_band_sigmas": "1"
+      },
+      "bars": [
+        {
+          "timestamp": 1699920000000,
+          "open": "100",
+          "high": "100",
+          "low": "100",
+          "close": "100",
+          "volume": "1",
+          "turnover": "100",
+          "status": "NORMAL",
+          "ts_available": 1699920060000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920060000,
+          "open": "120",
+          "high": "120",
+          "low": "120",
+          "close": "120",
+          "volume": "1",
+          "turnover": "120",
+          "status": "NORMAL",
+          "ts_available": 1699920120000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920120000,
+          "open": "140",
+          "high": "140",
+          "low": "140",
+          "close": "140",
+          "volume": "1",
+          "turnover": "140",
+          "status": "NORMAL",
+          "ts_available": 1699920180000,
+          "precision": "SECOND_VERIFIED"
+        }
+      ],
+      "derivative_points": [],
+      "include_kinds": [
+        "ANCHORED_VWAP"
+      ],
+      "expected": {
+        "levels": [
+          {
+            "kind": "ANCHORED_VWAP",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "130.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.425,
+            "status": "ACTIVE",
+            "ts_available": 1699920180000,
+            "formed_ts": 1699920060000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "timestamp",
+              "vwap_anchor_ts": "1699920060000",
+              "leverage_tiers": "5,10,25,50,100",
+              "band_sigma": "0",
+              "source": "anchored_vwap"
+            }
+          },
+          {
+            "kind": "ANCHORED_VWAP",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "120.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.375,
+            "status": "ACTIVE",
+            "ts_available": 1699920180000,
+            "formed_ts": 1699920060000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "timestamp",
+              "vwap_anchor_ts": "1699920060000",
+              "leverage_tiers": "5,10,25,50,100",
+              "band_sigma": "-1",
+              "source": "anchored_vwap"
+            }
+          },
+          {
+            "kind": "ANCHORED_VWAP",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "140.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.375,
+            "status": "ACTIVE",
+            "ts_available": 1699920180000,
+            "formed_ts": 1699920060000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "timestamp",
+              "vwap_anchor_ts": "1699920060000",
+              "leverage_tiers": "5,10,25,50,100",
+              "band_sigma": "1",
+              "source": "anchored_vwap"
+            }
+          }
+        ],
+        "notes": [
+          "该快照没有可用的持仓量数据，清算密集区为空。"
+        ]
+      }
+    },
+    {
+      "name": "liquidation_estimate_from_oi",
+      "cutoff_ts": 1699920360000,
+      "params": {
+        "leverage_tiers": [
+          5,
+          10
+        ],
+        "liquidation_cluster_atr": 0.5,
+        "liquidation_min_points": 4,
+        "liquidation_max_levels": 8,
+        "liquidation_max_distance_atr": 100
+      },
+      "bars": [
+        {
+          "timestamp": 1699920000000,
+          "open": "100",
+          "high": "101",
+          "low": "99",
+          "close": "100",
+          "volume": "10",
+          "turnover": "1000",
+          "status": "NORMAL",
+          "ts_available": 1699920060000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920060000,
+          "open": "102",
+          "high": "103",
+          "low": "101",
+          "close": "102",
+          "volume": "10",
+          "turnover": "1020",
+          "status": "NORMAL",
+          "ts_available": 1699920120000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920120000,
+          "open": "104",
+          "high": "105",
+          "low": "103",
+          "close": "104",
+          "volume": "10",
+          "turnover": "1040",
+          "status": "NORMAL",
+          "ts_available": 1699920180000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920180000,
+          "open": "106",
+          "high": "107",
+          "low": "105",
+          "close": "106",
+          "volume": "10",
+          "turnover": "1060",
+          "status": "NORMAL",
+          "ts_available": 1699920240000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920240000,
+          "open": "108",
+          "high": "109",
+          "low": "107",
+          "close": "108",
+          "volume": "10",
+          "turnover": "1080",
+          "status": "NORMAL",
+          "ts_available": 1699920300000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920300000,
+          "open": "110",
+          "high": "111",
+          "low": "109",
+          "close": "110",
+          "volume": "10",
+          "turnover": "1100",
+          "status": "NORMAL",
+          "ts_available": 1699920360000,
+          "precision": "SECOND_VERIFIED"
+        }
+      ],
+      "derivative_points": [
+        {
+          "kind": "open_interest",
+          "timeframe": "1m",
+          "value": "1000",
+          "ts_event": 1699920000000,
+          "ts_available": 1699920060000,
+          "ts_ingested": 1699920060000,
+          "ts_committed": 1699920060000
+        },
+        {
+          "kind": "open_interest",
+          "timeframe": "1m",
+          "value": "1010",
+          "ts_event": 1699920060000,
+          "ts_available": 1699920120000,
+          "ts_ingested": 1699920120000,
+          "ts_committed": 1699920120000
+        },
+        {
+          "kind": "open_interest",
+          "timeframe": "1m",
+          "value": "1020",
+          "ts_event": 1699920120000,
+          "ts_available": 1699920180000,
+          "ts_ingested": 1699920180000,
+          "ts_committed": 1699920180000
+        },
+        {
+          "kind": "open_interest",
+          "timeframe": "1m",
+          "value": "1030",
+          "ts_event": 1699920180000,
+          "ts_available": 1699920240000,
+          "ts_ingested": 1699920240000,
+          "ts_committed": 1699920240000
+        },
+        {
+          "kind": "open_interest",
+          "timeframe": "1m",
+          "value": "1040",
+          "ts_event": 1699920240000,
+          "ts_available": 1699920300000,
+          "ts_ingested": 1699920300000,
+          "ts_committed": 1699920300000
+        },
+        {
+          "kind": "open_interest",
+          "timeframe": "1m",
+          "value": "1050",
+          "ts_event": 1699920300000,
+          "ts_available": 1699920360000,
+          "ts_ingested": 1699920360000,
+          "ts_committed": 1699920360000
+        }
+      ],
+      "include_kinds": [
+        "LIQUIDATION_ZONE"
+      ],
+      "expected": {
+        "levels": [
+          {
+            "kind": "LIQUIDATION_ZONE",
+            "category": "LIQUIDATION",
+            "evidence_class": "ESTIMATED",
+            "price": null,
+            "price_low": "93.500000",
+            "price_high": "99.166667",
+            "strength": 0.9,
+            "status": "ACTIVE",
+            "ts_available": 1699920360000,
+            "formed_ts": 1699920120000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10",
+              "source": "oi_change_leverage",
+              "direction": "long",
+              "cluster_leverages": "10",
+              "oi_events": "4"
+            }
+          },
+          {
+            "kind": "LIQUIDATION_ZONE",
+            "category": "LIQUIDATION",
+            "evidence_class": "ESTIMATED",
+            "price": null,
+            "price_low": "80.750000",
+            "price_high": "86.416667",
+            "strength": 0.893,
+            "status": "ACTIVE",
+            "ts_available": 1699920300000,
+            "formed_ts": 1699920060000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10",
+              "source": "oi_change_leverage",
+              "direction": "long",
+              "cluster_leverages": "5",
+              "oi_events": "4"
+            }
+          },
+          {
+            "kind": "LIQUIDATION_ZONE",
+            "category": "LIQUIDATION",
+            "evidence_class": "ESTIMATED",
+            "price": null,
+            "price_low": "87.833333",
+            "price_high": "89.250000",
+            "strength": 0.573,
+            "status": "ACTIVE",
+            "ts_available": 1699920360000,
+            "formed_ts": 1699920300000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10",
+              "source": "oi_change_leverage",
+              "direction": "long",
+              "cluster_leverages": "5",
+              "oi_events": "1"
+            }
+          },
+          {
+            "kind": "LIQUIDATION_ZONE",
+            "category": "LIQUIDATION",
+            "evidence_class": "ESTIMATED",
+            "price": null,
+            "price_low": "90.666667",
+            "price_high": "92.083333",
+            "strength": 0.564,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920060000,
+            "parameters": {
+              "volume_profile_bins": "24",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10",
+              "source": "oi_change_leverage",
+              "direction": "long",
+              "cluster_leverages": "10",
+              "oi_events": "1"
+            }
+          }
+        ],
+        "notes": []
+      }
+    },
+    {
+      "name": "volume_profile_excludes_future_bar",
+      "cutoff_ts": 1699920120000,
+      "params": {
+        "volume_profile_bins": 2
+      },
+      "bars": [
+        {
+          "timestamp": 1699920000000,
+          "open": "100",
+          "high": "100",
+          "low": "100",
+          "close": "100",
+          "volume": "1",
+          "turnover": "100",
+          "status": "NORMAL",
+          "ts_available": 1699920060000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920060000,
+          "open": "110",
+          "high": "110",
+          "low": "110",
+          "close": "110",
+          "volume": "5",
+          "turnover": "550",
+          "status": "NORMAL",
+          "ts_available": 1699920120000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920120000,
+          "open": "130",
+          "high": "130",
+          "low": "130",
+          "close": "130",
+          "volume": "100",
+          "turnover": "13000",
+          "status": "NORMAL",
+          "ts_available": 1699920600000,
+          "precision": "SECOND_VERIFIED"
+        }
+      ],
+      "derivative_points": [],
+      "include_kinds": [
+        "POC",
+        "VAH",
+        "VAL"
+      ],
+      "expected": {
+        "levels": [
+          {
+            "kind": "POC",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "107.500000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.733,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "2",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "source": "volume_profile"
+            }
+          },
+          {
+            "kind": "VAH",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "110.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.58,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "2",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "source": "volume_profile"
+            }
+          },
+          {
+            "kind": "VAL",
+            "category": "VOLUME",
+            "evidence_class": "OBSERVED",
+            "price": "105.000000",
+            "price_low": null,
+            "price_high": null,
+            "strength": 0.58,
+            "status": "ACTIVE",
+            "ts_available": 1699920120000,
+            "formed_ts": 1699920000000,
+            "parameters": {
+              "volume_profile_bins": "2",
+              "value_area_ratio": "0.7",
+              "vwap_anchor": "session",
+              "vwap_anchor_ts": "auto",
+              "leverage_tiers": "5,10,25,50,100",
+              "source": "volume_profile"
+            }
+          }
+        ],
+        "notes": [
+          "该快照没有可用的持仓量数据，清算密集区为空。"
+        ]
+      }
+    },
+    {
+      "name": "liquidation_empty_when_oi_insufficient",
+      "cutoff_ts": 1699920360000,
+      "params": {
+        "liquidation_min_points": 4
+      },
+      "bars": [
+        {
+          "timestamp": 1699920000000,
+          "open": "100",
+          "high": "100",
+          "low": "100",
+          "close": "100",
+          "volume": "10",
+          "turnover": "1000",
+          "status": "NORMAL",
+          "ts_available": 1699920060000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920060000,
+          "open": "101",
+          "high": "101",
+          "low": "101",
+          "close": "101",
+          "volume": "10",
+          "turnover": "1010",
+          "status": "NORMAL",
+          "ts_available": 1699920120000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920120000,
+          "open": "102",
+          "high": "102",
+          "low": "102",
+          "close": "102",
+          "volume": "10",
+          "turnover": "1020",
+          "status": "NORMAL",
+          "ts_available": 1699920180000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920180000,
+          "open": "103",
+          "high": "103",
+          "low": "103",
+          "close": "103",
+          "volume": "10",
+          "turnover": "1030",
+          "status": "NORMAL",
+          "ts_available": 1699920240000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920240000,
+          "open": "104",
+          "high": "104",
+          "low": "104",
+          "close": "104",
+          "volume": "10",
+          "turnover": "1040",
+          "status": "NORMAL",
+          "ts_available": 1699920300000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920300000,
+          "open": "105",
+          "high": "105",
+          "low": "105",
+          "close": "105",
+          "volume": "10",
+          "turnover": "1050",
+          "status": "NORMAL",
+          "ts_available": 1699920360000,
+          "precision": "SECOND_VERIFIED"
+        }
+      ],
+      "derivative_points": [
+        {
+          "kind": "open_interest",
+          "timeframe": "1m",
+          "value": "1000",
+          "ts_event": 1699920000000,
+          "ts_available": 1699920060000,
+          "ts_ingested": 1699920060000,
+          "ts_committed": 1699920060000
+        },
+        {
+          "kind": "open_interest",
+          "timeframe": "1m",
+          "value": "1010",
+          "ts_event": 1699920060000,
+          "ts_available": 1699920120000,
+          "ts_ingested": 1699920120000,
+          "ts_committed": 1699920120000
+        }
+      ],
+      "include_kinds": [
+        "LIQUIDATION_ZONE"
+      ],
+      "expected": {
+        "levels": [],
+        "notes": [
+          "持仓量样本不足（2/4），清算密集区为空。"
+        ]
+      }
+    },
+    {
+      "name": "liquidation_empty_without_oi",
+      "cutoff_ts": 1699920360000,
+      "params": {
+        "liquidation_min_points": 4
+      },
+      "bars": [
+        {
+          "timestamp": 1699920000000,
+          "open": "100",
+          "high": "100",
+          "low": "100",
+          "close": "100",
+          "volume": "10",
+          "turnover": "1000",
+          "status": "NORMAL",
+          "ts_available": 1699920060000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920060000,
+          "open": "101",
+          "high": "101",
+          "low": "101",
+          "close": "101",
+          "volume": "10",
+          "turnover": "1010",
+          "status": "NORMAL",
+          "ts_available": 1699920120000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920120000,
+          "open": "102",
+          "high": "102",
+          "low": "102",
+          "close": "102",
+          "volume": "10",
+          "turnover": "1020",
+          "status": "NORMAL",
+          "ts_available": 1699920180000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920180000,
+          "open": "103",
+          "high": "103",
+          "low": "103",
+          "close": "103",
+          "volume": "10",
+          "turnover": "1030",
+          "status": "NORMAL",
+          "ts_available": 1699920240000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920240000,
+          "open": "104",
+          "high": "104",
+          "low": "104",
+          "close": "104",
+          "volume": "10",
+          "turnover": "1040",
+          "status": "NORMAL",
+          "ts_available": 1699920300000,
+          "precision": "SECOND_VERIFIED"
+        },
+        {
+          "timestamp": 1699920300000,
+          "open": "105",
+          "high": "105",
+          "low": "105",
+          "close": "105",
+          "volume": "10",
+          "turnover": "1050",
+          "status": "NORMAL",
+          "ts_available": 1699920360000,
+          "precision": "SECOND_VERIFIED"
+        }
+      ],
+      "derivative_points": [],
+      "include_kinds": [
+        "LIQUIDATION_ZONE"
+      ],
+      "expected": {
+        "levels": [],
+        "notes": [
+          "该快照没有可用的持仓量数据，清算密集区为空。"
+        ]
+      }
+    }
+  ]
+}

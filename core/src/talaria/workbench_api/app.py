@@ -52,10 +52,13 @@ from talaria.foundation.indicators import (
     OperatorRequest,
 )
 from talaria.foundation.key_levels import (
+    EvidenceClass,
     KeyLevelCategory,
     KeyLevelIgnoreList,
     KeyLevelIgnoreRequest,
+    KeyLevelParams,
     KeyLevelSet,
+    VwapAnchor,
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import (
@@ -623,6 +626,14 @@ def create_app(
         min_strength: float = Query(0.0, ge=0, le=1),
         order: str = Query("strength_desc", description="排序方式"),
         limit: int = Query(200, ge=1, le=500),
+        evidence_class: str = Query(
+            "ALL", description="OBSERVED | ESTIMATED | ALL"
+        ),
+        vwap_anchor: str = Query(
+            "session", description="锚定 VWAP 锚点：snapshot | session | timestamp"
+        ),
+        vwap_anchor_ts: int | None = Query(None, ge=0),
+        value_area_ratio: float = Query(0.70, gt=0, le=1),
     ) -> KeyLevelSet:
         parsed: list[KeyLevelCategory] = []
         if categories:
@@ -634,6 +645,24 @@ def create_app(
                     parsed.append(KeyLevelCategory(value))
                 except ValueError as exc:
                     raise InvalidRequestError(f"未知的关键位类别：{value}") from exc
+        evidence_token = evidence_class.strip().upper()
+        if evidence_token not in {"ALL", "OBSERVED", "ESTIMATED"}:
+            raise InvalidRequestError(f"未知的证据类别：{evidence_class}")
+        evidence = (
+            None if evidence_token == "ALL" else EvidenceClass(evidence_token)
+        )
+        anchor_token = vwap_anchor.strip().upper()
+        try:
+            anchor = VwapAnchor(anchor_token)
+        except ValueError as exc:
+            raise InvalidRequestError(f"未知的锚定 VWAP 锚点：{vwap_anchor}") from exc
+        if anchor is VwapAnchor.TIMESTAMP and vwap_anchor_ts is None:
+            raise InvalidRequestError("vwap_anchor=timestamp 时必须提供 vwap_anchor_ts")
+        params = KeyLevelParams(
+            vwap_anchor=anchor,
+            vwap_anchor_ts=vwap_anchor_ts,
+            value_area_ratio=value_area_ratio,
+        )
         return service(request).get_key_levels(
             snapshot_id,
             timeframe=timeframe,
@@ -641,6 +670,8 @@ def create_app(
             min_strength=min_strength,
             order=order,
             top_n=limit,
+            params=params,
+            evidence_class=evidence,
         )
 
     @app.get("/api/key-levels/ignored", response_model=KeyLevelIgnoreList)

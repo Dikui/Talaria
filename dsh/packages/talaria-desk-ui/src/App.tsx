@@ -629,6 +629,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                     loading={keyLevels.loading}
                     error={keyLevels.error}
                     readOnly={readOnlyViewport}
+                    notes={keyLevels.notes}
                     onClose={() => setKeyLevelPanelOpen(false)}
                   />
                 ) : (

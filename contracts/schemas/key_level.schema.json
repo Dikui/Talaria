@@ -1,12 +1,23 @@
 {
   "$defs": {
+    "EvidenceClass": {
+      "description": "证据等级：直接观测得到，或由假设推算。",
+      "enum": [
+        "OBSERVED",
+        "ESTIMATED"
+      ],
+      "title": "EvidenceClass",
+      "type": "string"
+    },
     "KeyLevelCategory": {
       "description": "面向 UI 过滤的稳定大类。",
       "enum": [
         "STRUCTURE",
         "SESSION",
         "GAP",
-        "ROUND_NUMBER"
+        "ROUND_NUMBER",
+        "VOLUME",
+        "LIQUIDATION"
       ],
       "title": "KeyLevelCategory",
       "type": "string"
@@ -25,7 +36,12 @@
         "SESSION_HIGH",
         "SESSION_LOW",
         "GAP",
-        "ROUND_NUMBER"
+        "ROUND_NUMBER",
+        "POC",
+        "VAH",
+        "VAL",
+        "ANCHORED_VWAP",
+        "LIQUIDATION_ZONE"
       ],
       "title": "KeyLevelKind",
       "type": "string"
@@ -45,6 +61,10 @@
   "properties": {
     "category": {
       "$ref": "#/$defs/KeyLevelCategory"
+    },
+    "evidence_class": {
+      "$ref": "#/$defs/EvidenceClass",
+      "default": "OBSERVED"
     },
     "formed_ts": {
       "minimum": 0,
@@ -80,7 +100,7 @@
       "type": "string"
     },
     "method_version": {
-      "default": "key-levels@1",
+      "default": "key-levels@2",
       "title": "Method Version",
       "type": "string"
     },

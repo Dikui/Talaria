@@ -1,4 +1,5 @@
 import type {
+  EvidenceClass,
   KeyLevel,
   KeyLevelCategory,
   KeyLevelKind,
@@ -15,8 +16,10 @@ import type {
 export const KEY_LEVEL_CATEGORIES: readonly KeyLevelCategory[] = [
   "STRUCTURE",
   "SESSION",
+  "VOLUME",
   "GAP",
   "ROUND_NUMBER",
+  "LIQUIDATION",
 ];
 
 export const CATEGORY_META: Record<
@@ -43,6 +46,35 @@ export const CATEGORY_META: Record<
     color: "#48c9a9",
     description: "按价格量级取整的关口",
   },
+  VOLUME: {
+    label: "成交量位",
+    color: "#e58f65",
+    description: "POC/VAH/VAL 与锚定 VWAP ±σ 带",
+  },
+  LIQUIDATION: {
+    label: "清算估算",
+    color: "#ff6b7a",
+    description: "由持仓量变化与杠杆假设推算，非观测成交",
+  },
+};
+
+export const EVIDENCE_CLASSES: readonly EvidenceClass[] = [
+  "OBSERVED",
+  "ESTIMATED",
+];
+
+export const EVIDENCE_META: Record<
+  EvidenceClass,
+  { label: string; description: string }
+> = {
+  OBSERVED: {
+    label: "观测",
+    description: "由已闭合的成交与报价直接计算",
+  },
+  ESTIMATED: {
+    label: "估算",
+    description: "由持仓量变化与杠杆假设推算，仅作参考",
+  },
 };
 
 export const KIND_LABELS: Record<KeyLevelKind, string> = {
@@ -58,6 +90,11 @@ export const KIND_LABELS: Record<KeyLevelKind, string> = {
   SESSION_LOW: "时段低",
   GAP: "缺口",
   ROUND_NUMBER: "整数关口",
+  POC: "成交量控制点",
+  VAH: "价值区上沿",
+  VAL: "价值区下沿",
+  ANCHORED_VWAP: "锚定 VWAP",
+  LIQUIDATION_ZONE: "清算密集区",
 };
 
 export const STATUS_LABELS: Record<KeyLevelStatus, string> = {
@@ -69,12 +106,25 @@ export const STATUS_LABELS: Record<KeyLevelStatus, string> = {
 export interface KeyLevelFilter {
   categories: KeyLevelCategory[];
   minStrength: number;
+  /** 省略时视为观测与估算全选，兼容既有的持久化筛选状态。 */
+  evidenceClasses?: EvidenceClass[];
 }
 
 export const defaultKeyLevelFilter: KeyLevelFilter = {
   categories: [...KEY_LEVEL_CATEGORIES],
   minStrength: 0.35,
+  evidenceClasses: [...EVIDENCE_CLASSES],
 };
+
+export function levelEvidenceClass(level: KeyLevel): EvidenceClass {
+  return level.evidence_class ?? "OBSERVED";
+}
+
+export function selectedEvidenceClasses(
+  filter: KeyLevelFilter,
+): readonly EvidenceClass[] {
+  return filter.evidenceClasses ?? EVIDENCE_CLASSES;
+}
 
 export function levelPrice(level: KeyLevel): number {
   if (level.price != null) {
@@ -101,19 +151,23 @@ export function formatLevelPrice(level: KeyLevel, precision: number): string {
 
 export function levelTitle(level: KeyLevel, precision: number): string {
   const price = formatLevelPrice(level, precision);
-  return `${KIND_LABELS[level.kind]} ${price} · ${STATUS_LABELS[level.status]}`;
+  const evidence =
+    levelEvidenceClass(level) === "ESTIMATED" ? " · 估算（OI 变化 + 杠杆假设）" : "";
+  return `${KIND_LABELS[level.kind]} ${price} · ${STATUS_LABELS[level.status]}${evidence}`;
 }
 
 export function levelLabel(level: KeyLevel, precision: number): string {
   const price = formatLevelPrice(level, precision);
   const status = level.status === "ACTIVE" ? "" : ` · ${STATUS_LABELS[level.status]}`;
-  return `${KIND_LABELS[level.kind]} ${price}${status}`;
+  const evidence = levelEvidenceClass(level) === "ESTIMATED" ? " · 估算" : "";
+  return `${KIND_LABELS[level.kind]} ${price}${status}${evidence}`;
 }
 
 export function matchesFilter(level: KeyLevel, filter: KeyLevelFilter): boolean {
   return (
     filter.categories.includes(level.category) &&
-    level.strength >= filter.minStrength
+    level.strength >= filter.minStrength &&
+    selectedEvidenceClasses(filter).includes(levelEvidenceClass(level))
   );
 }
 
@@ -146,6 +200,17 @@ export function toggleCategory(
   return { ...filter, categories };
 }
 
+export function toggleEvidenceClass(
+  filter: KeyLevelFilter,
+  evidence: EvidenceClass,
+): KeyLevelFilter {
+  const selected = selectedEvidenceClasses(filter);
+  const evidenceClasses = selected.includes(evidence)
+    ? selected.filter((item) => item !== evidence)
+    : [...selected, evidence];
+  return { ...filter, evidenceClasses };
+}
+
 export function countByCategory(
   levels: readonly KeyLevel[],
 ): Record<KeyLevelCategory, number> {
@@ -154,6 +219,8 @@ export function countByCategory(
     SESSION: 0,
     GAP: 0,
     ROUND_NUMBER: 0,
+    VOLUME: 0,
+    LIQUIDATION: 0,
   };
   for (const level of levels) {
     counts[level.category] += 1;
@@ -290,6 +357,19 @@ export function layoutKeyLevelLabels(
     floor = label.y - LABEL_GAP;
   }
   return placed;
+}
+
+export function countByEvidence(
+  levels: readonly KeyLevel[],
+): Record<EvidenceClass, number> {
+  const counts: Record<EvidenceClass, number> = {
+    OBSERVED: 0,
+    ESTIMATED: 0,
+  };
+  for (const level of levels) {
+    counts[levelEvidenceClass(level)] += 1;
+  }
+  return counts;
 }
 
 export function statusDash(status: KeyLevelStatus): string | undefined {

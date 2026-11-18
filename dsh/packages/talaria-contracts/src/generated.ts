@@ -18,11 +18,13 @@ export type DrawingKind = "HORIZONTAL_LINE" | "RAY" | "SEGMENT" | "PARALLEL_CHAN
 
 export type DrawingLineStyle = "solid" | "dashed" | "dotted";
 
-export type KeyLevelKind = "SWING_HIGH" | "SWING_LOW" | "PREV_DAY_HIGH" | "PREV_DAY_LOW" | "PREV_DAY_CLOSE" | "WEEK_OPEN" | "MONTH_OPEN" | "OPENING_RANGE" | "SESSION_HIGH" | "SESSION_LOW" | "GAP" | "ROUND_NUMBER";
+export type KeyLevelKind = "SWING_HIGH" | "SWING_LOW" | "PREV_DAY_HIGH" | "PREV_DAY_LOW" | "PREV_DAY_CLOSE" | "WEEK_OPEN" | "MONTH_OPEN" | "OPENING_RANGE" | "SESSION_HIGH" | "SESSION_LOW" | "GAP" | "ROUND_NUMBER" | "POC" | "VAH" | "VAL" | "ANCHORED_VWAP" | "LIQUIDATION_ZONE";
 
-export type KeyLevelCategory = "STRUCTURE" | "SESSION" | "GAP" | "ROUND_NUMBER";
+export type KeyLevelCategory = "STRUCTURE" | "SESSION" | "GAP" | "ROUND_NUMBER" | "VOLUME" | "LIQUIDATION";
 
 export type KeyLevelStatus = "ACTIVE" | "BROKEN" | "FLIPPED";
+
+export type EvidenceClass = "OBSERVED" | "ESTIMATED";
 
 export type WatchlistGroupKind = "MANUAL" | "SCANNER_FOCUS";
 
@@ -270,6 +272,7 @@ export interface KeyLevel {
   instrument_id: string;
   kind: KeyLevelKind;
   category: KeyLevelCategory;
+  evidence_class?: EvidenceClass;
   timeframe: string;
   price?: DecimalString | null;
   price_low?: DecimalString | null;
@@ -292,6 +295,7 @@ export interface KeyLevelSet {
   as_of_ts: number;
   method_version?: string;
   parameters?: Record<string, string>;
+  notes?: string[];
   levels?: KeyLevel[];
 }
 export interface KeyLevelIgnoreRequest {

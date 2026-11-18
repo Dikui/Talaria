@@ -67,7 +67,7 @@ def _project(level) -> dict:
 def test_key_level_golden_vectors() -> None:
     payload = _load()
     assert payload["operator"] == "key_levels"
-    assert payload["method_version"] == "key-levels@1"
+    assert payload["method_version"] == "key-levels@2"
     assert payload["cases"]
 
     for case in payload["cases"]:

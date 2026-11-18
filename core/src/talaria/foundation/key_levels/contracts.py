@@ -13,7 +13,7 @@ from talaria.foundation.market import SessionTrait, TradingSession
 from talaria.foundation.types import ContractModel, DecimalStr
 
 #: 算法版本；参数随每个关键位一起返回，便于复现与质量评估。
-KEY_LEVEL_METHOD_VERSION = "key-levels@1"
+KEY_LEVEL_METHOD_VERSION = "key-levels@2"
 
 
 class KeyLevelKind(StrEnum):
@@ -31,6 +31,11 @@ class KeyLevelKind(StrEnum):
     SESSION_LOW = "SESSION_LOW"
     GAP = "GAP"
     ROUND_NUMBER = "ROUND_NUMBER"
+    POC = "POC"
+    VAH = "VAH"
+    VAL = "VAL"
+    ANCHORED_VWAP = "ANCHORED_VWAP"
+    LIQUIDATION_ZONE = "LIQUIDATION_ZONE"
 
 
 class KeyLevelCategory(StrEnum):
@@ -40,12 +45,29 @@ class KeyLevelCategory(StrEnum):
     SESSION = "SESSION"
     GAP = "GAP"
     ROUND_NUMBER = "ROUND_NUMBER"
+    VOLUME = "VOLUME"
+    LIQUIDATION = "LIQUIDATION"
 
 
 class KeyLevelStatus(StrEnum):
     ACTIVE = "ACTIVE"
     BROKEN = "BROKEN"
     FLIPPED = "FLIPPED"
+
+
+class EvidenceClass(StrEnum):
+    """证据等级：直接观测得到，或由假设推算。"""
+
+    OBSERVED = "OBSERVED"
+    ESTIMATED = "ESTIMATED"
+
+
+class VwapAnchor(StrEnum):
+    """锚定 VWAP 的锚点选择。"""
+
+    SNAPSHOT = "SNAPSHOT"
+    SESSION = "SESSION"
+    TIMESTAMP = "TIMESTAMP"
 
 
 KIND_CATEGORY: dict[KeyLevelKind, KeyLevelCategory] = {
@@ -61,6 +83,11 @@ KIND_CATEGORY: dict[KeyLevelKind, KeyLevelCategory] = {
     KeyLevelKind.SESSION_LOW: KeyLevelCategory.SESSION,
     KeyLevelKind.GAP: KeyLevelCategory.GAP,
     KeyLevelKind.ROUND_NUMBER: KeyLevelCategory.ROUND_NUMBER,
+    KeyLevelKind.POC: KeyLevelCategory.VOLUME,
+    KeyLevelKind.VAH: KeyLevelCategory.VOLUME,
+    KeyLevelKind.VAL: KeyLevelCategory.VOLUME,
+    KeyLevelKind.ANCHORED_VWAP: KeyLevelCategory.VOLUME,
+    KeyLevelKind.LIQUIDATION_ZONE: KeyLevelCategory.LIQUIDATION,
 }
 
 
@@ -71,6 +98,7 @@ class KeyLevel(ContractModel):
     instrument_id: str = Field(min_length=1, max_length=64)
     kind: KeyLevelKind
     category: KeyLevelCategory
+    evidence_class: EvidenceClass = EvidenceClass.OBSERVED
     timeframe: str
     price: DecimalStr | None = None
     price_low: DecimalStr | None = None
@@ -111,6 +139,7 @@ class KeyLevelSet(ContractModel):
     as_of_ts: int = Field(ge=0)
     method_version: str = KEY_LEVEL_METHOD_VERSION
     parameters: dict[str, str] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
     levels: list[KeyLevel] = Field(default_factory=list)
 
 
@@ -166,9 +195,22 @@ class KeyLevelParams:
     round_step: Decimal | None = None
     round_levels_per_side: int = 3
     round_window_atr: float = 25.0
+    volume_profile_bins: int = 24
+    value_area_ratio: float = 0.70
+    vwap_anchor: VwapAnchor = VwapAnchor.SESSION
+    vwap_anchor_ts: int | None = None
+    vwap_band_sigmas: str = "1,2"
+    leverage_tiers: tuple[int, ...] = (5, 10, 25, 50, 100)
+    liquidation_cluster_atr: float = 0.5
+    liquidation_min_points: int = 4
+    liquidation_max_levels: int = 8
+    liquidation_min_oi_change: float = 0.0005
+    liquidation_max_distance_atr: float = 12.0
     max_levels: int = 60
 
     def __post_init__(self) -> None:
+        if not isinstance(self.vwap_anchor, VwapAnchor):
+            object.__setattr__(self, "vwap_anchor", VwapAnchor(str(self.vwap_anchor).upper()))
         if self.swing_span < 1 or self.confirm_bars < 1:
             raise ValueError("swing_span 与 confirm_bars 必须 >= 1")
         if self.atr_period < 2:
@@ -177,6 +219,29 @@ class KeyLevelParams:
             raise ValueError("opening_range_minutes 必须 >= 1")
         if self.round_levels_per_side < 0 or self.max_levels < 1:
             raise ValueError("round_levels_per_side 与 max_levels 非法")
+        if not 2 <= self.volume_profile_bins <= 512:
+            raise ValueError("volume_profile_bins 必须在 [2, 512]")
+        if not 0 < self.value_area_ratio <= 1:
+            raise ValueError("value_area_ratio 必须在 (0, 1]")
+        if self.vwap_anchor is VwapAnchor.TIMESTAMP and self.vwap_anchor_ts is None:
+            raise ValueError("vwap_anchor=TIMESTAMP 时必须提供 vwap_anchor_ts")
+        if self.vwap_anchor_ts is not None and self.vwap_anchor_ts < 0:
+            raise ValueError("vwap_anchor_ts 必须 >= 0")
+        sigmas = _parse_sigmas(self.vwap_band_sigmas)
+        if not sigmas or any(sigma <= 0 for sigma in sigmas):
+            raise ValueError("vwap_band_sigmas 必须是非空正数列表")
+        if not 1 <= len(self.leverage_tiers) <= 6 or any(
+            tier < 1 or tier > 200 for tier in self.leverage_tiers
+        ):
+            raise ValueError("leverage_tiers 必须包含 1..6 个 1..200 的整数")
+        if self.liquidation_min_points < 2:
+            raise ValueError("liquidation_min_points 必须 >= 2")
+        if self.liquidation_max_levels < 1:
+            raise ValueError("liquidation_max_levels 必须 >= 1")
+        if self.liquidation_min_oi_change < 0:
+            raise ValueError("liquidation_min_oi_change 必须 >= 0")
+        if self.liquidation_max_distance_atr <= 0:
+            raise ValueError("liquidation_max_distance_atr 必须 > 0")
 
     def as_parameters(self) -> dict[str, str]:
         return {
@@ -191,5 +256,24 @@ class KeyLevelParams:
             "round_step": "auto" if self.round_step is None else str(self.round_step),
             "round_levels_per_side": str(self.round_levels_per_side),
             "round_window_atr": f"{self.round_window_atr:g}",
+            "volume_profile_bins": str(self.volume_profile_bins),
+            "value_area_ratio": f"{self.value_area_ratio:g}",
+            "vwap_anchor": self.vwap_anchor.value.lower(),
+            "vwap_anchor_ts": (
+                "auto" if self.vwap_anchor_ts is None else str(self.vwap_anchor_ts)
+            ),
+            "vwap_band_sigmas": ",".join(f"{sigma:g}" for sigma in _parse_sigmas(self.vwap_band_sigmas)),
+            "leverage_tiers": ",".join(str(tier) for tier in self.leverage_tiers),
+            "liquidation_cluster_atr": f"{self.liquidation_cluster_atr:g}",
+            "liquidation_min_points": str(self.liquidation_min_points),
+            "liquidation_max_levels": str(self.liquidation_max_levels),
+            "liquidation_min_oi_change": f"{self.liquidation_min_oi_change:g}",
+            "liquidation_max_distance_atr": f"{self.liquidation_max_distance_atr:g}",
             "max_levels": str(self.max_levels),
         }
+
+
+def _parse_sigmas(value: str) -> tuple[float, ...]:
+    """把 ``"1,2"`` 解析为 ``(1.0, 2.0)``；非法片段直接报错。"""
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    return tuple(float(part) for part in parts)

@@ -7,6 +7,7 @@ import {
   CATEGORY_META,
   isZoneLevel,
   layoutKeyLevelLabels,
+  levelEvidenceClass,
   levelLabel,
   levelPrice,
   levelTitle,
@@ -145,6 +146,14 @@ export function KeyLevelLayer({
     },
   );
   const labelById = new Map(labels.map((label) => [label.id, label]));
+  const estimatedTag =
+    frame.width >= 480
+      ? inPane
+          .filter((item) => levelEvidenceClass(item.level) === "ESTIMATED")
+          .sort(
+            (left, right) => right.level.strength - left.level.strength,
+          )[0]
+      : undefined;
 
   return (
     <div className="key-level-overlay" data-testid="key-level-overlay">
@@ -158,12 +167,14 @@ export function KeyLevelLayer({
         {inPane.map(({ level, y, top, bottom }) => {
           const meta = CATEGORY_META[level.category];
           const dash = statusDash(level.status);
+          const estimated = levelEvidenceClass(level) === "ESTIMATED";
           return (
             <g
               key={level.level_id}
               data-testid={`key-level-${level.level_id}`}
               data-category={level.category}
               data-status={level.status}
+              data-evidence={levelEvidenceClass(level)}
             >
               <line
                 x1={0}
@@ -171,9 +182,15 @@ export function KeyLevelLayer({
                 y1={y}
                 y2={y}
                 stroke={meta.color}
-                strokeWidth={level.strength >= 0.7 ? 1.6 : 1}
-                strokeDasharray={level.kind === "GAP" ? "8 5" : dash}
-                strokeOpacity={level.status === "ACTIVE" ? 0.85 : 0.55}
+                strokeWidth={
+                  estimated ? 1.2 : level.strength >= 0.7 ? 1.6 : 1
+                }
+                strokeDasharray={
+                  estimated ? "3 3" : level.kind === "GAP" ? "8 5" : dash
+                }
+                strokeOpacity={
+                  estimated ? 0.5 : level.status === "ACTIVE" ? 0.85 : 0.55
+                }
               />
               {top != null && bottom != null && (
                 <rect
@@ -182,15 +199,41 @@ export function KeyLevelLayer({
                   width={frame.width}
                   height={Math.max(2, bottom - top)}
                   fill={meta.color}
-                  fillOpacity={0.08}
+                  fillOpacity={estimated ? 0.05 : 0.08}
                   stroke={meta.color}
-                  strokeOpacity={0.35}
-                  strokeDasharray="4 4"
+                  strokeOpacity={estimated ? 0.45 : 0.35}
+                  strokeDasharray={estimated ? "3 3" : "4 4"}
                 />
               )}
             </g>
           );
         })}
+        {estimatedTag !== undefined && (
+          <g
+            className="key-level-estimated-tag"
+            data-testid="key-level-estimated-tag"
+          >
+            <rect
+              x={frame.width - rightInset - 78}
+              y={20}
+              width={70}
+              height={14}
+              rx={3}
+              fill="var(--surface)"
+              fillOpacity={0.9}
+              stroke={CATEGORY_META[estimatedTag.level.category].color}
+              strokeOpacity={0.5}
+              strokeDasharray="3 3"
+            />
+            <text
+              x={frame.width - rightInset - 74}
+              y={31}
+              fill={CATEGORY_META[estimatedTag.level.category].color}
+            >
+              ESTIMATED
+            </text>
+          </g>
+        )}
         {labels.map((label) => {
           const item = inPane.find(
             (entry) => entry.level.level_id === label.id,
@@ -200,6 +243,7 @@ export function KeyLevelLayer({
             return null;
           }
           const meta = CATEGORY_META[level.category];
+          const estimated = levelEvidenceClass(level) === "ESTIMATED";
           const left =
             label.anchor === "end" ? label.x - label.width : label.x;
           return (
@@ -216,9 +260,10 @@ export function KeyLevelLayer({
                 height={label.height}
                 rx={3}
                 fill={meta.color}
-                fillOpacity={0.16}
+                fillOpacity={estimated ? 0.1 : 0.16}
                 stroke={meta.color}
                 strokeOpacity={0.7}
+                strokeDasharray={estimated ? "3 3" : undefined}
               />
               <text
                 x={label.anchor === "end" ? label.x - 4 : label.x + 4}

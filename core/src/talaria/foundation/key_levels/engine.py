@@ -7,21 +7,27 @@
 from __future__ import annotations
 
 import hashlib
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_FLOOR
+from typing import Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.key_levels.contracts import (
     KEY_LEVEL_METHOD_VERSION,
     KIND_CATEGORY,
+    EvidenceClass,
     KeyLevel,
     KeyLevelCategory,
     KeyLevelKind,
     KeyLevelParams,
     KeyLevelStatus,
     SessionProfile,
+    VwapAnchor,
+    _parse_sigmas,
 )
 from talaria.foundation.timeframes import timeframe_ms
 
@@ -882,7 +888,467 @@ def _round_levels(
     return levels
 
 
-def compute_key_levels(
+def _volume_profile_levels(
+    *,
+    instrument_id: str,
+    timeframe: str,
+    bars: list[CompactBar],
+    cutoff_ts: int,
+    atr: list[Decimal | None],
+    params: KeyLevelParams,
+    bar_ms: int,
+    profile: SessionProfile,
+) -> list[KeyLevel]:
+    """按当前时段成交量分布计算 POC/VAH/VAL；只使用已可见柱。"""
+
+    tz = _timezone(profile.timezone)
+    session_start = _day_start_ms(cutoff_ts, tz, profile.day_start)
+    window = [bar for bar in bars if bar.timestamp >= session_start]
+    profile_anchor = session_start
+    if not window:
+        window = bars
+        profile_anchor = bars[0].timestamp if bars else cutoff_ts
+    usable = [
+        bar
+        for bar in window
+        if bar.volume is not None and bar.high is not None and bar.low is not None
+    ]
+    total_volume = sum((bar.volume for bar in usable if bar.volume is not None), Decimal("0"))
+    if not usable or total_volume <= 0:
+        return []
+
+    low_price = min(bar.low for bar in usable if bar.low is not None)
+    high_price = max(bar.high for bar in usable if bar.high is not None)
+    if high_price < low_price:
+        return []
+    last_available = usable[-1].ts_available
+    recency = _recency(cutoff_ts, usable[-1].timestamp, bar_ms)
+    formed_ts = profile_anchor
+
+    if high_price == low_price:
+        prices = {
+            KeyLevelKind.POC: _quantize(low_price),
+            KeyLevelKind.VAH: _quantize(low_price),
+            KeyLevelKind.VAL: _quantize(low_price),
+        }
+        poc_share = Decimal("1")
+        va_share = Decimal("1")
+        edge_low_share = Decimal("1")
+        edge_high_share = Decimal("1")
+    else:
+        bins = params.volume_profile_bins
+        width = (high_price - low_price) / Decimal(bins)
+        if width <= 0:
+            return []
+        bin_volumes = [Decimal("0")] * bins
+        for bar in usable:
+            assert bar.low is not None and bar.high is not None and bar.volume is not None
+            start = int(
+                ((bar.low - low_price) / width).to_integral_value(rounding=ROUND_FLOOR)
+            )
+            end = int(
+                ((bar.high - low_price) / width).to_integral_value(rounding=ROUND_FLOOR)
+            )
+            start = max(0, min(bins - 1, start))
+            end = max(start, min(bins - 1, end))
+            share = bar.volume / Decimal(end - start + 1)
+            for index in range(start, end + 1):
+                bin_volumes[index] += share
+
+        poc_index = 0
+        for index in range(1, bins):
+            if bin_volumes[index] > bin_volumes[poc_index]:
+                poc_index = index
+        target = total_volume * Decimal(str(params.value_area_ratio))
+        low_index = high_index = poc_index
+        value_volume = bin_volumes[poc_index]
+        while value_volume < target:
+            left = bin_volumes[low_index - 1] if low_index > 0 else None
+            right = bin_volumes[high_index + 1] if high_index < bins - 1 else None
+            if left is None and right is None:
+                break
+            if right is None or (left is not None and left >= right):
+                low_index -= 1
+                value_volume += bin_volumes[low_index]
+            else:
+                high_index += 1
+                value_volume += bin_volumes[high_index]
+
+        poc_share = bin_volumes[poc_index] / total_volume
+        va_share = value_volume / total_volume
+        edge_low_share = bin_volumes[low_index] / total_volume
+        edge_high_share = bin_volumes[high_index] / total_volume
+        prices = {
+            KeyLevelKind.POC: _quantize(low_price + width * (Decimal(poc_index) + Decimal("0.5"))),
+            KeyLevelKind.VAH: _quantize(low_price + width * Decimal(high_index + 1)),
+            KeyLevelKind.VAL: _quantize(low_price + width * Decimal(low_index)),
+        }
+
+    levels: list[KeyLevel] = []
+    for kind in (KeyLevelKind.POC, KeyLevelKind.VAH, KeyLevelKind.VAL):
+        price = prices[kind]
+        tolerance = _zone_tolerance(atr[-1] if atr else None, price, params.touch_atr)
+        stats = _touch_stats(usable, 0, price, price, tolerance)
+        if kind is KeyLevelKind.POC:
+            strength = (
+                0.30
+                + 0.30 * float(poc_share)
+                + 0.10 * float(va_share)
+                + 0.10 * recency
+            )
+        else:
+            edge_share = edge_high_share if kind is KeyLevelKind.VAH else edge_low_share
+            strength = (
+                0.28
+                + 0.18 * float(va_share)
+                + 0.06 * float(edge_share)
+                + 0.10 * recency
+            )
+        levels.append(
+            KeyLevel(
+                level_id=_level_id(
+                    instrument_id,
+                    kind,
+                    timeframe,
+                    formed_ts,
+                    price,
+                    "profile",
+                ),
+                instrument_id=instrument_id,
+                kind=kind,
+                category=KIND_CATEGORY[kind],
+                evidence_class=EvidenceClass.OBSERVED,
+                timeframe=timeframe,
+                price=price,
+                strength=_strength(strength),
+                status=KeyLevelStatus.ACTIVE,
+                ts_available=last_available,
+                formed_ts=formed_ts,
+                method_version=KEY_LEVEL_METHOD_VERSION,
+                parameters=_parameters(
+                    params,
+                    source="volume_profile",
+                    profile_anchor="session",
+                    profile_start=str(formed_ts),
+                ),
+                touch_count=stats.count,
+                last_touch_ts=stats.last_ts,
+                volume_weight=stats.volume_weight,
+            )
+        )
+    return levels
+
+
+def _quantize(price: Decimal) -> Decimal:
+    return price.quantize(_QUANTUM)
+
+
+def _vwap_anchor_ts(
+    params: KeyLevelParams,
+    bars: list[CompactBar],
+    cutoff_ts: int,
+    profile: SessionProfile,
+) -> int:
+    if params.vwap_anchor is VwapAnchor.SNAPSHOT:
+        return bars[0].timestamp if bars else cutoff_ts
+    if params.vwap_anchor is VwapAnchor.SESSION:
+        tz = _timezone(profile.timezone)
+        anchor = _day_start_ms(cutoff_ts, tz, profile.day_start)
+        if bars:
+            last_session = _day_start_ms(bars[-1].timestamp, tz, profile.day_start)
+            if last_session < anchor:
+                # 数据落后于 cutoff（回放/冻结快照）时，锚定到最新数据所在时段，
+                # 否则会产出 formed_ts 晚于 ts_available 的伪关键位。
+                anchor = last_session
+        return anchor
+    assert params.vwap_anchor_ts is not None
+    return params.vwap_anchor_ts
+
+
+def _anchored_vwap_levels(
+    *,
+    instrument_id: str,
+    timeframe: str,
+    bars: list[CompactBar],
+    cutoff_ts: int,
+    params: KeyLevelParams,
+    bar_ms: int,
+    profile: SessionProfile,
+) -> list[KeyLevel]:
+    """锚定 VWAP 与 ±Nσ 带；零成交量柱不推进 VWAP 的可用时点。"""
+
+    anchor_ts = _vwap_anchor_ts(params, bars, cutoff_ts, profile)
+    contributing = [
+        bar
+        for bar in bars
+        if bar.timestamp >= anchor_ts
+        and bar.volume is not None
+        and bar.volume > 0
+        and bar.high is not None
+        and bar.low is not None
+        and bar.close is not None
+    ]
+    if not contributing:
+        return []
+    sum_volume = Decimal("0")
+    sum_price_volume = Decimal("0")
+    sum_price_squared_volume = Decimal("0")
+    for bar in contributing:
+        assert bar.high is not None and bar.low is not None and bar.close is not None
+        assert bar.volume is not None
+        typical = (bar.high + bar.low + bar.close) / Decimal(3)
+        sum_volume += bar.volume
+        sum_price_volume += typical * bar.volume
+        sum_price_squared_volume += typical * typical * bar.volume
+    if sum_volume <= 0:
+        return []
+    vwap = sum_price_volume / sum_volume
+    variance = sum_price_squared_volume / sum_volume - vwap * vwap
+    sigma = variance.sqrt() if variance > 0 else Decimal("0")
+
+    last_available = contributing[-1].ts_available
+    recency = _recency(cutoff_ts, contributing[-1].timestamp, bar_ms)
+    sample_score = min(1.0, len(contributing) / 50)
+    first_index = bars.index(contributing[0])
+    positive_bars = [bar for bar in bars if bar.volume is not None and bar.volume > 0]
+    sigmas = _parse_sigmas(params.vwap_band_sigmas)
+    multipliers: list[float] = [0.0]
+    for band in sigmas:
+        multipliers.extend((-band, band))
+
+    levels: list[KeyLevel] = []
+    for multiplier in multipliers:
+        price = _quantize(vwap + sigma * Decimal(str(multiplier)))
+        if price <= 0:
+            continue
+        tolerance = _zone_tolerance(None, price, params.touch_atr)
+        stats = _touch_stats(bars, first_index, price, price, tolerance)
+        strength = (
+            0.34
+            + 0.14 * sample_score
+            + 0.08 * recency
+            - 0.05 * min(abs(multiplier), 3.0)
+        )
+        tag = "vwap" if multiplier == 0 else f"vwap{multiplier:+g}"
+        levels.append(
+            KeyLevel(
+                level_id=_level_id(
+                    instrument_id,
+                    KeyLevelKind.ANCHORED_VWAP,
+                    timeframe,
+                    anchor_ts,
+                    price,
+                    tag,
+                ),
+                instrument_id=instrument_id,
+                kind=KeyLevelKind.ANCHORED_VWAP,
+                category=KIND_CATEGORY[KeyLevelKind.ANCHORED_VWAP],
+                evidence_class=EvidenceClass.OBSERVED,
+                timeframe=timeframe,
+                price=price,
+                strength=_strength(strength),
+                status=_status(positive_bars, price, price, last_available),
+                ts_available=last_available,
+                formed_ts=anchor_ts,
+                method_version=KEY_LEVEL_METHOD_VERSION,
+                parameters=_parameters(
+                    params,
+                    source="anchored_vwap",
+                    anchor_ts=str(anchor_ts),
+                    band_sigma=f"{multiplier:g}",
+                ),
+                touch_count=stats.count,
+                last_touch_ts=stats.last_ts,
+                volume_weight=stats.volume_weight,
+            )
+        )
+    return levels
+
+
+def _liquidation_levels(
+    *,
+    instrument_id: str,
+    timeframe: str,
+    bars: list[CompactBar],
+    cutoff_ts: int,
+    atr: list[Decimal | None],
+    params: KeyLevelParams,
+    bar_ms: int,
+    derivative_points: Sequence[DerivativePoint],
+) -> tuple[list[KeyLevel], list[str]]:
+    """按 OI 增量与杠杆假设估算清算密集区；数据不足时返回空集与原因。"""
+
+    points = sorted(
+        (
+            point
+            for point in derivative_points
+            if point.kind is DerivativeKind.OPEN_INTEREST
+            and point.ts_available <= cutoff_ts
+            and point.value > 0
+        ),
+        key=lambda point: point.ts_event,
+    )
+    if not points:
+        return [], ["该快照没有可用的持仓量数据，清算密集区为空。"]
+    if len(points) < params.liquidation_min_points:
+        return [], [
+            f"持仓量样本不足（{len(points)}/{params.liquidation_min_points}），"
+            "清算密集区为空。"
+        ]
+
+    timestamps = [bar.timestamp for bar in bars]
+
+    def close_at(ts: int) -> Decimal | None:
+        index = bisect_right(timestamps, ts) - 1
+        if index < 0:
+            return None
+        return bars[index].close
+
+    last_close = next(
+        (bar.close for bar in reversed(bars) if bar.close is not None), None
+    )
+    if last_close is None or last_close <= 0:
+        return [], ["缺少可用收盘价，清算密集区为空。"]
+    atr_last = atr[-1] if atr else None
+    width = (
+        atr_last * Decimal(str(params.liquidation_cluster_atr))
+        if atr_last is not None and atr_last > 0
+        else last_close * Decimal("0.002")
+    )
+    if width <= 0:
+        return [], ["无法确定清算密集区宽度。"]
+    distance_limit = (
+        atr_last * Decimal(str(params.liquidation_max_distance_atr))
+        if atr_last is not None and atr_last > 0
+        else last_close * Decimal("0.25")
+    )
+
+    buckets: dict[int, list[tuple[Decimal, int, str, int, int]]] = {}
+    for previous, current in zip(points, points[1:]):
+        delta = current.value - previous.value
+        if delta <= 0 or previous.value <= 0:
+            continue
+        relative = delta / previous.value
+        if relative < Decimal(str(params.liquidation_min_oi_change)):
+            continue
+        price = close_at(current.ts_event)
+        previous_price = close_at(previous.ts_event)
+        if price is None or price <= 0 or previous_price is None:
+            continue
+        is_long = price >= previous_price
+        notional = delta * price
+        for leverage in params.leverage_tiers:
+            factor = Decimal(1) / Decimal(leverage)
+            liquidation_price = (
+                price * (Decimal(1) - factor)
+                if is_long
+                else price * (Decimal(1) + factor)
+            )
+            if liquidation_price <= 0:
+                continue
+            if abs(liquidation_price - last_close) > distance_limit:
+                continue
+            bucket = int(
+                (liquidation_price / width).to_integral_value(rounding=ROUND_FLOOR)
+            )
+            buckets.setdefault(bucket, []).append(
+                (
+                    notional,
+                    leverage,
+                    "long" if is_long else "short",
+                    current.ts_event,
+                    current.ts_available,
+                )
+            )
+
+    if not buckets:
+        return [], ["持仓量没有可用的增量，清算密集区为空。"]
+
+    ordered_buckets = sorted(buckets)
+    merged: list[list[int]] = []
+    current_group = [ordered_buckets[0]]
+    for bucket in ordered_buckets[1:]:
+        if bucket - current_group[-1] <= 1:
+            current_group.append(bucket)
+        else:
+            merged.append(current_group)
+            current_group = [bucket]
+    merged.append(current_group)
+
+    groups: list[
+        tuple[list[int], Decimal, list[tuple[Decimal, int, str, int, int]], int, int]
+    ] = []
+    for group in merged:
+        events = [event for bucket in group for event in buckets[bucket]]
+        weight = sum((event[0] for event in events), Decimal("0"))
+        formed_ts = min(event[3] for event in events)
+        available_ts = max(event[4] for event in events)
+        groups.append((group, weight, events, formed_ts, available_ts))
+    max_weight = max(group[1] for group in groups)
+
+    levels: list[KeyLevel] = []
+    for group, weight, events, formed_ts, available_ts in groups:
+        leverages = sorted({event[1] for event in events})
+        directions = {event[2] for event in events}
+        low_price = _quantize(width * Decimal(min(group)))
+        high_price = _quantize(width * Decimal(max(group) + 1))
+        strength = (
+            0.30
+            + 0.35 * float(weight / max_weight)
+            + 0.15 * _recency(cutoff_ts, available_ts, bar_ms)
+            + 0.10 * min(1.0, len(events) / 3)
+        )
+        levels.append(
+            KeyLevel(
+                level_id=_level_id(
+                    instrument_id,
+                    KeyLevelKind.LIQUIDATION_ZONE,
+                    timeframe,
+                    formed_ts,
+                    low_price,
+                    "liq:" + ",".join(str(tier) for tier in leverages),
+                ),
+                instrument_id=instrument_id,
+                kind=KeyLevelKind.LIQUIDATION_ZONE,
+                category=KIND_CATEGORY[KeyLevelKind.LIQUIDATION_ZONE],
+                evidence_class=EvidenceClass.ESTIMATED,
+                timeframe=timeframe,
+                price_low=low_price,
+                price_high=high_price,
+                strength=_strength(strength),
+                status=KeyLevelStatus.ACTIVE,
+                ts_available=available_ts,
+                formed_ts=formed_ts,
+                method_version=KEY_LEVEL_METHOD_VERSION,
+                parameters=_parameters(
+                    params,
+                    source="oi_change_leverage",
+                    direction=("long" if directions == {"long"} else "short" if directions == {"short"} else "mixed"),
+                    cluster_leverages=",".join(str(tier) for tier in leverages),
+                    oi_events=str(len(events)),
+                    estimated_notional=_normalize(weight),
+                    cluster_width=_normalize(width),
+                ),
+                touch_count=0,
+                last_touch_ts=None,
+                volume_weight=Decimal("0"),
+            )
+        )
+    ordered_levels = sorted(
+        levels, key=lambda level: (-level.strength, level.level_id)
+    )
+    return ordered_levels[: params.liquidation_max_levels], []
+
+
+@dataclass(frozen=True, slots=True)
+class KeyLevelComputation:
+    """一次关键位计算的完整结果；``notes`` 说明估算类为空的原因。"""
+
+    levels: list[KeyLevel]
+    notes: list[str]
+
+
+def compute_key_levels_with_notes(
     *,
     instrument_id: str,
     timeframe: str,
@@ -890,12 +1356,9 @@ def compute_key_levels(
     cutoff_ts: int,
     session_profile: SessionProfile | None = None,
     params: KeyLevelParams | None = None,
-) -> list[KeyLevel]:
-    """计算截止 ``cutoff_ts`` 已可见的全部关键位。
-
-    输入可以包含未来柱；引擎只保留 ``ts_available <= cutoff_ts`` 的柱子，并在
-    枢轴确认柱闭合后才产出对应结构位，因此任何返回项都不会泄露未来信息。
-    """
+    derivative_points: Sequence[DerivativePoint] = (),
+) -> KeyLevelComputation:
+    """计算截止 ``cutoff_ts`` 已可见的全部关键位与空集原因。"""
 
     params = params or KeyLevelParams()
     profile = session_profile or SessionProfile()
@@ -905,7 +1368,7 @@ def compute_key_levels(
     )
     visible = [bar for bar in ordered if bar.ts_available <= cutoff_ts]
     if not visible:
-        return []
+        return KeyLevelComputation(levels=[], notes=[])
     bar_ms = _bar_ms(timeframe)
     atr = _atr_series(visible, params.atr_period)
 
@@ -954,6 +1417,40 @@ def compute_key_levels(
             bar_ms=bar_ms,
         )
     )
+    collected.extend(
+        _volume_profile_levels(
+            instrument_id=instrument_id,
+            timeframe=timeframe,
+            bars=visible,
+            cutoff_ts=cutoff_ts,
+            atr=atr,
+            params=params,
+            bar_ms=bar_ms,
+            profile=profile,
+        )
+    )
+    collected.extend(
+        _anchored_vwap_levels(
+            instrument_id=instrument_id,
+            timeframe=timeframe,
+            bars=visible,
+            cutoff_ts=cutoff_ts,
+            params=params,
+            bar_ms=bar_ms,
+            profile=profile,
+        )
+    )
+    liquidation_levels, notes = _liquidation_levels(
+        instrument_id=instrument_id,
+        timeframe=timeframe,
+        bars=visible,
+        cutoff_ts=cutoff_ts,
+        atr=atr,
+        params=params,
+        bar_ms=bar_ms,
+        derivative_points=derivative_points,
+    )
+    collected.extend(liquidation_levels)
 
     deduped: dict[str, KeyLevel] = {}
     for level in collected:
@@ -962,4 +1459,34 @@ def compute_key_levels(
         deduped.values(),
         key=lambda level: (-level.strength, -level.ts_available, level.level_id),
     )
-    return ordered_levels[: params.max_levels]
+    return KeyLevelComputation(
+        levels=ordered_levels[: params.max_levels],
+        notes=notes,
+    )
+
+
+def compute_key_levels(
+    *,
+    instrument_id: str,
+    timeframe: str,
+    bars: list[CompactBar],
+    cutoff_ts: int,
+    session_profile: SessionProfile | None = None,
+    params: KeyLevelParams | None = None,
+    derivative_points: Sequence[DerivativePoint] = (),
+) -> list[KeyLevel]:
+    """计算截止 ``cutoff_ts`` 已可见的全部关键位。
+
+    输入可以包含未来柱；引擎只保留 ``ts_available <= cutoff_ts`` 的柱子，并在
+    枢轴确认柱闭合后才产出对应结构位，因此任何返回项都不会泄露未来信息。
+    """
+
+    return compute_key_levels_with_notes(
+        instrument_id=instrument_id,
+        timeframe=timeframe,
+        bars=bars,
+        cutoff_ts=cutoff_ts,
+        session_profile=session_profile,
+        params=params,
+        derivative_points=derivative_points,
+    ).levels

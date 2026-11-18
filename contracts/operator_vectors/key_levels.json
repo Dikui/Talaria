@@ -808,7 +808,7 @@
     }
   ],
   "instrument_id": "BTC-USDT-PERP",
-  "method_version": "key-levels@1",
+  "method_version": "key-levels@2",
   "operator": "key_levels",
   "timeframe": "1m"
 }
