@@ -9,24 +9,39 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from talaria import __version__
-from talaria.foundation.errors import TalariaError
+from talaria.feed.supervisor import FeedSupervisor
+from talaria.foundation.errors import FeedUnavailableError, TalariaError
+from talaria.foundation.feed import (
+    FeedEvent,
+    FeedHealthEvent,
+    FeedHealthReport,
+    KlineEvent,
+    OrderBookEvent,
+)
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import ChartPage, ErrorResponse, SnapshotMeta, SnapshotRequest
-from talaria.packs.crypto_perp import CRYPTO_PERP_PACK, BybitLinearConnector
+from talaria.packs.crypto_perp import (
+    CRYPTO_PERP_PACK,
+    BybitLinearConnector,
+    BybitPublicStream,
+)
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.backfill import BackfillPolicy
 from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
+from talaria.replay import ReplayFeed
 from talaria.workbench_api.service import WorkbenchService
 from talaria.workbench_api.settings import AppSettings
 
@@ -42,6 +57,8 @@ ERROR_STATUS: dict[str, int] = {
     "NOT_IMPLEMENTED": 501,
     "INTERNAL": 500,
 }
+#: 单个 WebSocket 客户端的广播缓冲；慢客户端只丢自己的旧消息，不阻塞其他人。
+WS_QUEUE_MAX = 256
 
 _MISSING_DIST_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>Talaria 前端尚未构建</title>
@@ -75,6 +92,32 @@ def _desk_response(index_path: Path, token: str) -> HTMLResponse:
     return response
 
 
+def _ws_payload(event: FeedEvent) -> dict[str, object]:
+    if isinstance(event, KlineEvent):
+        return {"type": "bar", "data": event.model_dump(mode="json")}
+    if isinstance(event, OrderBookEvent):
+        return {"type": "book", "data": event.model_dump(mode="json")}
+    return {"type": "health", "data": event.model_dump(mode="json")}
+
+
+def _wanted(event: FeedEvent, subscriptions: set[tuple[str, str]]) -> bool:
+    if isinstance(event, KlineEvent):
+        return (event.instrument_id, event.timeframe) in subscriptions
+    if isinstance(event, FeedHealthEvent):
+        return (event.instrument_id, event.timeframe) in subscriptions
+    return any(
+        instrument_id == event.instrument_id for instrument_id, _ in subscriptions
+    )
+
+
+async def _send_loop(websocket: WebSocket, queue: asyncio.Queue[dict[str, object]]) -> None:
+    try:
+        while True:
+            await websocket.send_json(await queue.get())
+    except Exception:  # 客户端断开或运行时已关闭，直接结束发送循环
+        return
+
+
 def create_app(settings: AppSettings) -> FastAPI:
     token = settings.token or secrets.token_urlsafe(32)
 
@@ -85,6 +128,18 @@ def create_app(settings: AppSettings) -> FastAPI:
             if settings.fixture_dir is not None
             else BybitLinearConnector(settings.bybit_base_url)
         )
+        instruments = CRYPTO_PERP_PACK.instruments()
+        stream = None
+        feed_mode: str | None = None
+        if settings.replay_events is not None:
+            stream = ReplayFeed(settings.replay_events, speed=settings.replay_speed)
+            feed_mode = "replay"
+        elif settings.fixture_dir is None:
+            stream = BybitPublicStream(
+                instruments=instruments, now_ms=settings.now_ms
+            )
+            feed_mode = "bybit"
+
         store = SnapshotStore(settings.data_dir)
         builder = SnapshotBuilder(
             data_dir=settings.data_dir,
@@ -103,10 +158,27 @@ def create_app(settings: AppSettings) -> FastAPI:
             data_dir=settings.data_dir,
             snapshot_store=store,
             builder=builder,
+            feed_mode=feed_mode,
         )
+        app.state.ws_subscribers = {}
+        supervisor: FeedSupervisor | None = None
+        if stream is not None:
+            supervisor = FeedSupervisor(
+                stream=stream,
+                # 回放文件自带恢复段，不依赖 REST 回填；实盘断流才走 REST。
+                connector=None if feed_mode == "replay" else connector,
+                instruments=instruments,
+                feed_mode=feed_mode,
+                now_ms=settings.now_ms,
+                stale_after_ms=settings.stale_after_ms,
+            )
+            await supervisor.start()
+        app.state.supervisor = supervisor
         try:
             yield
         finally:
+            if supervisor is not None:
+                await supervisor.stop()
             close = getattr(connector, "close", None)
             if callable(close):
                 close()
@@ -152,6 +224,15 @@ def create_app(settings: AppSettings) -> FastAPI:
         active = service(request)
         return {"ok": True, "version": __version__, "feed_mode": active.feed_mode}
 
+    @app.get("/api/feed/health", response_model=FeedHealthReport)
+    def feed_health(request: Request) -> FeedHealthReport:
+        supervisor: FeedSupervisor | None = request.app.state.supervisor
+        if supervisor is None:
+            raise FeedUnavailableError(
+                "当前运行在离线样本模式，没有实时行情流；请用 --replay-events 或实盘模式启动"
+            )
+        return supervisor.health()
+
     @app.get("/api/instruments", response_model=list[InstrumentSpec])
     def instruments(request: Request) -> list[InstrumentSpec]:
         return list(service(request).instruments())
@@ -178,6 +259,108 @@ def create_app(settings: AppSettings) -> FastAPI:
             limit=limit,
             before_ts=before_ts,
         )
+
+    @app.websocket("/ws/desk")
+    async def desk_socket(websocket: WebSocket) -> None:
+        await websocket.accept()
+        supervisor: FeedSupervisor | None = websocket.app.state.supervisor
+        await websocket.send_json(
+            {
+                "type": "hello",
+                "feed_mode": websocket.app.state.service.feed_mode,
+                "server_ts": settings.now_ms(),
+                "live": supervisor is not None,
+            }
+        )
+        if supervisor is None:
+            try:
+                while True:
+                    await websocket.receive_text()
+            except (WebSocketDisconnect, RuntimeError):
+                return
+
+        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=WS_QUEUE_MAX)
+        subscriptions: set[tuple[str, str]] = set()
+        retainers: dict[tuple[str, str], int] = websocket.app.state.ws_subscribers
+
+        def listener(event: FeedEvent) -> None:
+            if not _wanted(event, subscriptions):
+                return
+            if queue.full():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+            queue.put_nowait(_ws_payload(event))
+
+        def retain(key: tuple[str, str]) -> None:
+            retainers[key] = retainers.get(key, 0) + 1
+
+        def release(key: tuple[str, str]) -> None:
+            remaining = retainers.get(key, 0) - 1
+            if remaining > 0:
+                retainers[key] = remaining
+            else:
+                retainers.pop(key, None)
+
+        remove_listener = supervisor.add_listener(listener)
+        sender = asyncio.create_task(_send_loop(websocket, queue))
+        try:
+            while True:
+                message = await websocket.receive_json()
+                if not isinstance(message, dict):
+                    continue
+                op = message.get("op")
+                instrument_id = str(message.get("instrument_id") or "")
+                timeframe = str(message.get("timeframe") or "")
+                key = (instrument_id, timeframe)
+                if op == "subscribe":
+                    if key in subscriptions:
+                        continue
+                    subscriptions.add(key)
+                    try:
+                        supervisor.subscribe(
+                            instrument_id=instrument_id, timeframe=timeframe
+                        )
+                    except TalariaError as exc:
+                        subscriptions.discard(key)
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "code": exc.code,
+                                "message": exc.message,
+                            }
+                        )
+                        continue
+                    retain(key)
+                elif op == "unsubscribe":
+                    if key not in subscriptions:
+                        continue
+                    subscriptions.discard(key)
+                    release(key)
+                    if retainers.get(key, 0) == 0:
+                        supervisor.unsubscribe(
+                            instrument_id=instrument_id, timeframe=timeframe
+                        )
+                else:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "code": "VALIDATION_ERROR",
+                            "message": "未知的订阅操作",
+                        }
+                    )
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            remove_listener()
+            sender.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sender
+            for key in subscriptions:
+                release(key)
+                if retainers.get(key, 0) == 0:
+                    supervisor.unsubscribe(
+                        instrument_id=key[0], timeframe=key[1]
+                    )
 
     dist_dir = settings.dist_dir
     index_path = dist_dir / "index.html"

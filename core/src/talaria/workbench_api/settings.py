@@ -18,6 +18,9 @@ class AppSettings:
     dist_dir: Path
     fixture_dir: Path | None = None
     bybit_base_url: str = "https://api.bybit.com"
+    replay_events: Path | None = None
+    replay_speed: float = 1.0
+    stale_after_ms: int = 12_000
     backfill_bars: int = 3000
     max_pages: int = 5
     token: str | None = None
@@ -28,3 +31,7 @@ class AppSettings:
             raise ValueError("backfill_bars 必须为正数")
         if self.max_pages <= 0:
             raise ValueError("max_pages 必须为正数")
+        if self.replay_speed <= 0:
+            raise ValueError("replay_speed 必须为正数")
+        if self.stale_after_ms <= 0:
+            raise ValueError("stale_after_ms 必须为正数")

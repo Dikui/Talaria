@@ -33,15 +33,19 @@ class WorkbenchService:
         data_dir: Path,
         snapshot_store: SnapshotStore,
         builder: SnapshotBuilder,
+        feed_mode: str | None = None,
     ) -> None:
         self._pack = pack
         self._connector = connector
         self._data_dir = data_dir
         self._snapshot_store = snapshot_store
         self._builder = builder
+        self._feed_mode = feed_mode
 
     @property
     def feed_mode(self) -> str:
+        if self._feed_mode is not None:
+            return self._feed_mode
         return getattr(self._connector, "feed_mode", "unknown")
 
     def instruments(self) -> Sequence[InstrumentSpec]:

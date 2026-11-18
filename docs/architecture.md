@@ -144,7 +144,9 @@ Talaria/
 ├── core/                               # Plane B：Python 确定性底座（uv 管理）
 │   ├── pyproject.toml
 │   └── src/talaria/
-│       ├── foundation/                 # 【L0】Decimal、五重时点、Instrument+5 Traits、契约对象、紧凑序列算子核、关键位纯函数算法
+│       ├── foundation/                 # 【L0】Decimal、五重时点、Instrument+5 Traits、契约对象、MarketEventFeed 协议、紧凑序列算子核、关键位纯函数算法
+│       ├── feed/                       # 【L1】实时行情状态机（LIVE/STALE/RECOVERING、NO_TRADES 与 FEED_GAP 合成、重连幂等回填）
+│       ├── replay/                     # 【L1】JSONL 确定性回放传输层（断流/恢复段、可注入时钟）
 │       ├── perception/                 # 【L1】connectors、perception_store、catalyst_calendar、watchlist、overlays、level_engine、alerts_scanner
 │       ├── strategy/                   # 【L2】Strategy 协议+ParamSpace、quant_strategies、dsh_agent_runner、plan_drafter
 │       ├── portfolio_risk/             # 【L3】subaccount_guard、r_unit_sizer、correlation_budget、hard_risk_pipeline
@@ -215,7 +217,15 @@ Talaria/
 3. **`Watchlist`、共享 `Chart Overlay` 与统一 `MarketEventFeed` 预警扫描**：
    - `Watchlist` 按“活跃持仓 > 挂有活跃预警 > 当前看盘标的 > 普通自选”动态调度有限实时订阅配额。
    - 向量化 `Scanner` 与毫秒级 `AlertEngine`（支持价格/衍生品阈值、技术指标交叉、`Chart Overlay` 几何插值触碰/收盘突破、关键位事件 `LEVEL_EVENT`（触及 / 突破 / 回踩，按 `level_id` 跟踪）、催化剂倒计时五类规则及 `ARMED → COOLDOWN / EXPIRED` 状态机）统一消费 `MarketEventFeed` 协议，在实时热流与历史冷库回放间共享同一套触发与冷却代码；仅在场所合法供流窗口内发生传输心跳失联或丢包时才判 `FEED_GAP / STALE` 挂起触发，正常稀疏分钟记为 `NO_TRADES`。
-4. **确定性关键位引擎（`level_engine`）**：
+4. **`MarketEventFeed` 实时传输实现（03 已落地）**：
+   - `foundation/feed.py` 定义跨数据源统一的 `KlineEvent`（含 `confirmed` 与单调递增 `revision`）、`OrderBookEvent`、`FeedHealthEvent` 与 `MarketEventFeed` 协议；这些契约同时导出 JSON Schema 与 TypeScript 类型，前后端共用同一份形状。
+   - `feed/supervisor.py` 持有唯一状态机：12s（默认 `stale_after_ms=12000`）无任何事件即 `LIVE → STALE`；传输层报错立即 `STALE`；重连成功后先 `RECOVERING` 并应用 REST 回填，再回 `LIVE`。断流窗口以“最后一根已知柱的事件时间 + 断流墙钟时长”记录，因此历史回放（事件时间与运行墙钟错位）不会伪造未来时间戳的缺口。
+   - 缺口合成口径与 `perception/compaction.py` 共用 `classify_flat_bar`：正常稀疏分钟补前收平盘零量的 `NO_TRADES`；断流窗口内补 OHLCV 全空的 `FEED_GAP`。同一 `timestamp` 的多次发布按 `revision` 追加保留、last-write-wins，REST 回填与实时推送可安全重放。
+   - `packs/crypto_perp/stream.py` 是 Bybit V5 Linear 公共 WS 传输层（`websockets>=15`）：topic 为 `kline.{interval}.{symbol}` 与 `orderbook.1.{symbol}`，等待订阅 ack、应用层 ping/pong、断线由 supervisor 指数退避重连；连接失败抛 `FeedTransportError`。
+   - `workbench_api` 暴露 `GET /api/feed/health` 与 `WS /ws/desk`：每客户端一条有界队列（256，“满则丢最旧”），慢客户端不会阻塞广播；前端 `useMarketStream` 按页面地址推导 WS URL、指数退避重连，并在标的/周期切换时先退订再订阅。图表增量走 KLineChart v10 的 `DataLoader.subscribeBar`（同 timestamp 更新、新 timestamp 追加），`FEED_GAP` 永不进入 `dataList`。
+   - `talaria up --solo --replay-events <path> [--replay-speed F]` 用 JSONL 回放驱动上述整条链路，用于离线确定性与浏览器验收；`--fixture-dir` 仅提供历史快照，`/api/health.feed_mode` 区分 `fixture` / `replay` / `bybit`。
+
+5. **确定性关键位引擎（`level_engine`）**：
    - 调用 `L0 foundation/levels` 算法，仅基于 `<= cutoff_ts` 的已可见数据产出不可变 `KeyLevelSet` 并随 `EvidenceSnapshot` 交付；实时态按闭合 K 线增量更新。
    - 初版价位类别：① 结构位（确认后的摆动高低点、多次触及聚成的支撑阻力区间）；② 时段参考位（前日高 / 低 / 收、周与月开盘价、开盘区间、加密亚洲 / 伦敦 / 纽约时段高低点，美股盘前高低点由 `us_equity` 包提供）；③ 成交量位（`POC / VAH / VAL`、锚定 VWAP 及 `±σ` 带）；④ 未回补跳空缺口与整数关口；⑤ 基于 OI 变化与杠杆假设推算的清算密集区（`kind` 标注 `ESTIMATED`，与观测类价位分开展示）。
    - 契约 `KeyLevel`：`level_id`（跨快照稳定）、`instrument_id`、`kind`、`price` 或 `[low, high]` 区间、`timeframe`、`strength` 及其构成（触及次数、最近触及时刻、成交量权重）、`status`（`ACTIVE | BROKEN | FLIPPED`）、`ts_available`、`method_version` 与参数。

@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "FeedHealthStatus": {
+      "description": "供流健康状态。",
+      "enum": [
+        "LIVE",
+        "STALE",
+        "RECOVERING"
+      ],
+      "title": "FeedHealthStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "某个标的 + 周期的供流健康。``stale_since`` 是最后一次收到传输活动的时刻。\n\n健康按 ``(instrument_id, timeframe)`` 区分通道：不同周期的订阅与断流互不影响，\n客户端切换周期时不会用旧周期的健康状态覆盖新周期。",
+  "properties": {
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "last_event_ts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Event Ts"
+    },
+    "reconnect_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Reconnect Count",
+      "type": "integer"
+    },
+    "stale_since": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stale Since"
+    },
+    "status": {
+      "$ref": "#/$defs/FeedHealthStatus"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "timeframe",
+    "status",
+    "ts"
+  ],
+  "title": "FeedHealthEvent",
+  "type": "object"
+}

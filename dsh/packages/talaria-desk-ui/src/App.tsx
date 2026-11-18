@@ -6,6 +6,13 @@ import type {
   SnapshotMeta,
 } from "@talaria/contracts";
 
+import {
+  FeedAlert,
+  FeedHealthBadge,
+  OrderBookSummary,
+} from "./features/feed/FeedIndicators";
+import { feedBadgeView } from "./features/feed/health";
+import { useMarketStream } from "./features/feed/useMarketStream";
 import { InstrumentSelect } from "./features/instruments/InstrumentSelect";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
 import { ApiError, api } from "./lib/api";
@@ -44,7 +51,10 @@ function feedLabel(feedMode: string | null): string {
     return "离线样本";
   }
   if (feedMode === "bybit") {
-    return "Bybit";
+    return "Bybit 实时";
+  }
+  if (feedMode === "replay") {
+    return "回放";
   }
   return "行情源未知";
 }
@@ -63,6 +73,7 @@ export default function App() {
   const [error, setError] = useState<ErrorInfo | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [theme, setTheme] = useState<Theme>(() => resolveInitialTheme());
+  const stream = useMarketStream(instrumentId, timeframe);
 
   useEffect(() => {
     applyTheme(theme);
@@ -174,6 +185,27 @@ export default function App() {
 
   const showEmpty = !loading && (initialFailed || stats.loaded === 0);
   const refresh = () => setRefreshNonce((nonce) => nonce + 1);
+  const effectiveFeedMode = stream.hello?.feed_mode ?? feedMode;
+  const streamLive = stream.hello?.live ?? null;
+  const badge = feedBadgeView(
+    stream.feedHealth,
+    stream.now,
+    streamLive,
+    stream.connection,
+  );
+  // 实时 FEED_GAP 按 timestamp 去重，同一缺口的多次 revision 只计一处。
+  const liveGapCount = new Set(
+    stream.bars
+      .filter((event) => event.bar.status === "FEED_GAP")
+      .map((event) => event.bar.timestamp),
+  ).size;
+  const gapCount = stats.gaps + liveGapCount;
+  const liveStatus =
+    stream.hello === null
+      ? "实时流连接中"
+      : streamLive
+        ? `${badge.label} · 已推送 ${stream.bars.length} 根`
+        : "离线样本（无实时流）";
 
   return (
     <div className="app-shell">
@@ -205,11 +237,21 @@ export default function App() {
           </div>
           <div className="header-actions">
             <span
-              className={`feed-badge feed-badge--${feedMode ?? "unknown"}`}
+              className={`feed-badge feed-badge--${effectiveFeedMode ?? "unknown"}`}
               data-testid="feed-mode"
             >
-              {feedLabel(feedMode)}
+              {feedLabel(effectiveFeedMode)}
             </span>
+            <FeedHealthBadge
+              health={stream.feedHealth}
+              now={stream.now}
+              live={streamLive}
+              connection={stream.connection}
+            />
+            <OrderBookSummary
+              book={stream.book}
+              pricePrecision={pricePrecision}
+            />
             <button
               type="button"
               className="ghost-button"
@@ -237,6 +279,13 @@ export default function App() {
             <span>{error.message}</span>
           </div>
         )}
+
+        <FeedAlert
+          health={stream.feedHealth}
+          now={stream.now}
+          live={streamLive}
+          connection={stream.connection}
+        />
 
         <section className="chart-panel" aria-label="K 线主图">
           {loading ? (
@@ -277,6 +326,7 @@ export default function App() {
                 initialBars={bars}
                 initialHasMoreForward={hasMoreForward}
                 loadOlder={loadOlder}
+                liveBars={stream.bars}
                 onStats={setStats}
                 onLoadError={(caught) => setError(describeError(caught))}
               />
@@ -294,7 +344,9 @@ export default function App() {
             <span className="status-divider">·</span>
             <span data-testid="loaded-count">已加载 {stats.loaded} 根</span>
             <span className="status-divider">·</span>
-            <span data-testid="gap-count">断流 {stats.gaps} 处</span>
+            <span data-testid="gap-count">断流 {gapCount} 处</span>
+            <span className="status-divider">·</span>
+            <span data-testid="live-status">{liveStatus}</span>
           </>
         ) : (
           <span>{loading ? "正在准备快照…" : "尚未创建快照"}</span>
