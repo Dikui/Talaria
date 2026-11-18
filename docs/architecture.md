@@ -144,7 +144,7 @@ Talaria/
 ├── core/                               # Plane B：Python 确定性底座（uv 管理）
 │   ├── pyproject.toml
 │   └── src/talaria/
-│       ├── foundation/                 # 【L0】Decimal、五重时点、Instrument+5 Traits、契约对象、MarketEventFeed 协议、紧凑序列算子核、关键位纯函数算法
+│       ├── foundation/                 # 【L0】Decimal、五重时点、Instrument+5 必需 Traits+可选衍生品能力、契约对象、MarketEventFeed 协议、紧凑序列算子核、关键位纯函数算法
 │       ├── feed/                       # 【L1】实时行情状态机（LIVE/STALE/RECOVERING、NO_TRADES 与 FEED_GAP 合成、重连幂等回填）
 │       ├── replay/                     # 【L1】JSONL 确定性回放传输层（断流/恢复段、可注入时钟）
 │       ├── perception/                 # 【L1】connectors、perception_store、catalyst_calendar、watchlist、overlays、level_engine、alerts_scanner
@@ -193,6 +193,8 @@ Talaria/
 | `CarryTrait` | 持仓跨越结算周期的现金流计提 | 整点（1h/4h/8h）按持仓名义价值与 `FundingRate` 多空直接收付 | 融券空头按年化费率跨结算日计提借券利息 |
 | `SessionTrait` | 可交易时段、场所供流联动保护与强平窗口 | `24x7` 连续交易 | 盘前 / 常规 RTH / 盘后分段；绑定 `ALPACA_IEX` 实时源时自动限制在有实时报价覆盖窗口内持仓（默认 ≤`16:55 ET` 平仓） |
 | `OrderConstraintTrait` | 委托标志、做空准入与监管频次限制 | 原生双向开空、支持 `POST_ONLY` 与 `reduce_only` | 非 RTH 时段禁用市价单；`< $25,000` Reg-T 账户受滚动 5 交易日 PDT 次数硬约束 |
+
+上述五项为所有标的的**必需**能力。衍生品数据是可选扩展：支持标记价、资金费率结算或持仓量的 Market Pack 额外声明 `DerivativeCapabilityTrait(kinds, history, realtime)`；不支持的 Pack 不声明该 trait，核心层仍只处理 `DerivativePoint`，不出现交易所或资产类别分支。
 
 3. **双层时间序列与单一实现确定性算子核（`foundation/operators`）**：
    - **横截面网格表（`GridAlignedTable`）**：保留正常休市（`SESSION_CLOSED`）、停牌（`HALTED`）、时段内无成交（`NO_TRADES`）与异常断流（`FEED_GAP`）显式状态，服务多品种横截面对齐。
