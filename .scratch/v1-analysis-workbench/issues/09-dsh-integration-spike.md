@@ -6,13 +6,13 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0001](../../../docs/adr/0001-dual-plane-dsh-and-python-core.md)、[ADR-0005](../../../docs/adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] `talaria up` 纳管双进程健康探针、日志分流与优雅退出；`--solo` 行为不变。
 - [x] 看盘组件包同一份代码既可由快通道独立打开，也可嵌入 DSH 插槽（不引入 SolidJS 外围封装）。
 - [x] 受控桥把 `get_snapshot` 封装为符合 DSH Schema 校验子集的工具，智能体调用后返回绑定 `snapshot_id` 的结果。
 - [x] `talaria-desk` Profile 在配置补丁层移除任何下单或绕过人工确认的执行工具，挂载 DSH 原生单调执行守卫（拦截从历史轨迹 `fork` 发起的重放写操作）；`dsh --dump-config` 快照测试固化权限边界。
-- [ ] DSH 宿主停止或卡住时，浏览器经快通道的切图与画线不受影响（以手动或脚本验证并记录）。
+- [x] DSH 宿主停止或卡住时，浏览器经快通道的切图与画线不受影响（以手动或脚本验证并记录）。
 - [x] 离线测试用模拟 / 录制的桥接消息验证工具契约；真实模型会话列为沙箱外可选冒烟验证。
 - [x] 结论（可行 / 需调整的接口与位置）追加到本任务单 `## Comments`。
 - [x] 浏览器界面验收（均附截图）：宽度 `1440` 与 `390`、浅色与深色、简体中文下检查同屏布局（图表区 + 协同面板）与宿主离线时的非阻塞提示。
@@ -84,3 +84,11 @@
 - `docs/architecture.md` §5.3 ③：明确 dump 只做权限/插件快照，守卫必须行为测试；09 只覆盖 `talaria-desk`，`talaria-auto/eval` 留 M2。
 - `docs/research/external-dependency-verification-v1.md`：更新回改状态并追加“09 实测补充”（客户端插槽、`dsh.bundle.patch` 重复、Schema 子集、`webServer.register`、guard 不可 dump）。
 - **ADR 无需改结论**：ADR-0001 的双平面/DSH 作为 Plane A、ADR-0005 的快通道绕开 DSH 与零 DSH 依赖组件包，均被本次实测支持；仅校准 ADR-0001 中“独立 `ui-slots 0.0.1-rc.1` 为基线”的事实（09 实测 rc.3 自带插槽 API，不再单独使用该包），不改变 ADR 结论。ADR-0005 的 `10.1.1` 版本与 `calc` 结论保持成立。
+
+### Lead 合并验收（2026-11-19）
+
+- 合并 `79ce93d Merge branch 'ticket-09-dsh-spike'`，解决 `main.py`、`App.tsx`、`lib/api.ts`、`styles.css` 与 05/08 的冲突：保留 05 画线、08 自选池与 09 的 DSH 插槽/协同徽标/写请求 helper，`contract-check` 零漂移。
+- 合并后全量：`uv run pytest -q` → 277 passed, 1 deselected；`pnpm -C dsh typecheck` 通过；desk-ui 84 passed、plugin 12 passed；`pnpm -C dsh build` 通过（desk-ui 529.24 kB JS / 25.23 kB CSS，plugin client 698.49 kB）；`uv run talaria contract-check` 零漂移。
+- 第 5 项已补验：`talaria up` dual 模式启动，`/api/collaboration` 为 `host=online`；DSH 右侧“Talaria 看盘”嵌入面板渲染正常。`kill` DSH 宿主后 `/api/collaboration` 变为 `host=offline`（detail：`DSH 宿主意外退出（退出码 0）`），`/api/health` 仍 200；独立 `/desk` 显示“协同宿主：离线 · 快通道正常”，点击 `5m` 后快照重建为 300 根，画线工具栏（水平线/射线/线段/平行通道/斐波那契/矩形区间/文本标签）可见且可用。说明快通道的切图与画线确实不依赖 DSH 宿主。
+- 已知限制：嵌入面板在 DSH 右侧窄栏下按响应式规则隐藏画线工具栏（≤720px），全屏/独立 `/desk` 可见；这是既有的窄屏只读约定，非功能缺失。真实模型会话与“DSH 卡住”只做了进程终止模拟，未做网络黑洞模拟。
+- 截图已复制到 `.scratch/tasks/ticket-09/`（5 张）；worktree 与分支在关闭后删除。
