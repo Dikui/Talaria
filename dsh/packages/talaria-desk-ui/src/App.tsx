@@ -11,7 +11,7 @@ import {
   FeedHealthBadge,
   OrderBookSummary,
 } from "./features/feed/FeedIndicators";
-import { healthLabel } from "./features/feed/health";
+import { feedBadgeView } from "./features/feed/health";
 import { useMarketStream } from "./features/feed/useMarketStream";
 import { InstrumentSelect } from "./features/instruments/InstrumentSelect";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
@@ -186,11 +186,25 @@ export default function App() {
   const showEmpty = !loading && (initialFailed || stats.loaded === 0);
   const refresh = () => setRefreshNonce((nonce) => nonce + 1);
   const effectiveFeedMode = stream.hello?.feed_mode ?? feedMode;
+  const streamLive = stream.hello?.live ?? null;
+  const badge = feedBadgeView(
+    stream.feedHealth,
+    stream.now,
+    streamLive,
+    stream.connection,
+  );
+  // 实时 FEED_GAP 按 timestamp 去重，同一缺口的多次 revision 只计一处。
+  const liveGapCount = new Set(
+    stream.bars
+      .filter((event) => event.bar.status === "FEED_GAP")
+      .map((event) => event.bar.timestamp),
+  ).size;
+  const gapCount = stats.gaps + liveGapCount;
   const liveStatus =
     stream.hello === null
       ? "实时流连接中"
-      : stream.hello.live
-        ? `${healthLabel(stream.feedHealth, stream.now)} · 已推送 ${stream.bars.length} 根`
+      : streamLive
+        ? `${badge.label} · 已推送 ${stream.bars.length} 根`
         : "离线样本（无实时流）";
 
   return (
@@ -231,7 +245,8 @@ export default function App() {
             <FeedHealthBadge
               health={stream.feedHealth}
               now={stream.now}
-              live={stream.hello?.live ?? null}
+              live={streamLive}
+              connection={stream.connection}
             />
             <OrderBookSummary
               book={stream.book}
@@ -265,7 +280,12 @@ export default function App() {
           </div>
         )}
 
-        <FeedAlert health={stream.feedHealth} now={stream.now} />
+        <FeedAlert
+          health={stream.feedHealth}
+          now={stream.now}
+          live={streamLive}
+          connection={stream.connection}
+        />
 
         <section className="chart-panel" aria-label="K 线主图">
           {loading ? (
@@ -324,7 +344,7 @@ export default function App() {
             <span className="status-divider">·</span>
             <span data-testid="loaded-count">已加载 {stats.loaded} 根</span>
             <span className="status-divider">·</span>
-            <span data-testid="gap-count">断流 {stats.gaps} 处</span>
+            <span data-testid="gap-count">断流 {gapCount} 处</span>
             <span className="status-divider">·</span>
             <span data-testid="live-status">{liveStatus}</span>
           </>

@@ -59,9 +59,14 @@ class OrderBookEvent(ContractModel):
 
 
 class FeedHealthEvent(ContractModel):
-    """单标的供流健康。``stale_since`` 是最后一次收到传输活动的时刻。"""
+    """某个标的 + 周期的供流健康。``stale_since`` 是最后一次收到传输活动的时刻。
+
+    健康按 ``(instrument_id, timeframe)`` 区分通道：不同周期的订阅与断流互不影响，
+    客户端切换周期时不会用旧周期的健康状态覆盖新周期。
+    """
 
     instrument_id: str
+    timeframe: str
     status: FeedHealthStatus
     ts: int
     last_event_ts: int | None = None

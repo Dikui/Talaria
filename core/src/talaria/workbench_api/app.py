@@ -103,6 +103,8 @@ def _ws_payload(event: FeedEvent) -> dict[str, object]:
 def _wanted(event: FeedEvent, subscriptions: set[tuple[str, str]]) -> bool:
     if isinstance(event, KlineEvent):
         return (event.instrument_id, event.timeframe) in subscriptions
+    if isinstance(event, FeedHealthEvent):
+        return (event.instrument_id, event.timeframe) in subscriptions
     return any(
         instrument_id == event.instrument_id for instrument_id, _ in subscriptions
     )

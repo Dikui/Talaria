@@ -50,6 +50,7 @@ function applyHealth(
   if (
     current !== null &&
     current.instrument_id === health.instrument_id &&
+    current.timeframe === health.timeframe &&
     health.ts < current.ts
   ) {
     return state;

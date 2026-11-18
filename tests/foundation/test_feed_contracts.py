@@ -108,6 +108,7 @@ def test_feed_health_status_only_allows_three_states() -> None:
     with pytest.raises(ValidationError):
         FeedHealthEvent(
             instrument_id="BTC-USDT-PERP",
+            timeframe="1m",
             status="UNKNOWN",
             ts=1_700_000_060_000,
             last_event_ts=None,
@@ -119,6 +120,7 @@ def test_feed_health_status_only_allows_three_states() -> None:
 def test_feed_health_event_requires_stale_since_when_stale() -> None:
     stale = FeedHealthEvent(
         instrument_id="BTC-USDT-PERP",
+        timeframe="1m",
         status=FeedHealthStatus.STALE,
         ts=1_700_000_072_000,
         last_event_ts=1_700_000_060_000,
@@ -130,6 +132,7 @@ def test_feed_health_event_requires_stale_since_when_stale() -> None:
     with pytest.raises(ValidationError, match="STALE 必须记录断流起点"):
         FeedHealthEvent(
             instrument_id="BTC-USDT-PERP",
+            timeframe="1m",
             status=FeedHealthStatus.STALE,
             ts=1_700_000_072_000,
             last_event_ts=None,
@@ -142,6 +145,7 @@ def test_live_or_recovering_health_must_clear_stale_since() -> None:
     with pytest.raises(ValidationError, match="LIVE 不能带断流起点"):
         FeedHealthEvent(
             instrument_id="BTC-USDT-PERP",
+            timeframe="1m",
             status=FeedHealthStatus.LIVE,
             ts=1_700_000_080_000,
             last_event_ts=1_700_000_080_000,
@@ -153,6 +157,7 @@ def test_live_or_recovering_health_must_clear_stale_since() -> None:
 def test_feed_health_report_lists_channels_and_aggregate_status() -> None:
     live = FeedHealthEvent(
         instrument_id="BTC-USDT-PERP",
+        timeframe="1m",
         status=FeedHealthStatus.LIVE,
         ts=1_700_000_080_000,
         last_event_ts=1_700_000_079_900,
@@ -169,3 +174,4 @@ def test_feed_health_report_lists_channels_and_aggregate_status() -> None:
     assert payload["feed_mode"] == "replay"
     assert payload["status"] == "LIVE"
     assert payload["channels"][0]["instrument_id"] == "BTC-USDT-PERP"
+    assert payload["channels"][0]["timeframe"] == "1m"

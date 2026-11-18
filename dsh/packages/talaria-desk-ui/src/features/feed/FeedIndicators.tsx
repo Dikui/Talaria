@@ -1,37 +1,33 @@
 import type { FeedHealthEvent, OrderBookEvent } from "@talaria/contracts";
 
 import { formatPrice } from "./format";
-import { healthLabel, healthTone, staleDurationMs } from "./health";
+import { feedAlertView, feedBadgeView } from "./health";
+import type { ConnectionState } from "./reducer";
 
 interface FeedHealthBadgeProps {
   health: FeedHealthEvent | null;
   now: number;
   live: boolean | null;
+  connection: ConnectionState;
 }
 
-/** 顶栏健康徽标：实时 / 断流 N 秒 / 恢复中。 */
-export function FeedHealthBadge({ health, now, live }: FeedHealthBadgeProps) {
-  if (health === null) {
-    const tone = live === false ? "offline" : "waiting";
-    return (
-      <span
-        className={`feed-health feed-health--${tone}`}
-        data-testid="feed-health"
-        data-status={live === false ? "OFFLINE" : "WAITING"}
-      >
-        {live === false ? "无实时流" : "等待行情"}
-      </span>
-    );
-  }
+/** 顶栏健康徽标：实时 / 断流 N 秒 / 恢复中 / 连接断开 · 重连中。 */
+export function FeedHealthBadge({
+  health,
+  now,
+  live,
+  connection,
+}: FeedHealthBadgeProps) {
+  const view = feedBadgeView(health, now, live, connection);
   return (
     <span
-      className={`feed-health feed-health--${healthTone(health.status)}`}
+      className={`feed-health feed-health--${view.tone}`}
       data-testid="feed-health"
-      data-status={health.status}
+      data-status={view.status}
       aria-live="polite"
     >
       <span className="feed-health-dot" aria-hidden="true" />
-      {healthLabel(health, now)}
+      {view.label}
     </span>
   );
 }
@@ -41,7 +37,7 @@ interface OrderBookSummaryProps {
   pricePrecision: number;
 }
 
-/** 顶栏盘口：只显示最优一档，纵深留给后续订单流任务。 */
+/** 顶栏盘口：最优一档 + 买卖价差，纵深留给后续订单流任务。 */
 export function OrderBookSummary({ book, pricePrecision }: OrderBookSummaryProps) {
   if (book === null) {
     return (
@@ -55,6 +51,12 @@ export function OrderBookSummary({ book, pricePrecision }: OrderBookSummaryProps
       </div>
     );
   }
+  const ask = Number(book.ask_price);
+  const bid = Number(book.bid_price);
+  const spread =
+    Number.isFinite(ask) && Number.isFinite(bid)
+      ? formatPrice(String(ask - bid), pricePrecision)
+      : "—";
   return (
     <div className="order-book" data-testid="order-book" data-ready="true">
       <span className="order-book-title">盘口</span>
@@ -70,6 +72,12 @@ export function OrderBookSummary({ book, pricePrecision }: OrderBookSummaryProps
           {formatPrice(book.bid_price, pricePrecision)}
         </span>
       </span>
+      <span className="order-book-row order-book-row--spread">
+        <span className="order-book-label">价差</span>
+        <span className="order-book-price" data-testid="order-book-spread">
+          {spread}
+        </span>
+      </span>
     </div>
   );
 }
@@ -77,21 +85,25 @@ export function OrderBookSummary({ book, pricePrecision }: OrderBookSummaryProps
 interface FeedAlertProps {
   health: FeedHealthEvent | null;
   now: number;
+  live: boolean | null;
+  connection: ConnectionState;
 }
 
-/** 断流提示条；仅 STALE 出现，恢复后自动消失。 */
-export function FeedAlert({ health, now }: FeedAlertProps) {
-  if (health === null || health.status !== "STALE") {
+/** 提示条：本地连接断开或行情断流时出现，恢复后自动消失。 */
+export function FeedAlert({
+  health,
+  now,
+  live,
+  connection,
+}: FeedAlertProps) {
+  const view = feedAlertView(health, now, live, connection);
+  if (view === null) {
     return null;
   }
-  const seconds = Math.floor(staleDurationMs(health, now) / 1000);
   return (
     <div className="feed-alert" role="status" data-testid="feed-alert">
-      <strong>实时行情断流</strong>
-      <span>
-        已持续 {seconds} 秒，正在等待重连与回填；断流期间的 K 线会以
-        FEED_GAP 留空，不参与指标计算。
-      </span>
+      <strong>{view.title}</strong>
+      <span>{view.detail}</span>
     </div>
   );
 }

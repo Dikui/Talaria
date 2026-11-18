@@ -335,6 +335,7 @@ def test_health_report_aggregates_worst_status_per_channel() -> None:
         "BTC-USDT-PERP",
         "ETH-USDT-PERP",
     ]
+    assert [channel.timeframe for channel in report.channels] == ["1m", "1m"]
     assert [channel.status for channel in report.channels] == [
         FeedHealthStatus.LIVE,
         FeedHealthStatus.STALE,

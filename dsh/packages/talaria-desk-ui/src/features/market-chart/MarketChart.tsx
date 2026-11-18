@@ -14,6 +14,8 @@ import type { CompactBar, KlineEvent } from "@talaria/contracts";
 import { toKLineData, toKLineSeries, toPeriod } from "../../lib/chartData";
 import type { Theme } from "../../lib/theme";
 
+import { shouldDeliverLiveBar } from "./liveDelivery";
+
 export interface OlderPage {
   bars: CompactBar[];
   hasMoreForward: boolean;
@@ -79,8 +81,8 @@ export function MarketChart({
     const pending = pendingLiveRef.current;
     pendingLiveRef.current = [];
     for (const event of pending) {
-      const revision = deliveredRef.current.get(event.bar.timestamp);
-      if (revision !== undefined && revision >= event.revision) {
+      const delivered = deliveredRef.current.get(event.bar.timestamp);
+      if (!shouldDeliverLiveBar(event, lastInitialTsRef.current, delivered)) {
         continue;
       }
       const point = toKLineData(event.bar);
@@ -98,7 +100,7 @@ export function MarketChart({
       return;
     }
     for (const event of liveBars) {
-      if (event.bar.timestamp > lastInitialTsRef.current) {
+      if (shouldDeliverLiveBar(event, lastInitialTsRef.current, undefined)) {
         pendingLiveRef.current.push(event);
       }
     }

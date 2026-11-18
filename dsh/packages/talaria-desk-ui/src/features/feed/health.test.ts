@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  feedAlertView,
+  feedBadgeView,
   formatDuration,
   healthLabel,
   healthTone,
@@ -15,6 +17,7 @@ const INSTRUMENT = "BTC-USDT-PERP";
 function health(overrides: Partial<FeedHealthEvent> = {}): FeedHealthEvent {
   return {
     instrument_id: INSTRUMENT,
+    timeframe: "1m",
     status: "LIVE",
     ts: 1_000,
     reconnect_count: 0,
@@ -69,6 +72,57 @@ describe("健康计时纯函数", () => {
         now,
       ),
     ).toBe(false);
+  });
+
+  it("浏览器连接断开时徽标不再显示旧的 LIVE health", () => {
+    const now = 1_763_596_808_000;
+    const live = health({ status: "LIVE", ts: now });
+    expect(feedBadgeView(live, now, true, "open")).toEqual({
+      status: "LIVE",
+      label: "实时",
+      tone: "live",
+    });
+    expect(feedBadgeView(live, now, true, "closed")).toEqual({
+      status: "DISCONNECTED",
+      label: "连接断开 · 重连中",
+      tone: "disconnected",
+    });
+    expect(feedBadgeView(live, now, null, "connecting")).toEqual({
+      status: "DISCONNECTED",
+      label: "连接断开 · 重连中",
+      tone: "disconnected",
+    });
+  });
+
+  it("离线样本模式不会伪装成等待行情", () => {
+    const now = 1_763_596_808_000;
+    expect(feedBadgeView(null, now, false, "open")).toEqual({
+      status: "OFFLINE",
+      label: "无实时流",
+      tone: "offline",
+    });
+    expect(feedBadgeView(null, now, true, "open")).toEqual({
+      status: "WAITING",
+      label: "等待行情",
+      tone: "waiting",
+    });
+  });
+
+  it("提示条优先提示本地连接断开，其次才是行情断流", () => {
+    const now = 1_763_596_808_000;
+    const stale = health({
+      status: "STALE",
+      stale_since: now - 8_000,
+      ts: now,
+    });
+    expect(feedAlertView(stale, now, true, "open")).toEqual({
+      title: "实时行情断流",
+      detail:
+        "已持续 8 秒，正在等待重连与回填；断流期间的 K 线会以 FEED_GAP 留空，不参与指标计算。",
+    });
+    expect(feedAlertView(stale, now, true, "closed")?.title).toBe("连接已断开");
+    expect(feedAlertView(health({ status: "LIVE" }), now, true, "open")).toBeNull();
+    expect(feedAlertView(null, now, false, "open")).toBeNull();
   });
 
   it("状态映射到徽标配色", () => {

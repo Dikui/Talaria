@@ -442,6 +442,7 @@ class FeedSupervisor(MarketEventFeed):
     def _health_event(self, channel: _Channel, now: int) -> FeedHealthEvent:
         return FeedHealthEvent(
             instrument_id=channel.instrument_id,
+            timeframe=channel.timeframe,
             status=channel.status,
             ts=now,
             last_event_ts=channel.last_event_ts,

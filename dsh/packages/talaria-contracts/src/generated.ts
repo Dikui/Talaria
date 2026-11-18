@@ -59,6 +59,7 @@ export interface OrderBookEvent {
 }
 export interface FeedHealthEvent {
   instrument_id: string;
+  timeframe: string;
   status: FeedHealthStatus;
   ts: number;
   last_event_ts?: number | null;

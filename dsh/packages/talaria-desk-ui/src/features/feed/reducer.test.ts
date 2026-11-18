@@ -83,6 +83,7 @@ describe("feedReducer", () => {
       type: "health",
       data: {
         instrument_id: INSTRUMENT,
+        timeframe: "1m",
         status: "LIVE",
         ts: 2_000,
         reconnect_count: 0,
@@ -94,6 +95,7 @@ describe("feedReducer", () => {
       type: "health",
       data: {
         instrument_id: INSTRUMENT,
+        timeframe: "1m",
         status: "STALE",
         ts: 1_000,
         stale_since: 900,
@@ -106,6 +108,7 @@ describe("feedReducer", () => {
       type: "health",
       data: {
         instrument_id: INSTRUMENT,
+        timeframe: "1m",
         status: "RECOVERING",
         ts: 3_000,
         stale_since: 2_500,
@@ -148,5 +151,31 @@ describe("feedReducer", () => {
     expect(state.error).toBeNull();
     expect(state.bars).toEqual([]);
     expect(state.health).toBeNull();
+  });
+
+  it("切换周期后新周期健康覆盖旧周期，即使 ts 更旧", () => {
+    let state = apply(initialFeedState, {
+      type: "health",
+      data: {
+        instrument_id: INSTRUMENT,
+        timeframe: "1m",
+        status: "STALE",
+        ts: 5_000,
+        stale_since: 4_000,
+        reconnect_count: 1,
+      },
+    });
+    state = apply(state, {
+      type: "health",
+      data: {
+        instrument_id: INSTRUMENT,
+        timeframe: "5m",
+        status: "LIVE",
+        ts: 1_000,
+        reconnect_count: 0,
+      },
+    });
+    expect(state.health?.timeframe).toBe("5m");
+    expect(state.health?.status).toBe("LIVE");
   });
 });

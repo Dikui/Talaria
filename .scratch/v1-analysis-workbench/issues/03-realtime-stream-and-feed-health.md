@@ -26,3 +26,12 @@
 - **确定性测试**：`tests/fixtures/realtime/*.jsonl`（进行中多次更新→闭合、同 `timestamp` 修订、`NO_TRADES`、断流→`STALE`+`FEED_GAP`、重连+回填→`LIVE`）+ `tests/foundation/test_feed_contracts.py`、`tests/feed/test_supervisor.py`、`tests/replay/test_replay_feed.py`、`tests/packs/test_bybit_stream.py`（本地 fake WS 服务器，无在线依赖）、`tests/workbench_api/test_feed_ws.py`；前端 `features/feed/*.test.ts` 覆盖 reducer 与健康计时纯函数。
 - **验收**：`uv run pytest -q` 134 passed；`uv run talaria contract-check` 零漂移；`pnpm -C dsh --filter @talaria/desk-ui test` 26 passed；`pnpm -C dsh typecheck` 与 `pnpm -C dsh build` 通过；`git diff --check` 干净。
 - **已知限制**：本机网络被 Bybit CloudFront 403 拒绝，实盘路径只用本地 fake WS 服务器与回放验证，未做在线冒烟；真实盘口仅订阅最优一档（`orderbook.1`），更深的订单流留给后续订单流任务。
+
+Lead review 修复（2026-11-19）：
+
+- **实时投递允许同 `timestamp`**：新增纯函数 `features/market-chart/liveDelivery.ts` 的 `shouldDeliverLiveBar`，`MarketChart` 不再用 `>` 丢弃进行中 K 线的后续修订；同 `timestamp` 低/重复 `revision` 不重复投递，`FEED_GAP` 仍由 `toKLineData` 返回 `null` 跳过。Vitest 覆盖相等投递、更旧不投递、同 `timestamp` 低 `revision` 不重复、高 `revision` 投递。
+- **健康契约按通道区分**：`FeedHealthEvent` 新增 `timeframe: str`，`FeedSupervisor` 按 `(instrument_id, timeframe)` 填通道；重新生成 contract schema 与 `generated.ts`；前端 `applyHealth` 同时匹配 `(instrument_id, timeframe)`，切换周期时旧周期健康不会覆盖新周期；`WS /ws/desk` 的订阅过滤对 `health` 同样按周期匹配。
+- **浏览器断线可见**：`feedBadgeView` / `feedAlertView` 纯函数在 `live !== false && connection !== "open"` 时优先显示“连接断开 · 重连中”与“与本地守护进程的连接已断开，正在重连；图表保留最后一次快照。”，不再被旧的 `LIVE` 健康掩盖；新增 Vitest 覆盖。
+- **状态栏断流计数**：实时 `FEED_GAP` 按 `timestamp` 去重后与历史 gaps 相加（回放样本 `断流 5 处 → 9 处`）。
+- **盘口价差**：顶栏盘口增加买一/卖一价差（保留 `pricePrecision`）。
+- **验收**：`uv run pytest -q` 135 passed；contract-check 零漂移；desk-ui test 34 passed；typecheck / build 通过；`git diff --check` 干净。重截 `01/02/03/04/05/06/07-*-fix.png` 到 `.scratch/tasks/ticket-03/`，其中 `07-1440x900-disconnected-fix.png` 覆盖客户端 WS 断开提示。

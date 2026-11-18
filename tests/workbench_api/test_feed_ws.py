@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from talaria.workbench_api.app import create_app
+from talaria.foundation import FeedHealthEvent, FeedHealthStatus
+from talaria.workbench_api.app import _wanted, create_app
 from talaria.workbench_api.settings import AppSettings
 
 BASE = 1_763_596_800_000
@@ -112,6 +113,7 @@ def test_replay_stream_publishes_revisions_and_health(tmp_path: Path) -> None:
             assert [channel["instrument_id"] for channel in report["channels"]] == [
                 INSTRUMENT
             ]
+            assert [channel["timeframe"] for channel in report["channels"]] == ["1m"]
 
         revisions = [event["revision"] for event in bars(messages)]
         assert revisions == [0, 1, 2]
@@ -226,3 +228,16 @@ def test_replay_speed_must_be_positive(tmp_path: Path, speed: float) -> None:
             replay_events=tmp_path / "missing.jsonl",
             replay_speed=speed,
         )
+
+
+def test_subscription_filter_matches_timeframe_for_health() -> None:
+    health = FeedHealthEvent(
+        instrument_id=INSTRUMENT,
+        timeframe="5m",
+        status=FeedHealthStatus.LIVE,
+        ts=BASE,
+        reconnect_count=0,
+    )
+    assert _wanted(health, {(INSTRUMENT, "1m")}) is False
+    assert _wanted(health, {(INSTRUMENT, "5m")}) is True
+    assert _wanted(health, {(INSTRUMENT, "1m"), (INSTRUMENT, "5m")}) is True

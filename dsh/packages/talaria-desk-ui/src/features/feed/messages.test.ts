@@ -37,6 +37,7 @@ describe("parseDeskMessage", () => {
         type: "health",
         data: {
           instrument_id: INSTRUMENT,
+          timeframe: "1m",
           status: "STALE",
           ts: 1_763_596_800_000,
           stale_since: 1_763_596_790_000,

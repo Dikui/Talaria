@@ -335,6 +335,13 @@ button:focus-visible {
   background: var(--danger-soft);
 }
 
+.feed-health--disconnected {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  border-style: dashed;
+  background: var(--danger-soft);
+}
+
 .order-book {
   display: flex;
   flex: none;
@@ -377,6 +384,11 @@ button:focus-visible {
 
 .order-book-row--bid .order-book-price {
   color: #0b7a53;
+}
+
+.order-book-row--spread .order-book-price {
+  color: var(--text-muted);
+  font-weight: 600;
 }
 
 :root[data-theme="dark"] .order-book-row--bid .order-book-price {
