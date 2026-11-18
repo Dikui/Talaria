@@ -87,10 +87,16 @@ describe("健康计时纯函数", () => {
       label: "连接断开 · 重连中",
       tone: "disconnected",
     });
-    expect(feedBadgeView(live, now, null, "connecting")).toEqual({
+    expect(feedBadgeView(live, now, true, "connecting")).toEqual({
       status: "DISCONNECTED",
       label: "连接断开 · 重连中",
       tone: "disconnected",
+    });
+    // 首次连接尚未收到 hello：显示等待行情，不误报“连接断开”。
+    expect(feedBadgeView(null, now, null, "connecting")).toEqual({
+      status: "WAITING",
+      label: "等待行情",
+      tone: "waiting",
     });
   });
 
@@ -121,6 +127,8 @@ describe("健康计时纯函数", () => {
         "已持续 8 秒，正在等待重连与回填；断流期间的 K 线会以 FEED_GAP 留空，不参与指标计算。",
     });
     expect(feedAlertView(stale, now, true, "closed")?.title).toBe("连接已断开");
+    // 首次连接就直接失败（没有 hello）也要提示连接断开。
+    expect(feedAlertView(null, now, null, "closed")?.title).toBe("连接已断开");
     expect(feedAlertView(health({ status: "LIVE" }), now, true, "open")).toBeNull();
     expect(feedAlertView(null, now, false, "open")).toBeNull();
   });

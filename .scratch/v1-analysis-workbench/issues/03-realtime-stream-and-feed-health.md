@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0005](../../../docs/adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 连接器订阅实时公共流（进行中 / 闭合 K 线、`Revision`、最优盘口），实时事件经统一 `MarketEventFeed` 协议对外提供，供后续预警与扫描复用。
 - [x] 供流窗口内无成交产出 `NO_TRADES` 柱（前收盘平盘零量）；传输失联产出 `FEED_GAP` 并把 `Instrument` 置为 `STALE`；重连后回填缺口并恢复。
@@ -31,7 +31,14 @@ Lead review 修复（2026-11-19）：
 
 - **实时投递允许同 `timestamp`**：新增纯函数 `features/market-chart/liveDelivery.ts` 的 `shouldDeliverLiveBar`，`MarketChart` 不再用 `>` 丢弃进行中 K 线的后续修订；同 `timestamp` 低/重复 `revision` 不重复投递，`FEED_GAP` 仍由 `toKLineData` 返回 `null` 跳过。Vitest 覆盖相等投递、更旧不投递、同 `timestamp` 低 `revision` 不重复、高 `revision` 投递。
 - **健康契约按通道区分**：`FeedHealthEvent` 新增 `timeframe: str`，`FeedSupervisor` 按 `(instrument_id, timeframe)` 填通道；重新生成 contract schema 与 `generated.ts`；前端 `applyHealth` 同时匹配 `(instrument_id, timeframe)`，切换周期时旧周期健康不会覆盖新周期；`WS /ws/desk` 的订阅过滤对 `health` 同样按周期匹配。
-- **浏览器断线可见**：`feedBadgeView` / `feedAlertView` 纯函数在 `live !== false && connection !== "open"` 时优先显示“连接断开 · 重连中”与“与本地守护进程的连接已断开，正在重连；图表保留最后一次快照。”，不再被旧的 `LIVE` 健康掩盖；新增 Vitest 覆盖。
+- **浏览器断线可见**：`feedBadgeView` / `feedAlertView` 纯函数在连接 `closed`（含首次连接失败）或收到过 live hello 后连接非 `open` 时优先显示“连接断开 · 重连中”与“与本地守护进程的连接已断开，正在重连；图表保留最后一次快照。”，不再被旧的 `LIVE` 健康掩盖；新增 Vitest 覆盖。
 - **状态栏断流计数**：实时 `FEED_GAP` 按 `timestamp` 去重后与历史 gaps 相加（回放样本 `断流 5 处 → 9 处`）。
 - **盘口价差**：顶栏盘口增加买一/卖一价差（保留 `pricePrecision`）。
 - **验收**：`uv run pytest -q` 135 passed；contract-check 零漂移；desk-ui test 34 passed；typecheck / build 通过；`git diff --check` 干净。重截 `01/02/03/04/05/06/07-*-fix.png` 到 `.scratch/tasks/ticket-03/`，其中 `07-1440x900-disconnected-fix.png` 覆盖客户端 WS 断开提示。
+
+Lead 验收（2026-11-19）：
+
+- 已合并到 main：`Merge branch 'ticket-03-realtime-feed'`（03 提交 `62e865e` + 修复提交 `84b7650`），任务单关闭。
+- 合并后重跑：`uv run pytest -q` → 135 passed, 1 deselected；`uv run talaria contract-check` → 零漂移；`pnpm -C dsh --filter @talaria/desk-ui test` → 34 passed；`pnpm -C dsh typecheck` → 通过；`pnpm -C dsh build` → 通过。
+- lead 补充修复：首次连接（`live=null` 且 `connecting`）不再误报“连接断开”，只有连接 `closed`（含首次连接失败）或收到过 live hello 后的重连才提示；`health.test.ts` 补充对应断言。
+- 截图已复制到主仓库 `.scratch/tasks/ticket-03/`（13 张，含 7 张 `-fix`，其中 `07-1440x900-disconnected-fix.png` 覆盖客户端 WS 断开）。

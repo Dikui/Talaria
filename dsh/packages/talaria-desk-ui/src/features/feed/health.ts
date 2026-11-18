@@ -77,7 +77,15 @@ function browserDisconnected(
   live: boolean | null,
   connection: ConnectionState,
 ): boolean {
-  return live !== false && connection !== "open";
+  if (live === false) {
+    return false;
+  }
+  if (connection === "closed") {
+    return true;
+  }
+  // 首次连接（尚未收到 hello）用“等待行情”，只有收到过 live hello 后的重连
+  // 才显示“连接断开 · 重连中”。
+  return connection === "connecting" && live === true;
 }
 
 export interface FeedBadgeView {
