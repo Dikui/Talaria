@@ -26,6 +26,7 @@ from talaria.foundation.errors import (
     InvalidRequestError,
 )
 from talaria.foundation.feed import (
+    DerivativeTickEvent,
     FeedEvent,
     FeedHealthEvent,
     FeedHealthReport,
@@ -170,9 +171,16 @@ class FeedSupervisor(MarketEventFeed):
 
     # ------------------------------------------------------------------ 状态机
 
-    def ingest(self, event: KlineEvent | OrderBookEvent, *, now: int | None = None) -> None:
+    def ingest(
+        self,
+        event: KlineEvent | OrderBookEvent | DerivativeTickEvent,
+        *,
+        now: int | None = None,
+    ) -> None:
         now = self._now_ms() if now is None else now
-        if isinstance(event, KlineEvent):
+        if isinstance(event, DerivativeTickEvent):
+            self._accept_derivative_tick(event, now)
+        elif isinstance(event, KlineEvent):
             self._accept_kline(event, now)
         else:
             self._accept_book(event, now)
@@ -302,6 +310,17 @@ class FeedSupervisor(MarketEventFeed):
             )
         self._resume_pending.discard(key)
         self._apply_bar(key, event.bar, confirmed=event.confirmed, now=now)
+
+    def _accept_derivative_tick(self, event: DerivativeTickEvent, now: int) -> None:
+        if not any(
+            channel.instrument_id == event.instrument_id
+            for channel in self._channels.values()
+        ):
+            return
+        self._mark_activity(
+            event.instrument_id, now, timeframe=None, event_ts=event.ts_event
+        )
+        self._emit(event)
 
     def _accept_book(self, event: OrderBookEvent, now: int) -> None:
         if not any(

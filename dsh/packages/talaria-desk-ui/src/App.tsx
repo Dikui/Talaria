@@ -3,6 +3,7 @@ import type { Chart } from "klinecharts";
 
 import type {
   CompactBar,
+  DerivativeBundle,
   IndicatorBundle,
   IndicatorName,
   IndicatorSeries,
@@ -10,6 +11,7 @@ import type {
   SnapshotMeta,
 } from "@talaria/contracts";
 
+import { DerivativeSummary } from "./features/derivatives/DerivativeSummary";
 import {
   FeedAlert,
   FeedHealthBadge,
@@ -86,6 +88,7 @@ export default function App() {
   const [timeframe, setTimeframe] = useState<string>("1m");
   const [feedMode, setFeedMode] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SnapshotMeta | null>(null);
+  const [derivativeBundle, setDerivativeBundle] = useState<DerivativeBundle | null>(null);
   const [bars, setBars] = useState<CompactBar[]>([]);
   const [hasMoreForward, setHasMoreForward] = useState(false);
   const [stats, setStats] = useState<ChartStats>({ loaded: 0, gaps: 0 });
@@ -147,6 +150,7 @@ export default function App() {
     setInitialFailed(false);
     setError(null);
     setSnapshot(null);
+    setDerivativeBundle(null);
     setBars([]);
     setStats({ loaded: 0, gaps: 0 });
     setHasMoreForward(false);
@@ -191,6 +195,29 @@ export default function App() {
       cancelled = true;
     };
   }, [instrumentId, timeframe, refreshNonce]);
+
+  useEffect(() => {
+    if (snapshot === null) {
+      setDerivativeBundle(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .derivatives(snapshot.snapshot_id, timeframe)
+      .then((bundle) => {
+        if (!cancelled) {
+          setDerivativeBundle(bundle);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDerivativeBundle(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [snapshot, timeframe]);
 
   const updateIndicator = useCallback(
     (name: IndicatorName, patch: Partial<IndicatorSetting>) => {
@@ -303,6 +330,16 @@ export default function App() {
       ?.qty_precision ?? 3;
 
   const showEmpty = !loading && (initialFailed || stats.loaded === 0);
+  const derivativeSummary = derivativeBundle?.summary;
+  const liveDerivative = stream.derivatives;
+  const markPrice = liveDerivative?.mark_price ?? derivativeSummary?.mark_price ?? null;
+  const fundingRate =
+    liveDerivative?.funding_rate ?? derivativeSummary?.funding_rate ?? null;
+  const nextFundingTs =
+    liveDerivative?.next_funding_ts ?? derivativeSummary?.next_funding_ts ?? null;
+  const openInterest =
+    liveDerivative?.open_interest ?? derivativeSummary?.open_interest ?? null;
+  const hasOiHistory = derivativeSummary?.oi_history_available ?? false;
   const visibleIndicators =
     snapshot !== null &&
     indicatorBundle !== null &&
@@ -310,6 +347,13 @@ export default function App() {
     indicatorBundle.timeframe === timeframe
       ? indicatorBundle
       : null;
+  const oiSeries = visibleIndicators?.series.find(
+    (item) => item.name === "OI_DIVERGENCE",
+  );
+  const oiPaneEmpty =
+    oiSeries !== undefined &&
+    oiSeries.points.every((point) => point.values.value === null);
+
   const refresh = () => setRefreshNonce((nonce) => nonce + 1);
   const effectiveFeedMode = stream.hello?.feed_mode ?? feedMode;
   const streamLive = stream.hello?.live ?? null;
@@ -369,6 +413,14 @@ export default function App() {
             ))}
           </div>
           <div className="header-actions">
+            <DerivativeSummary
+              markPrice={markPrice}
+              fundingRate={fundingRate}
+              nextFundingTs={nextFundingTs}
+              openInterest={openInterest}
+              pricePrecision={pricePrecision}
+              hasOiHistory={hasOiHistory}
+            />
             <span
               className={`feed-badge feed-badge--${effectiveFeedMode ?? "unknown"}`}
               data-testid="feed-mode"
@@ -463,6 +515,15 @@ export default function App() {
                   loading={indicatorsLoading}
                   error={indicatorError}
                 />
+                {oiPaneEmpty && (
+                  <div
+                    className="derivative-pane-empty"
+                    data-testid="derivative-pane-empty"
+                    role="status"
+                  >
+                    该合约暂无持仓量历史，OI 背离暂不可计算。
+                  </div>
+                )}
                 {!readOnlyViewport && (
                   <DrawingToolbar
                     controller={drawings}

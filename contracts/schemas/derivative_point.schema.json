@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "DerivativeKind": {
+      "description": "衍生品序列种类。",
+      "enum": [
+        "mark_price",
+        "funding_rate",
+        "open_interest"
+      ],
+      "title": "DerivativeKind",
+      "type": "string"
+    },
+    "PrecisionTier": {
+      "description": "时点可取信的程度。",
+      "enum": [
+        "SECOND_VERIFIED",
+        "SESSION_BOUND",
+        "DATE_CONSERVATIVE"
+      ],
+      "title": "PrecisionTier",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一个带五重时点的衍生品观测值。",
+  "properties": {
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/DerivativeKind"
+    },
+    "precision": {
+      "$ref": "#/$defs/PrecisionTier",
+      "default": "SECOND_VERIFIED"
+    },
+    "timeframe": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Timeframe"
+    },
+    "ts_available": {
+      "title": "Ts Available",
+      "type": "integer"
+    },
+    "ts_committed": {
+      "title": "Ts Committed",
+      "type": "integer"
+    },
+    "ts_event": {
+      "title": "Ts Event",
+      "type": "integer"
+    },
+    "ts_ingested": {
+      "title": "Ts Ingested",
+      "type": "integer"
+    },
+    "ts_published": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ts Published"
+    },
+    "value": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Value",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "kind",
+    "value",
+    "ts_event",
+    "ts_available",
+    "ts_ingested",
+    "ts_committed"
+  ],
+  "title": "DerivativePoint",
+  "type": "object"
+}

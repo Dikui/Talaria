@@ -68,7 +68,7 @@
       "items": {
         "type": "string"
       },
-      "maxItems": 6,
+      "maxItems": 9,
       "minItems": 1,
       "title": "Names",
       "type": "array"

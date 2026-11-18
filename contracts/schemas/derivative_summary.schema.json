@@ -1,0 +1,100 @@
+{
+  "additionalProperties": false,
+  "description": "快照内最新衍生品读数；缺失值为 ``None``，前端不做任何补算。",
+  "properties": {
+    "funding_rate": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Funding Rate"
+    },
+    "funding_settled_ts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Funding Settled Ts"
+    },
+    "mark_price": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mark Price"
+    },
+    "mark_price_ts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mark Price Ts"
+    },
+    "next_funding_ts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Funding Ts"
+    },
+    "oi_history_available": {
+      "default": false,
+      "title": "Oi History Available",
+      "type": "boolean"
+    },
+    "open_interest": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Open Interest"
+    },
+    "open_interest_ts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Open Interest Ts"
+    }
+  },
+  "title": "DerivativeSummary",
+  "type": "object"
+}

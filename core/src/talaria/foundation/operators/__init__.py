@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from talaria.foundation.operators.core import (
+    DerivativeSample,
     OperatorState,
     Point,
     compute_series,
@@ -11,6 +12,7 @@ from talaria.foundation.operators.core import (
 from talaria.foundation.operators.spec import (
     CHANNELS,
     DEFAULT_PERIODS,
+    DERIVATIVE_INDICATORS,
     MAX_PERIOD,
     SUB_PANE_NAMES,
     IndicatorName,
@@ -22,6 +24,8 @@ from talaria.foundation.operators.spec import (
 __all__ = [
     "CHANNELS",
     "DEFAULT_PERIODS",
+    "DERIVATIVE_INDICATORS",
+    "DerivativeSample",
     "MAX_PERIOD",
     "SUB_PANE_NAMES",
     "IndicatorName",

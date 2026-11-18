@@ -20,6 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.errors import SnapshotNotFoundError
 from talaria.foundation.snapshot import SnapshotMeta
 from talaria.foundation.sqlite import (
@@ -51,6 +52,22 @@ _SNAPSHOT_SCHEMA = pa.schema(
 )
 
 
+_DERIVATIVE_SCHEMA = pa.schema(
+    [
+        pa.field("instrument_id", pa.string(), nullable=False),
+        pa.field("kind", pa.string(), nullable=False),
+        pa.field("timeframe", pa.string(), nullable=True),
+        pa.field("value", pa.string(), nullable=False),
+        pa.field("ts_event", pa.int64(), nullable=False),
+        pa.field("ts_published", pa.int64(), nullable=True),
+        pa.field("ts_available", pa.int64(), nullable=False),
+        pa.field("precision", pa.string(), nullable=False),
+        pa.field("ts_ingested", pa.int64(), nullable=False),
+        pa.field("ts_committed", pa.int64(), nullable=False),
+    ]
+)
+
+
 @dataclass(frozen=True, slots=True)
 class SnapshotBar:
     """快照中的一根紧凑柱及其 Committed Time（旧文件可能缺失）。"""
@@ -64,6 +81,7 @@ class SnapshotRecord:
     meta: SnapshotMeta
     parquet_path: Path
     committed_ts: int | None = None
+    derivatives_path: Path | None = None
 
 
 def _decimal_or_none(value: Decimal | None) -> str | None:
@@ -125,6 +143,80 @@ def _path_under_data_dir(data_dir: Path, relative: Path) -> Path:
     if not candidate.is_relative_to(root):
         raise SnapshotNotFoundError("快照清单路径越界")
     return candidate
+
+
+def write_derivative_parquet(
+    data_dir: Path | str,
+    snapshot_id: str,
+    points: Sequence[DerivativePoint],
+) -> Path:
+    """把衍生品点写入快照附属 Parquet；返回相对 ``data_dir`` 的清单路径。"""
+    root = Path(data_dir)
+    directory = root / SNAPSHOT_SUBDIR
+    directory.mkdir(parents=True, exist_ok=True)
+    final = directory / f"{snapshot_id}.derivatives.parquet"
+    if final.exists():
+        raise FileExistsError(f"衍生品快照文件已存在，拒绝覆盖：{final}")
+    rows = [
+        {
+            "instrument_id": point.instrument_id,
+            "kind": point.kind.value,
+            "timeframe": point.timeframe,
+            "value": format(point.value, "f"),
+            "ts_event": point.ts_event,
+            "ts_published": point.ts_published,
+            "ts_available": point.ts_available,
+            "precision": point.precision.value,
+            "ts_ingested": point.ts_ingested,
+            "ts_committed": point.ts_committed,
+        }
+        for point in points
+    ]
+    table = pa.Table.from_pylist(rows, schema=_DERIVATIVE_SCHEMA)
+    temporary = directory / f".{snapshot_id}.derivatives.{uuid.uuid4().hex}.tmp"
+    try:
+        pq.write_table(table, temporary, compression="zstd")
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, final)
+    finally:
+        temporary.unlink(missing_ok=True)
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    return final.relative_to(root)
+
+
+def read_derivative_points(
+    data_dir: Path | str,
+    parquet_path: Path,
+) -> list[DerivativePoint]:
+    """只读取清单记录的衍生品附属文件。"""
+    root = Path(data_dir)
+    path = _path_under_data_dir(root, parquet_path)
+    if not path.is_file():
+        raise SnapshotNotFoundError(f"衍生品快照文件缺失：{parquet_path}")
+    points = [
+        DerivativePoint(
+            instrument_id=row["instrument_id"],
+            kind=DerivativeKind(row["kind"]),
+            timeframe=row["timeframe"],
+            value=Decimal(row["value"]),
+            ts_event=int(row["ts_event"]),
+            ts_published=None
+            if row["ts_published"] is None
+            else int(row["ts_published"]),
+            ts_available=int(row["ts_available"]),
+            precision=PrecisionTier(row["precision"]),
+            ts_ingested=int(row["ts_ingested"]),
+            ts_committed=int(row["ts_committed"]),
+        )
+        for row in pq.read_table(path).to_pylist()
+    ]
+    points.sort(key=lambda point: (point.kind.value, point.ts_event))
+    return points
 
 
 def read_snapshot_entries(
@@ -200,7 +292,8 @@ class SnapshotStore:
                     created_ts INTEGER NOT NULL,
                     mode TEXT NOT NULL,
                     bar_counts TEXT NOT NULL,
-                    parquet_path TEXT NOT NULL
+                    parquet_path TEXT NOT NULL,
+                    derivatives_path TEXT
                 )
                 """
             )
@@ -211,6 +304,10 @@ class SnapshotStore:
             if "committed_ts" not in columns:
                 self._connection.execute(
                     "ALTER TABLE snapshots ADD COLUMN committed_ts INTEGER"
+                )
+            if "derivatives_path" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE snapshots ADD COLUMN derivatives_path TEXT"
                 )
             self._connection.commit()
         except BaseException:
@@ -223,14 +320,16 @@ class SnapshotStore:
         parquet_path: Path,
         *,
         committed_ts: int | None = None,
+        derivatives_path: Path | None = None,
     ) -> None:
         with self._lock:
             self._connection.execute(
                 """
                 INSERT INTO snapshots (
                     snapshot_id, instrument_id, timeframes, cutoff_ts,
-                    created_ts, mode, bar_counts, parquet_path, committed_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_ts, mode, bar_counts, parquet_path, committed_ts,
+                    derivatives_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     meta.snapshot_id,
@@ -242,6 +341,7 @@ class SnapshotStore:
                     json.dumps(meta.bar_counts, ensure_ascii=False),
                     parquet_path.as_posix(),
                     committed_ts,
+                    None if derivatives_path is None else derivatives_path.as_posix(),
                 ),
             )
             self._connection.commit()
@@ -251,7 +351,8 @@ class SnapshotStore:
             row = self._connection.execute(
                 """
                 SELECT instrument_id, timeframes, cutoff_ts, created_ts,
-                       mode, bar_counts, parquet_path, committed_ts
+                       mode, bar_counts, parquet_path, committed_ts,
+                       derivatives_path
                 FROM snapshots WHERE snapshot_id = ?
                 """,
                 (snapshot_id,),
@@ -271,6 +372,7 @@ class SnapshotStore:
             meta=meta,
             parquet_path=Path(row[6]),
             committed_ts=None if row[7] is None else int(row[7]),
+            derivatives_path=None if row[8] is None else Path(row[8]),
         )
 
     def close(self) -> None:

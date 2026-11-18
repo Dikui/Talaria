@@ -19,6 +19,7 @@ from talaria.foundation.errors import (
     InvalidRequestError,
 )
 from talaria.foundation.feed import (
+    DerivativeTickEvent,
     FeedHealthEvent,
     FeedHealthStatus,
     KlineEvent,
@@ -363,3 +364,36 @@ def test_subscribe_rejects_unknown_instrument_and_timeframe() -> None:
         supervisor.subscribe(instrument_id="DOGE-USDT-PERP", timeframe="1m")
     with pytest.raises(InvalidRequestError):
         supervisor.subscribe(instrument_id=INSTRUMENT, timeframe="2m")
+
+
+def derivative_tick(now: int = BASE, *, instrument_id: str = INSTRUMENT) -> DerivativeTickEvent:
+    return DerivativeTickEvent(
+        instrument_id=instrument_id,
+        mark_price=Decimal("100.5"),
+        funding_rate=Decimal("0.0001"),
+        next_funding_ts=now + 8 * 3_600_000,
+        open_interest=Decimal("12345.6"),
+        ts_event=now,
+        ts_ingested=now,
+    )
+
+
+def test_derivative_tick_is_emitted_without_touching_bar_series() -> None:
+    clock = Clock(BASE + 1_000)
+    supervisor, events = make(clock)
+
+    supervisor.ingest(derivative_tick(clock()), now=clock())
+
+    ticks = [event for event in events if isinstance(event, DerivativeTickEvent)]
+    assert len(ticks) == 1
+    assert ticks[0].mark_price == Decimal("100.5")
+    assert supervisor.recent_bars(instrument_id=INSTRUMENT, timeframe="1m") == []
+
+
+def test_derivative_tick_for_unsubscribed_instrument_is_dropped() -> None:
+    clock = Clock(BASE + 1_000)
+    supervisor, events = make(clock)
+
+    supervisor.ingest(derivative_tick(clock(), instrument_id="ETH-USDT-PERP"), now=clock())
+
+    assert not [event for event in events if isinstance(event, DerivativeTickEvent)]

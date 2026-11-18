@@ -1745,3 +1745,66 @@ button:disabled {
     display: none;
   }
 }
+
+/* 衍生品状态：只展示后端读数，窄屏保留标记价与资金费率。 */
+.derivative-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.derivative-summary.is-empty-oi {
+  border-style: dashed;
+}
+
+.derivative-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.derivative-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.derivative-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.derivative-value.is-negative {
+  color: var(--danger);
+}
+
+.derivative-value.is-muted {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.derivative-pane-empty {
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .derivative-summary {
+    flex-basis: 100%;
+    justify-content: space-between;
+  }
+
+  .derivative-item--optional {
+    display: none;
+  }
+}

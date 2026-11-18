@@ -1,0 +1,76 @@
+{
+  "additionalProperties": false,
+  "description": "衍生品实时读数：标记价、资金费率、下次结算时间与持仓量。\n\n一次 ticker 推送可能只带其中一部分字段；全部缺失的推送不构成有效事件。",
+  "properties": {
+    "funding_rate": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Funding Rate"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "mark_price": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mark Price"
+    },
+    "next_funding_ts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Funding Ts"
+    },
+    "open_interest": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Open Interest"
+    },
+    "ts_event": {
+      "title": "Ts Event",
+      "type": "integer"
+    },
+    "ts_ingested": {
+      "title": "Ts Ingested",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "ts_event",
+    "ts_ingested"
+  ],
+  "title": "DerivativeTickEvent",
+  "type": "object"
+}

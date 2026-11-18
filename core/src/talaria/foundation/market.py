@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Protocol, Sequence
 
+from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
@@ -68,14 +69,24 @@ class OrderConstraintTrait:
 
 
 @dataclass(frozen=True, slots=True)
+class DerivativeCapabilityTrait:
+    """衍生品数据能力；不支持的 Market Pack 保持 ``None``。"""
+
+    kinds: tuple[DerivativeKind, ...]
+    history: bool
+    realtime: bool
+
+
+@dataclass(frozen=True, slots=True)
 class TraitBundle:
-    """一个标的的五项能力组合。"""
+    """一个标的的能力组合；衍生品能力是可选的第六项。"""
 
     feed: FeedCapabilityTrait
     margin: MarginTrait
     carry: CarryTrait
     session: SessionTrait
     order_constraint: OrderConstraintTrait
+    derivatives: DerivativeCapabilityTrait | None = None
 
 
 class MarketPack(Protocol):

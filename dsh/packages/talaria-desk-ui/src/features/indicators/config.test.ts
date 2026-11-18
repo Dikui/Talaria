@@ -29,6 +29,17 @@ describe("indicator config", () => {
     });
   });
 
+  it("exposes funding quantile and OI divergence with backend defaults", () => {
+    const settings = defaultIndicatorSettings();
+    expect(settings.FUNDING_QUANTILE.period).toBe(30);
+    expect(settings.OI_DIVERGENCE.period).toBe(30);
+    settings.FUNDING_QUANTILE.enabled = true;
+    expect(needsOperatorRequest(["FUNDING_QUANTILE"], settings)).toBe(false);
+    expect(operatorParams("FUNDING_QUANTILE", settings.FUNDING_QUANTILE)).toEqual({
+      period: 30,
+    });
+  });
+
   it("sends VWAP anchor and includes it in the refetch signature", () => {
     const settings = defaultIndicatorSettings();
     settings.VWAP.enabled = true;

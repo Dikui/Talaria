@@ -8,6 +8,8 @@ export const INDICATOR_ORDER: IndicatorName[] = [
   "VWAP",
   "RSI",
   "ATR",
+  "FUNDING_QUANTILE",
+  "OI_DIVERGENCE",
 ];
 
 export const INDICATOR_DEFAULTS: Record<
@@ -20,6 +22,9 @@ export const INDICATOR_DEFAULTS: Record<
   VWAP: { period: 1, stdDev: "2", anchor: "snapshot" },
   RSI: { period: 14, stdDev: "2", anchor: "snapshot" },
   ATR: { period: 14, stdDev: "2", anchor: "snapshot" },
+  FUNDING_QUANTILE: { period: 30, stdDev: "2", anchor: "snapshot" },
+  OI_DIVERGENCE: { period: 30, stdDev: "2", anchor: "snapshot" },
+  NET_ODDS: { period: 20, stdDev: "2", anchor: "snapshot" },
 };
 
 export const INDICATOR_CHANNELS: Record<IndicatorName, string[]> = {
@@ -29,6 +34,9 @@ export const INDICATOR_CHANNELS: Record<IndicatorName, string[]> = {
   VWAP: ["value"],
   RSI: ["value"],
   ATR: ["value"],
+  FUNDING_QUANTILE: ["value"],
+  OI_DIVERGENCE: ["value"],
+  NET_ODDS: ["value"],
 };
 
 export const INDICATOR_COLORS: Record<IndicatorName, string> = {
@@ -38,6 +46,15 @@ export const INDICATOR_COLORS: Record<IndicatorName, string> = {
   VWAP: "#0f766e",
   RSI: "#db2777",
   ATR: "#0891b2",
+  FUNDING_QUANTILE: "#c2410c",
+  OI_DIVERGENCE: "#4d7c0f",
+  NET_ODDS: "#7e22ce",
+};
+
+export const INDICATOR_LABELS: Partial<Record<IndicatorName, string>> = {
+  FUNDING_QUANTILE: "资金费率分位",
+  OI_DIVERGENCE: "OI 背离",
+  NET_ODDS: "净赔率",
 };
 
 export interface IndicatorSetting {

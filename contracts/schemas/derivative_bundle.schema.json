@@ -1,0 +1,271 @@
+{
+  "$defs": {
+    "DerivativeKind": {
+      "description": "衍生品序列种类。",
+      "enum": [
+        "mark_price",
+        "funding_rate",
+        "open_interest"
+      ],
+      "title": "DerivativeKind",
+      "type": "string"
+    },
+    "DerivativePoint": {
+      "additionalProperties": false,
+      "description": "一个带五重时点的衍生品观测值。",
+      "properties": {
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DerivativeKind"
+        },
+        "precision": {
+          "$ref": "#/$defs/PrecisionTier",
+          "default": "SECOND_VERIFIED"
+        },
+        "timeframe": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timeframe"
+        },
+        "ts_available": {
+          "title": "Ts Available",
+          "type": "integer"
+        },
+        "ts_committed": {
+          "title": "Ts Committed",
+          "type": "integer"
+        },
+        "ts_event": {
+          "title": "Ts Event",
+          "type": "integer"
+        },
+        "ts_ingested": {
+          "title": "Ts Ingested",
+          "type": "integer"
+        },
+        "ts_published": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ts Published"
+        },
+        "value": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "kind",
+        "value",
+        "ts_event",
+        "ts_available",
+        "ts_ingested",
+        "ts_committed"
+      ],
+      "title": "DerivativePoint",
+      "type": "object"
+    },
+    "DerivativeSeries": {
+      "additionalProperties": false,
+      "description": "同一标的、同一时点语义的衍生品序列。",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/DerivativeKind"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/DerivativePoint"
+          },
+          "title": "Points",
+          "type": "array"
+        },
+        "timeframe": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timeframe"
+        }
+      },
+      "required": [
+        "kind",
+        "timeframe",
+        "points"
+      ],
+      "title": "DerivativeSeries",
+      "type": "object"
+    },
+    "DerivativeSummary": {
+      "additionalProperties": false,
+      "description": "快照内最新衍生品读数；缺失值为 ``None``，前端不做任何补算。",
+      "properties": {
+        "funding_rate": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Funding Rate"
+        },
+        "funding_settled_ts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Funding Settled Ts"
+        },
+        "mark_price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mark Price"
+        },
+        "mark_price_ts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mark Price Ts"
+        },
+        "next_funding_ts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Next Funding Ts"
+        },
+        "oi_history_available": {
+          "default": false,
+          "title": "Oi History Available",
+          "type": "boolean"
+        },
+        "open_interest": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Open Interest"
+        },
+        "open_interest_ts": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Open Interest Ts"
+        }
+      },
+      "title": "DerivativeSummary",
+      "type": "object"
+    },
+    "PrecisionTier": {
+      "description": "时点可取信的程度。",
+      "enum": [
+        "SECOND_VERIFIED",
+        "SESSION_BOUND",
+        "DATE_CONSERVATIVE"
+      ],
+      "title": "PrecisionTier",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``GET /api/snapshots/{id}/derivatives`` 的响应。",
+  "properties": {
+    "cutoff_ts": {
+      "title": "Cutoff Ts",
+      "type": "integer"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "series": {
+      "items": {
+        "$ref": "#/$defs/DerivativeSeries"
+      },
+      "title": "Series",
+      "type": "array"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "summary": {
+      "$ref": "#/$defs/DerivativeSummary"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "instrument_id",
+    "timeframe",
+    "cutoff_ts",
+    "series",
+    "summary"
+  ],
+  "title": "DerivativeBundle",
+  "type": "object"
+}

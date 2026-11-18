@@ -1,0 +1,217 @@
+{
+  "operator": "NET_ODDS",
+  "params": {
+    "period": 3
+  },
+  "warmup_bars": 3,
+  "bars": [
+    {
+      "offset": 0,
+      "open": "100",
+      "high": "102",
+      "low": "99",
+      "close": "100",
+      "volume": "5",
+      "turnover": "500",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 1,
+      "open": "104",
+      "high": "105",
+      "low": "101",
+      "close": "104",
+      "volume": "5",
+      "turnover": "520",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 2,
+      "open": "103",
+      "high": "106",
+      "low": "102",
+      "close": "103",
+      "volume": "5",
+      "turnover": "515",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 3,
+      "open": "103",
+      "high": "103",
+      "low": "103",
+      "close": "103",
+      "volume": "5",
+      "turnover": "515",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 4,
+      "open": "104",
+      "high": "104",
+      "low": "104",
+      "close": "104",
+      "volume": "0",
+      "turnover": "0",
+      "status": "NO_TRADES"
+    },
+    {
+      "offset": 5,
+      "open": "110",
+      "high": "111",
+      "low": "107",
+      "close": "110",
+      "volume": "5",
+      "turnover": "550",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 6,
+      "open": null,
+      "high": null,
+      "low": null,
+      "close": null,
+      "volume": null,
+      "turnover": null,
+      "status": "FEED_GAP"
+    },
+    {
+      "offset": 7,
+      "open": "113",
+      "high": "114",
+      "low": "110",
+      "close": "113",
+      "volume": "5",
+      "turnover": "565",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 8,
+      "open": "114",
+      "high": "115",
+      "low": "111",
+      "close": "114",
+      "volume": "5",
+      "turnover": "570",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 9,
+      "open": "115",
+      "high": "116",
+      "low": "112",
+      "close": "115",
+      "volume": "5",
+      "turnover": "575",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 10,
+      "open": "117",
+      "high": "118",
+      "low": "114",
+      "close": "117",
+      "volume": "5",
+      "turnover": "585",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 11,
+      "open": "119",
+      "high": "120",
+      "low": "116",
+      "close": "119",
+      "volume": "5",
+      "turnover": "595",
+      "status": "NORMAL"
+    }
+  ],
+  "derivatives": [
+    {
+      "funding_rate": "0.0001",
+      "funding_offset": 1
+    },
+    {
+      "funding_rate": "0.0001",
+      "funding_offset": 1
+    },
+    {
+      "funding_rate": "0.0001",
+      "funding_offset": 1
+    },
+    {
+      "funding_rate": "0.0001",
+      "funding_offset": 1
+    },
+    {
+      "funding_rate": "0.0001",
+      "funding_offset": 1
+    },
+    {
+      "funding_rate": "0.0002",
+      "funding_offset": 4
+    },
+    {
+      "funding_rate": "0.0002",
+      "funding_offset": 4
+    },
+    {
+      "funding_rate": "-0.0001",
+      "funding_offset": 7
+    },
+    {
+      "funding_rate": "-0.0001",
+      "funding_offset": 7
+    },
+    {
+      "funding_rate": "-0.0001",
+      "funding_offset": 7
+    },
+    {
+      "funding_rate": "0.0001",
+      "funding_offset": 10
+    },
+    {
+      "funding_rate": "0.0001",
+      "funding_offset": 10
+    }
+  ],
+  "expected": [
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": "0.996567"
+    },
+    {
+      "value": "0.996567"
+    },
+    {
+      "value": "1.494500"
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": "0.997075"
+    },
+    {
+      "value": "1.247025"
+    }
+  ]
+}

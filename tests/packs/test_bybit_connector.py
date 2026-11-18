@@ -7,6 +7,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.errors import FeedUnavailableError
 from talaria.packs.crypto_perp.connector import BybitLinearConnector
 
@@ -64,7 +65,7 @@ def test_request_parameters_and_ascending_decimal_bars() -> None:
     assert str(requests[0].url).startswith("https://api.bybit.com/v5/market/kline")
     assert params["category"] == "linear"
     assert params["symbol"] == "BTCUSDT"
-    assert params["interval"] == "1m"
+    assert params["interval"] == "1"
     assert params["limit"] == "2"
     assert params["end"] == str(NOW_MS)
 
@@ -136,3 +137,122 @@ def test_unreachable_local_base_url_maps_to_feed_unavailable() -> None:
             connector.fetch_bars(symbol="BTCUSDT", timeframe="1m")
     finally:
         connector.close()
+
+
+def _derivative_payload(rows: list[dict], **extra: object) -> dict:
+    return {
+        "retCode": 0,
+        "retMsg": "OK",
+        "result": {"category": "linear", "symbol": "BTCUSDT", "list": rows, **extra},
+        "time": NOW_MS,
+    }
+
+
+def test_mark_price_backfill_uses_documented_endpoint_and_excludes_open_bar() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        rows = [
+            [
+                str(NOW_MS - MINUTE + 1),
+                "101",
+                "101",
+                "101",
+                "101",
+            ],
+            [
+                str(NOW_MS - 2 * MINUTE),
+                "100",
+                "100",
+                "100",
+                "100.5",
+            ],
+        ]
+        return httpx.Response(200, json=_derivative_payload(rows))
+
+    points = _connector(handler).fetch_mark_price_bars(
+        symbol="BTCUSDT", timeframe="1m", end_ts=NOW_MS, limit=2
+    )
+
+    params = requests[0].url.params
+    assert str(requests[0].url).startswith("https://api.bybit.com/v5/market/mark-price-kline")
+    assert params["category"] == "linear"
+    assert params["symbol"] == "BTCUSDT"
+    assert params["interval"] == "1"
+    assert params["limit"] == "2"
+    assert params["end"] == str(NOW_MS)
+    assert [point.value for point in points] == [Decimal("100.5")]
+    assert points[0].kind is DerivativeKind.MARK_PRICE
+    assert points[0].ts_available == points[0].ts_event + MINUTE
+
+
+def test_funding_history_uses_end_time_and_tracks_publication() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=_derivative_payload(
+                [
+                    {
+                        "symbol": "BTCUSDT",
+                        "fundingRate": "0.0002",
+                        "fundingRateTimestamp": str(NOW_MS - 8 * 3_600_000),
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "fundingRate": "0.0001",
+                        "fundingRateTimestamp": str(NOW_MS - 16 * 3_600_000),
+                    },
+                ]
+            ),
+        )
+
+    points = _connector(handler).fetch_funding_settlements(
+        symbol="BTCUSDT", end_ts=NOW_MS, limit=10
+    )
+
+    params = requests[0].url.params
+    assert str(requests[0].url).startswith("https://api.bybit.com/v5/market/funding/history")
+    assert params["endTime"] == str(NOW_MS)
+    assert params["limit"] == "10"
+    assert [point.value for point in points] == [Decimal("0.0001"), Decimal("0.0002")]
+    assert points[-1].ts_published == points[-1].ts_event
+    assert points[-1].ts_available == points[-1].ts_event
+
+
+def test_open_interest_uses_interval_time_and_excludes_open_point() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=_derivative_payload(
+                [
+                    {"openInterest": "999", "timestamp": str(NOW_MS - MINUTE + 1)},
+                    {"openInterest": "123.5", "timestamp": str(NOW_MS - 10 * MINUTE)},
+                ]
+            ),
+        )
+
+    points = _connector(handler).fetch_open_interest(
+        symbol="BTCUSDT", timeframe="5m", end_ts=NOW_MS, limit=10
+    )
+
+    params = requests[0].url.params
+    assert str(requests[0].url).startswith("https://api.bybit.com/v5/market/open-interest")
+    assert params["intervalTime"] == "5min"
+    assert params["endTime"] == str(NOW_MS)
+    assert [point.value for point in points] == [Decimal("123.5")]
+    assert points[0].ts_available == points[0].ts_event + 5 * MINUTE
+
+
+def test_unknown_open_interest_timeframe_is_rejected() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_derivative_payload([]))
+
+    with pytest.raises(FeedUnavailableError):
+        _connector(handler).fetch_open_interest(symbol="BTCUSDT", timeframe="3m")

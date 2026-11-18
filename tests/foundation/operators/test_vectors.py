@@ -10,6 +10,7 @@ import pytest
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.operators import (
+    DerivativeSample,
     compute_series,
     spec_from_params,
     update_series,
@@ -19,6 +20,39 @@ pytestmark = [pytest.mark.small, pytest.mark.regression]
 
 VECTOR_DIR = Path(__file__).resolve().parents[3] / "contracts" / "operator_vectors"
 VECTOR_PATHS = sorted(VECTOR_DIR.glob("*.json"))
+
+
+VECTOR_EPOCH_MS = 1_700_000_000_000
+
+
+def _samples(vector: dict) -> list[DerivativeSample] | None:
+    raw = vector.get("derivatives")
+    if raw is None:
+        return None
+    samples: list[DerivativeSample] = []
+    for item in raw:
+        funding_offset = item.get("funding_offset")
+        samples.append(
+            DerivativeSample(
+                funding_rate=(
+                    None
+                    if item.get("funding_rate") is None
+                    else Decimal(item["funding_rate"])
+                ),
+                funding_ts=(
+                    None
+                    if funding_offset is None
+                    else VECTOR_EPOCH_MS + funding_offset * 60_000
+                ),
+                open_interest=(
+                    None
+                    if item.get("open_interest") is None
+                    else Decimal(item["open_interest"])
+                ),
+                oi_ts=None,
+            )
+        )
+    return samples
 
 
 def _bars(raw: list[dict]) -> list[CompactBar]:
@@ -44,7 +78,8 @@ def test_vector_values_match_exactly(path: Path) -> None:
     vector = json.loads(path.read_text(encoding="utf-8"))
     spec = spec_from_params(vector["operator"], vector["params"])
     bars = _bars(vector["bars"])
-    points = compute_series(bars, spec).points
+    samples = _samples(vector)
+    points = compute_series(bars, spec, derivatives=samples).points
     expected = vector["expected"]
 
     assert len(points) == len(expected) == len(bars)
@@ -68,11 +103,21 @@ def test_batch_and_incremental_match_for_every_split(path: Path) -> None:
     vector = json.loads(path.read_text(encoding="utf-8"))
     spec = spec_from_params(vector["operator"], vector["params"])
     bars = _bars(vector["bars"])
-    batch = compute_series(bars, spec)
+    samples = _samples(vector)
+    batch = compute_series(bars, spec, derivatives=samples)
 
     for split in range(len(bars) + 1):
-        state = compute_series(bars[:split], spec)
-        state = update_series(state, bars[split:], spec)
+        state = compute_series(
+            bars[:split],
+            spec,
+            derivatives=None if samples is None else samples[:split],
+        )
+        state = update_series(
+            state,
+            bars[split:],
+            spec,
+            derivatives=None if samples is None else samples[split:],
+        )
         assert state.points == batch.points
 
 
@@ -81,7 +126,8 @@ def test_feed_gap_null_then_full_rewarmup(path: Path) -> None:
     vector = json.loads(path.read_text(encoding="utf-8"))
     spec = spec_from_params(vector["operator"], vector["params"])
     bars = _bars(vector["bars"])
-    points = compute_series(bars, spec).points
+    samples = _samples(vector)
+    points = compute_series(bars, spec, derivatives=samples).points
     channels = tuple(vector["expected"][0])
 
     gap_index = next(

@@ -5,8 +5,10 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Sequence
 
+from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.market import (
     CarryTrait,
+    DerivativeCapabilityTrait,
     FeedCapabilityTrait,
     InstrumentSpec,
     MarginTrait,
@@ -68,6 +70,15 @@ _TRAITS = TraitBundle(
     carry=CarryTrait(funding_interval_hours=8),
     session=SessionTrait(session_kind="24x7", timezone="UTC"),
     order_constraint=OrderConstraintTrait(post_only=True),
+    derivatives=DerivativeCapabilityTrait(
+        kinds=(
+            DerivativeKind.MARK_PRICE,
+            DerivativeKind.FUNDING_RATE,
+            DerivativeKind.OPEN_INTEREST,
+        ),
+        history=True,
+        realtime=True,
+    ),
 )
 
 

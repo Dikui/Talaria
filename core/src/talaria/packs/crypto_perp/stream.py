@@ -24,7 +24,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from talaria.foundation.bars import CompactBar, classify_flat_bar
 from talaria.foundation.errors import FeedTransportError
-from talaria.foundation.feed import KlineEvent, OrderBookEvent
+from talaria.foundation.feed import DerivativeTickEvent, KlineEvent, OrderBookEvent
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.types import PrecisionTier
 
@@ -116,7 +116,12 @@ class BybitPublicStream:
         interval = INTERVAL_BY_TIMEFRAME.get(timeframe)
         if interval is None:
             raise FeedTransportError(f"不支持的周期：{timeframe}")
-        topics = [f"kline.{interval}.{symbol}", f"orderbook.1.{symbol}"]
+        first_for_instrument = not any(
+            inst == instrument_id for inst, _ in self._subscriptions
+        )
+        topics = [f"kline.{interval}.{symbol}"]
+        if first_for_instrument:
+            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}"])
         self._subscriptions.add((instrument_id, timeframe))
         try:
             await self._request({"op": "subscribe", "args": topics})
@@ -132,11 +137,13 @@ class BybitPublicStream:
         self._subscriptions.discard((instrument_id, timeframe))
         topics = [f"kline.{interval}.{symbol}"]
         if not any(inst == instrument_id for inst, _ in self._subscriptions):
-            topics.append(f"orderbook.1.{symbol}")
+            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}"])
         with contextlib.suppress(FeedTransportError):
             await self._request({"op": "unsubscribe", "args": topics})
 
-    async def recv(self) -> KlineEvent | OrderBookEvent | None:
+    async def recv(
+        self,
+    ) -> KlineEvent | OrderBookEvent | DerivativeTickEvent | None:
         item = await self._events.get()
         if item is _LOST:
             raise FeedTransportError("Bybit 公共行情连接已断开")
@@ -259,13 +266,15 @@ class BybitPublicStream:
 
     # ------------------------------------------------------------- 解析
 
-    def _parse(self, payload: dict[str, object]) -> list[KlineEvent | OrderBookEvent]:
+    def _parse(
+        self, payload: dict[str, object]
+    ) -> list[KlineEvent | OrderBookEvent | DerivativeTickEvent]:
         topic = payload.get("topic")
         if not isinstance(topic, str):
             return []
         data = payload.get("data")
         if isinstance(data, list):
-            events: list[KlineEvent | OrderBookEvent] = []
+            events: list[KlineEvent | OrderBookEvent | DerivativeTickEvent] = []
             for item in data:
                 events.extend(self._parse_item(topic, item, payload))
             return events
@@ -278,13 +287,15 @@ class BybitPublicStream:
         topic: str,
         data: object,
         envelope: dict[str, object],
-    ) -> list[KlineEvent | OrderBookEvent]:
+    ) -> list[KlineEvent | OrderBookEvent | DerivativeTickEvent]:
         if not isinstance(data, dict):
             return []
         if topic.startswith("kline."):
             return self._parse_kline(data)
         if topic.startswith("orderbook."):
             return self._parse_book(data, envelope)
+        if topic.startswith("tickers."):
+            return self._parse_tickers(data, envelope)
         return []
 
     def _parse_kline(self, data: dict[str, object]) -> list[KlineEvent]:
@@ -334,6 +345,44 @@ class BybitPublicStream:
                 revision=0,
             )
         ]
+
+    def _parse_tickers(
+        self,
+        data: dict[str, object],
+        envelope: dict[str, object],
+    ) -> list[DerivativeTickEvent]:
+        symbol = data.get("symbol")
+        if not isinstance(symbol, str):
+            return []
+        instrument_id = self._instrument_by_symbol.get(symbol)
+        if instrument_id is None:
+            return []
+        if not any(inst == instrument_id for inst, _ in self._subscriptions):
+            return []
+        try:
+            mark_price = data.get("markPrice")
+            funding_rate = data.get("fundingRate")
+            next_funding = data.get("nextFundingTime")
+            open_interest = data.get("openInterest")
+            event = DerivativeTickEvent(
+                instrument_id=instrument_id,
+                mark_price=_decimal(mark_price) if mark_price not in (None, "") else None,
+                funding_rate=(
+                    _decimal(funding_rate) if funding_rate not in (None, "") else None
+                ),
+                next_funding_ts=(
+                    int(next_funding) if next_funding not in (None, "", 0) else None
+                ),
+                open_interest=(
+                    _decimal(open_interest) if open_interest not in (None, "") else None
+                ),
+                ts_event=int(data.get("ts") or envelope.get("ts") or self._now_ms()),
+                ts_ingested=self._now_ms(),
+            )
+        except (TypeError, ValueError) as exc:
+            logger.warning("忽略无法解析的 Bybit tickers：%s", exc)
+            return []
+        return [event]
 
     def _parse_book(
         self,
