@@ -12,7 +12,7 @@ from websockets.asyncio.server import serve
 
 from talaria.foundation.bars import BarStatus
 from talaria.foundation.errors import FeedTransportError
-from talaria.foundation.feed import KlineEvent, OrderBookEvent
+from talaria.foundation.feed import DerivativeTickEvent, KlineEvent, OrderBookEvent
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK, BybitPublicStream
 from talaria.packs.crypto_perp.stream import INTERVAL_BY_TIMEFRAME, TIMEFRAME_BY_INTERVAL
 
@@ -86,6 +86,29 @@ def book_payload(*, symbol: str = "BTCUSDT", bid: str = "100.0", ask: str = "100
     }
 
 
+def tickers_payload(
+    *,
+    symbol: str = "BTCUSDT",
+    mark_price: str = "101.5",
+    funding_rate: str = "0.0001",
+    next_funding_time: int = BASE + 8 * 3_600_000,
+    open_interest: str = "12345.6",
+) -> dict:
+    return {
+        "topic": f"tickers.{symbol}",
+        "type": "snapshot",
+        "ts": BASE + 500,
+        "data": {
+            "symbol": symbol,
+            "markPrice": mark_price,
+            "fundingRate": funding_rate,
+            "nextFundingTime": str(next_funding_time),
+            "openInterest": open_interest,
+            "lastPrice": "101.4",
+        },
+    }
+
+
 def test_subscribe_ack_then_kline_and_orderbook() -> None:
     received: list[dict] = []
 
@@ -94,6 +117,7 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
         await ws.send(json.dumps({"success": True, "ret_msg": "subscribe", "op": "subscribe"}))  # type: ignore[attr-defined]
         await ws.send(json.dumps(kline_payload()))  # type: ignore[attr-defined]
         await ws.send(json.dumps(book_payload()))  # type: ignore[attr-defined]
+        await ws.send(json.dumps(tickers_payload()))  # type: ignore[attr-defined]
         await ws.wait_closed()  # type: ignore[attr-defined]
 
     async def scenario(url: str) -> None:
@@ -102,10 +126,15 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
         await stream.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
         bar = await stream.recv()
         book = await stream.recv()
+        tick = await stream.recv()
         await stream.close()
 
         assert received[0]["op"] == "subscribe"
-        assert received[0]["args"] == ["kline.1.BTCUSDT", "orderbook.1.BTCUSDT"]
+        assert received[0]["args"] == [
+            "kline.1.BTCUSDT",
+            "orderbook.1.BTCUSDT",
+            "tickers.BTCUSDT",
+        ]
         assert isinstance(bar, KlineEvent)
         assert (bar.instrument_id, bar.timeframe) == (INSTRUMENT, "1m")
         assert bar.bar.timestamp == BASE
@@ -116,6 +145,12 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
         assert book.bid_price == Decimal("100.0")
         assert book.ask_price == Decimal("100.1")
         assert book.bid_size == Decimal("2.5")
+        assert isinstance(tick, DerivativeTickEvent)
+        assert tick.instrument_id == INSTRUMENT
+        assert tick.mark_price == Decimal("101.5")
+        assert tick.funding_rate == Decimal("0.0001")
+        assert tick.next_funding_ts == BASE + 8 * 3_600_000
+        assert tick.open_interest == Decimal("12345.6")
 
     asyncio.run(Harness(handler).run(scenario))
 
@@ -212,3 +247,32 @@ def test_interval_mapping_round_trip() -> None:
     assert INTERVAL_BY_TIMEFRAME["1d"] == "D"
     assert TIMEFRAME_BY_INTERVAL["D"] == "1d"
     assert set(INTERVAL_BY_TIMEFRAME) == {"1m", "5m", "15m", "1h", "4h", "1d"}
+
+
+def test_tickers_subscription_is_shared_across_timeframes() -> None:
+    received: list[dict] = []
+
+    async def handler(ws: object) -> None:
+        while True:
+            raw = await ws.recv()  # type: ignore[attr-defined]
+            received.append(json.loads(raw))
+            await ws.send(  # type: ignore[attr-defined]
+                json.dumps({"success": True, "op": received[-1]["op"]})
+            )
+
+    async def scenario(url: str) -> None:
+        stream = make_stream(url, ping_interval_seconds=None)
+        await stream.connect()
+        await stream.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+        await stream.subscribe(instrument_id=INSTRUMENT, timeframe="5m")
+        assert received[1]["args"] == ["kline.5.BTCUSDT"]
+        await stream.unsubscribe(instrument_id=INSTRUMENT, timeframe="1m")
+        assert received[2]["args"] == ["kline.1.BTCUSDT"]
+        await stream.unsubscribe(instrument_id=INSTRUMENT, timeframe="5m")
+        assert received[3]["args"] == ["kline.5.BTCUSDT", "orderbook.1.BTCUSDT", "tickers.BTCUSDT"]
+        await stream.close()
+
+    try:
+        asyncio.run(Harness(handler).run(scenario))
+    finally:
+        pass

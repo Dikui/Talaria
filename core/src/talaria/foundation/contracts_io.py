@@ -32,7 +32,15 @@ from talaria.foundation.drawings import (
     DrawingStyle,
     DrawingVersionList,
 )
+from talaria.foundation.derivatives import (
+    DerivativeBundle,
+    DerivativeKind,
+    DerivativePoint,
+    DerivativeSeries,
+    DerivativeSummary,
+)
 from talaria.foundation.feed import (
+    DerivativeTickEvent,
     FeedHealthEvent,
     FeedHealthReport,
     FeedHealthStatus,
@@ -79,6 +87,11 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "compact_bar": CompactBar,
     "kline_event": KlineEvent,
     "order_book_event": OrderBookEvent,
+    "derivative_tick_event": DerivativeTickEvent,
+    "derivative_point": DerivativePoint,
+    "derivative_series": DerivativeSeries,
+    "derivative_summary": DerivativeSummary,
+    "derivative_bundle": DerivativeBundle,
     "feed_health_event": FeedHealthEvent,
     "feed_health_report": FeedHealthReport,
     "snapshot_request": SnapshotRequest,
@@ -119,6 +132,7 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     FeedHealthStatus,
     SnapshotMode,
     IndicatorName,
+    DerivativeKind,
     DrawingKind,
     DrawingLineStyle,
     WatchlistGroupKind,
@@ -148,6 +162,10 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "price_max",
         "latest_price",
         "change_pct",
+        "value",
+        "mark_price",
+        "funding_rate",
+        "open_interest",
     }
 )
 

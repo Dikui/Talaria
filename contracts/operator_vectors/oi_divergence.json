@@ -1,0 +1,205 @@
+{
+  "operator": "OI_DIVERGENCE",
+  "params": {
+    "period": 3
+  },
+  "warmup_bars": 3,
+  "bars": [
+    {
+      "offset": 0,
+      "open": "100",
+      "high": "101",
+      "low": "99",
+      "close": "100",
+      "volume": "5",
+      "turnover": "500",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 1,
+      "open": "101",
+      "high": "102",
+      "low": "100",
+      "close": "101",
+      "volume": "5",
+      "turnover": "505",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 2,
+      "open": "102",
+      "high": "103",
+      "low": "101",
+      "close": "102",
+      "volume": "5",
+      "turnover": "510",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 3,
+      "open": "103",
+      "high": "104",
+      "low": "102",
+      "close": "103",
+      "volume": "5",
+      "turnover": "515",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 4,
+      "open": "104",
+      "high": "104",
+      "low": "104",
+      "close": "104",
+      "volume": "0",
+      "turnover": "0",
+      "status": "NO_TRADES"
+    },
+    {
+      "offset": 5,
+      "open": "105",
+      "high": "106",
+      "low": "104",
+      "close": "105",
+      "volume": "5",
+      "turnover": "525",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 6,
+      "open": null,
+      "high": null,
+      "low": null,
+      "close": null,
+      "volume": null,
+      "turnover": null,
+      "status": "FEED_GAP"
+    },
+    {
+      "offset": 7,
+      "open": "107",
+      "high": "108",
+      "low": "106",
+      "close": "107",
+      "volume": "5",
+      "turnover": "535",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 8,
+      "open": "108",
+      "high": "109",
+      "low": "107",
+      "close": "108",
+      "volume": "5",
+      "turnover": "540",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 9,
+      "open": "109",
+      "high": "110",
+      "low": "108",
+      "close": "109",
+      "volume": "5",
+      "turnover": "545",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 10,
+      "open": "110",
+      "high": "111",
+      "low": "109",
+      "close": "110",
+      "volume": "5",
+      "turnover": "550",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 11,
+      "open": "111",
+      "high": "112",
+      "low": "110",
+      "close": "111",
+      "volume": "5",
+      "turnover": "555",
+      "status": "NORMAL"
+    }
+  ],
+  "derivatives": [
+    {
+      "open_interest": "1000"
+    },
+    {
+      "open_interest": "1020"
+    },
+    {
+      "open_interest": "1010"
+    },
+    {
+      "open_interest": "1040"
+    },
+    {
+      "open_interest": "1030"
+    },
+    {
+      "open_interest": "1050"
+    },
+    {
+      "open_interest": "1050"
+    },
+    {
+      "open_interest": "1020"
+    },
+    {
+      "open_interest": "1035"
+    },
+    {
+      "open_interest": "1045"
+    },
+    {
+      "open_interest": "1060"
+    },
+    {
+      "open_interest": "1090"
+    }
+  ],
+  "expected": [
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": "-0.01000000"
+    },
+    {
+      "value": "-0.01000000"
+    },
+    {
+      "value": "0.01019220"
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": "-0.01117830"
+    },
+    {
+      "value": "-0.02536232"
+    }
+  ]
+}

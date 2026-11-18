@@ -58,6 +58,32 @@ class OrderBookEvent(ContractModel):
         return self
 
 
+class DerivativeTickEvent(ContractModel):
+    """衍生品实时读数：标记价、资金费率、下次结算时间与持仓量。
+
+    一次 ticker 推送可能只带其中一部分字段；全部缺失的推送不构成有效事件。
+    """
+
+    instrument_id: str
+    mark_price: DecimalStr | None = None
+    funding_rate: DecimalStr | None = None
+    next_funding_ts: int | None = None
+    open_interest: DecimalStr | None = None
+    ts_event: int
+    ts_ingested: int
+
+    @model_validator(mode="after")
+    def _at_least_one_reading(self) -> DerivativeTickEvent:
+        if (
+            self.mark_price is None
+            and self.funding_rate is None
+            and self.next_funding_ts is None
+            and self.open_interest is None
+        ):
+            raise ValueError("衍生品事件至少需要一个读数")
+        return self
+
+
 class FeedHealthEvent(ContractModel):
     """某个标的 + 周期的供流健康。``stale_since`` 是最后一次收到传输活动的时刻。
 
@@ -90,7 +116,9 @@ class FeedHealthReport(ContractModel):
     channels: list[FeedHealthEvent]
 
 
-FeedEvent: TypeAlias = KlineEvent | OrderBookEvent | FeedHealthEvent
+FeedEvent: TypeAlias = (
+    KlineEvent | OrderBookEvent | DerivativeTickEvent | FeedHealthEvent
+)
 
 
 class FeedTransport(Protocol):
@@ -107,7 +135,7 @@ class FeedTransport(Protocol):
     async def unsubscribe(self, *, instrument_id: str, timeframe: str) -> None:
         """取消订阅。"""
 
-    async def recv(self) -> KlineEvent | OrderBookEvent | None:
+    async def recv(self) -> KlineEvent | OrderBookEvent | DerivativeTickEvent | None:
         """读取下一条行情事件；``None`` 表示心跳活动，传输失联抛 ``FeedTransportError``。"""
 
     async def close(self) -> None:

@@ -48,6 +48,35 @@ describe("parseDeskMessage", () => {
     expect(healthMessage?.type).toBe("health");
   });
 
+  it("解析衍生品快照消息", () => {
+    const parsed = parseDeskMessage(
+      JSON.stringify({
+        type: "derivatives",
+        data: {
+          instrument_id: INSTRUMENT,
+          mark_price: "58000.5",
+          funding_rate: "0.0001",
+          next_funding_ts: 1_763_625_600_000,
+          open_interest: "12345.6",
+          ts_event: 1_763_596_800_000,
+          ts_ingested: 1_763_596_800_000,
+        },
+      }),
+    );
+    expect(parsed).toEqual({
+      type: "derivatives",
+      data: {
+        instrument_id: INSTRUMENT,
+        mark_price: "58000.5",
+        funding_rate: "0.0001",
+        next_funding_ts: 1_763_625_600_000,
+        open_interest: "12345.6",
+        ts_event: 1_763_596_800_000,
+        ts_ingested: 1_763_596_800_000,
+      },
+    });
+  });
+
   it("解析错误消息", () => {
     const parsed = parseDeskMessage(
       JSON.stringify({

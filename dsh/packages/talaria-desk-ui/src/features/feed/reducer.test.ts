@@ -136,6 +136,29 @@ describe("feedReducer", () => {
     expect(state.bars[0].bar.close).toBeNull();
   });
 
+  it("衍生品消息保留最新 ts，旧读数丢弃，reset 清空", () => {
+    const tick = {
+      instrument_id: INSTRUMENT,
+      mark_price: "58000.5",
+      funding_rate: "0.0001",
+      next_funding_ts: 1_763_625_600_000,
+      open_interest: "12345.6",
+      ts_event: 2_000,
+      ts_ingested: 2_000,
+    };
+    let state = apply(initialFeedState, { type: "derivatives", data: tick });
+    expect(state.derivatives?.mark_price).toBe("58000.5");
+
+    state = apply(state, {
+      type: "derivatives",
+      data: { ...tick, mark_price: "57000", ts_event: 1_000, ts_ingested: 1_000 },
+    });
+    expect(state.derivatives?.mark_price).toBe("58000.5");
+
+    state = feedReducer(state, { type: "reset" });
+    expect(state.derivatives).toBeNull();
+  });
+
   it("服务端错误写入 error，重连 reset 清空", () => {
     let state = apply(initialFeedState, {
       type: "bar",

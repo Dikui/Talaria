@@ -37,7 +37,9 @@ from talaria.foundation.errors import (
     InvalidRequestError,
     TalariaError,
 )
+from talaria.foundation.derivatives import DerivativeBundle
 from talaria.foundation.feed import (
+    DerivativeTickEvent,
     FeedEvent,
     FeedHealthEvent,
     FeedHealthReport,
@@ -139,6 +141,8 @@ def _ws_payload(event: FeedEvent) -> dict[str, object]:
         return {"type": "bar", "data": event.model_dump(mode="json")}
     if isinstance(event, OrderBookEvent):
         return {"type": "book", "data": event.model_dump(mode="json")}
+    if isinstance(event, DerivativeTickEvent):
+        return {"type": "derivatives", "data": event.model_dump(mode="json")}
     return {"type": "health", "data": event.model_dump(mode="json")}
 
 
@@ -504,6 +508,16 @@ def create_app(
             limit=limit,
             before_ts=before_ts,
         )
+
+    @app.get(
+        "/api/snapshots/{snapshot_id}/derivatives", response_model=DerivativeBundle
+    )
+    def get_derivatives(
+        snapshot_id: str,
+        request: Request,
+        timeframe: str = Query(..., description="K 线周期"),
+    ) -> DerivativeBundle:
+        return service(request).get_derivatives(snapshot_id, timeframe=timeframe)
 
     @app.get(
         "/api/snapshots/{snapshot_id}/indicators", response_model=IndicatorBundle

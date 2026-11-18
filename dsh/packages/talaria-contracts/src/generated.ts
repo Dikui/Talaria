@@ -10,7 +10,9 @@ export type FeedHealthStatus = "LIVE" | "STALE" | "RECOVERING";
 
 export type SnapshotMode = "HISTORICAL_PIT" | "OBSERVED_REPLAY";
 
-export type IndicatorName = "EMA" | "SMA" | "RSI" | "ATR" | "BOLL" | "VWAP";
+export type IndicatorName = "EMA" | "SMA" | "RSI" | "ATR" | "BOLL" | "VWAP" | "FUNDING_QUANTILE" | "OI_DIVERGENCE" | "NET_ODDS";
+
+export type DerivativeKind = "mark_price" | "funding_rate" | "open_interest";
 
 export type DrawingKind = "HORIZONTAL_LINE" | "RAY" | "SEGMENT" | "PARALLEL_CHANNEL" | "FIB_RETRACEMENT" | "RECTANGLE" | "TEXT_LABEL";
 
@@ -68,6 +70,50 @@ export interface OrderBookEvent {
   ask_size: DecimalString;
   ts_event: number;
   ts_ingested: number;
+}
+export interface DerivativeTickEvent {
+  instrument_id: string;
+  mark_price?: DecimalString | null;
+  funding_rate?: DecimalString | null;
+  next_funding_ts?: number | null;
+  open_interest?: DecimalString | null;
+  ts_event: number;
+  ts_ingested: number;
+}
+export interface DerivativePoint {
+  instrument_id: string;
+  kind: DerivativeKind;
+  timeframe?: string | null;
+  value: DecimalString;
+  ts_event: number;
+  ts_published?: number | null;
+  ts_available: number;
+  precision?: PrecisionTier;
+  ts_ingested: number;
+  ts_committed: number;
+}
+export interface DerivativeSeries {
+  kind: DerivativeKind;
+  timeframe: string | null;
+  points: DerivativePoint[];
+}
+export interface DerivativeSummary {
+  mark_price?: DecimalString | null;
+  mark_price_ts?: number | null;
+  funding_rate?: DecimalString | null;
+  funding_settled_ts?: number | null;
+  next_funding_ts?: number | null;
+  open_interest?: DecimalString | null;
+  open_interest_ts?: number | null;
+  oi_history_available?: boolean;
+}
+export interface DerivativeBundle {
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  cutoff_ts: number;
+  series: DerivativeSeries[];
+  summary: DerivativeSummary;
 }
 export interface FeedHealthEvent {
   instrument_id: string;

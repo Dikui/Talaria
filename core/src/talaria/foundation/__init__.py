@@ -8,6 +8,16 @@ from talaria.foundation.calendar import (
     CatalystStatus,
 )
 from talaria.foundation.connector import MarketDataConnector, RawBar
+from talaria.foundation.derivatives import (
+    OI_TIMEFRAME_BY_TIMEFRAME,
+    DerivativeBundle,
+    DerivativeDataConnector,
+    DerivativeKind,
+    DerivativePoint,
+    DerivativeSeries,
+    DerivativeSummary,
+    RawDerivativePoint,
+)
 from talaria.foundation.errors import (
     FeatureNotImplementedError,
     FeedTransportError,
@@ -20,6 +30,7 @@ from talaria.foundation.errors import (
     UnauthorizedError,
 )
 from talaria.foundation.feed import (
+    DerivativeTickEvent,
     FeedEvent,
     FeedHealthEvent,
     FeedHealthReport,
@@ -33,6 +44,7 @@ from talaria.foundation.feed import (
 )
 from talaria.foundation.market import (
     CarryTrait,
+    DerivativeCapabilityTrait,
     FeedCapabilityTrait,
     InstrumentSpec,
     MarginTrait,
@@ -69,6 +81,14 @@ __all__ = [
     "ContractModel",
     "DECIMAL_PATTERN",
     "DecimalStr",
+    "DerivativeBundle",
+    "DerivativeCapabilityTrait",
+    "DerivativeDataConnector",
+    "DerivativeKind",
+    "DerivativePoint",
+    "DerivativeSeries",
+    "DerivativeSummary",
+    "DerivativeTickEvent",
     "ErrorResponse",
     "FeatureNotImplementedError",
     "FeedCapabilityTrait",
@@ -90,9 +110,11 @@ __all__ = [
     "MarketDataConnector",
     "MarketPack",
     "NotFoundError",
+    "OI_TIMEFRAME_BY_TIMEFRAME",
     "OrderConstraintTrait",
     "PrecisionTier",
     "RawBar",
+    "RawDerivativePoint",
     "SUPPORTED_TIMEFRAMES",
     "SessionTrait",
     "SnapshotMeta",

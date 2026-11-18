@@ -328,13 +328,20 @@ export function MarketChart({
         chart.overrideIndicator(indicatorCreate(series, existing[0].paneId));
       }
     }
-    for (const indicator of chart.getIndicators()) {
-      if (
-        indicator.id.startsWith(INDICATOR_ID_PREFIX) &&
-        indicator.paneId !== CANDLE_PANE_ID
-      ) {
-        chart.setPaneOptions({ id: indicator.paneId, height: 132 });
-      }
+    const subPaneIds = new Set(
+      chart
+        .getIndicators()
+        .filter(
+          (indicator) =>
+            indicator.id.startsWith(INDICATOR_ID_PREFIX) &&
+            indicator.paneId !== CANDLE_PANE_ID,
+        )
+        .map((indicator) => indicator.paneId),
+    );
+    // 副图多于两个时压缩高度，保证主图仍有可读区域。
+    const subHeight = subPaneIds.size >= 4 ? 88 : subPaneIds.size >= 3 ? 104 : 132;
+    for (const paneId of subPaneIds) {
+      chart.setPaneOptions({ id: paneId, height: subHeight });
     }
   }, [indicatorSeries]);
 

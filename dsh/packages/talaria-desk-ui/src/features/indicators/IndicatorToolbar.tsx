@@ -4,6 +4,7 @@ import type { IndicatorBundle, IndicatorName, IndicatorSeries } from "@talaria/c
 
 import {
   INDICATOR_COLORS,
+  INDICATOR_LABELS,
   INDICATOR_ORDER,
   anchorLabel,
   type IndicatorSetting,
@@ -35,7 +36,7 @@ function LegendChip({ series }: { series: IndicatorSeries }) {
         style={{ background: INDICATOR_COLORS[series.name] }}
         aria-hidden="true"
       />
-      <strong>{series.name}</strong>
+      <strong>{INDICATOR_LABELS[series.name] ?? series.name}</strong>
       <span className="indicator-params">{describeParams(series)}</span>
       <span className="indicator-latest" data-testid={`indicator-latest-${series.name}`}>
         {describeLatest(series)}
@@ -110,7 +111,7 @@ export function IndicatorToolbar({
                     style={{ background: INDICATOR_COLORS[name] }}
                     aria-hidden="true"
                   />
-                  <strong>{name}</strong>
+                  <strong>{INDICATOR_LABELS[name] ?? name}</strong>
                 </label>
                 {name === "VWAP" ? (
                   <label className="indicator-param">

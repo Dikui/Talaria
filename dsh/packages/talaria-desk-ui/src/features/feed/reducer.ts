@@ -1,4 +1,5 @@
 import type {
+  DerivativeTickEvent,
   FeedHealthEvent,
   KlineEvent,
   OrderBookEvent,
@@ -22,6 +23,7 @@ export interface FeedState {
   hello: FeedHello | null;
   health: FeedHealthEvent | null;
   book: OrderBookEvent | null;
+  derivatives: DerivativeTickEvent | null;
   bars: KlineEvent[];
   error: string | null;
 }
@@ -31,6 +33,7 @@ export const initialFeedState: FeedState = {
   hello: null,
   health: null,
   book: null,
+  derivatives: null,
   bars: [],
   error: null,
 };
@@ -85,6 +88,15 @@ function applyMessage(state: FeedState, message: DeskMessage): FeedState {
     }
     case "book":
       return { ...state, book: message.data };
+    case "derivatives":
+      if (
+        state.derivatives !== null &&
+        state.derivatives.instrument_id === message.data.instrument_id &&
+        message.data.ts_event < state.derivatives.ts_event
+      ) {
+        return state;
+      }
+      return { ...state, derivatives: message.data };
     case "health":
       return applyHealth(state, message.data);
     case "error":
@@ -102,7 +114,14 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
     case "closed":
       return { ...state, connection: "closed" };
     case "reset":
-      return { ...state, bars: [], book: null, health: null, error: null };
+      return {
+        ...state,
+        bars: [],
+        book: null,
+        derivatives: null,
+        health: null,
+        error: null,
+      };
     case "message":
       return applyMessage(state, action.message);
   }

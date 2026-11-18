@@ -1,6 +1,11 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 
-import type { FeedHealthEvent, KlineEvent, OrderBookEvent } from "@talaria/contracts";
+import type {
+  DerivativeTickEvent,
+  FeedHealthEvent,
+  KlineEvent,
+  OrderBookEvent,
+} from "@talaria/contracts";
 
 import { getApiBaseUrl } from "../../lib/api";
 import { parseDeskMessage } from "./messages";
@@ -18,6 +23,7 @@ export interface MarketStream extends FeedState {
   latestBar: KlineEvent | null;
   hello: FeedHello | null;
   book: OrderBookEvent | null;
+  derivatives: DerivativeTickEvent | null;
 }
 
 const RECONNECT_BASE_MS = 500;

@@ -9,7 +9,13 @@ from typing import Callable, Mapping, Sequence
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
-from talaria.foundation.errors import ColdStoreError
+from talaria.foundation.derivatives import (
+    OI_TIMEFRAME_BY_TIMEFRAME,
+    DerivativeDataConnector,
+    DerivativePoint,
+    RawDerivativePoint,
+)
+from talaria.foundation.errors import ColdStoreError, FeedUnavailableError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
 from talaria.perception.backfill import BackfillPolicy, ensure_history
@@ -20,6 +26,7 @@ from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_store import (
     SnapshotBar,
     SnapshotStore,
+    write_derivative_parquet,
     write_snapshot_parquet,
 )
 
@@ -142,12 +149,140 @@ class SnapshotBuilder:
             bar_counts=bar_counts,
         )
         parquet_path = write_snapshot_parquet(self._data_dir, snapshot_id, frames)
+        derivatives_path = None
         try:
-            self._snapshot_store.register(meta, parquet_path, committed_ts=committed_ts)
+            derivative_points = self._derivative_points(
+                instrument=instrument, request=request, cutoff_ts=cutoff
+            )
+            if derivative_points:
+                derivatives_path = write_derivative_parquet(
+                    self._data_dir, snapshot_id, derivative_points
+                )
+            self._snapshot_store.register(
+                meta,
+                parquet_path,
+                committed_ts=committed_ts,
+                derivatives_path=derivatives_path,
+            )
         except Exception:
             (self._data_dir / parquet_path).unlink(missing_ok=True)
+            if derivatives_path is not None:
+                (self._data_dir / derivatives_path).unlink(missing_ok=True)
             raise
         return meta
+
+    def _derivative_points(
+        self,
+        *,
+        instrument: InstrumentSpec,
+        request: SnapshotRequest,
+        cutoff_ts: int,
+    ) -> list[DerivativePoint]:
+        """按各接口游标语义向左回填；任何衍生品缺失都不阻塞主快照。"""
+        connector = self._connector
+        if not isinstance(connector, DerivativeDataConnector):
+            return []
+        collected: dict[tuple[str, str | None, int], RawDerivativePoint] = {}
+
+        def collect(points: Sequence[RawDerivativePoint]) -> None:
+            for point in points:
+                if point.ts_available > cutoff_ts:
+                    continue
+                collected[(point.kind.value, point.timeframe, point.ts_event)] = point
+
+        for timeframe in request.timeframes:
+            try:
+                collect(
+                    self._pages(
+                        lambda end_ts, limit, tf=timeframe: connector.fetch_mark_price_bars(
+                            symbol=instrument.symbol,
+                            timeframe=tf,
+                            end_ts=end_ts,
+                            limit=limit,
+                        ),
+                        target=self._policy.target_bars,
+                        page_limit=min(self._policy.page_limit, 1000),
+                        cutoff_ts=cutoff_ts,
+                    )
+                )
+            except FeedUnavailableError as exc:
+                logger.warning("标记价回填失败，快照继续：%s", exc)
+        try:
+            collect(
+                self._pages(
+                    lambda end_ts, limit: connector.fetch_funding_settlements(
+                        symbol=instrument.symbol, end_ts=end_ts, limit=limit
+                    ),
+                    target=max(8, min(1000, self._policy.target_bars // 8)),
+                    page_limit=200,
+                    cutoff_ts=cutoff_ts,
+                )
+            )
+        except FeedUnavailableError as exc:
+            logger.warning("资金费率回填失败，快照继续：%s", exc)
+        oi_timeframes = sorted(
+            {
+                OI_TIMEFRAME_BY_TIMEFRAME[timeframe]
+                for timeframe in request.timeframes
+                if timeframe in OI_TIMEFRAME_BY_TIMEFRAME
+            }
+        )
+        for oi_timeframe in oi_timeframes:
+            try:
+                collect(
+                    self._pages(
+                        lambda end_ts, limit, tf=oi_timeframe: connector.fetch_open_interest(
+                            symbol=instrument.symbol,
+                            timeframe=tf,
+                            end_ts=end_ts,
+                            limit=limit,
+                        ),
+                        target=self._policy.target_bars,
+                        page_limit=200,
+                        cutoff_ts=cutoff_ts,
+                    )
+                )
+            except FeedUnavailableError as exc:
+                logger.warning("持仓量回填失败，快照继续：%s", exc)
+
+        points = [
+            point.to_point(instrument.instrument_id)
+            for point in sorted(
+                collected.values(),
+                key=lambda item: (item.kind.value, item.timeframe or "", item.ts_event),
+            )
+        ]
+        return points
+
+    def _pages(
+        self,
+        fetch,
+        *,
+        target: int,
+        page_limit: int,
+        cutoff_ts: int,
+    ) -> list[RawDerivativePoint]:
+        """复用 04 的向左游标语义：从 cutoff 开始，按最老事件继续翻页。"""
+        collected: dict[int, RawDerivativePoint] = {}
+        cursor: int | None = cutoff_ts
+        for _ in range(self._policy.max_pages):
+            batch = [
+                point
+                for point in fetch(end_ts=cursor, limit=page_limit)
+                if point.ts_available <= cutoff_ts
+            ]
+            before = len(collected)
+            for point in batch:
+                collected[point.ts_event] = point
+            if len(collected) == before or len(collected) >= target:
+                break
+            oldest = min(collected)
+            if oldest <= 0:
+                break
+            cursor = oldest - 1
+            if len(batch) < page_limit:
+                break
+        return [collected[key] for key in sorted(collected)]
 
     def _publish_cold(
         self,

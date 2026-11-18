@@ -1,6 +1,7 @@
 import type {
   ChartPage,
   ChartView,
+  DerivativeBundle,
   DrawingClearResponse,
   DrawingCreate,
   DrawingListResponse,
@@ -182,6 +183,16 @@ export const api = {
     return postJson<IndicatorSeries>(
       `/api/operators/compute${suffix}`,
       request,
+    );
+  },
+
+  derivatives(
+    snapshotId: string,
+    timeframe: string,
+  ): Promise<DerivativeBundle> {
+    const query = new URLSearchParams({ timeframe });
+    return getJson<DerivativeBundle>(
+      `/api/snapshots/${encodeURIComponent(snapshotId)}/derivatives?${query.toString()}`,
     );
   },
 

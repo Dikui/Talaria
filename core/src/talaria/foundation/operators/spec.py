@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 
 class IndicatorName(StrEnum):
-    """第一版支持的六个技术指标。"""
+    """技术指标与衍生品指标；全部共用同一算子核。"""
 
     EMA = "EMA"
     SMA = "SMA"
@@ -17,6 +17,9 @@ class IndicatorName(StrEnum):
     ATR = "ATR"
     BOLL = "BOLL"
     VWAP = "VWAP"
+    FUNDING_QUANTILE = "FUNDING_QUANTILE"
+    OI_DIVERGENCE = "OI_DIVERGENCE"
+    NET_ODDS = "NET_ODDS"
 
 
 #: 各指标的默认周期；BOLL 同时带默认标准差倍数。
@@ -27,6 +30,9 @@ DEFAULT_PERIODS: dict[IndicatorName, int] = {
     IndicatorName.ATR: 14,
     IndicatorName.BOLL: 20,
     IndicatorName.VWAP: 1,
+    IndicatorName.FUNDING_QUANTILE: 30,
+    IndicatorName.OI_DIVERGENCE: 30,
+    IndicatorName.NET_ODDS: 20,
 }
 
 #: 单值指标输出 ``value``；BOLL 输出三轨。
@@ -37,15 +43,34 @@ CHANNELS: dict[IndicatorName, tuple[str, ...]] = {
     IndicatorName.ATR: ("value",),
     IndicatorName.BOLL: ("mid", "upper", "lower"),
     IndicatorName.VWAP: ("value",),
+    IndicatorName.FUNDING_QUANTILE: ("value",),
+    IndicatorName.OI_DIVERGENCE: ("value",),
+    IndicatorName.NET_ODDS: ("value",),
 }
 
-SUB_PANE_NAMES = frozenset({IndicatorName.RSI, IndicatorName.ATR})
+DERIVATIVE_INDICATORS = frozenset(
+    {
+        IndicatorName.FUNDING_QUANTILE,
+        IndicatorName.OI_DIVERGENCE,
+        IndicatorName.NET_ODDS,
+    }
+)
+
+SUB_PANE_NAMES = frozenset(
+    {
+        IndicatorName.RSI,
+        IndicatorName.ATR,
+        IndicatorName.FUNDING_QUANTILE,
+        IndicatorName.OI_DIVERGENCE,
+        IndicatorName.NET_ODDS,
+    }
+)
 VWAP_ANCHORS = ("snapshot", "session")
 MAX_PERIOD = 5000
 
 
 def pane_for(name: IndicatorName) -> str:
-    """图表窗格：主图叠加其余指标，RSI/ATR 单独副图。"""
+    """图表窗格：主图叠加均线类指标，震荡与衍生品指标单独副图。"""
     return "sub" if name in SUB_PANE_NAMES else "main"
 
 

@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector
+from talaria.foundation.derivatives import (
+    OI_TIMEFRAME_BY_TIMEFRAME,
+    DerivativeBundle,
+    DerivativeKind,
+    DerivativePoint,
+    DerivativeSeries,
+    DerivativeSummary,
+)
 from talaria.foundation.errors import (
     FeatureNotImplementedError,
     InstrumentNotFoundError,
@@ -23,6 +32,8 @@ from talaria.foundation.indicators import (
 )
 from talaria.foundation.market import InstrumentSpec, MarketPack
 from talaria.foundation.operators import (
+    DERIVATIVE_INDICATORS,
+    DerivativeSample,
     IndicatorSpec,
     compute_series,
     spec_from_params,
@@ -35,7 +46,12 @@ from talaria.foundation.snapshot import (
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.snapshot_builder import SnapshotBuilder
-from talaria.perception.snapshot_store import SnapshotStore, read_snapshot_bars
+from talaria.perception.snapshot_store import (
+    SnapshotRecord,
+    SnapshotStore,
+    read_derivative_points,
+    read_snapshot_bars,
+)
 
 
 class WorkbenchService:
@@ -116,6 +132,50 @@ class WorkbenchService:
             has_more_backward=has_more_backward,
         )
 
+    def get_derivatives(
+        self, snapshot_id: str, *, timeframe: str
+    ) -> DerivativeBundle:
+        """按快照 cutoff 严格截断衍生品读数；十进制统一序列化为字符串。"""
+        record = self._snapshot_record(snapshot_id, timeframe)
+        meta = record.meta
+        series = self._derivative_series(record, timeframe)
+        mark_points = series[DerivativeKind.MARK_PRICE].points
+        funding_points = series[DerivativeKind.FUNDING_RATE].points
+        oi_points = series[DerivativeKind.OPEN_INTEREST].points
+        mark = mark_points[-1] if mark_points else None
+        funding = funding_points[-1] if funding_points else None
+        oi = oi_points[-1] if oi_points else None
+        next_funding_ts = None
+        if funding is not None:
+            interval_hours = self._funding_interval_hours(meta.instrument_id)
+            if interval_hours is not None and interval_hours > 0:
+                interval_ms = interval_hours * 3_600_000
+                next_funding_ts = funding.ts_event + interval_ms
+                # 历史结算接口只回放已发生结算；按结算周期推进到快照截止后的下一次。
+                while next_funding_ts <= meta.cutoff_ts:
+                    next_funding_ts += interval_ms
+        return DerivativeBundle(
+            snapshot_id=snapshot_id,
+            instrument_id=meta.instrument_id,
+            timeframe=timeframe,
+            cutoff_ts=meta.cutoff_ts,
+            series=[
+                series[DerivativeKind.MARK_PRICE],
+                series[DerivativeKind.FUNDING_RATE],
+                series[DerivativeKind.OPEN_INTEREST],
+            ],
+            summary=DerivativeSummary(
+                mark_price=None if mark is None else mark.value,
+                mark_price_ts=None if mark is None else mark.ts_event,
+                funding_rate=None if funding is None else funding.value,
+                funding_settled_ts=None if funding is None else funding.ts_event,
+                next_funding_ts=next_funding_ts,
+                open_interest=None if oi is None else oi.value,
+                open_interest_ts=None if oi is None else oi.ts_event,
+                oi_history_available=bool(oi_points),
+            ),
+        )
+
     def get_indicators(
         self,
         snapshot_id: str,
@@ -143,7 +203,15 @@ class WorkbenchService:
                 specs.append(spec_from_params(name, raw))
             except ValueError as exc:
                 raise InvalidRequestError(str(exc)) from exc
-        result = [self._series(meta, bars, spec, limit) for spec in specs]
+        samples = (
+            self._derivative_samples(snapshot_id, timeframe, bars)
+            if any(spec.name in DERIVATIVE_INDICATORS for spec in specs)
+            else None
+        )
+        result = [
+            self._series(meta, bars, spec, limit, derivatives=samples)
+            for spec in specs
+        ]
         return IndicatorBundle(
             snapshot_id=snapshot_id,
             instrument_id=meta.instrument_id,
@@ -170,7 +238,12 @@ class WorkbenchService:
             spec = spec_from_params(operator, params)
         except ValueError as exc:
             raise InvalidRequestError(str(exc)) from exc
-        return self._series(meta, bars, spec, limit)
+        samples = (
+            self._derivative_samples(snapshot_id, timeframe, bars)
+            if spec.name in DERIVATIVE_INDICATORS
+            else None
+        )
+        return self._series(meta, bars, spec, limit, derivatives=samples)
 
     @staticmethod
     def _with_extra_bars(
@@ -199,14 +272,118 @@ class WorkbenchService:
         ]
         return meta, bars
 
+    def _snapshot_record(
+        self, snapshot_id: str, timeframe: str
+    ) -> SnapshotRecord:
+        record = self._snapshot_store.get(snapshot_id)
+        if record is None:
+            raise SnapshotNotFoundError(f"未知快照：{snapshot_id}")
+        if timeframe not in record.meta.timeframes:
+            raise SnapshotNotFoundError(
+                f"快照 {snapshot_id} 不包含周期 {timeframe}"
+            )
+        return record
+
+    def _derivative_points(
+        self, record: SnapshotRecord, timeframe: str
+    ) -> list[DerivativePoint]:
+        if record.derivatives_path is None:
+            return []
+        points = read_derivative_points(self._data_dir, record.derivatives_path)
+        cutoff = record.meta.cutoff_ts
+        oi_timeframe = OI_TIMEFRAME_BY_TIMEFRAME.get(timeframe, timeframe)
+        visible: list[DerivativePoint] = []
+        for point in points:
+            if point.ts_available > cutoff:
+                continue
+            if point.kind is DerivativeKind.MARK_PRICE:
+                if point.timeframe != timeframe:
+                    continue
+            elif point.kind is DerivativeKind.OPEN_INTEREST:
+                if point.timeframe != oi_timeframe:
+                    continue
+            visible.append(point)
+        return visible
+
+    def _derivative_series(
+        self, record: SnapshotRecord, timeframe: str
+    ) -> dict[DerivativeKind, DerivativeSeries]:
+        grouped: dict[DerivativeKind, list[DerivativePoint]] = {
+            DerivativeKind.MARK_PRICE: [],
+            DerivativeKind.FUNDING_RATE: [],
+            DerivativeKind.OPEN_INTEREST: [],
+        }
+        for point in self._derivative_points(record, timeframe):
+            grouped[point.kind].append(point)
+        return {
+            kind: DerivativeSeries(
+                kind=kind,
+                timeframe=self._series_timeframe(record, timeframe, kind),
+                points=sorted(values, key=lambda point: point.ts_event),
+            )
+            for kind, values in grouped.items()
+        }
+
+    @staticmethod
+    def _series_timeframe(
+        record: SnapshotRecord, timeframe: str, kind: DerivativeKind
+    ) -> str | None:
+        if kind is DerivativeKind.MARK_PRICE:
+            return timeframe
+        if kind is DerivativeKind.OPEN_INTEREST:
+            return OI_TIMEFRAME_BY_TIMEFRAME.get(timeframe, timeframe)
+        return None
+
+    def _derivative_samples(
+        self,
+        snapshot_id: str,
+        timeframe: str,
+        bars: Sequence[CompactBar],
+    ) -> list[DerivativeSample]:
+        """把结算/OI 点按 ``ts_available`` 向前取值，逐根对齐到 K 线。"""
+        record = self._snapshot_record(snapshot_id, timeframe)
+        series = self._derivative_series(record, timeframe)
+        funding = series[DerivativeKind.FUNDING_RATE].points
+        oi = series[DerivativeKind.OPEN_INTEREST].points
+        funding_times = [point.ts_available for point in funding]
+        oi_times = [point.ts_available for point in oi]
+        samples: list[DerivativeSample] = []
+        for bar in bars:
+            funding_index = bisect_right(funding_times, bar.timestamp) - 1
+            oi_index = bisect_right(oi_times, bar.timestamp) - 1
+            funding_point = funding[funding_index] if funding_index >= 0 else None
+            oi_point = oi[oi_index] if oi_index >= 0 else None
+            samples.append(
+                DerivativeSample(
+                    funding_rate=(
+                        None if funding_point is None else funding_point.value
+                    ),
+                    funding_ts=(
+                        None if funding_point is None else funding_point.ts_event
+                    ),
+                    open_interest=None if oi_point is None else oi_point.value,
+                    oi_ts=None if oi_point is None else oi_point.ts_event,
+                )
+            )
+        return samples
+
+    def _funding_interval_hours(self, instrument_id: str) -> int | None:
+        try:
+            traits = self._pack.traits(instrument_id)
+        except KeyError:
+            return None
+        return traits.carry.funding_interval_hours
+
     @staticmethod
     def _series(
         meta: SnapshotMeta,
         bars: Sequence[CompactBar],
         spec: IndicatorSpec,
         limit: int,
+        *,
+        derivatives: Sequence[DerivativeSample] | None = None,
     ) -> IndicatorSeries:
-        state = compute_series(bars, spec)
+        state = compute_series(bars, spec, derivatives=derivatives)
         window_bars = bars[-limit:]
         window_points = state.points[-limit:]
         points: list[IndicatorPoint] = []

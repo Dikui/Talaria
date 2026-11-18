@@ -1,4 +1,5 @@
 import type {
+  DerivativeTickEvent,
   FeedHealthEvent,
   KlineEvent,
   OrderBookEvent,
@@ -15,6 +16,7 @@ export type DeskMessage =
   | { type: "bar"; data: KlineEvent }
   | { type: "book"; data: OrderBookEvent }
   | { type: "health"; data: FeedHealthEvent }
+  | { type: "derivatives"; data: DerivativeTickEvent }
   | { type: "error"; code: string; message: string };
 
 type RawRecord = Record<string, unknown>;
@@ -64,6 +66,10 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
     case "health":
       return hasInstrumentId(record.data)
         ? { type: "health", data: record.data as FeedHealthEvent }
+        : null;
+    case "derivatives":
+      return hasInstrumentId(record.data)
+        ? { type: "derivatives", data: record.data as DerivativeTickEvent }
         : null;
     case "error":
       return {

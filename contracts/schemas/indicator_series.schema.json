@@ -1,14 +1,17 @@
 {
   "$defs": {
     "IndicatorName": {
-      "description": "第一版支持的六个技术指标。",
+      "description": "技术指标与衍生品指标；全部共用同一算子核。",
       "enum": [
         "EMA",
         "SMA",
         "RSI",
         "ATR",
         "BOLL",
-        "VWAP"
+        "VWAP",
+        "FUNDING_QUANTILE",
+        "OI_DIVERGENCE",
+        "NET_ODDS"
       ],
       "title": "IndicatorName",
       "type": "string"
