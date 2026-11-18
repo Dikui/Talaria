@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import type { KeyLevel, KeyLevelSet } from "@talaria/contracts";
+import type { DrawingRecord, KeyLevel, KeyLevelSet } from "@talaria/contracts";
 
 import { ApiError, api } from "../../lib/api";
 
@@ -15,10 +15,13 @@ export interface KeyLevelsController {
   levels: KeyLevel[];
   notes: string[];
   ignoredIds: Set<string>;
+  adoptedIds: Set<string>;
   loading: boolean;
   error: string | null;
   ignoringId: string | null;
+  adoptingId: string | null;
   ignore: (levelId: string) => Promise<void>;
+  adopt: (level: KeyLevel) => Promise<DrawingRecord | null>;
   clearError: () => void;
 }
 
@@ -47,9 +50,11 @@ export function useKeyLevels({
 }: UseKeyLevelsOptions): KeyLevelsController {
   const [levelSet, setLevelSet] = useState<KeyLevelSet | null>(null);
   const [ignoredIds, setIgnoredIds] = useState<Set<string>>(() => new Set());
+  const [adoptedIds, setAdoptedIds] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ignoringId, setIgnoringId] = useState<string | null>(null);
+  const [adoptingId, setAdoptingId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,22 +92,18 @@ export function useKeyLevels({
   useEffect(() => {
     let cancelled = false;
     api
-      .ignoredKeyLevels(instrumentId)
-      .then((listing) => {
+      .keyLevelFeedback(instrumentId)
+      .then((summary) => {
         if (cancelled) {
           return;
         }
-        setIgnoredIds(
-          new Set(
-            (listing.entries ?? [])
-              .filter((entry) => entry.ignored)
-              .map((entry) => entry.level_id),
-          ),
-        );
+        setIgnoredIds(new Set(summary.ignored_level_ids ?? []));
+        setAdoptedIds(new Set(summary.adopted_level_ids ?? []));
       })
       .catch(() => {
         if (!cancelled) {
           setIgnoredIds(new Set());
+          setAdoptedIds(new Set());
         }
       });
     return () => {
@@ -143,6 +144,31 @@ export function useKeyLevels({
     [instrumentId],
   );
 
+  const adopt = useCallback(
+    async (level: KeyLevel) => {
+      if (snapshotId === null) {
+        return null;
+      }
+      setAdoptingId(level.level_id);
+      setError(null);
+      try {
+        const drawing = await api.adoptKeyLevel(
+          level.level_id,
+          snapshotId,
+          timeframe,
+        );
+        setAdoptedIds((current) => new Set(current).add(level.level_id));
+        return drawing;
+      } catch (caught) {
+        setError(describe(caught));
+        return null;
+      } finally {
+        setAdoptingId(null);
+      }
+    },
+    [snapshotId, timeframe],
+  );
+
   const clearError = useCallback(() => setError(null), []);
 
   return {
@@ -150,10 +176,13 @@ export function useKeyLevels({
     levels: levelSet?.levels ?? [],
     notes: levelSet?.notes ?? [],
     ignoredIds,
+    adoptedIds,
     loading,
     error,
     ignoringId,
+    adoptingId,
     ignore,
+    adopt,
     clearError,
   };
 }

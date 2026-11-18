@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "description": "采纳记录：只做来源追踪，画线本身与系统关键位完全解耦。",
+  "properties": {
+    "adopted_ts": {
+      "title": "Adopted Ts",
+      "type": "integer"
+    },
+    "drawing_id": {
+      "title": "Drawing Id",
+      "type": "string"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "level_id": {
+      "title": "Level Id",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "level_id",
+    "snapshot_id",
+    "drawing_id",
+    "adopted_ts",
+    "timeframe"
+  ],
+  "title": "KeyLevelAdoptionRecord",
+  "type": "object"
+}

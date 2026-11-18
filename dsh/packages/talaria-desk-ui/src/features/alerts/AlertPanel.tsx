@@ -9,12 +9,15 @@ import type {
   DrawingRecord,
   IndicatorName,
   InstrumentSpec,
+  KeyLevelKind,
 } from "@talaria/contracts";
 
 import { KIND_LABELS } from "../drawings/tools";
 import { INDICATOR_LABELS } from "../indicators/config";
 import {
   ALERT_INDICATORS,
+  ALERT_LEVEL_EVENTS,
+  ALERT_LEVEL_EVENT_LABELS,
   ALERT_OVERLAY_KINDS,
   ALERT_STATUS_LABELS,
   ALERT_TABS,
@@ -41,6 +44,8 @@ const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
 export interface AlertFormSeed {
   nonce: number;
   drawingId?: string;
+  levelId?: string;
+  levelKind?: KeyLevelKind | null;
   instrumentId?: string;
   timeframe?: string;
 }
@@ -89,7 +94,11 @@ export function AlertPanel({
       defaultAlertForm(
         formSeed.instrumentId ?? currentInstrument,
         formSeed.timeframe ?? currentTimeframe,
-        { drawingId: formSeed.drawingId },
+        {
+          drawingId: formSeed.drawingId,
+          levelId: formSeed.levelId,
+          levelKind: formSeed.levelKind,
+        },
       ),
     );
     setEditingId(null);
@@ -161,6 +170,7 @@ export function AlertPanel({
         kind === "OVERLAY_CROSS" && current.drawingId === ""
           ? (selectableDrawings[0]?.drawing_id ?? "")
           : current.drawingId,
+      levelKind: kind === "LEVEL_EVENT" ? current.levelKind : null,
     }));
   };
 
@@ -169,7 +179,7 @@ export function AlertPanel({
       <div className="alerts-head">
         <div>
           <h2 className="alerts-title">预警</h2>
-          <p className="alerts-subtitle">阈值 · 指标 · 画线几何</p>
+          <p className="alerts-subtitle">阈值 · 指标 · 画线 · 关键位</p>
         </div>
         <div className="alerts-head-actions">
           <button
@@ -255,6 +265,7 @@ export function AlertPanel({
               <option value="METRIC_THRESHOLD">指标阈值</option>
               <option value="INDICATOR_SIGNAL">指标信号</option>
               <option value="OVERLAY_CROSS">画线触碰</option>
+              <option value="LEVEL_EVENT">关键位事件</option>
             </select>
           </label>
 
@@ -414,6 +425,51 @@ export function AlertPanel({
             </>
           )}
 
+          {form.kind === "LEVEL_EVENT" && (
+            <>
+              <label>
+                关键位 level_id
+                <input
+                  value={form.levelId}
+                  placeholder="例如 kl_0123456789abcdef"
+                  aria-label="关键位 level_id"
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      levelId: event.target.value,
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                关键位事件
+                <select
+                  value={form.levelEvent}
+                  aria-label="关键位事件"
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      levelEvent: event.target
+                        .value as AlertFormState["levelEvent"],
+                    }))
+                  }
+                >
+                  {ALERT_LEVEL_EVENTS.map((event) => (
+                    <option key={event} value={event}>
+                      {ALERT_LEVEL_EVENT_LABELS[event]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {form.levelKind !== null && (
+                <p className="alert-form-hint" data-testid="alert-level-kind">
+                  类型：{form.levelKind}
+                </p>
+              )}
+            </>
+          )}
+
+          {form.kind !== "LEVEL_EVENT" && (
           <label>
             方向
             <select
@@ -429,6 +485,7 @@ export function AlertPanel({
               <option value="BELOW">下穿 / 低于</option>
             </select>
           </label>
+          )}
           <label>
             冷却（秒）
             <input

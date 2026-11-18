@@ -10,6 +10,7 @@ import {
   levelLabel,
   levelPrice,
   levelTitle,
+  showLevelActions,
   toggleCategory,
   toggleEvidenceClass,
   visibleKeyLevels,
@@ -206,5 +207,12 @@ describe("layoutKeyLevelLabels", () => {
       frame,
     );
     expect(placed.map((item) => item.id)).toEqual(["top", "bottom"]);
+  });
+});
+
+describe("key level actions", () => {
+  it("hides management actions in the 390px read-only viewport", () => {
+    expect(showLevelActions(false)).toBe(true);
+    expect(showLevelActions(true)).toBe(false);
   });
 });

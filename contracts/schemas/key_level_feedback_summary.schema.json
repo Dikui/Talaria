@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "单标的的关键位质量反馈汇总；供离线评估与前端持久状态使用。",
+  "properties": {
+    "adopted_level_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Adopted Level Ids",
+      "type": "array"
+    },
+    "ignored_level_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Ignored Level Ids",
+      "type": "array"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id"
+  ],
+  "title": "KeyLevelFeedbackSummary",
+  "type": "object"
+}

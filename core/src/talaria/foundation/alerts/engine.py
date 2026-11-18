@@ -17,6 +17,7 @@ from uuid import uuid4
 from talaria.foundation.alerts.contracts import (
     AlertConditionKind,
     AlertDirection,
+    AlertLevelEvent,
     AlertMetric,
     AlertOverlayMode,
     AlertRecord,
@@ -33,6 +34,11 @@ from talaria.foundation.feed import (
     FeedHealthStatus,
     KlineEvent,
     OrderBookEvent,
+)
+from talaria.foundation.key_levels import (
+    KeyLevel,
+    KeyLevelStatus,
+    compute_key_levels,
 )
 from talaria.foundation.operators import (
     CHANNELS,
@@ -65,6 +71,15 @@ _OVERLAY_LABELS = {
 
 _THICK_OVERLAYS = frozenset({DrawingKind.PARALLEL_CHANNEL, DrawingKind.RECTANGLE})
 
+#: 关键位来源：instrument、timeframe、level_id、cutoff → 该 cutoff 已可见的最新关键位。
+KeyLevelProvider = Callable[[str, str, str, int], KeyLevel | None]
+
+_LEVEL_EVENT_LABELS = {
+    AlertLevelEvent.TOUCH: "触及",
+    AlertLevelEvent.BREAK: "收盘突破",
+    AlertLevelEvent.RETEST: "回踩确认",
+}
+
 
 @dataclass(slots=True)
 class _Runtime:
@@ -73,6 +88,9 @@ class _Runtime:
     condition_true: bool | None = None
     baseline_pending: bool = True
     last_bar_key: tuple[int, int] | None = None
+    level_status: KeyLevelStatus | None = None
+    level_breakout: str | None = None
+    level_breakout_ts: int | None = None
 
 
 @dataclass(slots=True)
@@ -83,6 +101,9 @@ class _Observation:
     bar: CompactBar | None = None
     bounds: OverlayBounds | None = None
     drawing_kind: DrawingKind | None = None
+    level: KeyLevel | None = None
+    level_event: AlertLevelEvent | None = None
+    level_direction: str | None = None
 
 
 class AlertEngine:
@@ -94,6 +115,7 @@ class AlertEngine:
         now_ms: Callable[[], int],
         overlay_geometry: Callable[[str], DrawingRecord | None] | None = None,
         history_provider: Callable[[str, str], Sequence[CompactBar]] | None = None,
+        key_level_provider: KeyLevelProvider | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
         on_trigger: Callable[[AlertTriggerRecord, AlertRecord], None] | None = None,
         bar_limit: int = 600,
@@ -101,6 +123,8 @@ class AlertEngine:
         self._now_ms = now_ms
         self._overlay_geometry = overlay_geometry
         self._history_provider = history_provider
+        self._key_level_provider = key_level_provider
+        self._level_cache: dict[tuple[str, str, int], list[KeyLevel]] = {}
         self._freeze_snapshot = freeze_snapshot
         self._on_trigger = on_trigger
         self._bar_limit = max(bar_limit, 32)
@@ -183,6 +207,7 @@ class AlertEngine:
             self._handle_health(event)
             return []
         self._store_event_bars(event)
+        self._level_cache.clear()
         instrument_id = event.instrument_id
         if instrument_id in self._stale:
             return []
@@ -273,6 +298,8 @@ class AlertEngine:
                         runtime = self._runtime_for(alert)
                         runtime.baseline_pending = True
                         runtime.condition_true = None
+                        runtime.level_breakout = None
+                        runtime.level_breakout_ts = None
             return
         self._stale.add(event.instrument_id)
 
@@ -310,6 +337,8 @@ class AlertEngine:
             runtime = self._runtime_for(alert)
             runtime.baseline_pending = True
             runtime.condition_true = None
+            runtime.level_breakout = None
+            runtime.level_breakout_ts = None
             changed = True
         if changed:
             alert.updated_ts = now
@@ -344,6 +373,12 @@ class AlertEngine:
             return False
 
         self._trigger(alert, observation, now)
+        if (
+            condition.kind is AlertConditionKind.LEVEL_EVENT
+            and condition.level_event is AlertLevelEvent.RETEST
+        ):
+            runtime.level_breakout = None
+            runtime.level_breakout_ts = None
         return True
 
     def _observe(self, alert: AlertRecord, event: FeedEvent) -> _Observation | None:
@@ -415,7 +450,133 @@ class AlertEngine:
                 drawing_kind=drawing.kind,
             )
 
+        if condition.kind is AlertConditionKind.LEVEL_EVENT:
+            if not isinstance(event, KlineEvent):
+                return None
+            return self._observe_level(alert, event)
+
         return None
+
+    def _observe_level(self, alert: AlertRecord, event: KlineEvent) -> _Observation | None:
+        """按 ``level_id`` 读取 cutoff 前最新状态，判定触及/突破/回踩。"""
+
+        condition = alert.condition
+        level_event = condition.level_event
+        level_id = condition.level_id
+        if level_event is None or level_id is None:
+            return None
+        bar = event.bar
+        if level_event is not AlertLevelEvent.TOUCH and not event.confirmed:
+            return None
+        if bar.close is None or bar.high is None or bar.low is None:
+            return None
+        cutoff_ts = bar.ts_available if event.confirmed else bar.timestamp
+        level = self._key_level(alert.instrument_id, alert.timeframe, level_id, cutoff_ts)
+        if level is None:
+            return None
+        if condition.level_kind is not None and level.kind is not condition.level_kind:
+            return None
+        bounds = _level_bounds(level)
+        if bounds is None:
+            return None
+        lower, upper = bounds
+        runtime = self._runtime_for(alert)
+        runtime.level_status = level.status
+
+        if level_event is AlertLevelEvent.TOUCH:
+            touched = bar.low <= upper and bar.high >= lower
+            return _Observation(
+                value=touched,
+                observed=bar.close,
+                threshold=upper if bar.close >= upper else lower,
+                bar=bar,
+                level=level,
+                level_event=level_event,
+            )
+
+        if bar.status is BarStatus.FEED_GAP:
+            return None
+        close = bar.close
+        side = "UP" if close > upper else "DOWN" if close < lower else None
+        if side is not None and level.status is KeyLevelStatus.ACTIVE:
+            # 收盘已越过，但关键位仍报 ACTIVE：以最新状态为准，本次不判定。
+            return None
+
+        if level_event is AlertLevelEvent.BREAK:
+            return _Observation(
+                value=side is not None,
+                observed=close,
+                threshold=upper if side == "UP" else lower,
+                bar=bar,
+                level=level,
+                level_event=level_event,
+                level_direction=side,
+            )
+
+        # RETEST：记录突破方向与时刻；FLIPPED 表示价格已回到另一侧，方向随之翻转。
+        if side is not None and runtime.level_breakout != side:
+            runtime.level_breakout = side
+            runtime.level_breakout_ts = bar.timestamp
+        direction = runtime.level_breakout
+        if direction is None or runtime.level_breakout_ts is None:
+            return _Observation(
+                value=False,
+                observed=close,
+                threshold=upper if close >= upper else lower,
+                bar=bar,
+                level=level,
+                level_event=level_event,
+            )
+        if bar.timestamp <= runtime.level_breakout_ts or level.status is KeyLevelStatus.ACTIVE:
+            return _Observation(
+                value=False,
+                observed=close,
+                threshold=upper if direction == "UP" else lower,
+                bar=bar,
+                level=level,
+                level_event=level_event,
+                level_direction=direction,
+            )
+        if direction == "UP":
+            retested = bar.low <= upper and close > upper
+            threshold = upper
+        else:
+            retested = bar.high >= lower and close < lower
+            threshold = lower
+        return _Observation(
+            value=retested,
+            observed=close,
+            threshold=threshold,
+            bar=bar,
+            level=level,
+            level_event=level_event,
+            level_direction=direction,
+        )
+
+    def _key_level(
+        self, instrument_id: str, timeframe: str, level_id: str, cutoff_ts: int
+    ) -> KeyLevel | None:
+        provider = self._key_level_provider
+        if provider is not None:
+            return provider(instrument_id, timeframe, level_id, cutoff_ts)
+        cache_key = (instrument_id, timeframe, cutoff_ts)
+        cached = self._level_cache.get(cache_key)
+        if cached is None:
+            window = self._windows.get((instrument_id, timeframe))
+            if not window:
+                return None
+            try:
+                cached = compute_key_levels(
+                    instrument_id=instrument_id,
+                    timeframe=timeframe,
+                    bars=list(window),
+                    cutoff_ts=cutoff_ts,
+                )
+            except Exception:
+                logger.exception("重算关键位失败：%s %s", instrument_id, timeframe)
+                return None
+            self._level_cache[cache_key] = cached
+        return next((level for level in cached if level.level_id == level_id), None)
 
     @staticmethod
     def _metric_value(metric: AlertMetric | None, event: FeedEvent) -> Decimal | None:
@@ -525,6 +686,8 @@ class AlertEngine:
     @staticmethod
     def _message(alert: AlertRecord, observation: _Observation) -> str:
         condition = alert.condition
+        if condition.kind is AlertConditionKind.LEVEL_EVENT:
+            return _level_message(observation)
         direction = "上穿" if condition.direction is AlertDirection.ABOVE else "下穿"
         if condition.kind is AlertConditionKind.METRIC_THRESHOLD:
             label = _METRIC_LABELS.get(condition.metric, "指标")
@@ -555,6 +718,36 @@ class AlertEngine:
             else "触碰"
         )
         return f"价格{action}{label}{edge} {_decimal_text(observation.threshold)}"
+
+
+def _level_bounds(level: KeyLevel) -> tuple[Decimal, Decimal] | None:
+    if level.price is not None:
+        return level.price, level.price
+    if level.price_low is not None and level.price_high is not None:
+        return level.price_low, level.price_high
+    return None
+
+
+def _level_message(observation: _Observation) -> str:
+    level = observation.level
+    bounds = _level_bounds(level) if level is not None else None
+    label = "-"
+    if bounds is not None:
+        label = (
+            _decimal_text(bounds[0])
+            if bounds[0] == bounds[1]
+            else f"{_decimal_text(bounds[0])}–{_decimal_text(bounds[1])}"
+        )
+    kind = level.kind.value if level is not None else "-"
+    status = level.status.value if level is not None else "-"
+    action = _LEVEL_EVENT_LABELS.get(observation.level_event, "关键位事件")
+    if observation.level_event is AlertLevelEvent.TOUCH:
+        return f"价格触及关键位 {label}（{kind}）"
+    if observation.level_event is AlertLevelEvent.BREAK:
+        direction = "上穿" if observation.level_direction == "UP" else "下穿"
+        return f"收盘{direction}关键位 {label}（{kind}·{status}）"
+    side = "上方" if observation.level_direction == "UP" else "下方"
+    return f"价格回踩关键位 {label} 并收盘回到{side}（{kind}·{status}）"
 
 
 def _decimal_text(value: Decimal | None) -> str:

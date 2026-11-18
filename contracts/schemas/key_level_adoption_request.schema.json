@@ -1,0 +1,24 @@
+{
+  "additionalProperties": false,
+  "description": "把某条系统关键位采纳为独立人工画线；快照提供该位当时的投影。",
+  "properties": {
+    "snapshot_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "maxLength": 8,
+      "minLength": 1,
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "timeframe"
+  ],
+  "title": "KeyLevelAdoptionRequest",
+  "type": "object"
+}

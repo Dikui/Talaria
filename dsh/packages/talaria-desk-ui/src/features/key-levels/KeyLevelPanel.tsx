@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { KeyLevel, KeyLevelCategory } from "@talaria/contracts";
 
 import {
@@ -13,6 +14,7 @@ import {
   levelEvidenceClass,
   levelTitle,
   selectedEvidenceClasses,
+  showLevelActions,
   toggleCategory,
   toggleEvidenceClass,
   type KeyLevelFilter,
@@ -27,6 +29,10 @@ export interface KeyLevelPanelProps {
   ignoredCount: number;
   onIgnore: (levelId: string) => void;
   ignoringId: string | null;
+  onAdopt: (level: KeyLevel) => void;
+  adoptingId: string | null;
+  adoptedIds: Set<string>;
+  onAttachAlert: (level: KeyLevel) => void;
   loading: boolean;
   error: string | null;
   readOnly: boolean;
@@ -47,12 +53,17 @@ export function KeyLevelPanel({
   ignoredCount,
   onIgnore,
   ignoringId,
+  onAdopt,
+  adoptingId,
+  adoptedIds,
+  onAttachAlert,
   loading,
   error,
   readOnly,
   onClose,
   notes = [],
 }: KeyLevelPanelProps) {
+  const [menuLevelId, setMenuLevelId] = useState<string | null>(null);
   const counts = countByCategory(allLevels);
   const evidenceCounts = countByEvidence(allLevels);
   const strengthValue = Math.round(filter.minStrength * 100);
@@ -258,18 +269,80 @@ export function KeyLevelPanel({
                     : `触及 ${level.touch_count}`}
                 </span>
               </div>
-              {/* 14 的“采纳为人工画线”入口预留在此行尾部；写路径走 DrawingService，不混入忽略反馈。 */}
-              {!readOnly && (
-                <button
-                  type="button"
-                  className="key-level-ignore"
-                  title={levelTitle(level, precision)}
-                  aria-label={`忽略 ${levelTitle(level, precision)}`}
-                  disabled={ignoringId !== null}
-                  onClick={() => onIgnore(level.level_id)}
+              {/* 采纳写路径走 DrawingService（复制为独立人工画线），忽略仍走质量反馈。 */}
+              {adoptedIds.has(level.level_id) && (
+                <span
+                  className="key-level-adopted-badge"
+                  data-testid={`key-level-adopted-${level.level_id}`}
                 >
-                  {ignoringId === level.level_id ? "…" : "忽略"}
-                </button>
+                  已采纳
+                </span>
+              )}
+              {showLevelActions(readOnly) && (
+                <div className="key-level-actions">
+                  <button
+                    type="button"
+                    className="key-level-actions-toggle"
+                    title={levelTitle(level, precision)}
+                    aria-label={`关键位操作 ${levelTitle(level, precision)}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuLevelId === level.level_id}
+                    onClick={() =>
+                      setMenuLevelId((current) =>
+                        current === level.level_id ? null : level.level_id,
+                      )
+                    }
+                  >
+                    ⋯
+                  </button>
+                </div>
+              )}
+              {showLevelActions(readOnly) && menuLevelId === level.level_id && (
+                <div
+                  className="key-level-actions-menu"
+                  role="menu"
+                  data-testid={`key-level-actions-${level.level_id}`}
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuLevelId(null);
+                      onAttachAlert(level);
+                    }}
+                  >
+                    挂预警
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={
+                      adoptingId !== null ||
+                      adoptedIds.has(level.level_id)
+                    }
+                    onClick={() => {
+                      setMenuLevelId(null);
+                      onAdopt(level);
+                    }}
+                  >
+                    {adoptedIds.has(level.level_id)
+                      ? "已采纳"
+                      : adoptingId === level.level_id
+                        ? "采纳中…"
+                        : "采纳为画线"}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={ignoringId !== null}
+                    onClick={() => {
+                      setMenuLevelId(null);
+                      onIgnore(level.level_id);
+                    }}
+                  >
+                    {ignoringId === level.level_id ? "忽略中…" : "忽略"}
+                  </button>
+                </div>
               )}
             </li>
           ))}

@@ -252,6 +252,17 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS key_level_ignores_by_instrument
                     ON key_level_ignores (instrument_id, updated_ts);
+                CREATE TABLE IF NOT EXISTS key_level_adoptions (
+                    instrument_id TEXT NOT NULL,
+                    level_id TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL,
+                    drawing_id TEXT NOT NULL,
+                    adopted_ts INTEGER NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    PRIMARY KEY (instrument_id, level_id)
+                );
+                CREATE INDEX IF NOT EXISTS key_level_adoptions_by_instrument
+                    ON key_level_adoptions (instrument_id, adopted_ts DESC);
                 CREATE TABLE IF NOT EXISTS alerts (
                     alert_id TEXT PRIMARY KEY,
                     instrument_id TEXT NOT NULL,
@@ -785,6 +796,92 @@ class StateStore:
                     "instrument_id": instrument_id,
                     "level_id": level_id,
                     "ignored": ignored,
+                },
+                ts=now,
+            )
+
+    def list_key_level_adoptions(
+        self, instrument_id: str
+    ) -> list[dict[str, object]]:
+        rows = self._connection.execute(
+            """
+            SELECT instrument_id, level_id, snapshot_id, drawing_id,
+                   adopted_ts, timeframe
+            FROM key_level_adoptions
+            WHERE instrument_id = ?
+            ORDER BY adopted_ts DESC, level_id
+            """,
+            (instrument_id,),
+        ).fetchall()
+        return [
+            {
+                "instrument_id": str(row[0]),
+                "level_id": str(row[1]),
+                "snapshot_id": str(row[2]),
+                "drawing_id": str(row[3]),
+                "adopted_ts": int(row[4]),
+                "timeframe": str(row[5]),
+            }
+            for row in rows
+        ]
+
+    def get_key_level_adoption(
+        self, instrument_id: str, level_id: str
+    ) -> dict[str, object] | None:
+        row = self._connection.execute(
+            """
+            SELECT instrument_id, level_id, snapshot_id, drawing_id,
+                   adopted_ts, timeframe
+            FROM key_level_adoptions
+            WHERE instrument_id = ? AND level_id = ?
+            """,
+            (instrument_id, level_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "instrument_id": str(row[0]),
+            "level_id": str(row[1]),
+            "snapshot_id": str(row[2]),
+            "drawing_id": str(row[3]),
+            "adopted_ts": int(row[4]),
+            "timeframe": str(row[5]),
+        }
+
+    def record_key_level_adoption(
+        self,
+        *,
+        instrument_id: str,
+        level_id: str,
+        snapshot_id: str,
+        drawing_id: str,
+        timeframe: str,
+        ts: int | None = None,
+    ) -> None:
+        now = self._now_ms() if ts is None else ts
+        with self._transaction():
+            self._connection.execute(
+                """
+                INSERT INTO key_level_adoptions
+                    (instrument_id, level_id, snapshot_id, drawing_id,
+                     adopted_ts, timeframe)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(instrument_id, level_id) DO UPDATE SET
+                    snapshot_id = excluded.snapshot_id,
+                    drawing_id = excluded.drawing_id,
+                    adopted_ts = excluded.adopted_ts,
+                    timeframe = excluded.timeframe
+                """,
+                (instrument_id, level_id, snapshot_id, drawing_id, now, timeframe),
+            )
+            self.append_event(
+                "key_level.adopt",
+                {
+                    "instrument_id": instrument_id,
+                    "level_id": level_id,
+                    "snapshot_id": snapshot_id,
+                    "drawing_id": drawing_id,
+                    "timeframe": timeframe,
                 },
                 ts=now,
             )

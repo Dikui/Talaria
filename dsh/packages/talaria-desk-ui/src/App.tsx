@@ -701,6 +701,25 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                     ignoredCount={keyLevels.ignoredIds.size}
                     onIgnore={keyLevels.ignore}
                     ignoringId={keyLevels.ignoringId}
+                    adoptedIds={keyLevels.adoptedIds}
+                    adoptingId={keyLevels.adoptingId}
+                    onAdopt={(level) => {
+                      void keyLevels.adopt(level).then((drawing) => {
+                        if (drawing !== null) {
+                          drawings.refresh();
+                        }
+                      });
+                    }}
+                    onAttachAlert={(level) => {
+                      setAlertSeed({
+                        nonce: Date.now(),
+                        levelId: level.level_id,
+                        levelKind: level.kind,
+                        instrumentId,
+                        timeframe,
+                      });
+                      setAlertsOpen(true);
+                    }}
                     loading={keyLevels.loading}
                     error={keyLevels.error}
                     readOnly={readOnlyViewport}

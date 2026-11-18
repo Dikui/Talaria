@@ -381,3 +381,11 @@ export function statusDash(status: KeyLevelStatus): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * 窄屏（<=400px）进入只读视口，关键位操作必须整体隐藏；
+ * 该判定集中在这里，避免面板与样式各自猜测断点。
+ */
+export function showLevelActions(readOnly: boolean): boolean {
+  return !readOnly;
+}

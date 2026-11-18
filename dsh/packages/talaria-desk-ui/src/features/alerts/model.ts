@@ -3,6 +3,7 @@ import type {
   AlertConditionKind,
   AlertCreate,
   AlertDirection,
+  AlertLevelEvent,
   AlertMetric,
   AlertOverlayMode,
   AlertRecord,
@@ -11,6 +12,7 @@ import type {
   DecimalString,
   DrawingKind,
   IndicatorName,
+  KeyLevelKind,
 } from "@talaria/contracts";
 
 import { KIND_LABELS } from "../drawings/tools";
@@ -52,6 +54,14 @@ export const ALERT_INDICATORS: IndicatorName[] = [
   "RSI",
   "ATR",
 ];
+
+export const ALERT_LEVEL_EVENTS: AlertLevelEvent[] = ["TOUCH", "BREAK", "RETEST"];
+
+export const ALERT_LEVEL_EVENT_LABELS: Record<AlertLevelEvent, string> = {
+  TOUCH: "触及关键位",
+  BREAK: "收盘突破关键位",
+  RETEST: "突破后回踩确认",
+};
 
 export const ALERT_OVERLAY_KINDS: DrawingKind[] = [
   "HORIZONTAL_LINE",
@@ -166,7 +176,9 @@ export function conditionSummary(
   condition: AlertCondition,
   drawingKind?: DrawingKind | null,
 ): string {
-  const direction = DIRECTION_SYMBOL[condition.direction];
+  const direction = condition.direction
+    ? DIRECTION_SYMBOL[condition.direction]
+    : "";
   switch (condition.kind) {
     case "METRIC_THRESHOLD":
       return `${METRIC_LABELS[condition.metric ?? "last_price"]} ${direction} ${condition.threshold ?? "?"}`;
@@ -182,15 +194,23 @@ export function conditionSummary(
           condition.compare_period,
           null,
         );
-        return `${left} ${CROSS_LABEL[condition.direction]} ${right}`;
+        return `${left} ${
+          condition.direction ? CROSS_LABEL[condition.direction] : "穿越"
+        } ${right}`;
       }
       return `${left} ${direction} ${condition.threshold ?? "?"}`;
     }
     case "OVERLAY_CROSS": {
       const kind = drawingKind ? KIND_LABELS[drawingKind] : "画线";
       const mode = condition.overlay_mode === "TOUCH" ? "盘中触碰" : "收盘突破";
-      return `${kind} ${mode}（${CROSS_LABEL[condition.direction]}）`;
+      return `${kind} ${mode}（${
+        condition.direction ? CROSS_LABEL[condition.direction] : "触发"
+      }）`;
     }
+    case "LEVEL_EVENT":
+      return `关键位 ${condition.level_id ?? "?"} · ${
+        ALERT_LEVEL_EVENT_LABELS[condition.level_event ?? "TOUCH"]
+      }`;
   }
 }
 
@@ -215,6 +235,9 @@ export interface AlertFormState {
   comparePeriod: number;
   drawingId: string;
   overlayMode: AlertOverlayMode;
+  levelId: string;
+  levelEvent: AlertLevelEvent;
+  levelKind: KeyLevelKind | null;
   note: string;
   cooldownSeconds: number;
   repeat: boolean;
@@ -224,12 +247,20 @@ export interface AlertFormState {
 export function defaultAlertForm(
   instrumentId: string,
   timeframe: string,
-  options: { drawingId?: string } = {},
+  options: {
+    drawingId?: string;
+    levelId?: string;
+    levelKind?: KeyLevelKind | null;
+  } = {},
 ): AlertFormState {
   return {
     instrumentId,
     timeframe,
-    kind: options.drawingId ? "OVERLAY_CROSS" : "METRIC_THRESHOLD",
+    kind: options.levelId
+      ? "LEVEL_EVENT"
+      : options.drawingId
+        ? "OVERLAY_CROSS"
+        : "METRIC_THRESHOLD",
     metric: "last_price",
     threshold: "",
     direction: "ABOVE",
@@ -240,6 +271,9 @@ export function defaultAlertForm(
     comparePeriod: 0,
     drawingId: options.drawingId ?? "",
     overlayMode: "CLOSE_BREAK",
+    levelId: options.levelId ?? "",
+    levelEvent: "TOUCH",
+    levelKind: options.levelKind ?? null,
     note: "",
     cooldownSeconds: 60,
     repeat: true,
@@ -272,6 +306,9 @@ export function validateAlertForm(form: AlertFormState): string | null {
   }
   if (form.kind === "OVERLAY_CROSS" && !form.drawingId) {
     return "请选择要挂载的画线";
+  }
+  if (form.kind === "LEVEL_EVENT" && !form.levelId.trim()) {
+    return "请从关键位面板选择或填写 level_id";
   }
   if (form.cooldownSeconds < 0) {
     return "冷却时间不能为负";
@@ -311,6 +348,14 @@ export function buildAlertCondition(form: AlertFormState): AlertCondition {
         : { threshold: form.threshold.trim() as DecimalString }),
     };
   }
+  if (form.kind === "LEVEL_EVENT") {
+    return {
+      kind: "LEVEL_EVENT",
+      level_id: form.levelId.trim(),
+      level_event: form.levelEvent,
+      ...(form.levelKind !== null ? { level_kind: form.levelKind } : {}),
+    };
+  }
   return {
     kind: "OVERLAY_CROSS",
     direction: form.direction,
@@ -341,7 +386,7 @@ export function formFromRecord(record: AlertRecord): AlertFormState {
     kind: condition.kind,
     metric: condition.metric ?? base.metric,
     threshold: condition.threshold ?? "",
-    direction: condition.direction,
+    direction: condition.direction ?? base.direction,
     indicator: (condition.indicator ?? base.indicator) as IndicatorName,
     indicatorPeriod: condition.indicator_period ?? base.indicatorPeriod,
     indicatorChannel: condition.indicator_channel ?? base.indicatorChannel,
@@ -350,6 +395,9 @@ export function formFromRecord(record: AlertRecord): AlertFormState {
     comparePeriod: condition.compare_period ?? 0,
     drawingId: condition.drawing_id ?? "",
     overlayMode: condition.overlay_mode ?? base.overlayMode,
+    levelId: condition.level_id ?? "",
+    levelEvent: condition.level_event ?? base.levelEvent,
+    levelKind: condition.level_kind ?? null,
     note: record.note ?? "",
     cooldownSeconds: Math.round(record.cooldown_ms / 1_000),
     repeat: record.repeat,

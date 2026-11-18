@@ -11,16 +11,18 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
+from talaria.foundation.key_levels.contracts import KeyLevelKind
 from talaria.foundation.operators import CHANNELS, IndicatorName
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
 class AlertConditionKind(StrEnum):
-    """规则条件的三种来源；前端不复制任何指标或几何数学。"""
+    """规则条件的来源；前端不复制任何指标、几何或关键位数学。"""
 
     METRIC_THRESHOLD = "METRIC_THRESHOLD"
     INDICATOR_SIGNAL = "INDICATOR_SIGNAL"
     OVERLAY_CROSS = "OVERLAY_CROSS"
+    LEVEL_EVENT = "LEVEL_EVENT"
 
 
 class AlertMetric(StrEnum):
@@ -48,6 +50,14 @@ class AlertOverlayMode(StrEnum):
     CLOSE_BREAK = "CLOSE_BREAK"
 
 
+class AlertLevelEvent(StrEnum):
+    """关键位事件：盘中触及、收盘突破、突破后的回踩确认。"""
+
+    TOUCH = "TOUCH"
+    BREAK = "BREAK"
+    RETEST = "RETEST"
+
+
 class AlertStatus(StrEnum):
     """规则状态机：草案/待命/冷却/过期/禁用。"""
 
@@ -62,7 +72,7 @@ class AlertCondition(ContractModel):
     """一条可评估条件；字段组合由 ``kind`` 决定。"""
 
     kind: AlertConditionKind
-    direction: AlertDirection
+    direction: AlertDirection | None = None
     metric: AlertMetric | None = None
     threshold: DecimalStr | None = None
     indicator: IndicatorName | None = None
@@ -73,6 +83,9 @@ class AlertCondition(ContractModel):
     drawing_id: str | None = Field(default=None, max_length=64)
     overlay_mode: AlertOverlayMode | None = None
     overlay_ratio: DecimalStr | None = None
+    level_id: str | None = Field(default=None, max_length=64)
+    level_event: AlertLevelEvent | None = None
+    level_kind: KeyLevelKind | None = None
 
     @model_validator(mode="after")
     def _validate_shape(self) -> AlertCondition:
@@ -90,9 +103,12 @@ class AlertCondition(ContractModel):
                     self.drawing_id,
                     self.overlay_mode,
                     self.overlay_ratio,
+                    self.level_id,
+                    self.level_event,
+                    self.level_kind,
                 )
             ):
-                raise ValueError("METRIC_THRESHOLD 不接受指标或画线字段")
+                raise ValueError("METRIC_THRESHOLD 不接受指标、画线或关键位字段")
             return self
 
         if self.kind is AlertConditionKind.INDICATOR_SIGNAL:
@@ -125,11 +141,41 @@ class AlertCondition(ContractModel):
                     self.drawing_id,
                     self.overlay_mode,
                     self.overlay_ratio,
+                    self.level_id,
+                    self.level_event,
+                    self.level_kind,
                 )
             ):
-                raise ValueError("INDICATOR_SIGNAL 不接受 metric 或画线字段")
+                raise ValueError("INDICATOR_SIGNAL 不接受 metric、画线或关键位字段")
             return self
 
+        if self.kind is AlertConditionKind.LEVEL_EVENT:
+            if self.level_id is None or self.level_event is None:
+                raise ValueError("LEVEL_EVENT 需要 level_id 与 level_event")
+            if self.direction is not None:
+                raise ValueError("LEVEL_EVENT 的方向由关键位事件决定，无需 direction")
+            if any(
+                value is not None
+                for value in (
+                    self.metric,
+                    self.threshold,
+                    self.indicator,
+                    self.indicator_period,
+                    self.indicator_channel,
+                    self.compare_indicator,
+                    self.compare_period,
+                    self.drawing_id,
+                    self.overlay_mode,
+                    self.overlay_ratio,
+                )
+            ):
+                raise ValueError("LEVEL_EVENT 不接受指标、画线或阈值字段")
+            return self
+
+        if self.direction is None:
+            raise ValueError(f"{self.kind} 需要 direction")
+        if self.level_id is not None or self.level_event is not None or self.level_kind is not None:
+            raise ValueError(f"{self.kind} 不接受关键位字段")
         if self.drawing_id is None or self.overlay_mode is None:
             raise ValueError("OVERLAY_CROSS 需要 drawing_id 与 overlay_mode")
         if any(
