@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0005](../../../docs/adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 手工分组的增删改查持久化；分组模型支持系统维护的动态分组（`SCANNER_FOCUS` 由 15 写入，本任务只需保证该类分组只读展示）。
 - [x] 订阅调度器按可扩展的优先级规则分配配额：当前打开图表 > 普通自选；“挂有活跃预警”一级由 13 接入。配额不足时低优先级标的降级为非实时并在列表中标明。
@@ -30,3 +30,14 @@
   - `390-readonly.png`：390×844 浅色；点击 ETH 行后顶栏与选中态均切到 `ETH-USDT-PERP`；所有 `.watchlist-edit` 计算样式为 `display:none`，页面无横向溢出，图表仍可见。
   - 截图未提交（按约束不提交截图/data/dist）；绝对路径见最终报告。
 - 已知限制：fixture 仅含 BTC/ETH/1000BONK，SOL 在验收中显示“无报价”；回放脚本结束后 supervisor 靠空心跳保持 LIVE，行情柱不再增长；系统组写入 API 留给 15；1m 报价缓存 5 秒，非逐笔。
+
+
+## Lead 验收
+
+2026-11-19 合并任务单 08，合并提交 `04e8d1c Merge branch 'ticket-08-watchlist'`（分支提交 `90b48f3`）。
+
+- 冲突解决：`contracts_io.py` 同时保留 drawing_* 与 watchlist_* 模型/枚举/金额字段；`state_store.py` 同时保留 drawings/drawing_versions 与 watchlist_groups/watchlist_items 两套表与全部方法，写操作均走 `StateWriterQueue.run` 单协程；`app.py` 同时保留 05 的 `/api/drawings*`、`/api/chart-view` 与 08 的 `/api/watchlist*`、订阅调度器；`generated.ts` 由 `talaria contract-check --write` 重新生成；`styles.css` 合并 05 画线样式与 08 自选池样式。
+- 合并后主分支验证：`uv run pytest -q` → 263 passed, 1 deselected；`uv run talaria contract-check` → 零漂移；`pnpm -C dsh typecheck` 通过；`pnpm -C dsh --filter @talaria/desk-ui test` → 84 passed（14 文件）；`pnpm -C dsh build` 通过（527.91 kB JS / 24.00 kB CSS，仅 chunk 体积提示）。
+- 浏览器复核（fixture daemon 127.0.0.1:8899）：1440×900 左栏 220px + 指标条 + 画线工具栏 + 主图/副图同屏，无横向溢出；390×844 左栏折叠到图表上方、画线工具栏隐藏、`.watchlist-edit` 为 none、`scrollWidth==390`；通过 API 新建分组/加入 ETH-USDT-PERP 后左栏显示报价，点击行切主图到 ETH 并重建快照（300 根）。
+- 截图复制到 `.scratch/tasks/ticket-08/`（3 张原验收图 + `merge-1440.png`、`merge-390.png`）。
+- 接受已知限制：fixture 缺 SOL 报价；回放 EOF 后无新柱；系统组写入 API 留给 15；1m 报价缓存 5 秒。
