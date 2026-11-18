@@ -1,0 +1,30 @@
+"""看盘守护进程的运行参数。"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+@dataclass(frozen=True, slots=True)
+class AppSettings:
+    data_dir: Path
+    dist_dir: Path
+    fixture_dir: Path | None = None
+    bybit_base_url: str = "https://api.bybit.com"
+    backfill_bars: int = 3000
+    max_pages: int = 5
+    token: str | None = None
+    now_ms: Callable[[], int] = field(default=_now_ms)
+
+    def __post_init__(self) -> None:
+        if self.backfill_bars <= 0:
+            raise ValueError("backfill_bars 必须为正数")
+        if self.max_pages <= 0:
+            raise ValueError("max_pages 必须为正数")

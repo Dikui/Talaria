@@ -1,0 +1,58 @@
+{
+  "additionalProperties": false,
+  "description": "一个可交易标的的静态规格。",
+  "properties": {
+    "asset_class": {
+      "title": "Asset Class",
+      "type": "string"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "min_qty": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Min Qty",
+      "type": "string"
+    },
+    "price_precision": {
+      "title": "Price Precision",
+      "type": "integer"
+    },
+    "qty_precision": {
+      "title": "Qty Precision",
+      "type": "integer"
+    },
+    "qty_step": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Qty Step",
+      "type": "string"
+    },
+    "symbol": {
+      "title": "Symbol",
+      "type": "string"
+    },
+    "tick_size": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Tick Size",
+      "type": "string"
+    },
+    "venue": {
+      "title": "Venue",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "venue",
+    "symbol",
+    "asset_class",
+    "tick_size",
+    "qty_step",
+    "min_qty",
+    "price_precision",
+    "qty_precision"
+  ],
+  "title": "InstrumentSpec",
+  "type": "object"
+}

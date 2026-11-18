@@ -1,0 +1,32 @@
+[project]
+name = "talaria-workspace"
+version = "0.0.2"
+description = "Talaria 人机协同分析工作台（uv workspace 根）"
+requires-python = ">=3.14"
+dependencies = ["talaria"]
+
+[dependency-groups]
+dev = ["pytest>=8.4"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["core"]
+
+[tool.uv.sources]
+talaria = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not online'"
+markers = [
+  "online: 访问真实外部网络的冒烟测试（默认跳过）",
+  "small: 快速单元测试",
+  "medium: 集成测试",
+  "large: 端到端测试",
+  "spec: 契约或需求测试",
+  "regression: 缺陷回归测试",
+  "property: 性质测试",
+  "pin: 记录现有行为、待确认后转为 spec",
+]

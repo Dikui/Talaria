@@ -1,0 +1,58 @@
+{
+  "$defs": {
+    "PrecisionTier": {
+      "description": "时点可取信的程度。",
+      "enum": [
+        "SECOND_VERIFIED",
+        "SESSION_BOUND",
+        "DATE_CONSERVATIVE"
+      ],
+      "title": "PrecisionTier",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "五重时点；所有分析都必须能回答“当时是否已经知道”。",
+  "properties": {
+    "precision": {
+      "$ref": "#/$defs/PrecisionTier"
+    },
+    "ts_available": {
+      "title": "Ts Available",
+      "type": "integer"
+    },
+    "ts_committed": {
+      "title": "Ts Committed",
+      "type": "integer"
+    },
+    "ts_event": {
+      "title": "Ts Event",
+      "type": "integer"
+    },
+    "ts_ingested": {
+      "title": "Ts Ingested",
+      "type": "integer"
+    },
+    "ts_published": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ts Published"
+    }
+  },
+  "required": [
+    "ts_event",
+    "ts_available",
+    "precision",
+    "ts_ingested",
+    "ts_committed"
+  ],
+  "title": "TemporalStamp",
+  "type": "object"
+}

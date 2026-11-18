@@ -4,3 +4,19 @@ docs/experiments/
 .scratch/tasks/
 .scratch/prototype/
 .agents/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.talaria/
+
+# Node / 前端构建产物
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 本地任务产物（截图、临时数据）
+.DS_Store
