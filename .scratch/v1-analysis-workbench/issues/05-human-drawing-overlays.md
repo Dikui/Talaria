@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0005](../../../docs/adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 轻量 React 画线工具栏支持水平线、射线、线段、平行通道、斐波那契回撤、矩形区间与文本标签。
 - [x] 拖拽过程在前端乐观重绘，不等待后端；松手后经快通道写入协同与感知状态库（进程内单一异步串行写队列独占写入，SQLite WAL）。记录含十进制字符串价格坐标、`Instrument`、单周期 / 跨周期可见范围、递增版本号与软删除时间戳。
@@ -30,3 +30,13 @@
   - 390×844 只读：`matchMedia('(max-width: 400px)')` 命中后工具栏/属性浮层/管理列表均不渲染、2 条画线仍显示；截图 `.../06-390-readonly.png`。
   - 交互断言：刷新页面后画线按窗口恢复；切到 5m 时仅 1m 可见画线消失、切回 1m 恢复；撤销 → 后端版本链出现 `deleted_at`（v2 软删），重做 → 恢复为 v3；拖拽水平线 → PATCH 生成 v2 且价格坐标变化；文本修改 → v3。写操作均经单一串行队列落库。
 - 已知限制：撤销/重做栈保存在当前页面会话内，不跨刷新持久化；「清空标的」后的撤销只能恢复当前窗口已加载的画线；射线/线段等端点拖拽只移动锚点，不提供独立控制点手柄；宽度 390 的验收通过 CDP `Emulation.setDeviceMetricsOverride` 取得精确视口（ego 浏览器窗口本身为 1028×848）。验收期间同机存在其他任务的 Talaria 实例（127.0.0.1 不同端口共享 cookie 域）导致 token 覆写，故改用 `localhost` 域名隔离 cookie，不属于产品缺陷。
+
+
+## Lead 验收
+
+2026-11-19 合并任务单 05，合并提交 `190530b Merge branch 'ticket-05-drawings'`（分支末提交 `9ed1fa6`）。
+
+- 合并后主分支验证：`uv run pytest -q` → 256 passed, 1 deselected；`uv run talaria contract-check` → 零漂移；`pnpm -C dsh typecheck` 通过；`pnpm -C dsh --filter @talaria/desk-ui test` → 75 passed（13 文件）；`pnpm -C dsh build` 通过（仅 Vite 500 kB chunk 提示）。
+- 审查确认：画线写入全部经 `StateWriterQueue.run` 单协程串行执行；`drawings`/`drawing_versions` 两张表，价格 JSON 为十进制字符串；PATCH 递增 version，DELETE 软删除，restore 可恢复；`get_chart_view` 返回 Instrument、周期、时间-价格窗口与窗口内有效画线；SVG 覆盖层用 `convertToPixel/convertFromPixel(...,{absolute:true})` 对齐，价格只在像素转换最后一跳转 number；390 工具栏与编辑控件隐藏。
+- 截图已复制到主仓库 `.scratch/tasks/ticket-05/`（6 张，1440 浅/深色、选中浮层、长文本贴边、空管理列表、390 只读）。
+- 接受已知限制：撤销/重做栈仅当前页面会话；“清空标的”的撤销只恢复当前窗口已加载画线；射线/线段仅整体改变锚点；390 长文本可能贴右缘截断（1440 贴边翻转已验收）。
