@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0002](../../../docs/adr/0002-capability-traits-and-market-packs.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 无前视纯函数产出：① 结构位（摆动高低点与多次触及聚成的区间；摆动枢轴须经后续确认柱数闭合后才产出，`Available Time` 记为确认柱收盘时刻）；② 时段参考位（前日高 / 低 / 收、周与月开盘价、开盘区间，以及由 `SessionTrait` 提供的加密亚洲 / 伦敦 / 纽约分段高低点，核心引擎不硬编码时区）；③ 未回补跳空缺口与整数关口。借鉴参考项目算法时遵守 01 的许可证结论，洁净室实现。
 - [x] 每个关键位具备稳定 `level_id`、单价或区间、周期、强度评分与构成明细（触及次数、最近触及时刻、成交量权重）、状态（`ACTIVE | BROKEN | FLIPPED`）与算法版本参数；黄金向量覆盖确认延迟无前视与状态转换。引擎接口可扩展新类别（11 加入成交量位与清算估算）。
@@ -34,3 +34,12 @@
   - `05-390-readonly.png`（390x935）：390 只读、底部抽屉过滤面板与四色图例、类别/强度控件 disabled、标签隐藏仅保留线。
   - `06-1440-ignored-after-refresh.png`（1440x900）：忽略 `kl_99b374562aebc3fc` 后 16/17，刷新后仍隐藏并提示忽略计数。
 - 已知限制：本批结构位只用单周期闭合 K 线的分形与 ATR 聚类，未纳入成交量分布/清算估算（11）；分段时段高低仅对 `timeframe <= 1h` 生效；`OBSERVED_REPLAY` 仍为 501；忽略只记录质量反馈，不提供“撤销忽略”以外的采纳行为（14 实现采纳，面板行尾已留扩展点注释）；浏览器验收使用 fixture 守护进程，非实时行情。
+
+
+### Lead 合并验收（2026-11-19）
+
+- 合并 `bafaf7f Merge branch 'ticket-10-key-levels'`；解决 `workbench_api/service.py`、`feed/messages.ts`、`feed/reducer.ts`、`feed/messages.test.ts` 与 07 的冲突，保留衍生品 `derivatives` 事件与关键位 `levels` 事件、两边 reducer 状态与解析测试。
+- 合并后全量：`uv run pytest -q` → 324 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 97 passed；plugin 12 passed；`pnpm -C dsh build` 成功。
+- 目视复核 01/05：1440 浅色下 `SYSTEM_LEVEL` 虚线、四类图例、17/18 计数、强度滑杆与忽略按钮正常；390 为只读底部抽屉，类别/强度控件 disabled，仅保留线。接受 390 下抽屉覆盖部分图表、1440 下右侧过滤面板覆盖价格轴区域的布局取舍，后续 14/16 可再优化。
+- 已知限制沿用子代理记录：结构位仅单周期 ATR 分形、分段时段仅 `timeframe <= 1h`、`SYSTEM_LEVEL` 随快照/订阅下发而非逐根闭合增量重算、忽略暂无“撤销”控件；真实 Bybit 联网未验证。
+- 截图已复制到 `.scratch/tasks/ticket-10/`（6 张）；worktree 与分支在关闭后删除。
