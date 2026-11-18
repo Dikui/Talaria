@@ -1,0 +1,24 @@
+{
+  "additionalProperties": false,
+  "description": "分组内条目排序：``ids`` 必须与该分组当前条目标识完全一致。",
+  "properties": {
+    "group_id": {
+      "minLength": 1,
+      "title": "Group Id",
+      "type": "string"
+    },
+    "ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "group_id",
+    "ids"
+  ],
+  "title": "WatchlistItemOrder",
+  "type": "object"
+}

@@ -1,0 +1,132 @@
+{
+  "$defs": {
+    "DegradationReason": {
+      "description": "降级原因：实时配额不足，或根本没有实时流。",
+      "enum": [
+        "QUOTA",
+        "NO_FEED"
+      ],
+      "title": "DegradationReason",
+      "type": "string"
+    },
+    "FeedHealthStatus": {
+      "description": "供流健康状态。",
+      "enum": [
+        "LIVE",
+        "STALE",
+        "RECOVERING"
+      ],
+      "title": "FeedHealthStatus",
+      "type": "string"
+    },
+    "QuoteSource": {
+      "description": "最新价的来源；前端必须能区分实时流与快照/回退。",
+      "enum": [
+        "SUPERVISOR",
+        "SNAPSHOT",
+        "UNAVAILABLE"
+      ],
+      "title": "QuoteSource",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一个自选标的的实时状态与最近行情。",
+  "properties": {
+    "change_pct": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Change Pct"
+    },
+    "degradation_reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DegradationReason"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "degraded": {
+      "title": "Degraded",
+      "type": "boolean"
+    },
+    "feed_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FeedHealthStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "latest_price": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Latest Price"
+    },
+    "position": {
+      "minimum": 0,
+      "title": "Position",
+      "type": "integer"
+    },
+    "quote_source": {
+      "$ref": "#/$defs/QuoteSource"
+    },
+    "quote_ts": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Quote Ts"
+    },
+    "realtime": {
+      "title": "Realtime",
+      "type": "boolean"
+    },
+    "stale": {
+      "title": "Stale",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "position",
+    "quote_source",
+    "realtime",
+    "stale",
+    "degraded"
+  ],
+  "title": "WatchlistItem",
+  "type": "object"
+}

@@ -1,0 +1,19 @@
+{
+  "additionalProperties": false,
+  "description": "分组排序：``ids`` 必须覆盖当前全部分组（系统分组位置固定）。",
+  "properties": {
+    "ids": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "ids"
+  ],
+  "title": "WatchlistOrder",
+  "type": "object"
+}

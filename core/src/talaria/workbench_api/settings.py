@@ -23,6 +23,7 @@ class AppSettings:
     stale_after_ms: int = 12_000
     backfill_bars: int = 3000
     max_pages: int = 5
+    realtime_quota: int = 8
     token: str | None = None
     now_ms: Callable[[], int] = field(default=_now_ms)
 
@@ -31,6 +32,8 @@ class AppSettings:
             raise ValueError("backfill_bars 必须为正数")
         if self.max_pages <= 0:
             raise ValueError("max_pages 必须为正数")
+        if self.realtime_quota <= 0:
+            raise ValueError("realtime_quota 必须为正数")
         if self.replay_speed <= 0:
             raise ValueError("replay_speed 必须为正数")
         if self.stale_after_ms <= 0:
