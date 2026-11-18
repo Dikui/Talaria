@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "description": "序列末端的可用值，以及预热与有效点数。",
+  "properties": {
+    "latest": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Latest",
+      "type": "object"
+    },
+    "valid_points": {
+      "minimum": 0,
+      "title": "Valid Points",
+      "type": "integer"
+    },
+    "warmup_bars": {
+      "minimum": 0,
+      "title": "Warmup Bars",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "latest",
+    "warmup_bars",
+    "valid_points"
+  ],
+  "title": "IndicatorSummary",
+  "type": "object"
+}

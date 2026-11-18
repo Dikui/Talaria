@@ -2,6 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 
 import type {
   CompactBar,
+  IndicatorBundle,
+  IndicatorName,
+  IndicatorSeries,
   InstrumentSpec,
   SnapshotMeta,
 } from "@talaria/contracts";
@@ -14,6 +17,16 @@ import {
 import { feedBadgeView } from "./features/feed/health";
 import { useMarketStream } from "./features/feed/useMarketStream";
 import { InstrumentSelect } from "./features/instruments/InstrumentSelect";
+import { IndicatorToolbar } from "./features/indicators/IndicatorToolbar";
+import {
+  defaultIndicatorSettings,
+  enabledIndicatorNames,
+  needsOperatorRequest,
+  operatorParams,
+  settingsSignature,
+  type IndicatorSetting,
+  type IndicatorSettings,
+} from "./features/indicators/config";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
 import { ApiError, api } from "./lib/api";
 import { toKLineSeries } from "./lib/chartData";
@@ -73,6 +86,12 @@ export default function App() {
   const [error, setError] = useState<ErrorInfo | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [theme, setTheme] = useState<Theme>(() => resolveInitialTheme());
+  const [indicatorSettings, setIndicatorSettings] = useState<IndicatorSettings>(
+    defaultIndicatorSettings,
+  );
+  const [indicatorBundle, setIndicatorBundle] = useState<IndicatorBundle | null>(null);
+  const [indicatorsLoading, setIndicatorsLoading] = useState(false);
+  const [indicatorError, setIndicatorError] = useState<string | null>(null);
   const stream = useMarketStream(instrumentId, timeframe);
 
   useEffect(() => {
@@ -162,6 +181,95 @@ export default function App() {
     };
   }, [instrumentId, timeframe, refreshNonce]);
 
+  const updateIndicator = useCallback(
+    (name: IndicatorName, patch: Partial<IndicatorSetting>) => {
+      setIndicatorSettings((previous) => ({
+        ...previous,
+        [name]: { ...previous[name], ...patch },
+      }));
+    },
+    [],
+  );
+
+  const enabledNames = enabledIndicatorNames(indicatorSettings);
+  const indicatorSignature = settingsSignature(enabledNames, indicatorSettings);
+  const latestLive = stream.bars[stream.bars.length - 1];
+  const liveTick =
+    latestLive === undefined
+      ? ""
+      : `${latestLive.bar.timestamp}:${latestLive.revision}:${latestLive.confirmed}`;
+
+  useEffect(() => {
+    if (snapshot === null) {
+      setIndicatorBundle(null);
+      setIndicatorError(null);
+      setIndicatorsLoading(false);
+      return;
+    }
+    if (enabledNames.length === 0) {
+      setIndicatorBundle(null);
+      setIndicatorError(null);
+      setIndicatorsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(
+      () => {
+        setIndicatorsLoading(true);
+        (async () => {
+          try {
+            let series: IndicatorSeries[];
+            if (!needsOperatorRequest(enabledNames, indicatorSettings)) {
+              const bundle = await api.indicators(
+                snapshot.snapshot_id,
+                timeframe,
+                enabledNames,
+                PAGE_SIZE,
+                true,
+              );
+              series = bundle.series;
+            } else {
+              // 非默认参数只走单指标 POST；历史与指标数学仍全部在 Python。
+              series = await Promise.all(
+                enabledNames.map((name) =>
+                  api.computeOperator({
+                    snapshot_id: snapshot.snapshot_id,
+                    timeframe,
+                    operator: name,
+                    params: operatorParams(name, indicatorSettings[name]),
+                    limit: PAGE_SIZE,
+                  }, true),
+                ),
+              );
+            }
+            if (!cancelled) {
+              setIndicatorBundle({
+                snapshot_id: snapshot.snapshot_id,
+                instrument_id: snapshot.instrument_id,
+                timeframe,
+                series,
+              });
+              setIndicatorError(null);
+            }
+          } catch (caught) {
+            if (!cancelled) {
+              setIndicatorError(describeError(caught).message);
+            }
+          } finally {
+            if (!cancelled) {
+              setIndicatorsLoading(false);
+            }
+          }
+        })();
+      },
+      liveTick === "" ? 0 : 550,
+    );
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [snapshot, timeframe, indicatorSignature, liveTick, indicatorSettings]);
+
   const loadOlder = useCallback(
     async (beforeTs: number): Promise<OlderPage> => {
       if (!snapshot) {
@@ -184,6 +292,13 @@ export default function App() {
       ?.qty_precision ?? 3;
 
   const showEmpty = !loading && (initialFailed || stats.loaded === 0);
+  const visibleIndicators =
+    snapshot !== null &&
+    indicatorBundle !== null &&
+    indicatorBundle.snapshot_id === snapshot.snapshot_id &&
+    indicatorBundle.timeframe === timeframe
+      ? indicatorBundle
+      : null;
   const refresh = () => setRefreshNonce((nonce) => nonce + 1);
   const effectiveFeedMode = stream.hello?.feed_mode ?? feedMode;
   const streamLive = stream.hello?.live ?? null;
@@ -316,7 +431,15 @@ export default function App() {
             </div>
           ) : (
             snapshot && (
-              <MarketChart
+              <>
+                <IndicatorToolbar
+                  settings={indicatorSettings}
+                  onChange={updateIndicator}
+                  bundle={visibleIndicators}
+                  loading={indicatorsLoading}
+                  error={indicatorError}
+                />
+                <MarketChart
                 key={snapshot.snapshot_id}
                 instrumentId={instrumentId}
                 timeframe={timeframe}
@@ -327,9 +450,11 @@ export default function App() {
                 initialHasMoreForward={hasMoreForward}
                 loadOlder={loadOlder}
                 liveBars={stream.bars}
+                indicatorSeries={visibleIndicators?.series ?? []}
                 onStats={setStats}
                 onLoadError={(caught) => setError(describeError(caught))}
               />
+              </>
             )
           )}
         </section>

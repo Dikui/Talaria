@@ -752,3 +752,227 @@ button:disabled {
     margin-right: 0;
   }
 }
+
+/* 指标条：legend 数据全部来自后端 IndicatorSeries，前端只负责排版。 */
+.chart-panel {
+  flex-direction: column;
+}
+
+.chart-stage {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.indicator-bar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px 12px;
+  padding: 8px 12px 7px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.indicator-legend {
+  display: flex;
+  flex: 1 1 520px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 9px;
+  min-width: 0;
+}
+
+.indicator-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  font-size: 11px;
+  line-height: 1.65;
+  font-variant-numeric: tabular-nums;
+}
+
+.indicator-chip strong {
+  letter-spacing: 0.02em;
+}
+
+.indicator-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: translateY(-1px);
+}
+
+.indicator-params {
+  color: var(--text-muted);
+}
+
+.indicator-latest {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.indicator-empty,
+.indicator-loading {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.indicator-loading {
+  padding-left: 2px;
+}
+
+.indicator-error {
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.legend-toggle {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.legend-toggle:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.is-collapsed .indicator-params,
+.is-collapsed .indicator-latest {
+  display: none;
+}
+
+.indicator-settings {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.indicator-settings[open] {
+  flex-basis: 100%;
+}
+
+.indicator-settings summary {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.indicator-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.indicator-settings[open] summary {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.indicator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 6px 12px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-muted);
+}
+
+.indicator-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 7px;
+}
+
+.indicator-field.is-enabled {
+  background: var(--surface);
+}
+
+.indicator-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 11.5px;
+}
+
+.indicator-toggle input {
+  accent-color: var(--accent);
+}
+
+.indicator-param {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.indicator-param input,
+.indicator-param select {
+  width: 4.4rem;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.indicator-param select {
+  width: 6.4rem;
+}
+
+@media (max-width: 720px) {
+  .indicator-bar {
+    padding: 7px 8px 6px;
+  }
+
+  .indicator-legend {
+    flex-basis: 100%;
+  }
+
+  .indicator-settings {
+    display: none;
+  }
+
+  .indicator-chip {
+    font-size: 10.5px;
+  }
+}
+
+@media (max-width: 400px) {
+  .indicator-params {
+    display: none;
+  }
+
+  .indicator-latest {
+    font-size: 10.5px;
+  }
+}

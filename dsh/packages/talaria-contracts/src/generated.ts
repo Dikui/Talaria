@@ -10,6 +10,8 @@ export type FeedHealthStatus = "LIVE" | "STALE" | "RECOVERING";
 
 export type SnapshotMode = "HISTORICAL_PIT" | "OBSERVED_REPLAY";
 
+export type IndicatorName = "EMA" | "SMA" | "RSI" | "ATR" | "BOLL" | "VWAP";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -97,4 +99,45 @@ export interface ChartPage {
 export interface ErrorResponse {
   code: string;
   message: string;
+}
+export interface IndicatorParams {
+  period: number;
+  std_dev?: DecimalString | null;
+  anchor?: "snapshot" | "session" | null;
+}
+export interface IndicatorSummary {
+  latest: Record<string, DecimalString | null>;
+  warmup_bars: number;
+  valid_points: number;
+}
+export interface IndicatorPoint {
+  timestamp: number;
+  values: Record<string, DecimalString | null>;
+}
+export interface IndicatorSeries {
+  name: IndicatorName;
+  pane: "main" | "sub";
+  params: IndicatorParams;
+  points: IndicatorPoint[];
+  summary: IndicatorSummary;
+}
+export interface IndicatorRequest {
+  snapshot_id: string;
+  timeframe: string;
+  names: string[];
+  params?: Record<string, IndicatorParams> | null;
+  limit?: number | null;
+}
+export interface OperatorRequest {
+  snapshot_id: string;
+  timeframe: string;
+  operator: IndicatorName;
+  params?: IndicatorParams | null;
+  limit?: number | null;
+}
+export interface IndicatorBundle {
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  series: IndicatorSeries[];
 }

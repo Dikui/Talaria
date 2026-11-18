@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "一个指标实例的参数；BOLL 额外使用 ``std_dev``。",
+  "properties": {
+    "anchor": {
+      "anyOf": [
+        {
+          "enum": [
+            "snapshot",
+            "session"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Anchor"
+    },
+    "period": {
+      "maximum": 5000,
+      "minimum": 1,
+      "title": "Period",
+      "type": "integer"
+    },
+    "std_dev": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Std Dev"
+    }
+  },
+  "required": [
+    "period"
+  ],
+  "title": "IndicatorParams",
+  "type": "object"
+}

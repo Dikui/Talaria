@@ -13,7 +13,7 @@ import types
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Iterable, Union, get_args, get_origin
+from typing import Annotated, Any, Iterable, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -24,6 +24,16 @@ from talaria.foundation.feed import (
     FeedHealthStatus,
     KlineEvent,
     OrderBookEvent,
+)
+from talaria.foundation.indicators import (
+    IndicatorBundle,
+    IndicatorName,
+    IndicatorParams,
+    IndicatorPoint,
+    IndicatorRequest,
+    IndicatorSeries,
+    IndicatorSummary,
+    OperatorRequest,
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import (
@@ -48,6 +58,13 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "snapshot_meta": SnapshotMeta,
     "chart_page": ChartPage,
     "error_response": ErrorResponse,
+    "indicator_params": IndicatorParams,
+    "indicator_summary": IndicatorSummary,
+    "indicator_point": IndicatorPoint,
+    "indicator_series": IndicatorSeries,
+    "indicator_request": IndicatorRequest,
+    "operator_request": OperatorRequest,
+    "indicator_bundle": IndicatorBundle,
 }
 
 #: 枚举的固定输出顺序。
@@ -56,6 +73,7 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     BarStatus,
     FeedHealthStatus,
     SnapshotMode,
+    IndicatorName,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
@@ -74,6 +92,7 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "bid_size",
         "ask_price",
         "ask_size",
+        "std_dev",
     }
 )
 
@@ -144,6 +163,11 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _ts_type(annotation: Any, prop: dict[str, Any]) -> str:
+    if get_origin(annotation) is Annotated:
+        base, *metadata = get_args(annotation)
+        if base is Decimal:
+            return "DecimalString"
+        return _ts_type(base, prop)
     if get_origin(annotation) is Union or isinstance(annotation, types.UnionType):
         args = list(get_args(annotation))
         non_none = [item for item in args if item is not type(None)]
@@ -153,8 +177,10 @@ def _ts_type(annotation: Any, prop: dict[str, Any]) -> str:
             return f"{inner} | null" if has_null else inner
         return " | ".join(_ts_type(item, prop) for item in non_none)
 
-    if _is_decimal_property(prop):
-        return "DecimalString"
+    if get_origin(annotation) is Literal:
+        return " | ".join(
+            json.dumps(member, ensure_ascii=False) for member in get_args(annotation)
+        )
     if get_origin(annotation) is list:
         (item_annotation,) = get_args(annotation)
         item_prop = prop.get("items", {}) if isinstance(prop, dict) else {}
@@ -162,6 +188,8 @@ def _ts_type(annotation: Any, prop: dict[str, Any]) -> str:
     if get_origin(annotation) is dict:
         key_annotation, value_annotation = get_args(annotation)
         return f"Record<{_ts_type(key_annotation, {})}, {_ts_type(value_annotation, {})}>"
+    if _is_decimal_property(prop):
+        return "DecimalString"
     if annotation is str:
         return "string"
     if annotation is bool:
