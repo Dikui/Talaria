@@ -11,6 +11,8 @@ import type {
   SnapshotMeta,
 } from "@talaria/contracts";
 
+import { AlertPanel, AlertToast, type AlertFormSeed } from "./features/alerts/AlertPanel";
+import { useAlerts } from "./features/alerts/useAlerts";
 import { DerivativeSummary } from "./features/derivatives/DerivativeSummary";
 import {
   FeedAlert,
@@ -124,9 +126,23 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     defaultKeyLevelFilter,
   );
   const [keyLevelPanelOpen, setKeyLevelPanelOpen] = useState(true);
+  const [alertsOpen, setAlertsOpen] = useState(true);
+  const [alertSeed, setAlertSeed] = useState<AlertFormSeed | null>(null);
+  const [snapshotCutoff, setSnapshotCutoff] = useState<number | null>(null);
   const readOnlyViewport = useReadOnlyViewport();
   const stream = useMarketStream(instrumentId, timeframe);
+  const alerts = useAlerts();
   const collaboration = useCollaborationStatus();
+
+  const chooseInstrument = useCallback((next: string) => {
+    setSnapshotCutoff(null);
+    setInstrumentId(next);
+  }, []);
+
+  const chooseTimeframe = useCallback((next: string) => {
+    setSnapshotCutoff(null);
+    setTimeframe(next);
+  }, []);
 
   useEffect(() => {
     if (embedded) {
@@ -183,7 +199,11 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
 
     (async () => {
       try {
-        const meta = await api.createSnapshot(instrumentId, [timeframe]);
+        const meta = await api.createSnapshot(
+          instrumentId,
+          [timeframe],
+          snapshotCutoff,
+        );
         if (cancelled) {
           return;
         }
@@ -220,7 +240,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     return () => {
       cancelled = true;
     };
-  }, [instrumentId, timeframe, refreshNonce]);
+  }, [instrumentId, timeframe, refreshNonce, snapshotCutoff]);
 
   useEffect(() => {
     if (snapshot === null) {
@@ -380,7 +400,26 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     oiSeries !== undefined &&
     oiSeries.points.every((point) => point.values.value === null);
 
-  const refresh = () => setRefreshNonce((nonce) => nonce + 1);
+  useEffect(() => {
+    if (stream.alert !== null) {
+      alerts.ingestTrigger(stream.alert);
+    }
+  }, [stream.alert, alerts.ingestTrigger]);
+
+  const locateTrigger = useCallback(
+    (trigger: { instrument_id: string; timeframe: string; triggered_ts: number }) => {
+      setSnapshotCutoff(trigger.triggered_ts > 0 ? trigger.triggered_ts : null);
+      setInstrumentId(trigger.instrument_id);
+      setTimeframe(trigger.timeframe);
+      alerts.markSeen();
+    },
+    [alerts.markSeen],
+  );
+
+  const refresh = () => {
+    setSnapshotCutoff(null);
+    setRefreshNonce((nonce) => nonce + 1);
+  };
   const effectiveFeedMode = stream.hello?.feed_mode ?? feedMode;
   const streamLive = stream.hello?.live ?? null;
   const badge = feedBadgeView(
@@ -441,7 +480,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
             instruments={instruments}
             value={instrumentId}
             disabled={loading}
-            onChange={setInstrumentId}
+            onChange={chooseInstrument}
           />
           <div className="timeframes" role="group" aria-label="K 线周期">
             {TIMEFRAMES.map((item) => (
@@ -451,7 +490,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                 className={`timeframe-button${item === timeframe ? " is-active" : ""}`}
                 aria-pressed={item === timeframe}
                 disabled={loading}
-                onClick={() => setTimeframe(item)}
+                onClick={() => chooseTimeframe(item)}
               >
                 {item}
               </button>
@@ -492,6 +531,29 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
             />
             <button
               type="button"
+              className={`ghost-button alerts-toggle${alertsOpen ? " is-active" : ""}`}
+              aria-pressed={alertsOpen}
+              onClick={() => {
+                setAlertsOpen((open) => !open);
+                if (!alertsOpen) {
+                  alerts.markSeen();
+                }
+              }}
+            >
+              预警{alerts.unread > 0 ? ` ${alerts.unread}` : ""}
+            </button>
+            {snapshotCutoff !== null && (
+              <button
+                type="button"
+                className="ghost-button locate-badge"
+                onClick={refresh}
+                title="回到最新快照"
+              >
+                触发时刻 · 返回最新
+              </button>
+            )}
+            <button
+              type="button"
               className="ghost-button"
               aria-label={theme === "dark" ? "切换为浅色主题" : "切换为深色主题"}
               onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -528,8 +590,21 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
         <WatchlistPanel
           instruments={instruments}
           selectedInstrumentId={instrumentId}
-          onSelect={setInstrumentId}
+          onSelect={chooseInstrument}
         />
+
+        {alertsOpen && (
+          <AlertPanel
+            controller={alerts}
+            instruments={instruments}
+            drawings={drawings.drawings}
+            currentInstrument={instrumentId}
+            currentTimeframe={timeframe}
+            formSeed={alertSeed}
+            onLocate={locateTrigger}
+            onClose={() => setAlertsOpen(false)}
+          />
+        )}
 
         <section
           className={`chart-panel${keyLevelPanelOpen ? "" : " key-levels-collapsed"}`}
@@ -651,7 +726,19 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                   </div>
                 )}
                 {!readOnlyViewport && drawings.selected !== null && (
-                  <DrawingInspector controller={drawings} timeframe={timeframe} />
+                  <DrawingInspector
+                    controller={drawings}
+                    timeframe={timeframe}
+                    onAttachAlert={(drawing) => {
+                      setAlertSeed({
+                        nonce: Date.now(),
+                        drawingId: drawing.drawing_id,
+                        instrumentId,
+                        timeframe,
+                      });
+                      setAlertsOpen(true);
+                    }}
+                  />
                 )}
                 {!readOnlyViewport && drawingManagerOpen && (
                   <DrawingManager
@@ -664,6 +751,17 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
           )}
         </section>
       </main>
+
+      {alerts.toast !== null && (
+        <AlertToast
+          trigger={alerts.toast}
+          onLocate={(trigger) => {
+            locateTrigger(trigger);
+            alerts.clearToast();
+          }}
+          onDismiss={alerts.clearToast}
+        />
+      )}
 
       <footer className="status-bar" data-testid="status-bar" aria-live="polite">
         {snapshot ? (

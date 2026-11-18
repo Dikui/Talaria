@@ -1,0 +1,265 @@
+{
+  "$defs": {
+    "AlertCondition": {
+      "additionalProperties": false,
+      "description": "一条可评估条件；字段组合由 ``kind`` 决定。",
+      "properties": {
+        "compare_indicator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IndicatorName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "compare_period": {
+          "anyOf": [
+            {
+              "maximum": 5000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Compare Period"
+        },
+        "direction": {
+          "$ref": "#/$defs/AlertDirection"
+        },
+        "drawing_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Drawing Id"
+        },
+        "indicator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IndicatorName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "indicator_channel": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Indicator Channel"
+        },
+        "indicator_period": {
+          "anyOf": [
+            {
+              "maximum": 5000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Indicator Period"
+        },
+        "kind": {
+          "$ref": "#/$defs/AlertConditionKind"
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AlertMetric"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "overlay_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AlertOverlayMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "overlay_ratio": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Overlay Ratio"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        }
+      },
+      "required": [
+        "kind",
+        "direction"
+      ],
+      "title": "AlertCondition",
+      "type": "object"
+    },
+    "AlertConditionKind": {
+      "description": "规则条件的三种来源；前端不复制任何指标或几何数学。",
+      "enum": [
+        "METRIC_THRESHOLD",
+        "INDICATOR_SIGNAL",
+        "OVERLAY_CROSS"
+      ],
+      "title": "AlertConditionKind",
+      "type": "string"
+    },
+    "AlertDirection": {
+      "description": "比较方向：向上穿越/高于，或向下穿越/低于。",
+      "enum": [
+        "ABOVE",
+        "BELOW"
+      ],
+      "title": "AlertDirection",
+      "type": "string"
+    },
+    "AlertMetric": {
+      "description": "可直接比较的盘口或衍生品标量。",
+      "enum": [
+        "last_price",
+        "bid_price",
+        "ask_price",
+        "mark_price",
+        "funding_rate",
+        "open_interest"
+      ],
+      "title": "AlertMetric",
+      "type": "string"
+    },
+    "AlertOverlayMode": {
+      "description": "画线触发的两种判定：盘中触碰或收盘确认突破。",
+      "enum": [
+        "TOUCH",
+        "CLOSE_BREAK"
+      ],
+      "title": "AlertOverlayMode",
+      "type": "string"
+    },
+    "IndicatorName": {
+      "description": "技术指标与衍生品指标；全部共用同一算子核。",
+      "enum": [
+        "EMA",
+        "SMA",
+        "RSI",
+        "ATR",
+        "BOLL",
+        "VWAP",
+        "FUNDING_QUANTILE",
+        "OI_DIVERGENCE",
+        "NET_ODDS"
+      ],
+      "title": "IndicatorName",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "创建预警的请求体；``draft=True`` 时只落草案，确认前绝不触发。",
+  "properties": {
+    "condition": {
+      "$ref": "#/$defs/AlertCondition"
+    },
+    "cooldown_ms": {
+      "default": 60000,
+      "maximum": 86400000,
+      "minimum": 0,
+      "title": "Cooldown Ms",
+      "type": "integer"
+    },
+    "draft": {
+      "default": false,
+      "title": "Draft",
+      "type": "boolean"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
+    },
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "note": {
+      "default": "",
+      "maxLength": 500,
+      "title": "Note",
+      "type": "string"
+    },
+    "repeat": {
+      "default": true,
+      "title": "Repeat",
+      "type": "boolean"
+    },
+    "timeframe": {
+      "maxLength": 16,
+      "minLength": 1,
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "timeframe",
+    "condition"
+  ],
+  "title": "AlertCreate",
+  "type": "object"
+}

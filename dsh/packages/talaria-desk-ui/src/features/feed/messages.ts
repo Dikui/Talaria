@@ -1,4 +1,5 @@
 import type {
+  AlertTriggerRecord,
   DerivativeTickEvent,
   FeedHealthEvent,
   KeyLevelSet,
@@ -19,6 +20,7 @@ export type DeskMessage =
   | { type: "health"; data: FeedHealthEvent }
   | { type: "derivatives"; data: DerivativeTickEvent }
   | { type: "levels"; data: KeyLevelSet }
+  | { type: "alert"; data: AlertTriggerRecord }
   | { type: "error"; code: string; message: string };
 
 type RawRecord = Record<string, unknown>;
@@ -80,6 +82,15 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
         typeof data.timeframe === "string" &&
         Array.isArray(data.levels)
         ? { type: "levels", data: record.data as KeyLevelSet }
+        : null;
+    }
+    case "alert": {
+      const data = asRecord(record.data);
+      return data !== null &&
+        typeof data.alert_id === "string" &&
+        typeof data.instrument_id === "string" &&
+        typeof data.triggered_ts === "number"
+        ? { type: "alert", data: record.data as AlertTriggerRecord }
         : null;
     }
     case "error":

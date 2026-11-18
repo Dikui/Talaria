@@ -123,4 +123,27 @@ describe("parseDeskMessage", () => {
     expect(parseDeskMessage(JSON.stringify({ type: "bar" }))).toBeNull();
     expect(parseDeskMessage(JSON.stringify({ type: "bar", data: {} }))).toBeNull();
   });
+
+  it("解析 alert 触发载荷", () => {
+    const parsed = parseDeskMessage(
+      JSON.stringify({
+        type: "alert",
+        data: {
+          trigger_id: "trg_1",
+          alert_id: "alr_1",
+          instrument_id: INSTRUMENT,
+          timeframe: "1m",
+          condition_kind: "OVERLAY_CROSS",
+          triggered_ts: 1_763_596_800_000,
+          snapshot_id: "snap-1",
+          message: "价格收盘突破水平线 100.5",
+        },
+      }),
+    );
+    expect(parsed?.type).toBe("alert");
+    if (parsed?.type === "alert") {
+      expect(parsed.data.snapshot_id).toBe("snap-1");
+      expect(parsed.data.triggered_ts).toBe(1_763_596_800_000);
+    }
+  });
 });

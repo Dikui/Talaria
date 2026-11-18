@@ -81,6 +81,7 @@ class WatchlistService:
         supervisor: FeedSupervisor | None,
         scheduler: RealtimeSubscriptionScheduler | None,
         now_ms: Callable[[], int],
+        alerted_instruments: Callable[[], Sequence[str]] | None = None,
     ) -> None:
         self._state_writer = state_writer
         self._instruments = {spec.instrument_id: spec for spec in instruments}
@@ -88,6 +89,7 @@ class WatchlistService:
         self._supervisor = supervisor
         self._scheduler = scheduler
         self._now_ms = now_ms
+        self._alerted_instruments = alerted_instruments
         self._quote_cache: dict[str, tuple[int, _Quote]] = {}
 
     # ------------------------------------------------------------------ 读取
@@ -130,7 +132,10 @@ class WatchlistService:
                 chart_instruments=frozenset(),
             )
         else:
-            view = self._scheduler.reconcile(ordered)
+            alerted = (
+                self._alerted_instruments() if self._alerted_instruments is not None else ()
+            )
+            view = self._scheduler.reconcile(ordered, alerted=alerted)
 
         statuses: dict[str, list[FeedHealthStatus]] = {}
         if self._supervisor is not None:

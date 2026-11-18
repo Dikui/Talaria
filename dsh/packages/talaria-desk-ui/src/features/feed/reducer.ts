@@ -1,4 +1,5 @@
 import type {
+  AlertTriggerRecord,
   DerivativeTickEvent,
   FeedHealthEvent,
   KeyLevelSet,
@@ -27,6 +28,7 @@ export interface FeedState {
   derivatives: DerivativeTickEvent | null;
   bars: KlineEvent[];
   levels: KeyLevelSet | null;
+  alert: AlertTriggerRecord | null;
   error: string | null;
 }
 
@@ -38,6 +40,7 @@ export const initialFeedState: FeedState = {
   derivatives: null,
   bars: [],
   levels: null,
+  alert: null,
   error: null,
 };
 
@@ -102,6 +105,8 @@ function applyMessage(state: FeedState, message: DeskMessage): FeedState {
       return { ...state, derivatives: message.data };
     case "levels":
       return { ...state, levels: message.data };
+    case "alert":
+      return { ...state, alert: message.data };
     case "health":
       return applyHealth(state, message.data);
     case "error":
@@ -126,6 +131,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         derivatives: null,
         health: null,
         levels: null,
+        alert: null,
         error: null,
       };
     case "message":

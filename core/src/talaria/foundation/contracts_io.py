@@ -17,6 +17,20 @@ from typing import Annotated, Any, Iterable, Literal, Union, get_args, get_origi
 
 from pydantic import BaseModel
 
+from talaria.foundation.alerts import (
+    AlertCondition,
+    AlertConditionKind,
+    AlertCreate,
+    AlertDirection,
+    AlertListResponse,
+    AlertMetric,
+    AlertOverlayMode,
+    AlertPatch,
+    AlertRecord,
+    AlertStatus,
+    AlertTriggerListResponse,
+    AlertTriggerRecord,
+)
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.drawings import (
     ChartView,
@@ -139,6 +153,13 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "watchlist_item": WatchlistItem,
     "watchlist_group": WatchlistGroup,
     "watchlist": Watchlist,
+    "alert_condition": AlertCondition,
+    "alert_create": AlertCreate,
+    "alert_patch": AlertPatch,
+    "alert_record": AlertRecord,
+    "alert_list_response": AlertListResponse,
+    "alert_trigger_record": AlertTriggerRecord,
+    "alert_trigger_list_response": AlertTriggerListResponse,
 }
 
 #: 枚举的固定输出顺序。
@@ -158,6 +179,11 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     WatchlistGroupKind,
     QuoteSource,
     DegradationReason,
+    AlertConditionKind,
+    AlertMetric,
+    AlertDirection,
+    AlertOverlayMode,
+    AlertStatus,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
@@ -189,6 +215,9 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "mark_price",
         "funding_rate",
         "open_interest",
+        "threshold",
+        "observed",
+        "overlay_ratio",
     }
 )
 

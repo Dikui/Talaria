@@ -216,4 +216,25 @@ describe("feedReducer", () => {
     expect(state.health?.timeframe).toBe("5m");
     expect(state.health?.status).toBe("LIVE");
   });
+
+  it("alert 消息替换最近一次触发通知", () => {
+    const trigger = {
+      trigger_id: "trg_1",
+      alert_id: "alr_1",
+      instrument_id: INSTRUMENT,
+      timeframe: "1m",
+      condition_kind: "METRIC_THRESHOLD" as const,
+      triggered_ts: 1_763_596_800_000,
+      snapshot_id: "snap-1",
+      message: "价格上穿 99.5",
+    };
+    let state = apply(initialFeedState, { type: "alert", data: trigger });
+    expect(state.alert).toEqual(trigger);
+    state = apply(state, {
+      type: "alert",
+      data: { ...trigger, trigger_id: "trg_2", message: "价格下穿 90" },
+    });
+    expect(state.alert?.trigger_id).toBe("trg_2");
+    expect(state.alert?.message).toBe("价格下穿 90");
+  });
 });

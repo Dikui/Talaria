@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "AlertConditionKind": {
+      "description": "规则条件的三种来源；前端不复制任何指标或几何数学。",
+      "enum": [
+        "METRIC_THRESHOLD",
+        "INDICATOR_SIGNAL",
+        "OVERLAY_CROSS"
+      ],
+      "title": "AlertConditionKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次触发；``snapshot_id`` 可为空表示冻结失败（已记录告警）。",
+  "properties": {
+    "alert_id": {
+      "title": "Alert Id",
+      "type": "string"
+    },
+    "condition_kind": {
+      "$ref": "#/$defs/AlertConditionKind"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "note": {
+      "default": "",
+      "title": "Note",
+      "type": "string"
+    },
+    "observed": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Observed"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "threshold": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Threshold"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    },
+    "trigger_id": {
+      "title": "Trigger Id",
+      "type": "string"
+    },
+    "triggered_ts": {
+      "title": "Triggered Ts",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "trigger_id",
+    "alert_id",
+    "instrument_id",
+    "timeframe",
+    "condition_kind",
+    "triggered_ts",
+    "snapshot_id",
+    "message"
+  ],
+  "title": "AlertTriggerRecord",
+  "type": "object"
+}

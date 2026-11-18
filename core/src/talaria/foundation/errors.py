@@ -33,6 +33,10 @@ class DrawingNotFoundError(NotFoundError):
     code = "DRAWING_NOT_FOUND"
 
 
+class AlertNotFoundError(NotFoundError):
+    code = "ALERT_NOT_FOUND"
+
+
 class FeedUnavailableError(TalariaError):
     code = "FEED_UNAVAILABLE"
 

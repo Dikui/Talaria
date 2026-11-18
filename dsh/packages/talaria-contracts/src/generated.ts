@@ -32,6 +32,16 @@ export type QuoteSource = "SUPERVISOR" | "SNAPSHOT" | "UNAVAILABLE";
 
 export type DegradationReason = "QUOTA" | "NO_FEED";
 
+export type AlertConditionKind = "METRIC_THRESHOLD" | "INDICATOR_SIGNAL" | "OVERLAY_CROSS";
+
+export type AlertMetric = "last_price" | "bid_price" | "ask_price" | "mark_price" | "funding_rate" | "open_interest";
+
+export type AlertDirection = "ABOVE" | "BELOW";
+
+export type AlertOverlayMode = "TOUCH" | "CLOSE_BREAK";
+
+export type AlertStatus = "DRAFT" | "ARMED" | "COOLDOWN" | "EXPIRED" | "DISABLED";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -356,4 +366,71 @@ export interface Watchlist {
   realtime_quota: number;
   realtime_used: number;
   generated_ts: number;
+}
+export interface AlertCondition {
+  kind: AlertConditionKind;
+  direction: AlertDirection;
+  metric?: AlertMetric | null;
+  threshold?: DecimalString | null;
+  indicator?: IndicatorName | null;
+  indicator_period?: number | null;
+  indicator_channel?: string | null;
+  compare_indicator?: IndicatorName | null;
+  compare_period?: number | null;
+  drawing_id?: string | null;
+  overlay_mode?: AlertOverlayMode | null;
+  overlay_ratio?: DecimalString | null;
+}
+export interface AlertCreate {
+  instrument_id: string;
+  timeframe: string;
+  condition: AlertCondition;
+  note?: string;
+  draft?: boolean;
+  repeat?: boolean;
+  cooldown_ms?: number;
+  expires_at?: number | null;
+}
+export interface AlertPatch {
+  condition?: AlertCondition | null;
+  note?: string | null;
+  repeat?: boolean | null;
+  cooldown_ms?: number | null;
+  expires_at?: number | null;
+  enabled?: boolean | null;
+}
+export interface AlertRecord {
+  alert_id: string;
+  instrument_id: string;
+  timeframe: string;
+  condition: AlertCondition;
+  status: AlertStatus;
+  repeat: boolean;
+  cooldown_ms: number;
+  expires_at?: number | null;
+  note?: string;
+  created_ts: number;
+  updated_ts: number;
+  last_triggered_ts?: number | null;
+  next_arm_ts?: number | null;
+  trigger_count?: number;
+}
+export interface AlertListResponse {
+  alerts: AlertRecord[];
+}
+export interface AlertTriggerRecord {
+  trigger_id: string;
+  alert_id: string;
+  instrument_id: string;
+  timeframe: string;
+  condition_kind: AlertConditionKind;
+  triggered_ts: number;
+  snapshot_id: string;
+  observed?: DecimalString | null;
+  threshold?: DecimalString | null;
+  message: string;
+  note?: string;
+}
+export interface AlertTriggerListResponse {
+  triggers: AlertTriggerRecord[];
 }
