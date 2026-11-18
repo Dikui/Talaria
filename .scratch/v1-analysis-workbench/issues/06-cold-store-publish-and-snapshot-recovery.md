@@ -26,3 +26,12 @@
 - 测试：`uv run pytest -q` → 177 passed, 1 deselected；`uv run talaria contract-check` → 零漂移；`pnpm -C dsh typecheck` 与 `pnpm -C dsh build` 通过。新增测试覆盖 28 例冷库（含 10 阶段中断/重试、归档幂等与哈希拒绝、清单外文件、重启字节一致、WAL/单写者）、6 例热端快照、2 例快照清单 WAL、5 例协同状态队列，以及 app 生命周期 checkpoint。
 - 冒烟：`uv run talaria up --solo --fixture-dir tests/fixtures/bybit --data-dir <tmp> --port <port>`，经 `/desk` 取 token 创建 `BTC-USDT-PERP` 1m+5m 快照（905/400 根），读回成功；SIGTERM 后两个运行时 WAL 文件消失/清零，同端口重启后按 `snapshot_id` 读回 200 且 Parquet sha256 完全一致，端口释放。
 - 已知限制：任务 06 的 ColdStore 是发布/读取库，daemon 尚未接入实时批次发布（当前冷库增量由将来采集发布器调用）；热端缓冲只在存在实时/回放流且对应通道被 WS 订阅时积累，与 03 的按需订阅语义一致。
+
+2026-11-19 lead review 后追加：daemon 级冷库发布已接入（同一分支，后续提交）。
+
+- 新增 `core/src/talaria/perception/cold_publisher.py`：`ColdPublisher` 持有 `ColdStore` + `InstrumentSpec` + timeframe，`publish_snapshot_bars()` 按 `ts_event` 排序、同 timestamp 后出现者胜、丢弃空值柱，再按冷库游标只保留 `ts_event > cursor.last_ts` 的新柱；无新柱返回 `None`。
+- `ColdStore.publish()` 在“同内容已发布”判断后新增 append-only 游标守卫：`cursor.last_ts >= 批次最小 ts_event` 时抛 `ColdStoreQualityError`，旧批次/重叠批次绝不发布，游标不回退。
+- `SnapshotBuilder` 新增可选 `cold_publishers: Mapping[(instrument_id, timeframe), ColdBarPublisher]`；每个周期在合并 RawStore 与热端后，把 `ts_available<=cutoff` 的柱尽力发布到冷库；`ColdStoreError` 只记 warning，不阻塞快照创建。
+- `workbench_api/app.py` lifespan 创建 `ColdStore(data_dir)`，为配置中的全部 instrument/timeframe 构建 publisher，注入 `SnapshotBuilder`；退出时在 supervisor、`SnapshotStore`、`StateWriterQueue` 关闭之后关闭冷库并执行 `wal_checkpoint(TRUNCATE)`。
+- 验证：`uv run pytest -q` → 187 passed, 1 deselected；`uv run talaria contract-check` → 契约生成物零漂移。新增测试覆盖游标/排序/去重/空柱、旧批次与重叠批次拒绝、builder 可见柱过滤与发布失败降级、fixture daemon 快照生成冷库 generation、二次快照不重复、重启后按 manifest 读回冷柱、退出后无 `*-wal`。CLI 冒烟（fixture + `--solo`）确认 `data_manifest.sqlite` 与 1 个 BTC 1m generation、900 根真实柱；SIGTERM 后 WAL 为 0，重启后 `snapshot_id` 仍 200。
+- 上面“daemon 尚未接入实时批次发布”的已知限制已被本次提交取代；冷库仍以快照构建为发布触发点，不做独立后台采集循环。

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
+from talaria.foundation.errors import ColdStoreError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
 from talaria.perception.backfill import BackfillPolicy, ensure_history
+from talaria.perception.cold_publisher import ColdBarPublisher
 from talaria.perception.compaction import compact_series
 from talaria.perception.hot_buffer import HotBarProvider
 from talaria.perception.raw_store import RawStore
@@ -19,6 +22,8 @@ from talaria.perception.snapshot_store import (
     SnapshotStore,
     write_snapshot_parquet,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _merge_bars(archived: Sequence[RawBar], hot: Sequence[RawBar]) -> list[RawBar]:
@@ -63,6 +68,7 @@ class SnapshotBuilder:
         policy: BackfillPolicy,
         now_ms: Callable[[], int],
         hot_bars: HotBarProvider | None = None,
+        cold_publishers: Mapping[tuple[str, str], ColdBarPublisher] | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._connector = connector
@@ -71,6 +77,7 @@ class SnapshotBuilder:
         self._policy = policy
         self._now_ms = now_ms
         self._hot_bars = hot_bars
+        self._cold_publishers = cold_publishers
 
     def build(
         self,
@@ -103,6 +110,12 @@ class SnapshotBuilder:
                 else ()
             )
             raw_bars = _merge_bars(archived, hot)
+            self._publish_cold(
+                instrument=instrument,
+                timeframe=timeframe,
+                raw_bars=raw_bars,
+                cutoff_ts=cutoff,
+            )
             compact = compact_series(raw_bars, timeframe=timeframe, cutoff_ts=cutoff)
             entries = _snapshot_entries(compact, raw_bars, cutoff_ts=cutoff)
             frames.append((timeframe, entries))
@@ -135,3 +148,31 @@ class SnapshotBuilder:
             (self._data_dir / parquet_path).unlink(missing_ok=True)
             raise
         return meta
+
+    def _publish_cold(
+        self,
+        *,
+        instrument: InstrumentSpec,
+        timeframe: str,
+        raw_bars: Sequence[RawBar],
+        cutoff_ts: int,
+    ) -> None:
+        """尽力把快照可见柱增量写入冷库；冷库故障绝不阻塞快照主路径。"""
+
+        if self._cold_publishers is None:
+            return
+        publisher = self._cold_publishers.get((instrument.instrument_id, timeframe))
+        if publisher is None:
+            return
+        visible = [bar for bar in raw_bars if bar.ts_available <= cutoff_ts]
+        if not visible:
+            return
+        try:
+            publisher.publish_snapshot_bars(visible)
+        except ColdStoreError as exc:
+            logger.warning(
+                "冷库发布失败，快照继续（%s %s）：%s",
+                instrument.instrument_id,
+                timeframe,
+                exc,
+            )

@@ -31,6 +31,7 @@ from talaria.foundation.feed import (
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import ChartPage, ErrorResponse, SnapshotMeta, SnapshotRequest
+from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.packs.crypto_perp import (
     CRYPTO_PERP_PACK,
     BybitLinearConnector,
@@ -38,6 +39,8 @@ from talaria.packs.crypto_perp import (
 )
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.backfill import BackfillPolicy
+from talaria.perception.cold_publisher import ColdPublisher
+from talaria.perception.cold_store import ColdStore
 from talaria.perception.hot_buffer import HotStreamBuffer
 from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
@@ -142,6 +145,14 @@ def create_app(settings: AppSettings) -> FastAPI:
             )
             feed_mode = "bybit"
 
+        cold_store = ColdStore(settings.data_dir)
+        cold_publishers = {
+            (instrument.instrument_id, timeframe): ColdPublisher(
+                cold_store, instrument=instrument, timeframe=timeframe
+            )
+            for instrument in instruments
+            for timeframe in SUPPORTED_TIMEFRAMES
+        }
         store = SnapshotStore(settings.data_dir)
         hot_buffer = (
             HotStreamBuffer(instruments=instruments, now_ms=settings.now_ms)
@@ -159,6 +170,7 @@ def create_app(settings: AppSettings) -> FastAPI:
             ),
             now_ms=settings.now_ms,
             hot_bars=hot_buffer,
+            cold_publishers=cold_publishers,
         )
         app.state.service = WorkbenchService(
             pack=CRYPTO_PERP_PACK,
@@ -186,6 +198,7 @@ def create_app(settings: AppSettings) -> FastAPI:
                 remove_hot_listener = supervisor.add_listener(hot_buffer.ingest)
         app.state.supervisor = supervisor
         app.state.hot_buffer = hot_buffer
+        app.state.cold_store = cold_store
         state_writer = StateWriterQueue(settings.data_dir, now_ms=settings.now_ms)
         await state_writer.start()
         app.state.state_writer = state_writer
@@ -201,6 +214,7 @@ def create_app(settings: AppSettings) -> FastAPI:
                 close()
             store.close()
             await state_writer.close()
+            cold_store.close()
 
     app = FastAPI(title="Talaria 分析工作台", version=__version__, lifespan=lifespan)
     app.state.token = token

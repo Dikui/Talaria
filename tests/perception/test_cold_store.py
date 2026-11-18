@@ -147,6 +147,21 @@ def test_duplicate_batch_is_idempotent(store: ColdStore) -> None:
     assert len(store.generations(INSTRUMENT, TIMEFRAME)) == 1
 
 
+def test_publish_rejects_older_or_overlapping_batch(store: ColdStore) -> None:
+    first = store.publish(_batch(_bars(3)))
+    baseline = store.cursor(INSTRUMENT, TIMEFRAME)
+    assert baseline is not None
+
+    with pytest.raises(ColdStoreQualityError, match="append-only"):
+        store.publish(_batch(_bars(2)))
+    with pytest.raises(ColdStoreQualityError, match="append-only"):
+        store.publish(_batch(_bars(3, start=BASE + MINUTE)))
+
+    assert store.generations(INSTRUMENT, TIMEFRAME) == [first]
+    assert store.read_bars(INSTRUMENT, TIMEFRAME) == _bars(3)
+    assert store.cursor(INSTRUMENT, TIMEFRAME) == baseline
+
+
 def test_archive_rejects_corrupted_content(tmp_path: Path) -> None:
     cold = ColdStore(tmp_path)
     try:

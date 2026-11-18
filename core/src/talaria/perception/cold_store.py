@@ -357,6 +357,13 @@ class ColdStore:
                 self._verify_generation_file(existing)
                 return existing
 
+            cursor = self.cursor(batch.instrument, batch.timeframe)
+            first_ts = min(bar.ts_event for bar in batch.bars)
+            if cursor is not None and cursor.last_ts >= first_ts:
+                raise ColdStoreQualityError(
+                    "批次首柱不晚于冷库游标，拒绝非追加发布（append-only monotonic cursor）"
+                )
+
             archived = self._archive_content(content, generation_id)
             self._write_staging(archived, batch.bars)
             self._quality_check(archived, batch)
