@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import json
 import os
 import secrets
 import shutil
@@ -339,6 +340,85 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_evaluate_levels(args: argparse.Namespace) -> int:
+    from talaria.evaluation.key_levels import (
+        EvaluationError,
+        KeyLevelEvaluationConfig,
+        dumps_report,
+        evaluate_key_levels,
+        format_table,
+        load_compact_bars,
+        parse_time_ms,
+    )
+    from talaria.foundation.errors import FeedUnavailableError
+    from talaria.foundation.key_levels import session_profile_from_trait
+    from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+
+    try:
+        config = KeyLevelEvaluationConfig(
+            instrument_id=args.instrument,
+            timeframe=args.timeframe,
+            from_ts=parse_time_ms(args.from_ts),
+            to_ts=parse_time_ms(args.to_ts),
+            atr_multiple=args.atr_multiple,
+            horizon_bars=args.horizon_bars,
+            baseline_samples=args.baseline_samples,
+            seed=args.seed,
+            atr_period=args.atr_period,
+        )
+        instrument = CRYPTO_PERP_PACK.instrument(config.instrument_id)
+        if instrument is None:
+            available = "、".join(
+                item.instrument_id for item in CRYPTO_PERP_PACK.instruments()
+            )
+            raise EvaluationError(
+                "unknown_instrument",
+                f"未知标的: {config.instrument_id}；可用: {available}",
+            )
+        profile = session_profile_from_trait(
+            CRYPTO_PERP_PACK.traits(config.instrument_id).session
+        )
+        fixture_dir = Path(args.fixture_dir) if args.fixture_dir else None
+        data_dir = Path(args.data_dir) if args.data_dir else None
+        if fixture_dir is None and data_dir is None:
+            fixture_dir = repo_root() / "tests" / "fixtures" / "bybit"
+        bars, source = load_compact_bars(
+            instrument_symbol=instrument.symbol,
+            timeframe=config.timeframe,
+            from_ts=config.from_ts,
+            to_ts=config.to_ts,
+            fixture_dir=fixture_dir,
+            data_dir=data_dir,
+            horizon_bars=config.horizon_bars,
+            atr_period=config.atr_period,
+        )
+        report = evaluate_key_levels(bars, config, session_profile=profile)
+    except FeedUnavailableError as exc:
+        print(
+            json.dumps(
+                {"error": {"code": "data_unavailable", "message": str(exc)}},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    except EvaluationError as exc:
+        print(
+            json.dumps(
+                {"error": {"code": exc.code, "message": exc.message}},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.json:
+        print(dumps_report(report, source=source))
+    print(format_table(report), file=sys.stderr)
+    print(f"source={source}", file=sys.stderr)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="talaria", description="Talaria 分析工作台")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -430,6 +510,72 @@ def build_parser() -> argparse.ArgumentParser:
         "--write", action="store_true", help="原地重新生成契约文件"
     )
     check.set_defaults(func=_cmd_contract_check)
+
+    evaluate = subparsers.add_parser(
+        "evaluate-levels", help="离线评估关键位触及后的 ATR 反应率与随机基线"
+    )
+    evaluate.add_argument(
+        "--instrument", required=True, help="标的，例如 BTC-USDT-PERP"
+    )
+    evaluate.add_argument(
+        "--timeframe", required=True, help="周期，例如 1m/5m/1h"
+    )
+    evaluate.add_argument(
+        "--from",
+        dest="from_ts",
+        required=True,
+        help="起始时间（毫秒时间戳或 ISO-8601；无时区按 Asia/Shanghai）",
+    )
+    evaluate.add_argument(
+        "--to",
+        dest="to_ts",
+        required=True,
+        help="结束时间（毫秒时间戳或 ISO-8601；无时区按 Asia/Shanghai）",
+    )
+    evaluate.add_argument(
+        "--atr-multiple",
+        type=float,
+        default=1.0,
+        help="反应阈值，单位为 ATR 倍数（默认 1.0，ATR 周期见 --atr-period）",
+    )
+    evaluate.add_argument(
+        "--horizon-bars",
+        type=int,
+        default=20,
+        help="触及后观察的柱数（默认 20）",
+    )
+    evaluate.add_argument(
+        "--baseline-samples",
+        type=int,
+        default=200,
+        help="每个类别的随机价位样本数（默认 200）",
+    )
+    evaluate.add_argument(
+        "--seed", type=int, default=42, help="随机基线种子（默认 42）"
+    )
+    evaluate.add_argument(
+        "--atr-period", type=int, default=14, help="ATR 周期（默认 14）"
+    )
+    evaluate.add_argument(
+        "--fixture-dir", default=None, help="离线 Bybit fixture 目录"
+    )
+    evaluate.add_argument(
+        "--data-dir",
+        default=None,
+        help="RawStore 数据目录；未给 --fixture-dir 时读取其中的历史柱",
+    )
+    output = evaluate.add_mutually_exclusive_group()
+    output.add_argument(
+        "--json",
+        dest="json",
+        action="store_true",
+        default=True,
+        help="向 stdout 输出 JSON，同时向 stderr 输出可读表格（默认）",
+    )
+    output.add_argument(
+        "--no-json", dest="json", action="store_false", help="只输出可读表格到 stderr"
+    )
+    evaluate.set_defaults(func=_cmd_evaluate_levels)
     return parser
 
 

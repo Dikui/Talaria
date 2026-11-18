@@ -53,6 +53,31 @@ pnpm -C dsh build
 uv run python tests/fixtures/bybit/generate.py
 ```
 
+## 关键位离线评估
+
+`evaluate-levels` 逐时点重放关键位引擎：每次只用 `ts_available <= cutoff` 的柱，统计每个 `kind` 被触及后 `horizon_bars` 根内出现 `atr_multiple × ATR` 反应的比例与平均幅度，并与同窗口、固定种子的随机价位基线对照。ATR 复用 `foundation/operators` 的 ATR（默认周期 14）。
+
+```bash
+uv run talaria evaluate-levels \
+  --instrument BTC-USDT-PERP \
+  --timeframe 1m \
+  --from 2026-11-01T08:00:00+08:00 \
+  --to 2026-11-01T18:00:00+08:00 \
+  --atr-multiple 1.0 \
+  --horizon-bars 20 \
+  --baseline-samples 200 \
+  --seed 42
+```
+
+- `--from` / `--to` 接受毫秒时间戳或 ISO-8601；不带时区的 ISO 按 `Asia/Shanghai` 解释，带 `Z` 或偏移量的按其自身时区。
+- 默认向 stdout 输出 JSON，同时向 stderr 输出可读表格与数据源；`--no-json` 只输出表格。错误以退出码 2 和 stderr JSON `{"error": {"code", "message"}}` 返回。
+- `--fixture-dir` 默认 `tests/fixtures/bybit`；只给 `--data-dir` 时回退读取 `<data-dir>/data/raw/bybit_linear/<SYMBOL>/<timeframe>.jsonl`。两者都没给时使用仓库 fixture。
+- 输出字段：输入参数 `instrument_id`、`timeframe`、`from_ts` / `to_ts`、`atr_period`、`atr_multiple`、`horizon_bars`、`baseline_samples`、`seed`，以及 `method_version`、`reaction_definition`、`skipped`、`baseline_skipped`、`total_sample_count`、`baseline_sample_count` 和 `results[]`。每个 `kind` 含 `sample_count`、`reaction_count`、`reaction_rate`、`mean_reaction_atr`、`skipped_count`、`baseline_sample_count`、`baseline_reaction_count`、`baseline_reaction_rate`、`baseline_mean_reaction_atr`、`baseline_skipped_count`。
+- 样本：同一 `level_id` 跨 cutoff 只计一次，取它在评估窗口内的首次触及；触及指柱的 high/low 包含线价（区间位为区间重叠）。触及之后严格后续 `horizon_bars` 根内，任一 close 相对价位/区间达到阈值即算反应（向上突破与向下反弹都算）；`mean_reaction_atr` 是最大偏离的 ATR 倍数均值。
+- 随机基线：从同窗口收盘价分布抽 `baseline_samples` 个价位，每个 `kind` 用 `sha256(seed:kind)` 派生独立随机流；触及与反应判定和真实关键位完全相同，但不读取引擎的 `level_id`、状态或强度。
+- 首次触及后数据不足（包括 ATR 预热不足）的样本计入 `skipped`（真实关键位）或 `baseline_skipped`（随机基线），不会以 0 代替。
+- 类别由 `KeyLevelKind` 自动枚举；11 合入后新增的成交量位、锚定 VWAP、清算估算等类别无需修改评估代码。
+
 ## 真实 Bybit（可选）
 
 本机所在网络可能被 CloudFront 按国家/地区拒绝（HTTP 403），因此**真实在线回填不是本任务单的验收前提**。在可访问 Bybit 的沙箱外可显式运行：
