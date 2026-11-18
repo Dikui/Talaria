@@ -38,12 +38,14 @@ from talaria.packs.crypto_perp import (
 )
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.backfill import BackfillPolicy
+from talaria.perception.hot_buffer import HotStreamBuffer
 from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.replay import ReplayFeed
 from talaria.workbench_api.service import WorkbenchService
 from talaria.workbench_api.settings import AppSettings
+from talaria.workbench_api.state_store import StateWriterQueue
 
 AUTH_SCHEME = "Bearer"
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -141,6 +143,11 @@ def create_app(settings: AppSettings) -> FastAPI:
             feed_mode = "bybit"
 
         store = SnapshotStore(settings.data_dir)
+        hot_buffer = (
+            HotStreamBuffer(instruments=instruments, now_ms=settings.now_ms)
+            if stream is not None
+            else None
+        )
         builder = SnapshotBuilder(
             data_dir=settings.data_dir,
             connector=connector,
@@ -151,6 +158,7 @@ def create_app(settings: AppSettings) -> FastAPI:
                 max_pages=settings.max_pages,
             ),
             now_ms=settings.now_ms,
+            hot_bars=hot_buffer,
         )
         app.state.service = WorkbenchService(
             pack=CRYPTO_PERP_PACK,
@@ -162,6 +170,7 @@ def create_app(settings: AppSettings) -> FastAPI:
         )
         app.state.ws_subscribers = {}
         supervisor: FeedSupervisor | None = None
+        remove_hot_listener = None
         if stream is not None:
             supervisor = FeedSupervisor(
                 stream=stream,
@@ -173,16 +182,25 @@ def create_app(settings: AppSettings) -> FastAPI:
                 stale_after_ms=settings.stale_after_ms,
             )
             await supervisor.start()
+            if hot_buffer is not None:
+                remove_hot_listener = supervisor.add_listener(hot_buffer.ingest)
         app.state.supervisor = supervisor
+        app.state.hot_buffer = hot_buffer
+        state_writer = StateWriterQueue(settings.data_dir, now_ms=settings.now_ms)
+        await state_writer.start()
+        app.state.state_writer = state_writer
         try:
             yield
         finally:
+            if remove_hot_listener is not None:
+                remove_hot_listener()
             if supervisor is not None:
                 await supervisor.stop()
             close = getattr(connector, "close", None)
             if callable(close):
                 close()
             store.close()
+            await state_writer.close()
 
     app = FastAPI(title="Talaria 分析工作台", version=__version__, lifespan=lifespan)
     app.state.token = token

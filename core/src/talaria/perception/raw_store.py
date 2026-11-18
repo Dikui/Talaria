@@ -18,7 +18,8 @@ from talaria.foundation.types import PrecisionTier
 RAW_SUBDIR = Path("data") / "raw" / "bybit_linear"
 
 
-def _record(bar: RawBar) -> dict[str, object]:
+def bar_record(bar: RawBar) -> dict[str, object]:
+    """把原始柱转成稳定字段顺序的 JSON 记录（冷库归档也复用这一形状）。"""
     return {
         "symbol": bar.symbol,
         "timeframe": bar.timeframe,
@@ -36,7 +37,7 @@ def _record(bar: RawBar) -> dict[str, object]:
     }
 
 
-def _bar(record: dict[str, object]) -> RawBar:
+def bar_from_record(record: dict[str, object]) -> RawBar:
     return RawBar(
         symbol=str(record["symbol"]),
         timeframe=str(record["timeframe"]),
@@ -71,7 +72,9 @@ class RawStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             for bar in materialized:
-                handle.write(json.dumps(_record(bar), ensure_ascii=False, sort_keys=True) + "\n")
+                handle.write(
+                    json.dumps(bar_record(bar), ensure_ascii=False, sort_keys=True) + "\n"
+                )
             handle.flush()
             os.fsync(handle.fileno())
         return len(materialized)
@@ -86,6 +89,6 @@ class RawStore:
                 if not line.strip():
                     continue
                 record = json.loads(line)
-                bar = _bar(record)
+                bar = bar_from_record(record)
                 by_timestamp[bar.ts_event] = bar
         return [by_timestamp[key] for key in sorted(by_timestamp)]

@@ -272,6 +272,19 @@ def test_feed_failure_maps_to_503(tmp_path, dist_dir) -> None:
     assert response.json()["code"] == "FEED_UNAVAILABLE"
 
 
+def test_lifespan_creates_and_checkpoints_collaboration_state(
+    tmp_path, fixture_dir, dist_dir
+) -> None:
+    app = create_app(_app_settings(tmp_path, fixture_dir, dist=dist_dir))
+    with TestClient(app):
+        pass
+
+    db = tmp_path / "data" / "state" / "collaboration_state.sqlite"
+    assert db.is_file()
+    wal = Path(f"{db}-wal")
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
 def test_validation_error_is_wrapped_in_error_response(client) -> None:
     response = client.post(
         "/api/snapshots", content=json.dumps({}), headers={**AUTH, "Content-Type": "application/json"}
