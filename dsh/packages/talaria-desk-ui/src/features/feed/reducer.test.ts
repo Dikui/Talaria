@@ -33,6 +33,21 @@ describe("feedReducer", () => {
     expect(state.hello).toEqual({ feed_mode: "replay", server_ts: 1, live: true });
   });
 
+  it("levels 帧整体替换关键位集合，不回退旧快照", () => {
+    const bundle = {
+      snapshot_id: "snap",
+      instrument_id: INSTRUMENT,
+      timeframe: "1m",
+      cutoff_ts: 1,
+      as_of_ts: 1,
+      levels: [],
+    };
+    const state = apply(initialFeedState, { type: "levels", data: bundle });
+    expect(state.levels).toEqual(bundle);
+    expect(state.bars).toEqual([]);
+    expect(state.connection).toBe("connecting");
+  });
+
   it("同 timestamp 的 K 线原位更新，新 timestamp 追加", () => {
     let state = apply(initialFeedState, {
       type: "bar",

@@ -48,6 +48,31 @@ describe("parseDeskMessage", () => {
     expect(healthMessage?.type).toBe("health");
   });
 
+  it("解析 levels 投影，拒绝缺失 levels 的载荷", () => {
+    const parsed = parseDeskMessage(
+      JSON.stringify({
+        type: "levels",
+        data: {
+          snapshot_id: "snap",
+          instrument_id: INSTRUMENT,
+          timeframe: "1m",
+          cutoff_ts: 1,
+          as_of_ts: 1,
+          method_version: "key-levels@1",
+          levels: [],
+        },
+      }),
+    );
+    expect(parsed?.type).toBe("levels");
+    if (parsed?.type === "levels") {
+      expect(parsed.data.snapshot_id).toBe("snap");
+      expect(parsed.data.levels).toEqual([]);
+    }
+    expect(
+      parseDeskMessage(JSON.stringify({ type: "levels", data: { instrument_id: INSTRUMENT } })),
+    ).toBeNull();
+  });
+
   it("解析错误消息", () => {
     const parsed = parseDeskMessage(
       JSON.stringify({

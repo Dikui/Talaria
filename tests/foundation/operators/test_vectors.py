@@ -18,7 +18,18 @@ from talaria.foundation.operators import (
 pytestmark = [pytest.mark.small, pytest.mark.regression]
 
 VECTOR_DIR = Path(__file__).resolve().parents[3] / "contracts" / "operator_vectors"
-VECTOR_PATHS = sorted(VECTOR_DIR.glob("*.json"))
+
+
+def _is_operator_vector(path: Path) -> bool:
+    """关键位等更高层引擎的向量自带 cases，不属于单算子 params 契约。"""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return "operator" in payload and "params" in payload
+
+
+VECTOR_PATHS = sorted(path for path in VECTOR_DIR.glob("*.json") if _is_operator_vector(path))
 
 
 def _bars(raw: list[dict]) -> list[CompactBar]:

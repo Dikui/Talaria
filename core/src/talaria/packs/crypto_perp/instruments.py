@@ -13,6 +13,7 @@ from talaria.foundation.market import (
     OrderConstraintTrait,
     SessionTrait,
     TraitBundle,
+    TradingSession,
 )
 
 _INSTRUMENTS: tuple[InstrumentSpec, ...] = (
@@ -66,7 +67,16 @@ _TRAITS = TraitBundle(
     feed=FeedCapabilityTrait(realtime=True, polling=True, history=True),
     margin=MarginTrait(margin_asset="USDT", max_leverage=Decimal("100")),
     carry=CarryTrait(funding_interval_hours=8),
-    session=SessionTrait(session_kind="24x7", timezone="UTC"),
+    session=SessionTrait(
+        session_kind="24x7",
+        timezone="UTC",
+        day_start="00:00",
+        sessions=(
+            TradingSession(name="asia", start="00:00", end="08:00"),
+            TradingSession(name="london", start="07:00", end="16:00"),
+            TradingSession(name="new_york", start="12:00", end="21:00"),
+        ),
+    ),
     order_constraint=OrderConstraintTrait(post_only=True),
 )
 

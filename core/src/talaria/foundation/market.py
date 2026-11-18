@@ -52,11 +52,23 @@ class CarryTrait:
 
 
 @dataclass(frozen=True, slots=True)
+class TradingSession:
+    """包内声明的单一时段窗口（当地时间，``HH:MM``）。"""
+
+    name: str
+    start: str
+    end: str
+    timezone: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SessionTrait:
-    """交易时段能力。"""
+    """交易时段能力；具体时区与分段窗口完全由市场包提供。"""
 
     session_kind: str
     timezone: str | None = None
+    day_start: str = "00:00"
+    sessions: tuple[TradingSession, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

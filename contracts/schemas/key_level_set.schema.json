@@ -1,0 +1,233 @@
+{
+  "$defs": {
+    "KeyLevel": {
+      "additionalProperties": false,
+      "description": "一个已确认、无前视的关键位；单价或区间二选一。",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/KeyLevelCategory"
+        },
+        "formed_ts": {
+          "minimum": 0,
+          "title": "Formed Ts",
+          "type": "integer"
+        },
+        "instrument_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/KeyLevelKind"
+        },
+        "last_touch_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Touch Ts"
+        },
+        "level_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Level Id",
+          "type": "string"
+        },
+        "method_version": {
+          "default": "key-levels@1",
+          "title": "Method Version",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price"
+        },
+        "price_high": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price High"
+        },
+        "price_low": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price Low"
+        },
+        "status": {
+          "$ref": "#/$defs/KeyLevelStatus"
+        },
+        "strength": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Strength",
+          "type": "number"
+        },
+        "timeframe": {
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "touch_count": {
+          "minimum": 0,
+          "title": "Touch Count",
+          "type": "integer"
+        },
+        "ts_available": {
+          "minimum": 0,
+          "title": "Ts Available",
+          "type": "integer"
+        },
+        "volume_weight": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Volume Weight",
+          "type": "string"
+        }
+      },
+      "required": [
+        "level_id",
+        "instrument_id",
+        "kind",
+        "category",
+        "timeframe",
+        "strength",
+        "status",
+        "ts_available",
+        "formed_ts",
+        "touch_count",
+        "volume_weight"
+      ],
+      "title": "KeyLevel",
+      "type": "object"
+    },
+    "KeyLevelCategory": {
+      "description": "面向 UI 过滤的稳定大类。",
+      "enum": [
+        "STRUCTURE",
+        "SESSION",
+        "GAP",
+        "ROUND_NUMBER"
+      ],
+      "title": "KeyLevelCategory",
+      "type": "string"
+    },
+    "KeyLevelKind": {
+      "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+      "enum": [
+        "SWING_HIGH",
+        "SWING_LOW",
+        "PREV_DAY_HIGH",
+        "PREV_DAY_LOW",
+        "PREV_DAY_CLOSE",
+        "WEEK_OPEN",
+        "MONTH_OPEN",
+        "OPENING_RANGE",
+        "SESSION_HIGH",
+        "SESSION_LOW",
+        "GAP",
+        "ROUND_NUMBER"
+      ],
+      "title": "KeyLevelKind",
+      "type": "string"
+    },
+    "KeyLevelStatus": {
+      "enum": [
+        "ACTIVE",
+        "BROKEN",
+        "FLIPPED"
+      ],
+      "title": "KeyLevelStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "某个冻结快照与周期上的一份不可变关键位集合。",
+  "properties": {
+    "as_of_ts": {
+      "minimum": 0,
+      "title": "As Of Ts",
+      "type": "integer"
+    },
+    "cutoff_ts": {
+      "minimum": 0,
+      "title": "Cutoff Ts",
+      "type": "integer"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "levels": {
+      "items": {
+        "$ref": "#/$defs/KeyLevel"
+      },
+      "title": "Levels",
+      "type": "array"
+    },
+    "method_version": {
+      "default": "key-levels@1",
+      "title": "Method Version",
+      "type": "string"
+    },
+    "parameters": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Parameters",
+      "type": "object"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "instrument_id",
+    "timeframe",
+    "cutoff_ts",
+    "as_of_ts"
+  ],
+  "title": "KeyLevelSet",
+  "type": "object"
+}

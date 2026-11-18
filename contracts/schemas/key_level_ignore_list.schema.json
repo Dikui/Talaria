@@ -1,0 +1,52 @@
+{
+  "$defs": {
+    "KeyLevelIgnoreRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "ignored": {
+          "title": "Ignored",
+          "type": "boolean"
+        },
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "level_id": {
+          "title": "Level Id",
+          "type": "string"
+        },
+        "updated_ts": {
+          "title": "Updated Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "level_id",
+        "ignored",
+        "updated_ts"
+      ],
+      "title": "KeyLevelIgnoreRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/KeyLevelIgnoreRecord"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id"
+  ],
+  "title": "KeyLevelIgnoreList",
+  "type": "object"
+}

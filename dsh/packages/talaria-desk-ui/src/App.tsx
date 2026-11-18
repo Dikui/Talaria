@@ -34,6 +34,14 @@ import { DrawingOverlay } from "./features/drawings/DrawingOverlay";
 import { DrawingToolbar } from "./features/drawings/DrawingToolbar";
 import { useDrawings } from "./features/drawings/useDrawings";
 import { useReadOnlyViewport } from "./features/drawings/useReadOnlyViewport";
+import { KeyLevelLayer } from "./features/key-levels/KeyLevelLayer";
+import { KeyLevelPanel } from "./features/key-levels/KeyLevelPanel";
+import {
+  defaultKeyLevelFilter,
+  visibleKeyLevels,
+  type KeyLevelFilter,
+} from "./features/key-levels/model";
+import { useKeyLevels } from "./features/key-levels/useKeyLevels";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
 import { WatchlistPanel } from "./features/watchlist/WatchlistPanel";
 import { ApiError, api } from "./lib/api";
@@ -102,6 +110,10 @@ export default function App() {
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
   const [chart, setChart] = useState<Chart | null>(null);
   const [drawingManagerOpen, setDrawingManagerOpen] = useState(false);
+  const [keyLevelFilter, setKeyLevelFilter] = useState<KeyLevelFilter>(
+    defaultKeyLevelFilter,
+  );
+  const [keyLevelPanelOpen, setKeyLevelPanelOpen] = useState(true);
   const readOnlyViewport = useReadOnlyViewport();
   const stream = useMarketStream(instrumentId, timeframe);
 
@@ -339,6 +351,19 @@ export default function App() {
     pricePrecision,
     readOnly: readOnlyViewport,
   });
+  const keyLevels = useKeyLevels({
+    snapshotId: snapshot?.snapshot_id ?? null,
+    instrumentId,
+    timeframe,
+    streamed: stream.levels,
+  });
+  const visibleLevels = visibleKeyLevels(
+    keyLevels.levels,
+    keyLevelFilter,
+    keyLevels.ignoredIds,
+  );
+  const keyLevelInset =
+    keyLevelPanelOpen && !readOnlyViewport ? 278 : 0;
 
   return (
     <div className="app-shell">
@@ -426,7 +451,10 @@ export default function App() {
           onSelect={setInstrumentId}
         />
 
-        <section className="chart-panel" aria-label="K 线主图">
+        <section
+          className={`chart-panel${keyLevelPanelOpen ? "" : " key-levels-collapsed"}`}
+          aria-label="K 线主图"
+        >
           {loading ? (
             <div className="loading-state" data-testid="loading-state" aria-live="polite">
               <div className="skeleton" aria-hidden="true">
@@ -484,9 +512,46 @@ export default function App() {
                   indicatorSeries={visibleIndicators?.series ?? []}
                   onStats={setStats}
                   onLoadError={(caught) => setError(describeError(caught))}
-                  overlay={<DrawingOverlay chart={chart} controller={drawings} />}
+                  overlay={
+                    <>
+                      <KeyLevelLayer
+                        chart={chart}
+                        levels={visibleLevels}
+                        pricePrecision={pricePrecision}
+                        rightInset={keyLevelInset}
+                      />
+                      <DrawingOverlay chart={chart} controller={drawings} />
+                    </>
+                  }
                   onChartReady={setChart}
                 />
+                {keyLevelPanelOpen ? (
+                  <KeyLevelPanel
+                    levels={visibleLevels}
+                    allLevels={keyLevels.levels.filter(
+                      (level) => !keyLevels.ignoredIds.has(level.level_id),
+                    )}
+                    filter={keyLevelFilter}
+                    onFilterChange={setKeyLevelFilter}
+                    precision={pricePrecision}
+                    ignoredCount={keyLevels.ignoredIds.size}
+                    onIgnore={keyLevels.ignore}
+                    ignoringId={keyLevels.ignoringId}
+                    loading={keyLevels.loading}
+                    error={keyLevels.error}
+                    readOnly={readOnlyViewport}
+                    onClose={() => setKeyLevelPanelOpen(false)}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="key-level-open"
+                    data-testid="key-level-open"
+                    onClick={() => setKeyLevelPanelOpen(true)}
+                  >
+                    关键位 {visibleLevels.length}
+                  </button>
+                )}
                 {!readOnlyViewport && drawings.error !== null && (
                   <div className="drawing-error" role="alert" data-testid="drawing-error">
                     <span>{drawings.error}</span>

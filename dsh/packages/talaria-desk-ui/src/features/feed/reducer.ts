@@ -1,5 +1,6 @@
 import type {
   FeedHealthEvent,
+  KeyLevelSet,
   KlineEvent,
   OrderBookEvent,
 } from "@talaria/contracts";
@@ -23,6 +24,7 @@ export interface FeedState {
   health: FeedHealthEvent | null;
   book: OrderBookEvent | null;
   bars: KlineEvent[];
+  levels: KeyLevelSet | null;
   error: string | null;
 }
 
@@ -32,6 +34,7 @@ export const initialFeedState: FeedState = {
   health: null,
   book: null,
   bars: [],
+  levels: null,
   error: null,
 };
 
@@ -85,6 +88,8 @@ function applyMessage(state: FeedState, message: DeskMessage): FeedState {
     }
     case "book":
       return { ...state, book: message.data };
+    case "levels":
+      return { ...state, levels: message.data };
     case "health":
       return applyHealth(state, message.data);
     case "error":
@@ -102,7 +107,14 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
     case "closed":
       return { ...state, connection: "closed" };
     case "reset":
-      return { ...state, bars: [], book: null, health: null, error: null };
+      return {
+        ...state,
+        bars: [],
+        book: null,
+        health: null,
+        levels: null,
+        error: null,
+      };
     case "message":
       return applyMessage(state, action.message);
   }

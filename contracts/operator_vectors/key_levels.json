@@ -1,0 +1,814 @@
+{
+  "cases": [
+    {
+      "bars": [
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1699999980000,
+          "ts_available": 1700000040000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000040000,
+          "ts_available": 1700000100000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000100000,
+          "ts_available": 1700000160000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000160000,
+          "ts_available": 1700000220000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000220000,
+          "ts_available": 1700000280000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "120",
+          "low": "100",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000280000,
+          "ts_available": 1700000340000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000340000,
+          "ts_available": 1700000400000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000400000,
+          "ts_available": 1700000460000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000460000,
+          "ts_available": 1700000520000,
+          "turnover": "1050",
+          "volume": "10"
+        }
+      ],
+      "cutoff_ts": 1700000400000,
+      "expected": [],
+      "name": "swing_confirmation_before",
+      "params": {}
+    },
+    {
+      "bars": [
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1699999980000,
+          "ts_available": 1700000040000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000040000,
+          "ts_available": 1700000100000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000100000,
+          "ts_available": 1700000160000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000160000,
+          "ts_available": 1700000220000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000220000,
+          "ts_available": 1700000280000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "120",
+          "low": "100",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000280000,
+          "ts_available": 1700000340000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000340000,
+          "ts_available": 1700000400000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000400000,
+          "ts_available": 1700000460000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000460000,
+          "ts_available": 1700000520000,
+          "turnover": "1050",
+          "volume": "10"
+        }
+      ],
+      "cutoff_ts": 1700000460000,
+      "expected": [
+        {
+          "category": "STRUCTURE",
+          "formed_ts": 1700000280000,
+          "kind": "SWING_HIGH",
+          "level_id": "kl_e5f53fb926c32a10",
+          "price": "120",
+          "price_high": null,
+          "price_low": null,
+          "status": "ACTIVE",
+          "strength": 0.702,
+          "touch_count": 1,
+          "ts_available": 1700000460000
+        }
+      ],
+      "name": "swing_confirmation_after",
+      "params": {}
+    },
+    {
+      "bars": [
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1699999980000,
+          "ts_available": 1700000040000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000040000,
+          "ts_available": 1700000100000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000100000,
+          "ts_available": 1700000160000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "101",
+          "high": "102",
+          "low": "100",
+          "open": "101",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000160000,
+          "ts_available": 1700000220000,
+          "turnover": "1010",
+          "volume": "10"
+        },
+        {
+          "close": "104",
+          "high": "105",
+          "low": "103",
+          "open": "103",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000220000,
+          "ts_available": 1700000280000,
+          "turnover": "1040",
+          "volume": "10"
+        },
+        {
+          "close": "104",
+          "high": "105",
+          "low": "103",
+          "open": "103",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000280000,
+          "ts_available": 1700000340000,
+          "turnover": "1040",
+          "volume": "10"
+        },
+        {
+          "close": "98",
+          "high": "102",
+          "low": "97",
+          "open": "102",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000340000,
+          "ts_available": 1700000400000,
+          "turnover": "980",
+          "volume": "10"
+        },
+        {
+          "close": "102",
+          "high": "103",
+          "low": "101",
+          "open": "101",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000400000,
+          "ts_available": 1700000460000,
+          "turnover": "1020",
+          "volume": "10"
+        }
+      ],
+      "cutoff_ts": 1700000340000,
+      "expected": [
+        {
+          "category": "STRUCTURE",
+          "formed_ts": 1700000160000,
+          "kind": "SWING_LOW",
+          "level_id": "kl_5101adf6bace872e",
+          "price": "100",
+          "price_high": null,
+          "price_low": null,
+          "status": "ACTIVE",
+          "strength": 0.702,
+          "touch_count": 1,
+          "ts_available": 1700000340000
+        }
+      ],
+      "name": "support_active_broken_flipped",
+      "params": {}
+    },
+    {
+      "bars": [
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1699999980000,
+          "ts_available": 1700000040000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000040000,
+          "ts_available": 1700000100000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000100000,
+          "ts_available": 1700000160000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "101",
+          "high": "102",
+          "low": "100",
+          "open": "101",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000160000,
+          "ts_available": 1700000220000,
+          "turnover": "1010",
+          "volume": "10"
+        },
+        {
+          "close": "104",
+          "high": "105",
+          "low": "103",
+          "open": "103",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000220000,
+          "ts_available": 1700000280000,
+          "turnover": "1040",
+          "volume": "10"
+        },
+        {
+          "close": "104",
+          "high": "105",
+          "low": "103",
+          "open": "103",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000280000,
+          "ts_available": 1700000340000,
+          "turnover": "1040",
+          "volume": "10"
+        },
+        {
+          "close": "98",
+          "high": "102",
+          "low": "97",
+          "open": "102",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000340000,
+          "ts_available": 1700000400000,
+          "turnover": "980",
+          "volume": "10"
+        },
+        {
+          "close": "102",
+          "high": "103",
+          "low": "101",
+          "open": "101",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000400000,
+          "ts_available": 1700000460000,
+          "turnover": "1020",
+          "volume": "10"
+        }
+      ],
+      "cutoff_ts": 1700000400000,
+      "expected": [
+        {
+          "category": "STRUCTURE",
+          "formed_ts": 1700000160000,
+          "kind": "SWING_LOW",
+          "level_id": "kl_5101adf6bace872e",
+          "price": "100",
+          "price_high": null,
+          "price_low": null,
+          "status": "BROKEN",
+          "strength": 0.819,
+          "touch_count": 2,
+          "ts_available": 1700000340000
+        }
+      ],
+      "name": "support_broken",
+      "params": {}
+    },
+    {
+      "bars": [
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1699999980000,
+          "ts_available": 1700000040000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000040000,
+          "ts_available": 1700000100000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "104",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000100000,
+          "ts_available": 1700000160000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "101",
+          "high": "102",
+          "low": "100",
+          "open": "101",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000160000,
+          "ts_available": 1700000220000,
+          "turnover": "1010",
+          "volume": "10"
+        },
+        {
+          "close": "104",
+          "high": "105",
+          "low": "103",
+          "open": "103",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000220000,
+          "ts_available": 1700000280000,
+          "turnover": "1040",
+          "volume": "10"
+        },
+        {
+          "close": "104",
+          "high": "105",
+          "low": "103",
+          "open": "103",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000280000,
+          "ts_available": 1700000340000,
+          "turnover": "1040",
+          "volume": "10"
+        },
+        {
+          "close": "98",
+          "high": "102",
+          "low": "97",
+          "open": "102",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000340000,
+          "ts_available": 1700000400000,
+          "turnover": "980",
+          "volume": "10"
+        },
+        {
+          "close": "102",
+          "high": "103",
+          "low": "101",
+          "open": "101",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000400000,
+          "ts_available": 1700000460000,
+          "turnover": "1020",
+          "volume": "10"
+        }
+      ],
+      "cutoff_ts": 1700000460000,
+      "expected": [
+        {
+          "category": "STRUCTURE",
+          "formed_ts": 1700000160000,
+          "kind": "SWING_LOW",
+          "level_id": "kl_5101adf6bace872e",
+          "price": "100",
+          "price_high": null,
+          "price_low": null,
+          "status": "FLIPPED",
+          "strength": 0.797,
+          "touch_count": 2,
+          "ts_available": 1700000340000
+        }
+      ],
+      "name": "support_flipped",
+      "params": {}
+    },
+    {
+      "bars": [
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1699999980000,
+          "ts_available": 1700000040000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000040000,
+          "ts_available": 1700000100000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000100000,
+          "ts_available": 1700000160000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000160000,
+          "ts_available": 1700000220000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "100",
+          "high": "101",
+          "low": "99",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000220000,
+          "ts_available": 1700000280000,
+          "turnover": "1000",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "120.2",
+          "low": "100",
+          "open": "100",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000280000,
+          "ts_available": 1700000340000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000340000,
+          "ts_available": 1700000400000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000400000,
+          "ts_available": 1700000460000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "101",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000460000,
+          "ts_available": 1700000520000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "103",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000520000,
+          "ts_available": 1700000580000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "103",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000580000,
+          "ts_available": 1700000640000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "105",
+          "high": "106",
+          "low": "103",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000640000,
+          "ts_available": 1700000700000,
+          "turnover": "1050",
+          "volume": "10"
+        },
+        {
+          "close": "110",
+          "high": "120.6",
+          "low": "103",
+          "open": "105",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000700000,
+          "ts_available": 1700000760000,
+          "turnover": "1100",
+          "volume": "10"
+        },
+        {
+          "close": "110",
+          "high": "111",
+          "low": "106",
+          "open": "110",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000760000,
+          "ts_available": 1700000820000,
+          "turnover": "1100",
+          "volume": "10"
+        },
+        {
+          "close": "110",
+          "high": "111",
+          "low": "106",
+          "open": "110",
+          "precision": "SECOND_VERIFIED",
+          "status": "NORMAL",
+          "timestamp": 1700000820000,
+          "ts_available": 1700000880000,
+          "turnover": "1100",
+          "volume": "10"
+        }
+      ],
+      "cutoff_ts": 1700000880000,
+      "expected": [
+        {
+          "category": "STRUCTURE",
+          "formed_ts": 1700000280000,
+          "kind": "SWING_HIGH",
+          "level_id": "kl_3eec2d4ea6be93c9",
+          "price": null,
+          "price_high": "120.6",
+          "price_low": "120.2",
+          "status": "ACTIVE",
+          "strength": 0.752,
+          "touch_count": 2,
+          "ts_available": 1700000880000
+        }
+      ],
+      "name": "zone_cluster",
+      "params": {
+        "cluster_atr": 2.0,
+        "pivot_atr_min": 0.2,
+        "touch_atr": 0.5
+      }
+    }
+  ],
+  "instrument_id": "BTC-USDT-PERP",
+  "method_version": "key-levels@1",
+  "operator": "key_levels",
+  "timeframe": "1m"
+}

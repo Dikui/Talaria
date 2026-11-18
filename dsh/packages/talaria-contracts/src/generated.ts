@@ -16,6 +16,12 @@ export type DrawingKind = "HORIZONTAL_LINE" | "RAY" | "SEGMENT" | "PARALLEL_CHAN
 
 export type DrawingLineStyle = "solid" | "dashed" | "dotted";
 
+export type KeyLevelKind = "SWING_HIGH" | "SWING_LOW" | "PREV_DAY_HIGH" | "PREV_DAY_LOW" | "PREV_DAY_CLOSE" | "WEEK_OPEN" | "MONTH_OPEN" | "OPENING_RANGE" | "SESSION_HIGH" | "SESSION_LOW" | "GAP" | "ROUND_NUMBER";
+
+export type KeyLevelCategory = "STRUCTURE" | "SESSION" | "GAP" | "ROUND_NUMBER";
+
+export type KeyLevelStatus = "ACTIVE" | "BROKEN" | "FLIPPED";
+
 export type WatchlistGroupKind = "MANUAL" | "SCANNER_FOCUS";
 
 export type QuoteSource = "SUPERVISOR" | "SNAPSHOT" | "UNAVAILABLE";
@@ -212,6 +218,50 @@ export interface ChartView {
   timeframe: string;
   window: ChartViewWindow;
   drawings: DrawingRecord[];
+}
+export interface KeyLevel {
+  level_id: string;
+  instrument_id: string;
+  kind: KeyLevelKind;
+  category: KeyLevelCategory;
+  timeframe: string;
+  price?: DecimalString | null;
+  price_low?: DecimalString | null;
+  price_high?: DecimalString | null;
+  strength: number;
+  status: KeyLevelStatus;
+  ts_available: number;
+  formed_ts: number;
+  method_version?: string;
+  parameters?: Record<string, string>;
+  touch_count: number;
+  last_touch_ts?: number | null;
+  volume_weight: DecimalString;
+}
+export interface KeyLevelSet {
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  cutoff_ts: number;
+  as_of_ts: number;
+  method_version?: string;
+  parameters?: Record<string, string>;
+  levels?: KeyLevel[];
+}
+export interface KeyLevelIgnoreRequest {
+  instrument_id: string;
+  level_id: string;
+  ignored?: boolean;
+}
+export interface KeyLevelIgnoreRecord {
+  instrument_id: string;
+  level_id: string;
+  ignored: boolean;
+  updated_ts: number;
+}
+export interface KeyLevelIgnoreList {
+  instrument_id: string;
+  entries?: KeyLevelIgnoreRecord[];
 }
 export interface WatchlistGroupCreate {
   name: string;

@@ -11,6 +11,9 @@ import type {
   IndicatorBundle,
   IndicatorSeries,
   InstrumentSpec,
+  KeyLevelCategory,
+  KeyLevelIgnoreList,
+  KeyLevelSet,
   OperatorRequest,
   SnapshotMeta,
   Watchlist,
@@ -227,6 +230,52 @@ export const api = {
     return deleteJson<DrawingClearResponse>(
       `/api/drawings?instrument_id=${encodeURIComponent(instrumentId)}`,
     );
+  },
+
+  keyLevels(
+    snapshotId: string,
+    timeframe: string,
+    options: {
+      categories?: KeyLevelCategory[];
+      minStrength?: number;
+      order?: string;
+      limit?: number;
+    } = {},
+  ): Promise<KeyLevelSet> {
+    const params = new URLSearchParams({ timeframe });
+    if (options.categories !== undefined && options.categories.length > 0) {
+      params.set("categories", options.categories.join(","));
+    }
+    if (options.minStrength !== undefined) {
+      params.set("min_strength", String(options.minStrength));
+    }
+    if (options.order !== undefined) {
+      params.set("order", options.order);
+    }
+    if (options.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    return getJson<KeyLevelSet>(
+      `/api/snapshots/${encodeURIComponent(snapshotId)}/key-levels?${params.toString()}`,
+    );
+  },
+
+  ignoredKeyLevels(instrumentId: string): Promise<KeyLevelIgnoreList> {
+    return getJson<KeyLevelIgnoreList>(
+      `/api/key-levels/ignored?instrument_id=${encodeURIComponent(instrumentId)}`,
+    );
+  },
+
+  setKeyLevelIgnored(
+    instrumentId: string,
+    levelId: string,
+    ignored: boolean,
+  ): Promise<KeyLevelIgnoreList> {
+    return writeJson<KeyLevelIgnoreList>("/api/key-levels/ignored", "PUT", {
+      instrument_id: instrumentId,
+      level_id: levelId,
+      ignored,
+    });
   },
 
   watchlist(): Promise<Watchlist> {
