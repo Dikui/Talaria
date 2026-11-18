@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0001](../../../docs/adr/0001-dual-plane-dsh-and-python-core.md)、[ADR-0002](../../../docs/adr/0002-capability-traits-and-market-packs.md)、[ADR-0005](../../../docs/adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 跨语言契约检查命令可独立运行并断言：价格、数量、费率在 JSON Schema 中一律为十进制字符串；Python 导出契约与前端生成类型零漂移；面向智能体工具导出的 Schema 子集不含根级 `$schema`、无未展开 `$defs`。
 - [x] 底座契约表达五重时点（`Event Time`、`ts_published`、`Available Time` + 精度等级、`ts_ingested`、`Committed Time`）、通用 `Instrument` 规格、五项能力特征接口，以及 K 线柱状态（正常 / `NO_TRADES` / `FEED_GAP`）；核心层无特定市场条件分支，`Bybit V5 Linear` 连接器与 `24x7` `SessionTrait` 通过加密永续 `Market Pack` 注册。
@@ -65,3 +65,12 @@ git diff --cached --check
 - 图表暂时过滤 `FEED_GAP` 仅在状态栏计数；API 完整保留这些柱。后续 03/04 可在不重写快照层的前提下接入断流与指标。
 - `BybitLinearConnector` 自建 httpx client 使用 `trust_env=False`，不继承环境代理；需要代理的部署应显式注入 client。
 - `OBSERVED_REPLAY`、实时流、指标、画线、冷库发布、衍生品、自选池、DSH 接入、关键位与预警均按任务单留给后续。
+
+### 2026-11-19 合并验收（lead）
+
+- 合并：`ticket-02-kline-tracer`（`6a6959e`）以 `7714a09` 合入 main，87 files / +8077 −8；工作树已删除，分支已删。
+- main 重跑：`uv run pytest -q` → 85 passed, 1 deselected（`online` 默认跳过）；`uv run talaria contract-check` → 零漂移；`pnpm -C dsh typecheck` → 2 包通过；`pnpm -C dsh --filter @talaria/desk-ui test` → 6 passed；`pnpm -C dsh build` → 成功。
+- 手动冒烟（`.venv/bin/python -m talaria up --solo --fixture-dir tests/fixtures/bybit`）：`/api/health` 返回 `feed_mode=fixture`；`/api/instruments` 4 个标的；`POST /api/snapshots` 无 token 401、带 token 200 且 `bar_counts.1m=905`；`GET .../bars?limit=5` 返回十进制字符串与 `SECOND_VERIFIED`；SIGTERM 后约 0.4s 完成 shutdown，端口释放。
+- 验收截图已复制到主仓库 `.scratch/tasks/ticket-02/`（01–06 六张，均已检查非空白）。
+- 设计说明：五重时点由独立 `TemporalStamp` 契约表达并测试；紧凑柱只携带 `ts_available` + `precision`，避免把审计时点塞进图表数据。`get_bars` 的 `has_more_forward` 指向更早数据、`has_more_backward` 指向更新数据，已有分页测试覆盖。
+- 遗留：图表当前过滤 `FEED_GAP` 并仅在状态栏计数，与 `docs/architecture.md` 的“紧凑序列与 dataList 1:1”存在张力；04 接入指标时须让指标序列与图表过滤后的柱严格对齐，或统一改为 1:1 表示。`MAX_GAP_FILL=1000` 的超大缺口不展开，06 冷库发布时复核。
