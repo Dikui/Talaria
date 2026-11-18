@@ -33,11 +33,12 @@ from talaria.foundation.indicators import (
 )
 from talaria.foundation.key_levels import (
     KEY_LEVEL_METHOD_VERSION,
+    EvidenceClass,
     KeyLevel,
     KeyLevelCategory,
     KeyLevelParams,
     KeyLevelSet,
-    compute_key_levels,
+    compute_key_levels_with_notes,
     session_profile_from_trait,
 )
 from talaria.foundation.market import InstrumentSpec, MarketPack
@@ -265,33 +266,48 @@ class WorkbenchService:
         order: str = "strength_desc",
         top_n: int | None = None,
         params: KeyLevelParams | None = None,
+        evidence_class: EvidenceClass | None = None,
     ) -> KeyLevelSet:
         """按快照 PIT 数据计算关键位；筛选与排序在确定性结果之上进行。"""
-        meta, bars = self._snapshot_bars(snapshot_id, timeframe)
+        record = self._snapshot_record(snapshot_id, timeframe)
+        meta = record.meta
         instrument = self._pack.instrument(meta.instrument_id)
         if instrument is None:
             raise InstrumentNotFoundError(f"未知标的：{meta.instrument_id}")
+        _, bars = self._snapshot_bars(snapshot_id, timeframe)
         traits = self._pack.traits(meta.instrument_id)
         profile = session_profile_from_trait(traits.session)
         engine_params = params or KeyLevelParams()
-        levels = compute_key_levels(
+        derivative_points = [
+            point
+            for point in self._derivative_points(record, timeframe)
+            if point.kind is DerivativeKind.OPEN_INTEREST
+        ]
+        computation = compute_key_levels_with_notes(
             instrument_id=meta.instrument_id,
             timeframe=timeframe,
             bars=bars,
             cutoff_ts=meta.cutoff_ts,
             session_profile=profile,
             params=engine_params,
+            derivative_points=derivative_points,
         )
         selected = set(categories) if categories else None
         filtered = [
             level
-            for level in levels
+            for level in computation.levels
             if (selected is None or level.category in selected)
             and level.strength >= min_strength
+            and (evidence_class is None or level.evidence_class is evidence_class)
         ]
         filtered = _sort_levels(filtered, order)
         if top_n is not None:
             filtered = filtered[:top_n]
+        notes = (
+            []
+            if evidence_class is EvidenceClass.OBSERVED
+            else list(computation.notes)
+        )
         return KeyLevelSet(
             snapshot_id=snapshot_id,
             instrument_id=meta.instrument_id,
@@ -300,6 +316,7 @@ class WorkbenchService:
             as_of_ts=meta.cutoff_ts,
             method_version=KEY_LEVEL_METHOD_VERSION,
             parameters=engine_params.as_parameters(),
+            notes=notes,
             levels=filtered,
         )
 

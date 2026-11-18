@@ -58,6 +58,7 @@ from talaria.foundation.indicators import (
     OperatorRequest,
 )
 from talaria.foundation.key_levels import (
+    EvidenceClass,
     KeyLevel,
     KeyLevelCategory,
     KeyLevelIgnoreList,
@@ -153,6 +154,7 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     KeyLevelKind,
     KeyLevelCategory,
     KeyLevelStatus,
+    EvidenceClass,
     WatchlistGroupKind,
     QuoteSource,
     DegradationReason,

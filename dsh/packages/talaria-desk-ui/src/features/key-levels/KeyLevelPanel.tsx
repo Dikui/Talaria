@@ -2,13 +2,19 @@ import type { KeyLevel, KeyLevelCategory } from "@talaria/contracts";
 
 import {
   CATEGORY_META,
+  EVIDENCE_CLASSES,
+  EVIDENCE_META,
   KEY_LEVEL_CATEGORIES,
   KIND_LABELS,
   STATUS_LABELS,
   countByCategory,
+  countByEvidence,
   formatLevelPrice,
+  levelEvidenceClass,
   levelTitle,
+  selectedEvidenceClasses,
   toggleCategory,
+  toggleEvidenceClass,
   type KeyLevelFilter,
 } from "./model";
 
@@ -25,6 +31,7 @@ export interface KeyLevelPanelProps {
   error: string | null;
   readOnly: boolean;
   onClose: () => void;
+  notes?: string[];
 }
 
 function statusClass(status: KeyLevel["status"]): string {
@@ -44,8 +51,10 @@ export function KeyLevelPanel({
   error,
   readOnly,
   onClose,
+  notes = [],
 }: KeyLevelPanelProps) {
   const counts = countByCategory(allLevels);
+  const evidenceCounts = countByEvidence(allLevels);
   const strengthValue = Math.round(filter.minStrength * 100);
 
   return (
@@ -106,6 +115,40 @@ export function KeyLevelPanel({
           })}
         </div>
 
+        <div
+          className="key-level-evidence-row"
+          role="group"
+          aria-label="证据类别"
+        >
+          {EVIDENCE_CLASSES.map((evidence) => {
+            const selected = selectedEvidenceClasses(filter).includes(evidence);
+            return (
+              <button
+                key={evidence}
+                type="button"
+                className={`key-level-evidence-chip${
+                  selected ? " is-active" : ""
+                }`}
+                aria-pressed={selected}
+                disabled={readOnly}
+                data-testid={`key-level-evidence-${evidence}`}
+                onClick={() =>
+                  onFilterChange(toggleEvidenceClass(filter, evidence))
+                }
+              >
+                <span
+                  className={`key-level-evidence-mark key-level-evidence-mark--${evidence.toLowerCase()}`}
+                  aria-hidden="true"
+                />
+                {EVIDENCE_META[evidence].label}
+                <span className="key-level-chip-count">
+                  {evidenceCounts[evidence]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
         <label className="key-level-strength">
           <span>
             强度阈值 <output data-testid="key-level-strength-value">{filter.minStrength.toFixed(2)}</output>
@@ -140,6 +183,17 @@ export function KeyLevelPanel({
             </span>
           ))}
           <span className="key-level-legend-item key-level-legend-item--muted">
+            <span className="key-level-line-sample" aria-hidden="true" />
+            观测 实线
+          </span>
+          <span className="key-level-legend-item key-level-legend-item--muted">
+            <span
+              className="key-level-line-sample key-level-line-sample--estimated"
+              aria-hidden="true"
+            />
+            估算 虚线/半透明
+          </span>
+          <span className="key-level-legend-item key-level-legend-item--muted">
             虚线=已破/缺口
           </span>
         </div>
@@ -149,6 +203,14 @@ export function KeyLevelPanel({
         <p className="key-level-error" role="alert">
           {error}
         </p>
+      )}
+
+      {notes.length > 0 && (
+        <ul className="key-level-notes" data-testid="key-level-notes">
+          {notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
       )}
 
       {loading ? (
@@ -177,12 +239,23 @@ export function KeyLevelPanel({
                   <span className={statusClass(level.status)}>
                     {STATUS_LABELS[level.status]}
                   </span>
+                  {levelEvidenceClass(level) === "ESTIMATED" && (
+                    <span
+                      className="key-level-evidence-badge"
+                      data-testid={`key-level-estimated-${level.level_id}`}
+                    >
+                      估算
+                    </span>
+                  )}
                 </span>
                 <span className="key-level-row-price">
                   {formatLevelPrice(level, precision)}
                 </span>
                 <span className="key-level-row-meta">
-                  强度 {level.strength.toFixed(2)} · 触及 {level.touch_count}
+                  强度 {level.strength.toFixed(2)} ·{" "}
+                  {levelEvidenceClass(level) === "ESTIMATED"
+                    ? "OI 推算"
+                    : `触及 ${level.touch_count}`}
                 </span>
               </div>
               {/* 14 的“采纳为人工画线”入口预留在此行尾部；写路径走 DrawingService，不混入忽略反馈。 */}

@@ -1,11 +1,24 @@
 {
   "$defs": {
+    "EvidenceClass": {
+      "description": "证据等级：直接观测得到，或由假设推算。",
+      "enum": [
+        "OBSERVED",
+        "ESTIMATED"
+      ],
+      "title": "EvidenceClass",
+      "type": "string"
+    },
     "KeyLevel": {
       "additionalProperties": false,
       "description": "一个已确认、无前视的关键位；单价或区间二选一。",
       "properties": {
         "category": {
           "$ref": "#/$defs/KeyLevelCategory"
+        },
+        "evidence_class": {
+          "$ref": "#/$defs/EvidenceClass",
+          "default": "OBSERVED"
         },
         "formed_ts": {
           "minimum": 0,
@@ -41,7 +54,7 @@
           "type": "string"
         },
         "method_version": {
-          "default": "key-levels@1",
+          "default": "key-levels@2",
           "title": "Method Version",
           "type": "string"
         },
@@ -142,7 +155,9 @@
         "STRUCTURE",
         "SESSION",
         "GAP",
-        "ROUND_NUMBER"
+        "ROUND_NUMBER",
+        "VOLUME",
+        "LIQUIDATION"
       ],
       "title": "KeyLevelCategory",
       "type": "string"
@@ -161,7 +176,12 @@
         "SESSION_HIGH",
         "SESSION_LOW",
         "GAP",
-        "ROUND_NUMBER"
+        "ROUND_NUMBER",
+        "POC",
+        "VAH",
+        "VAL",
+        "ANCHORED_VWAP",
+        "LIQUIDATION_ZONE"
       ],
       "title": "KeyLevelKind",
       "type": "string"
@@ -201,9 +221,16 @@
       "type": "array"
     },
     "method_version": {
-      "default": "key-levels@1",
+      "default": "key-levels@2",
       "title": "Method Version",
       "type": "string"
+    },
+    "notes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Notes",
+      "type": "array"
     },
     "parameters": {
       "additionalProperties": {

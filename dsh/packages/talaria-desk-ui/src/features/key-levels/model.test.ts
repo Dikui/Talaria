@@ -3,12 +3,15 @@ import { describe, expect, it } from "vitest";
 import type { KeyLevel } from "@talaria/contracts";
 
 import {
+  countByEvidence,
   defaultKeyLevelFilter,
   formatLevelPrice,
   layoutKeyLevelLabels,
   levelLabel,
   levelPrice,
+  levelTitle,
   toggleCategory,
+  toggleEvidenceClass,
   visibleKeyLevels,
 } from "./model";
 
@@ -24,7 +27,7 @@ function level(overrides: Partial<KeyLevel> = {}): KeyLevel {
     status: "ACTIVE",
     ts_available: 1,
     formed_ts: 1,
-    method_version: "key-levels@1",
+    method_version: "key-levels@2",
     parameters: {},
     touch_count: 2,
     last_touch_ts: 1,
@@ -59,6 +62,43 @@ describe("visibleKeyLevels", () => {
     expect(next.categories).toEqual(["STRUCTURE"]);
     expect(next.minStrength).toBe(0.4);
   });
+
+  it("按证据类别区分观测与估算，并可单独切换", () => {
+    const levels = [
+      level({ level_id: "observed", kind: "POC", category: "VOLUME" }),
+      level({
+        level_id: "estimated",
+        kind: "LIQUIDATION_ZONE",
+        category: "LIQUIDATION",
+        evidence_class: "ESTIMATED",
+        price: undefined,
+        price_low: "90",
+        price_high: "92",
+      }),
+    ];
+    const observedOnly = visibleKeyLevels(
+      levels,
+      { categories: ["VOLUME", "LIQUIDATION"], minStrength: 0, evidenceClasses: ["OBSERVED"] },
+      new Set(),
+    );
+    expect(observedOnly.map((item) => item.level_id)).toEqual(["observed"]);
+
+    const estimatedOnly = visibleKeyLevels(
+      levels,
+      {
+        categories: ["VOLUME", "LIQUIDATION"],
+        minStrength: 0,
+        evidenceClasses: ["ESTIMATED"],
+      },
+      new Set(),
+    );
+    expect(estimatedOnly.map((item) => item.level_id)).toEqual(["estimated"]);
+
+    const toggled = toggleEvidenceClass(defaultKeyLevelFilter, "OBSERVED");
+    expect(toggled.evidenceClasses).toEqual(["ESTIMATED"]);
+    expect(toggled.categories).toEqual(defaultKeyLevelFilter.categories);
+    expect(countByEvidence(levels)).toEqual({ OBSERVED: 1, ESTIMATED: 1 });
+  });
 });
 
 describe("levels formatting", () => {
@@ -79,6 +119,21 @@ describe("levels formatting", () => {
   it("非 ACTIVE 状态体现在长标签里", () => {
     expect(levelLabel(level({ status: "FLIPPED" }), 1)).toBe(
       "摆动高点 120.0 · 反转",
+    );
+  });
+
+  it("估算位带估算角标、虚线说明与 OI 来源提示", () => {
+    const estimated = level({
+      kind: "LIQUIDATION_ZONE",
+      category: "LIQUIDATION",
+      evidence_class: "ESTIMATED",
+      price: undefined,
+      price_low: "90",
+      price_high: "92",
+    });
+    expect(levelLabel(estimated, 0)).toBe("清算密集区 90–92 · 估算");
+    expect(levelTitle(estimated, 0)).toContain(
+      "估算（OI 变化 + 杠杆假设）",
     );
   });
 });

@@ -13,6 +13,7 @@ import { ApiError, api } from "../../lib/api";
 export interface KeyLevelsController {
   levelSet: KeyLevelSet | null;
   levels: KeyLevel[];
+  notes: string[];
   ignoredIds: Set<string>;
   loading: boolean;
   error: string | null;
@@ -147,6 +148,7 @@ export function useKeyLevels({
   return {
     levelSet,
     levels: levelSet?.levels ?? [],
+    notes: levelSet?.notes ?? [],
     ignoredIds,
     loading,
     error,

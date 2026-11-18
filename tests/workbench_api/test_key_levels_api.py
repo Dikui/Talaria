@@ -75,7 +75,7 @@ def test_key_levels_are_pit_filtered_and_reproducible(client) -> None:
     assert first["instrument_id"] == INSTRUMENT
     assert first["timeframe"] == "1m"
     assert first["cutoff_ts"] == meta["cutoff_ts"]
-    assert first["method_version"] == "key-levels@1"
+    assert first["method_version"] == "key-levels@2"
     assert first["levels"]
     assert [item["level_id"] for item in first["levels"]] == [
         item["level_id"] for item in second["levels"]
@@ -211,3 +211,106 @@ def test_ignore_unset_keeps_audit_row(client) -> None:
     response = client.put("/api/key-levels/ignored", json=body, headers=AUTH)
     assert response.status_code == 200
     assert response.json()["entries"][0]["ignored"] is False
+
+
+def test_key_levels_include_observed_volume_and_estimated_liquidation(client) -> None:
+    meta = _snapshot(client)
+    payload = _levels(client, meta["snapshot_id"])
+
+    by_kind = {item["kind"] for item in payload["levels"]}
+    assert {"POC", "VAH", "VAL", "ANCHORED_VWAP"} <= by_kind
+    volume = [
+        item for item in payload["levels"] if item["category"] == "VOLUME"
+    ]
+    assert volume
+    assert {item["evidence_class"] for item in volume} == {"OBSERVED"}
+    assert all(item["method_version"] == "key-levels@2" for item in volume)
+
+    liquidation = [
+        item for item in payload["levels"] if item["category"] == "LIQUIDATION"
+    ]
+    assert liquidation
+    assert {item["evidence_class"] for item in liquidation} == {"ESTIMATED"}
+    assert {item["kind"] for item in liquidation} == {"LIQUIDATION_ZONE"}
+    assert payload["notes"] == []
+    params = payload["parameters"]
+    assert params["leverage_tiers"] == "5,10,25,50,100"
+    assert params["value_area_ratio"] == "0.7"
+
+
+def test_evidence_class_filter_splits_observed_and_estimated(client) -> None:
+    meta = _snapshot(client)
+    observed = _levels(client, meta["snapshot_id"], evidence_class="OBSERVED")
+    assert observed["levels"]
+    assert {item["evidence_class"] for item in observed["levels"]} == {"OBSERVED"}
+    assert not [
+        item for item in observed["levels"] if item["category"] == "LIQUIDATION"
+    ]
+    assert observed["notes"] == []
+
+    estimated = _levels(client, meta["snapshot_id"], evidence_class="ESTIMATED")
+    assert estimated["levels"]
+    assert {item["evidence_class"] for item in estimated["levels"]} == {"ESTIMATED"}
+    assert {item["category"] for item in estimated["levels"]} == {"LIQUIDATION"}
+
+    invalid = client.get(
+        f"/api/snapshots/{meta['snapshot_id']}/key-levels",
+        params={"timeframe": "1m", "evidence_class": "MAYBE"},
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_vwap_anchor_is_configurable(client) -> None:
+    meta = _snapshot(client)
+    session = _levels(client, meta["snapshot_id"], vwap_anchor="session")
+    session_vwap = [
+        item for item in session["levels"] if item["kind"] == "ANCHORED_VWAP"
+    ]
+    assert session_vwap
+    anchor_ts = session_vwap[0]["formed_ts"]
+    assert anchor_ts <= meta["cutoff_ts"]
+
+    payload = _levels(
+        client,
+        meta["snapshot_id"],
+        vwap_anchor="timestamp",
+        vwap_anchor_ts=anchor_ts,
+    )
+    vwap = [item for item in payload["levels"] if item["kind"] == "ANCHORED_VWAP"]
+    assert vwap
+    assert all(item["formed_ts"] == anchor_ts for item in vwap)
+    centers = [
+        item for item in vwap if item["parameters"]["band_sigma"] == "0"
+    ]
+    assert len(centers) == 1
+
+    missing = client.get(
+        f"/api/snapshots/{meta['snapshot_id']}/key-levels",
+        params={"timeframe": "1m", "vwap_anchor": "timestamp"},
+    )
+    assert missing.status_code == 422
+    assert missing.json()["code"] == "VALIDATION_ERROR"
+
+    invalid = client.get(
+        f"/api/snapshots/{meta['snapshot_id']}/key-levels",
+        params={"timeframe": "1m", "vwap_anchor": "weekly"},
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_missing_oi_returns_empty_liquidation_with_reason(client) -> None:
+    response = client.post(
+        "/api/snapshots",
+        json={"instrument_id": "1000BONK-USDT-PERP", "timeframes": ["1m"]},
+        headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    meta = response.json()
+    payload = _levels(client, meta["snapshot_id"])
+    assert not [
+        item for item in payload["levels"] if item["category"] == "LIQUIDATION"
+    ]
+    assert payload["notes"]
+    assert "没有可用的持仓量数据" in payload["notes"][0]
