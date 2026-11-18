@@ -15,3 +15,4 @@ status: accepted
 
 - 从物理通信路径上保证慢速大模型推理、断连或升级故障对人工看盘、画线、盘面预警及模拟交易零阻塞。
 - 图表技术指标与 DSH PTC 运行时不自行计算，统一消费 Python 底座按紧凑交易柱序列契约（`SessionCompactBars`）产出的结果，从源头避免数值漂移（见 ADR-0008）。
+- **图表库版本基线（2026-11-19 核实）**：锁定 `klinecharts 10.1.1` 正式版（Apache-2.0）。`registerIndicator` 不能直接注入外部结果，须注册模板并以 `createIndicator({ name, calc })` 的 `calc` 返回与 `dataList` 等长同序数组，更新时换新闭包并 `overrideIndicator`；历史分页使用 `setDataLoader`（`init / forward / backward / update`）。

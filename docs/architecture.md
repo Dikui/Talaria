@@ -307,7 +307,7 @@ class ExecutionEngine(Protocol):
 1. **多子账户十进制复式账本与全量认知成本台账（`DoubleEntryLedger`）**：
    - 采用仅追加 `ledger_entries` + `ledger_postings` 双表，按 `(run_id, sub_account_id, currency)` 隔离核算可用现金、挂单冻结、全仓/逐仓保证金、已结毛利、手续费、资金费率/融券收支与强平罚金，每次写入强制校验借贷差严格为 `Decimal('0')`。
    - **子账户级全量认知成本流水（`EXPENSE_LLM_COGNITION`）**：每一次 DSH 模型调用（涵盖最终成交、`Abstain`、`L3` 拒单、挂单超时取消、人工废弃草案、框选会诊与 `ControllerPatch` 调参）均实时写入认知成本流水；子账户区间净收益与净夏普强制扣减同期全部认知推理总开销，杜绝只统计成交单的幸存者偏差。
-   - **用量采集通道**：`talaria-auto / talaria-eval` 由守护进程经 SDK 直接取得用量；`talaria-desk` 会话在开始时绑定 `sub_account_id`（随 `ConsultationPacket` 传入），由 `dsh-bridge` 在宿主侧（非模型可调用工具）于每轮结束时上报 `(dsh_session_id, dsh_turn_id, 输入 / 缓存命中 / 输出 Token)`，账本按 `dsh_turn_id` 幂等入账；守护进程定期扫描 `$DSH_HOME` 轨迹文件补齐漏报。无法归属的会话计入默认子账户的 `UNALLOCATED` 认知成本，不丢弃。
+   - **用量采集通道**：`talaria-auto / talaria-eval` 由守护进程经 SDK 直接取得用量；`talaria-desk` 会话在开始时绑定 `sub_account_id`（随 `ConsultationPacket` 传入），由 `dsh-bridge` 在宿主侧（非模型可调用工具）于每轮结束时上报 `(dsh_session_id, dsh_turn_id, 输入 / 缓存命中 / 输出 Token)`，账本按 `(dsh_session_id, dsh_turn_id)` 幂等入账（`turn` 仅为会话内序号，不能单独作为幂等键）；`turn/end` 事件本身不含 usage，需在 bridge 侧折叠该 turn 内全部 attempt 事件，缺失或 `undefined` 的用量不得按 0 入账，须标记待补；守护进程定期扫描 `$DSH_HOME` 轨迹文件补齐漏报。无法归属的会话计入默认子账户的 `UNALLOCATED` 认知成本，不丢弃。（2026-11-19 核实：`deriveTurnTokenUsage` 非公开导出，bridge 侧需按同一规则自行折叠并以黄金测试锁定。）
 2. **六维全成本瀑布与 `Co-Pilot Lift` 反事实评测（`CostAttributionEvaluator`）**：
    - 按完整 `Position Round` 精确拆解：`无摩擦理论毛利 − 决策延迟漂移(Δt) − 撮合滑点 − 交易所手续费 + 持仓资金费率/融券净额 − 关联认知 Token 成本 = 真实净收益`，与复式账本结转盈亏恒等对齐。
    - **`Co-Pilot Lift` 隔离沙箱评估**：对源出结构化 `StagedPlanDraft` 的协同交互，在草案生成时刻基于独立无副作用 `CounterfactualSimSandbox`（克隆当时子账户净值，不占用真实保证金与风险簇额度）跑完原始草案的 `L3→L4` 影子结果（原始草案被 `L3` 拒单则基准净利记 `0`，人工否决亏损草案记正避险增益），量化人机协同相对纯智能体的真实边际净贡献。
@@ -320,7 +320,7 @@ class ExecutionEngine(Protocol):
 
 ### 4.1 人机共享图表四图层与双轨交互契约（O2 `workbench`）
 
-前端核心包 `talaria-desk-ui` 直接基于 `KLineChart v10`（Apache-2.0）构建，将画布图元物理隔离为四个独立图层：
+前端核心包 `talaria-desk-ui` 直接基于 `KLineChart v10`（Apache-2.0）构建，将画布图元物理隔离为四个独立图层。已锁定 `klinecharts 10.1.1` 正式版（2026-11-16 发布）：外部指标结果不能直接注入，需注册指标模板并以 `createIndicator({ name, calc })` 的 `calc` 回调返回与 `dataList` 等长同序的数组，更新时换新闭包并调用 `overrideIndicator`；历史分页使用 `setDataLoader`（`init / forward / backward / update` 与 `callback(data, more)`）。
 
 | 图层标识 (`groupId`) | 写入主体与存储位置 | 交互与安全校验规则 |
 |---|---|---|
@@ -378,6 +378,7 @@ flowchart LR
 ```
 
 - **权限物理隔离**：`talaria-desk`（Web 协同 Profile）在 `cordis.patch.yml` 层物理不挂载直接提交正式计划工具，智能体在协同会话中只能写 `StagedPlanDraft` 待人工确认；自治子账户（`talaria-auto`）与历史回测（`talaria-eval`）均基于 `sdk-minimal` 物理剔除 `shell`、外网与文件写权限，统一由 Python 经官方 `deepseek-harness-sdk`（`stdio`）受控调用，实现实时自治与历史回测 100% 路径同构。
+- **版本基线与探针**：截至 2026-11-19，DSH 尚无 stable release，本机基线锁定 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`（`ui-slots 0.0.1-rc.1`、`typert` 仍为 0.x 预览版）；`dsh_bin` 显式指向本机 rc.3 可执行文件并显式设置 `dsh_home`，升级 DSH 或 SDK 前必须重跑 `dsh --dump-config --profile <name>` 与确定性探针。
 - **三种轻量化运行态（零 Docker / 零 Redis / 零 Kafka）**：
   1. `talaria up`（日常实时 `Shadow Run`）：启动 `talaria-daemon` + `dsh web --profile talaria-desk`（加 `--solo` 参数时仅启动 `talaria-daemon` 单个进程，直接访问 `http://127.0.0.1:8765/desk` 纯人工独立看盘模拟）；
   2. `talaria replay`（历史批量回放）：单进程虚拟时钟回放，含智能体时按需池化拉起 `talaria-eval` 子进程；
@@ -400,4 +401,4 @@ flowchart LR
 ### 5.3 异常降级与跨缝隙自动化契约门禁
 
 1. **优雅降级**：外部数据源在供流窗口内传输失联时置 `STALE` 挂起新触发，策略强制 `Abstain`，持续超限子账户自动降级 `REDUCING`；DSH 超时或离线时自动降级 `Abstain(MODEL_TIMEOUT)`，本地快通道人工看盘、画线、盘面预警弹窗与存量仓位四重保护屏障 100% 无损运行。
-2. **五项自动化契约回归检查**：① Python `foundation` 导出 JSON Schema 与 `@talaria/contracts` 零漂移及十进制字符串类型断言；② DSH 工具 Schema 经 `assertSupportedJsonSchema` 子集规则（零根级 `$schema`、零未展开 `$defs`）静态门禁；③ `talaria-desk / talaria-auto / talaria-eval` 三个 Profile 的 `dsh --dump-config` 权限与单调执行守卫快照断言（拦截历史轨迹 `fork` 重放）；④ `contracts/operator_vectors/` Python 算子与关键位算法黄金回归测试（含 `NO_TRADES` 与 `FEED_GAP` 重预热、摆动点确认延迟无前视断言）；⑤ 守护进程仅绑定 `127.0.0.1` 回环地址与会话随机 Bearer Token 鉴权基线断言。
+2. **五项自动化契约回归检查**：① Python `foundation` 导出 JSON Schema 与 `@talaria/contracts` 零漂移及十进制字符串类型断言；② DSH 工具 Schema 经 `assertSupportedJsonSchema` 子集规则（零根级 `$schema`、零未展开 `$defs`）静态门禁；③ `talaria-desk / talaria-auto / talaria-eval` 三个 Profile 的权限配置快照断言（`dsh --dump-config --profile <name>`，输出为含 `!!js` 的 YAML 风格文本而非 JSON），以及单调执行守卫的行为测试（守卫不出现在 dump 输出中，必须构造 `ctx.tools.guard` 场景断言其拦截历史轨迹 `fork` 重放）；④ `contracts/operator_vectors/` Python 算子与关键位算法黄金回归测试（含 `NO_TRADES` 与 `FEED_GAP` 重预热、摆动点确认延迟无前视断言）；⑤ 守护进程仅绑定 `127.0.0.1` 回环地址与会话随机 Bearer Token 鉴权基线断言。

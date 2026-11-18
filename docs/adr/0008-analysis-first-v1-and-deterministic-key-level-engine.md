@@ -19,3 +19,4 @@ status: accepted
 - 摆动类关键位须经 N 根后续 K 线确认后才可见，其 `ts_available` 记为确认时刻，与五重时点纪律一致。
 - 新增图表只读图层 `SYSTEM_LEVEL` 与预警类型 `LEVEL_EVENT`（触及、突破、回踩）；关键位质量以“触及后 X 倍 ATR 内出现反应的比例”对比随机价位离线评估，并记录人工采纳/忽略反馈。
 - 契约回归中的算子一致性检查收缩为 Python 单端黄金向量测试；图表离开守护进程无法自行计算指标。
+- **依赖版本基线（2026-11-19 核实）**：指标底层锁定 `TA-Lib 0.8.3`（C 库 BSD-3-Clause、Python 封装 BSD-2-Clause，Python 3.14 + macOS 14+ arm64 wheel 实测可用）与 `talipp 2.7.0`（MIT）。关键位参考项目 `smart-money-concepts`、`trendln`、`pymarket-structure` 均为 MIT，仅可按洁净室原则借鉴算法；`etnfrank/support_resistance` 无 LICENSE 文件、仅 `setup.py` 声明 `wtfpl` 且已停更，不可复制。
