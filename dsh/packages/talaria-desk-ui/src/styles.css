@@ -1882,3 +1882,360 @@ button:disabled {
     display: none;
   }
 }
+
+/* 关键位图层：只读叠加，位于画线覆盖层之下，不改变图表布局。 */
+.key-level-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.key-level-surface {
+  display: block;
+  pointer-events: none;
+}
+
+.key-level-label text {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.key-level-panel {
+  position: absolute;
+  top: 46px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 6;
+  width: 264px;
+  max-height: calc(100% - 56px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+}
+
+.key-level-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.key-level-panel-head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.key-level-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.key-level-close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.key-level-close:hover {
+  background: var(--surface-hover);
+}
+
+.key-level-readonly {
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
+.key-level-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.key-level-category-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.key-level-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.key-level-chip.is-active {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.key-level-chip:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.key-level-chip-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.key-level-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.key-level-strength {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-muted);
+}
+
+.key-level-strength > span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.key-level-strength output {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.key-level-strength input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.key-level-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.key-level-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.key-level-legend-item--muted {
+  opacity: 0.8;
+}
+
+.key-level-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 2px 0 0;
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.key-level-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--surface-muted);
+}
+
+.key-level-row:hover {
+  border-color: var(--border);
+}
+
+.key-level-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.key-level-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.key-level-row-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.key-level-row-price {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.key-level-row-meta {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.key-level-status {
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.key-level-status--active {
+  color: #2f7d5c;
+  background: rgba(72, 201, 169, 0.16);
+}
+
+.key-level-status--broken {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.key-level-status--flipped {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.key-level-ignore {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.key-level-ignore:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+
+.key-level-ignore:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.key-level-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.key-level-empty strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.key-level-empty span,
+.key-level-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.key-level-hint {
+  margin: 0;
+}
+
+.key-level-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.key-level-ignored-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.key-level-open {
+  position: absolute;
+  top: 52px;
+  right: 10px;
+  z-index: 6;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chart-panel.key-levels-collapsed .drawing-hint {
+  padding-right: 92px;
+}
+
+@media (max-width: 640px) {
+  .key-level-panel {
+    top: auto;
+    left: 6px;
+    right: 6px;
+    bottom: 6px;
+    width: auto;
+    max-height: 48%;
+    padding: 8px;
+  }
+
+  .key-level-panel .key-level-legend {
+    display: flex;
+  }
+
+  .key-level-open {
+    top: auto;
+    bottom: 8px;
+    right: 8px;
+  }
+}

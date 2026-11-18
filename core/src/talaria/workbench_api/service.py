@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -29,6 +30,15 @@ from talaria.foundation.indicators import (
     IndicatorPoint,
     IndicatorSeries,
     IndicatorSummary,
+)
+from talaria.foundation.key_levels import (
+    KEY_LEVEL_METHOD_VERSION,
+    KeyLevel,
+    KeyLevelCategory,
+    KeyLevelParams,
+    KeyLevelSet,
+    compute_key_levels,
+    session_profile_from_trait,
 )
 from talaria.foundation.market import InstrumentSpec, MarketPack
 from talaria.foundation.operators import (
@@ -245,6 +255,54 @@ class WorkbenchService:
         )
         return self._series(meta, bars, spec, limit, derivatives=samples)
 
+    def get_key_levels(
+        self,
+        snapshot_id: str,
+        *,
+        timeframe: str,
+        categories: Sequence[KeyLevelCategory] | None = None,
+        min_strength: float = 0.0,
+        order: str = "strength_desc",
+        top_n: int | None = None,
+        params: KeyLevelParams | None = None,
+    ) -> KeyLevelSet:
+        """按快照 PIT 数据计算关键位；筛选与排序在确定性结果之上进行。"""
+        meta, bars = self._snapshot_bars(snapshot_id, timeframe)
+        instrument = self._pack.instrument(meta.instrument_id)
+        if instrument is None:
+            raise InstrumentNotFoundError(f"未知标的：{meta.instrument_id}")
+        traits = self._pack.traits(meta.instrument_id)
+        profile = session_profile_from_trait(traits.session)
+        engine_params = params or KeyLevelParams()
+        levels = compute_key_levels(
+            instrument_id=meta.instrument_id,
+            timeframe=timeframe,
+            bars=bars,
+            cutoff_ts=meta.cutoff_ts,
+            session_profile=profile,
+            params=engine_params,
+        )
+        selected = set(categories) if categories else None
+        filtered = [
+            level
+            for level in levels
+            if (selected is None or level.category in selected)
+            and level.strength >= min_strength
+        ]
+        filtered = _sort_levels(filtered, order)
+        if top_n is not None:
+            filtered = filtered[:top_n]
+        return KeyLevelSet(
+            snapshot_id=snapshot_id,
+            instrument_id=meta.instrument_id,
+            timeframe=timeframe,
+            cutoff_ts=meta.cutoff_ts,
+            as_of_ts=meta.cutoff_ts,
+            method_version=KEY_LEVEL_METHOD_VERSION,
+            parameters=engine_params.as_parameters(),
+            levels=filtered,
+        )
+
     @staticmethod
     def _with_extra_bars(
         bars: Sequence[CompactBar], extra_bars: Sequence[CompactBar]
@@ -418,3 +476,28 @@ class WorkbenchService:
                 valid_points=valid_points,
             ),
         )
+
+
+def _level_price(level: KeyLevel) -> Decimal:
+    if level.price is not None:
+        return level.price
+    assert level.price_low is not None and level.price_high is not None
+    return (level.price_low + level.price_high) / 2
+
+
+def _sort_levels(levels: list[KeyLevel], order: str) -> list[KeyLevel]:
+    if order == "strength_desc":
+        return sorted(
+            levels, key=lambda item: (-item.strength, -item.ts_available, item.level_id)
+        )
+    if order == "strength_asc":
+        return sorted(
+            levels, key=lambda item: (item.strength, -item.ts_available, item.level_id)
+        )
+    if order == "price_asc":
+        return sorted(levels, key=lambda item: (_level_price(item), item.level_id))
+    if order == "price_desc":
+        return sorted(levels, key=lambda item: (-_level_price(item), item.level_id))
+    if order == "ts_available_desc":
+        return sorted(levels, key=lambda item: (-item.ts_available, item.level_id))
+    raise InvalidRequestError(f"不支持的排序：{order}")

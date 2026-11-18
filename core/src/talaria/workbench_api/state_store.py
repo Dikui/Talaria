@@ -238,6 +238,15 @@ class StateStore:
                 );
                 CREATE INDEX IF NOT EXISTS watchlist_items_group_idx
                     ON watchlist_items(group_id, position);
+                CREATE TABLE IF NOT EXISTS key_level_ignores (
+                    instrument_id TEXT NOT NULL,
+                    level_id TEXT NOT NULL,
+                    ignored INTEGER NOT NULL CHECK (ignored IN (0, 1)),
+                    updated_ts INTEGER NOT NULL,
+                    PRIMARY KEY (instrument_id, level_id)
+                );
+                CREATE INDEX IF NOT EXISTS key_level_ignores_by_instrument
+                    ON key_level_ignores (instrument_id, updated_ts);
                 """
             )
         except BaseException:
@@ -693,6 +702,57 @@ class StateStore:
                     """,
                     (group_id, instrument_id, position, now, now),
                 )
+
+    def list_key_level_ignores(self, instrument_id: str) -> list[dict[str, object]]:
+        rows = self._connection.execute(
+            """
+            SELECT instrument_id, level_id, ignored, updated_ts
+            FROM key_level_ignores
+            WHERE instrument_id = ?
+            ORDER BY updated_ts DESC, level_id
+            """,
+            (instrument_id,),
+        ).fetchall()
+        return [
+            {
+                "instrument_id": str(row[0]),
+                "level_id": str(row[1]),
+                "ignored": bool(row[2]),
+                "updated_ts": int(row[3]),
+            }
+            for row in rows
+        ]
+
+    def set_key_level_ignore(
+        self,
+        instrument_id: str,
+        level_id: str,
+        ignored: bool,
+        *,
+        ts: int | None = None,
+    ) -> None:
+        now = self._now_ms() if ts is None else ts
+        with self._transaction():
+            self._connection.execute(
+                """
+                INSERT INTO key_level_ignores
+                    (instrument_id, level_id, ignored, updated_ts)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(instrument_id, level_id) DO UPDATE SET
+                    ignored = excluded.ignored,
+                    updated_ts = excluded.updated_ts
+                """,
+                (instrument_id, level_id, 1 if ignored else 0, now),
+            )
+            self.append_event(
+                "key_level.ignore",
+                {
+                    "instrument_id": instrument_id,
+                    "level_id": level_id,
+                    "ignored": ignored,
+                },
+                ts=now,
+            )
 
     def close(self) -> None:
         if self._closed:

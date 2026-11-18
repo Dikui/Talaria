@@ -1,6 +1,7 @@
 import type {
   DerivativeTickEvent,
   FeedHealthEvent,
+  KeyLevelSet,
   KlineEvent,
   OrderBookEvent,
 } from "@talaria/contracts";
@@ -17,6 +18,7 @@ export type DeskMessage =
   | { type: "book"; data: OrderBookEvent }
   | { type: "health"; data: FeedHealthEvent }
   | { type: "derivatives"; data: DerivativeTickEvent }
+  | { type: "levels"; data: KeyLevelSet }
   | { type: "error"; code: string; message: string };
 
 type RawRecord = Record<string, unknown>;
@@ -71,6 +73,15 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
       return hasInstrumentId(record.data)
         ? { type: "derivatives", data: record.data as DerivativeTickEvent }
         : null;
+    case "levels": {
+      const data = asRecord(record.data);
+      return data !== null &&
+        typeof data.instrument_id === "string" &&
+        typeof data.timeframe === "string" &&
+        Array.isArray(data.levels)
+        ? { type: "levels", data: record.data as KeyLevelSet }
+        : null;
+    }
     case "error":
       return {
         type: "error",

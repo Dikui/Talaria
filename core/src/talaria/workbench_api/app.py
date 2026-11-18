@@ -51,6 +51,12 @@ from talaria.foundation.indicators import (
     IndicatorSeries,
     OperatorRequest,
 )
+from talaria.foundation.key_levels import (
+    KeyLevelCategory,
+    KeyLevelIgnoreList,
+    KeyLevelIgnoreRequest,
+    KeyLevelSet,
+)
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import (
     ChartPage,
@@ -82,6 +88,7 @@ from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.replay import ReplayFeed
 from talaria.workbench_api.drawing_service import DrawingService
+from talaria.workbench_api.key_level_feedback import KeyLevelFeedbackService
 from talaria.workbench_api.service import WorkbenchService
 from talaria.workbench_api.settings import AppSettings
 from talaria.workbench_api.state_store import StateWriterQueue
@@ -156,6 +163,30 @@ def _wanted(event: FeedEvent, subscriptions: set[tuple[str, str]]) -> bool:
     )
 
 
+def _ws_levels_payload(level_set: KeyLevelSet) -> dict[str, object]:
+    return {"type": "levels", "data": level_set.model_dump(mode="json")}
+
+
+def _enqueue(queue: asyncio.Queue[dict[str, object]], payload: dict[str, object]) -> None:
+    """队列满时丢弃最旧事件，保证关键位投影不会阻塞行情帧。"""
+    if queue.full():
+        with contextlib.suppress(asyncio.QueueEmpty):
+            queue.get_nowait()
+    queue.put_nowait(payload)
+
+
+def _broadcast_levels(app: FastAPI, key: tuple[str, str], level_set: KeyLevelSet) -> None:
+    """把新的关键位集合单向投影给订阅了该标的/周期的连接。"""
+    payload = _ws_levels_payload(level_set)
+    for websocket, filters in list(app.state.ws_filters.items()):
+        if key not in filters:
+            continue
+        queue = app.state.ws_queues.get(websocket)
+        if queue is None:
+            continue
+        _enqueue(queue, payload)
+
+
 async def _send_loop(websocket: WebSocket, queue: asyncio.Queue[dict[str, object]]) -> None:
     try:
         while True:
@@ -225,6 +256,9 @@ def create_app(
             feed_mode=feed_mode,
         )
         app.state.ws_subscribers = {}
+        app.state.level_sets = {}
+        app.state.ws_queues = {}
+        app.state.ws_filters = {}
         supervisor: FeedSupervisor | None = None
         remove_hot_listener = None
         if stream is not None:
@@ -248,6 +282,9 @@ def create_app(
         app.state.state_writer = state_writer
         app.state.drawing_service = DrawingService(
             queue=state_writer, pack=CRYPTO_PERP_PACK, now_ms=settings.now_ms
+        )
+        app.state.key_level_feedback = KeyLevelFeedbackService(
+            state_writer=state_writer
         )
         scheduler = (
             RealtimeSubscriptionScheduler(
@@ -431,6 +468,7 @@ def create_app(
             price_min=price_min,
             price_max=price_max,
         )
+
     @app.get("/api/watchlist", response_model=Watchlist)
     async def get_watchlist(request: Request) -> Watchlist:
         return await request.app.state.watchlist.get_watchlist()
@@ -487,8 +525,19 @@ def create_app(
         return await request.app.state.watchlist.remove_item(instrument_id)
 
     @app.post("/api/snapshots", response_model=SnapshotMeta)
-    def create_snapshot(payload: SnapshotRequest, request: Request) -> SnapshotMeta:
-        return service(request).create_snapshot(payload)
+    async def create_snapshot(
+        payload: SnapshotRequest, request: Request
+    ) -> SnapshotMeta:
+        workbench = service(request)
+        meta = workbench.create_snapshot(payload)
+        for timeframe in meta.timeframes:
+            level_set = workbench.get_key_levels(
+                meta.snapshot_id, timeframe=timeframe
+            )
+            key: tuple[str, str] = (meta.instrument_id, timeframe)
+            request.app.state.level_sets[key] = level_set
+            _broadcast_levels(request.app, key, level_set)
+        return meta
 
     @app.get("/api/snapshots/{snapshot_id}", response_model=SnapshotMeta)
     def get_snapshot(snapshot_id: str, request: Request) -> SnapshotMeta:
@@ -561,6 +610,52 @@ def create_app(
             extra_bars=extra_bars,
         )
 
+    @app.get(
+        "/api/snapshots/{snapshot_id}/key-levels", response_model=KeyLevelSet
+    )
+    def get_key_levels(
+        snapshot_id: str,
+        request: Request,
+        timeframe: str = Query(..., description="K 线周期"),
+        categories: str | None = Query(
+            None, description="逗号分隔的类别，如 STRUCTURE,SESSION"
+        ),
+        min_strength: float = Query(0.0, ge=0, le=1),
+        order: str = Query("strength_desc", description="排序方式"),
+        limit: int = Query(200, ge=1, le=500),
+    ) -> KeyLevelSet:
+        parsed: list[KeyLevelCategory] = []
+        if categories:
+            for token in categories.split(","):
+                value = token.strip().upper()
+                if not value:
+                    continue
+                try:
+                    parsed.append(KeyLevelCategory(value))
+                except ValueError as exc:
+                    raise InvalidRequestError(f"未知的关键位类别：{value}") from exc
+        return service(request).get_key_levels(
+            snapshot_id,
+            timeframe=timeframe,
+            categories=parsed or None,
+            min_strength=min_strength,
+            order=order,
+            top_n=limit,
+        )
+
+    @app.get("/api/key-levels/ignored", response_model=KeyLevelIgnoreList)
+    async def list_ignored_key_levels(
+        request: Request,
+        instrument_id: str = Query(..., description="标的"),
+    ) -> KeyLevelIgnoreList:
+        return await request.app.state.key_level_feedback.list(instrument_id)
+
+    @app.put("/api/key-levels/ignored", response_model=KeyLevelIgnoreList)
+    async def set_ignored_key_level(
+        payload: KeyLevelIgnoreRequest, request: Request
+    ) -> KeyLevelIgnoreList:
+        return await request.app.state.key_level_feedback.set_ignored(payload)
+
     @app.post("/api/operators/compute", response_model=IndicatorSeries)
     def compute_operator(
         payload: OperatorRequest,
@@ -597,29 +692,25 @@ def create_app(
     @app.websocket("/ws/desk")
     async def desk_socket(websocket: WebSocket) -> None:
         await websocket.accept()
-        supervisor: FeedSupervisor | None = websocket.app.state.supervisor
+        app = websocket.app
+        supervisor: FeedSupervisor | None = app.state.supervisor
         await websocket.send_json(
             {
                 "type": "hello",
-                "feed_mode": websocket.app.state.service.feed_mode,
+                "feed_mode": app.state.service.feed_mode,
                 "server_ts": settings.now_ms(),
                 "live": supervisor is not None,
             }
         )
-        if supervisor is None:
-            try:
-                while True:
-                    await websocket.receive_text()
-            except (WebSocketDisconnect, RuntimeError):
-                return
-
-        scheduler: RealtimeSubscriptionScheduler = (
-            websocket.app.state.subscription_scheduler
+        scheduler: RealtimeSubscriptionScheduler | None = (
+            app.state.subscription_scheduler
         )
-        watchlist: WatchlistService = websocket.app.state.watchlist
+        watchlist: WatchlistService = app.state.watchlist
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=WS_QUEUE_MAX)
         subscriptions: set[tuple[str, str]] = set()
-        retainers: dict[tuple[str, str], int] = websocket.app.state.ws_subscribers
+        retainers: dict[tuple[str, str], int] = app.state.ws_subscribers
+        app.state.ws_queues[websocket] = queue
+        app.state.ws_filters[websocket] = subscriptions
 
         async def rebalance_watchlist() -> None:
             with contextlib.suppress(TalariaError):
@@ -643,7 +734,9 @@ def create_app(
             else:
                 retainers.pop(key, None)
 
-        remove_listener = supervisor.add_listener(listener)
+        remove_listener = (
+            supervisor.add_listener(listener) if supervisor is not None else None
+        )
         sender = asyncio.create_task(_send_loop(websocket, queue))
         try:
             while True:
@@ -658,27 +751,58 @@ def create_app(
                     if key in subscriptions:
                         continue
                     subscriptions.add(key)
-                    try:
-                        scheduler.acquire_chart(key)
-                    except TalariaError as exc:
-                        subscriptions.discard(key)
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "code": exc.code,
-                                "message": exc.message,
-                            }
-                        )
-                        continue
-                    retain(key)
-                    await rebalance_watchlist()
+                    if scheduler is not None:
+                        try:
+                            scheduler.acquire_chart(key)
+                        except TalariaError as exc:
+                            subscriptions.discard(key)
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "code": exc.code,
+                                    "message": exc.message,
+                                }
+                            )
+                            continue
+                    else:
+                        valid_ids = {
+                            spec.instrument_id for spec in app.state.service.instruments()
+                        }
+                        if instrument_id not in valid_ids:
+                            subscriptions.discard(key)
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "code": "INSTRUMENT_NOT_FOUND",
+                                    "message": f"未知标的：{instrument_id}",
+                                }
+                            )
+                            continue
+                        if timeframe not in SUPPORTED_TIMEFRAMES:
+                            subscriptions.discard(key)
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "code": "VALIDATION_ERROR",
+                                    "message": f"不支持的周期：{timeframe}",
+                                }
+                            )
+                            continue
+                    if supervisor is not None:
+                        retain(key)
+                        await rebalance_watchlist()
+                    cached = app.state.level_sets.get(key)
+                    if cached is not None:
+                        _enqueue(queue, _ws_levels_payload(cached))
                 elif op == "unsubscribe":
                     if key not in subscriptions:
                         continue
                     subscriptions.discard(key)
-                    release(key)
-                    scheduler.release_chart(key)
-                    if retainers.get(key, 0) == 0:
+                    if supervisor is not None:
+                        release(key)
+                    if scheduler is not None:
+                        scheduler.release_chart(key)
+                    if supervisor is not None and retainers.get(key, 0) == 0:
                         await rebalance_watchlist()
                 else:
                     await websocket.send_json(
@@ -691,14 +815,20 @@ def create_app(
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
-            remove_listener()
+            app.state.ws_queues.pop(websocket, None)
+            app.state.ws_filters.pop(websocket, None)
+            if remove_listener is not None:
+                remove_listener()
             sender.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await sender
             for key in subscriptions:
-                release(key)
-                scheduler.release_chart(key)
-            await rebalance_watchlist()
+                if supervisor is not None:
+                    release(key)
+                if scheduler is not None:
+                    scheduler.release_chart(key)
+            if supervisor is not None:
+                await rebalance_watchlist()
 
     dist_dir = settings.dist_dir
     index_path = dist_dir / "index.html"

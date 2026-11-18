@@ -57,6 +57,16 @@ from talaria.foundation.indicators import (
     IndicatorSummary,
     OperatorRequest,
 )
+from talaria.foundation.key_levels import (
+    KeyLevel,
+    KeyLevelCategory,
+    KeyLevelIgnoreList,
+    KeyLevelIgnoreRecord,
+    KeyLevelIgnoreRequest,
+    KeyLevelKind,
+    KeyLevelSet,
+    KeyLevelStatus,
+)
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import (
     ChartPage,
@@ -115,6 +125,11 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "drawing_clear_response": DrawingClearResponse,
     "chart_view_window": ChartViewWindow,
     "chart_view": ChartView,
+    "key_level": KeyLevel,
+    "key_level_set": KeyLevelSet,
+    "key_level_ignore_request": KeyLevelIgnoreRequest,
+    "key_level_ignore_record": KeyLevelIgnoreRecord,
+    "key_level_ignore_list": KeyLevelIgnoreList,
     "watchlist_group_create": WatchlistGroupCreate,
     "watchlist_group_update": WatchlistGroupUpdate,
     "watchlist_item_create": WatchlistItemCreate,
@@ -135,6 +150,9 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     DerivativeKind,
     DrawingKind,
     DrawingLineStyle,
+    KeyLevelKind,
+    KeyLevelCategory,
+    KeyLevelStatus,
     WatchlistGroupKind,
     QuoteSource,
     DegradationReason,
@@ -160,6 +178,9 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "price",
         "price_min",
         "price_max",
+        "price_low",
+        "price_high",
+        "volume_weight",
         "latest_price",
         "change_pct",
         "value",

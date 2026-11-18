@@ -1,6 +1,7 @@
 import type {
   DerivativeTickEvent,
   FeedHealthEvent,
+  KeyLevelSet,
   KlineEvent,
   OrderBookEvent,
 } from "@talaria/contracts";
@@ -25,6 +26,7 @@ export interface FeedState {
   book: OrderBookEvent | null;
   derivatives: DerivativeTickEvent | null;
   bars: KlineEvent[];
+  levels: KeyLevelSet | null;
   error: string | null;
 }
 
@@ -35,6 +37,7 @@ export const initialFeedState: FeedState = {
   book: null,
   derivatives: null,
   bars: [],
+  levels: null,
   error: null,
 };
 
@@ -97,6 +100,8 @@ function applyMessage(state: FeedState, message: DeskMessage): FeedState {
         return state;
       }
       return { ...state, derivatives: message.data };
+    case "levels":
+      return { ...state, levels: message.data };
     case "health":
       return applyHealth(state, message.data);
     case "error":
@@ -120,6 +125,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         book: null,
         derivatives: null,
         health: null,
+        levels: null,
         error: null,
       };
     case "message":

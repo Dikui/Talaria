@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "忽略/恢复单条系统关键位；只写协同状态库，不改冻结快照。",
+  "properties": {
+    "ignored": {
+      "default": true,
+      "title": "Ignored",
+      "type": "boolean"
+    },
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "level_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Level Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "level_id"
+  ],
+  "title": "KeyLevelIgnoreRequest",
+  "type": "object"
+}
