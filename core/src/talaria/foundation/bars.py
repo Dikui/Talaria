@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum
 from typing import Self
 
@@ -16,6 +17,24 @@ class BarStatus(StrEnum):
     NORMAL = "NORMAL"
     NO_TRADES = "NO_TRADES"
     FEED_GAP = "FEED_GAP"
+
+
+def classify_flat_bar(
+    *,
+    open: Decimal,
+    high: Decimal,
+    low: Decimal,
+    close: Decimal,
+    volume: Decimal,
+) -> BarStatus:
+    """零成交量且四价相等判定为 ``NO_TRADES``，其余为 ``NORMAL``。
+
+    实时流与历史压缩共用同一判定，避免两处口径漂移。
+    """
+
+    if volume == 0 and open == high == low == close:
+        return BarStatus.NO_TRADES
+    return BarStatus.NORMAL
 
 
 class CompactBar(ContractModel):

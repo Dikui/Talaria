@@ -10,6 +10,7 @@ from talaria.foundation.calendar import (
 from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.errors import (
     FeatureNotImplementedError,
+    FeedTransportError,
     FeedUnavailableError,
     InstrumentNotFoundError,
     InvalidRequestError,
@@ -17,6 +18,18 @@ from talaria.foundation.errors import (
     SnapshotNotFoundError,
     TalariaError,
     UnauthorizedError,
+)
+from talaria.foundation.feed import (
+    FeedEvent,
+    FeedHealthEvent,
+    FeedHealthReport,
+    FeedHealthStatus,
+    FeedListener,
+    FeedTransport,
+    KlineEvent,
+    MarketEventFeed,
+    OrderBookEvent,
+    worst_status,
 )
 from talaria.foundation.market import (
     CarryTrait,
@@ -59,7 +72,17 @@ __all__ = [
     "ErrorResponse",
     "FeatureNotImplementedError",
     "FeedCapabilityTrait",
+    "FeedEvent",
+    "FeedHealthEvent",
+    "FeedHealthReport",
+    "FeedHealthStatus",
+    "FeedListener",
+    "FeedTransport",
+    "FeedTransportError",
     "FeedUnavailableError",
+    "KlineEvent",
+    "MarketEventFeed",
+    "OrderBookEvent",
     "InstrumentNotFoundError",
     "InvalidRequestError",
     "InstrumentSpec",
@@ -80,5 +103,6 @@ __all__ = [
     "TemporalStamp",
     "TraitBundle",
     "UnauthorizedError",
+    "worst_status",
     "timeframe_ms",
 ]

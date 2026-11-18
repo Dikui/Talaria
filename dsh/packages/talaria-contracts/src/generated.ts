@@ -6,6 +6,8 @@ export type PrecisionTier = "SECOND_VERIFIED" | "SESSION_BOUND" | "DATE_CONSERVA
 
 export type BarStatus = "NORMAL" | "NO_TRADES" | "FEED_GAP";
 
+export type FeedHealthStatus = "LIVE" | "STALE" | "RECOVERING";
+
 export type SnapshotMode = "HISTORICAL_PIT" | "OBSERVED_REPLAY";
 
 export interface TemporalStamp {
@@ -38,6 +40,35 @@ export interface CompactBar {
   status: BarStatus;
   ts_available: number;
   precision: PrecisionTier;
+}
+export interface KlineEvent {
+  instrument_id: string;
+  timeframe: string;
+  bar: CompactBar;
+  confirmed: boolean;
+  revision: number;
+}
+export interface OrderBookEvent {
+  instrument_id: string;
+  bid_price: DecimalString;
+  bid_size: DecimalString;
+  ask_price: DecimalString;
+  ask_size: DecimalString;
+  ts_event: number;
+  ts_ingested: number;
+}
+export interface FeedHealthEvent {
+  instrument_id: string;
+  status: FeedHealthStatus;
+  ts: number;
+  last_event_ts?: number | null;
+  stale_since?: number | null;
+  reconnect_count?: number;
+}
+export interface FeedHealthReport {
+  feed_mode: string;
+  status: FeedHealthStatus;
+  channels: FeedHealthEvent[];
 }
 export interface SnapshotRequest {
   instrument_id: string;

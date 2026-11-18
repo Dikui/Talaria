@@ -82,10 +82,21 @@ def _cmd_up(args: argparse.Namespace) -> int:
         if args.dist_dir
         else repo_dist_dir()
     )
+    replay_events = None
+    if args.replay_events:
+        replay_events = Path(args.replay_events).expanduser().resolve()
+        if not replay_events.is_file():
+            print(f"回放文件不存在：{replay_events}", file=sys.stderr)
+            return 2
+    if args.replay_speed <= 0:
+        print(f"回放速度必须为正数：{args.replay_speed}", file=sys.stderr)
+        return 2
     settings = AppSettings(
         data_dir=data_dir,
         dist_dir=dist_dir,
         fixture_dir=fixture_dir,
+        replay_events=replay_events,
+        replay_speed=args.replay_speed,
         bybit_base_url=args.bybit_base_url,
         backfill_bars=args.backfill_bars,
     )
@@ -155,6 +166,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3000,
         help="首次回填目标根数（默认 3000）",
+    )
+    up.add_argument(
+        "--replay-events",
+        default=None,
+        help="回放 JSONL 脚本；与 --fixture-dir 并用时 fixture 只供历史快照",
+    )
+    up.add_argument(
+        "--replay-speed",
+        type=float,
+        default=1.0,
+        help="回放速度倍率（默认 1.0，必须为正数）",
     )
     up.set_defaults(func=_cmd_up)
 

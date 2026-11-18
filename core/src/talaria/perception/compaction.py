@@ -12,21 +12,12 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.foundation.bars import BarStatus, CompactBar, classify_flat_bar
 from talaria.foundation.connector import RawBar
 from talaria.foundation.timeframes import timeframe_ms
 
 #: 单个缺口最多补多少根；超过时说明数据源本身有问题，不展开。
 MAX_GAP_FILL = 1000
-
-
-def _is_no_trades(bar: RawBar) -> bool:
-    return (
-        bar.volume == 0
-        and bar.open == bar.high
-        and bar.high == bar.low
-        and bar.low == bar.close
-    )
 
 
 def compact_series(
@@ -66,7 +57,13 @@ def compact_series(
                             precision=bar.precision,
                         )
                     )
-        status = BarStatus.NO_TRADES if _is_no_trades(bar) else BarStatus.NORMAL
+        status = classify_flat_bar(
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+            volume=bar.volume,
+        )
         compact.append(bar.to_compact(status=status))
         previous_ts = bar.ts_event
     return compact

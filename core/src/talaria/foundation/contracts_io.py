@@ -18,6 +18,13 @@ from typing import Any, Iterable, Union, get_args, get_origin
 from pydantic import BaseModel
 
 from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.foundation.feed import (
+    FeedHealthEvent,
+    FeedHealthReport,
+    FeedHealthStatus,
+    KlineEvent,
+    OrderBookEvent,
+)
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import (
     ChartPage,
@@ -33,6 +40,10 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "temporal_stamp": TemporalStamp,
     "instrument_spec": InstrumentSpec,
     "compact_bar": CompactBar,
+    "kline_event": KlineEvent,
+    "order_book_event": OrderBookEvent,
+    "feed_health_event": FeedHealthEvent,
+    "feed_health_report": FeedHealthReport,
     "snapshot_request": SnapshotRequest,
     "snapshot_meta": SnapshotMeta,
     "chart_page": ChartPage,
@@ -40,7 +51,12 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
 }
 
 #: 枚举的固定输出顺序。
-ENUM_TYPES: tuple[type[StrEnum], ...] = (PrecisionTier, BarStatus, SnapshotMode)
+ENUM_TYPES: tuple[type[StrEnum], ...] = (
+    PrecisionTier,
+    BarStatus,
+    FeedHealthStatus,
+    SnapshotMode,
+)
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
 DECIMAL_FIELDS: frozenset[str] = frozenset(
@@ -54,6 +70,10 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "tick_size",
         "qty_step",
         "min_qty",
+        "bid_price",
+        "bid_size",
+        "ask_price",
+        "ask_size",
     }
 )
 

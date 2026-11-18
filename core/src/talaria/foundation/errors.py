@@ -33,6 +33,10 @@ class FeedUnavailableError(TalariaError):
     code = "FEED_UNAVAILABLE"
 
 
+class FeedTransportError(FeedUnavailableError):
+    """实时流传输层失败：握手失败、连接断开或帧格式错误。"""
+
+
 class FeatureNotImplementedError(TalariaError):
     code = "NOT_IMPLEMENTED"
 

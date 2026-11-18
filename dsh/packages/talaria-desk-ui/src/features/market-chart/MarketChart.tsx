@@ -1,15 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   dispose,
   init,
   type Chart,
   type DataLoader,
+  type DataLoaderSubscribeBarParams,
+  type DataLoaderUnsubscribeBarParams,
   type KLineData,
 } from "klinecharts";
 
-import type { CompactBar } from "@talaria/contracts";
+import type { CompactBar, KlineEvent } from "@talaria/contracts";
 
-import { toKLineSeries, toPeriod } from "../../lib/chartData";
+import { toKLineData, toKLineSeries, toPeriod } from "../../lib/chartData";
 import type { Theme } from "../../lib/theme";
 
 export interface OlderPage {
@@ -31,6 +33,8 @@ interface MarketChartProps {
   initialBars: CompactBar[];
   initialHasMoreForward: boolean;
   loadOlder: (beforeTs: number) => Promise<OlderPage>;
+  /** 实时增量：同 timestamp 更新、新 timestamp 追加；FEED_GAP 不进 dataList。 */
+  liveBars?: KlineEvent[];
   onStats: (stats: ChartStats) => void;
   onLoadError: (error: unknown) => void;
 }
@@ -53,6 +57,7 @@ export function MarketChart({
   initialBars,
   initialHasMoreForward,
   loadOlder,
+  liveBars,
   onStats,
   onLoadError,
 }: MarketChartProps) {
@@ -61,6 +66,44 @@ export function MarketChart({
   const seriesRef = useRef<KLineData[]>([]);
   const gapsRef = useRef(0);
   const loadingOlderRef = useRef(false);
+  const lastInitialTsRef = useRef(0);
+  const barCallbackRef = useRef<((data: KLineData) => void) | null>(null);
+  const pendingLiveRef = useRef<KlineEvent[]>([]);
+  const deliveredRef = useRef<Map<number, number>>(new Map());
+
+  const flushLive = useCallback(() => {
+    const callback = barCallbackRef.current;
+    if (callback === null || pendingLiveRef.current.length === 0) {
+      return;
+    }
+    const pending = pendingLiveRef.current;
+    pendingLiveRef.current = [];
+    for (const event of pending) {
+      const revision = deliveredRef.current.get(event.bar.timestamp);
+      if (revision !== undefined && revision >= event.revision) {
+        continue;
+      }
+      const point = toKLineData(event.bar);
+      if (point === null) {
+        // FEED_GAP 不能进入 dataList，否则会伪造价格。
+        continue;
+      }
+      deliveredRef.current.set(event.bar.timestamp, event.revision);
+      callback(point);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (liveBars === undefined || liveBars.length === 0) {
+      return;
+    }
+    for (const event of liveBars) {
+      if (event.bar.timestamp > lastInitialTsRef.current) {
+        pendingLiveRef.current.push(event);
+      }
+    }
+    flushLive();
+  }, [liveBars, flushLive]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -86,6 +129,10 @@ export function MarketChart({
     const initial = toKLineSeries(initialBars);
     seriesRef.current = initial.points;
     gapsRef.current = initial.gapCount;
+    lastInitialTsRef.current =
+      initial.points.length > 0
+        ? initial.points[initial.points.length - 1].timestamp
+        : 0;
     onStats({ loaded: initial.points.length, gaps: initial.gapCount });
 
     const dataLoader: DataLoader = {
@@ -126,6 +173,13 @@ export function MarketChart({
           loadingOlderRef.current = false;
         }
       },
+      subscribeBar: (params: DataLoaderSubscribeBarParams) => {
+        barCallbackRef.current = params.callback;
+        flushLive();
+      },
+      unsubscribeBar: (_params: DataLoaderUnsubscribeBarParams) => {
+        barCallbackRef.current = null;
+      },
     };
     chart.setDataLoader(dataLoader);
 
@@ -137,6 +191,9 @@ export function MarketChart({
 
     return () => {
       observer.disconnect();
+      barCallbackRef.current = null;
+      pendingLiveRef.current = [];
+      deliveredRef.current.clear();
       dispose(chart);
       chartRef.current = null;
     };

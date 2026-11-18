@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "description": "最优一档盘口；``ts_event`` 为交易所时间，``ts_ingested`` 为本地接收时间。",
+  "properties": {
+    "ask_price": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Ask Price",
+      "type": "string"
+    },
+    "ask_size": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Ask Size",
+      "type": "string"
+    },
+    "bid_price": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Bid Price",
+      "type": "string"
+    },
+    "bid_size": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Bid Size",
+      "type": "string"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "ts_event": {
+      "title": "Ts Event",
+      "type": "integer"
+    },
+    "ts_ingested": {
+      "title": "Ts Ingested",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "bid_price",
+    "bid_size",
+    "ask_price",
+    "ask_size",
+    "ts_event",
+    "ts_ingested"
+  ],
+  "title": "OrderBookEvent",
+  "type": "object"
+}
