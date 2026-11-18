@@ -1,0 +1,22 @@
+---
+status: accepted
+---
+
+# 以模型知识截止日划分智能体评估证据等级，历史回放默认仅作诊断
+
+数据层的时点纪律（五重时间戳、冻结快照、工具层按 `cutoff_ts` 过滤）挡不住模型权重中对回测区间的记忆，因此凡评估 `AGENT` / `CO_PILOT` 表现，均按所用模型的 `model_knowledge_cutoff` 划分证据等级：回放区间与“截止日 + 缓冲期（默认 30 天）”有任何重叠，结果一律标记为 `DIAGNOSTIC`，只用于调试、提示词对比与执行/风控/格式缺陷排查；策略或提示词晋升、`Co-Pilot Lift` 与跨子账户对比报告只采信 `POST_CUTOFF_REPLAY`（区间严格晚于全部参与模型截止日 + 缓冲期）与 `SHADOW_FORWARD`（Shadow Run 实时前向）两类证据。调研依据见 [docs/research/llm-trading-lookahead-contamination.md](../research/llm-trading-lookahead-contamination.md)。
+
+## Considered Options
+
+- **只靠数据层时点过滤与提示词注入模拟日期**：AI-Trader 等项目即以此自称“无污染”，但这类过滤只约束工具返回的数据，触及不到模型权重，且实现中常有放行路径；FINSABER 也明确承认未校正预训练泄漏。
+- **完全禁止截止日之前的智能体回放**：最干净，但每次升级模型都会清空可用窗口，且失去调试与对照价值；改为保留回放、降级为诊断。
+- **改用时点一致训练的模型（ChronoGPT / TimeMachineGPT）做决策**：权重可得（ChronoGPT 1.55B，MIT），但规模远小于前沿模型，作者“前视偏差不大”的结论只适用于“文本嵌入 + 收益回归”。仅作为美股新闻特征的可选下限基线，不替代决策模型。
+- **以匿名化回放作为主要证据**：Glasserman & Lin 显示匿名化对照有用，但差值方向不定（可能是干扰、记忆或信息丢失），且加密永续价格轨迹本身可识别，匿名化价值有限；只作为诊断期的配套对照。
+
+## Consequences
+
+- 每个模型 Profile 声明 `model_knowledge_cutoff`；回放报告必须登记证据等级（`SHADOW_FORWARD | POST_CUTOFF_REPLAY | DIAGNOSTIC`），晋升门禁只读取前两类。模型升级后，原 `POST_CUTOFF_REPLAY` 区间若落入新模型截止日之内，自动降级为 `DIAGNOSTIC`。
+- 美股的诊断回放默认同时运行匿名化对照（替换公司名、代码、产品与高管名，价格按窗口起点归一，日期改为相对日期）并并列报告；加密永续的诊断回放不用于评估 alpha。
+- 衰减 `decay = 指标(截止后) − 指标(截止前)` 作为常规指标，须在相近市场状态之间比较或标注各窗口市场状态；财报与宏观事件驱动类策略只认截止后与 Shadow Run 证据。
+- 证据级结果须计入手续费、资金费率与滑点，并报告样本长度与统计不确定性；数据层沿用时点成分股、含退市股与滚动窗口纪律。
+- 回放中的 LLM 响应按 `(模型版本, prompt 哈希, snapshot_id)` 录制，重跑直接复用以实现“录制后可复现”；`LookaheadAudit` 与字节级确定性要求只适用于纯量化策略及智能体调用的确定性工具层。

@@ -14,4 +14,4 @@ status: accepted
 ## Consequences
 
 - 从物理通信路径上保证慢速大模型推理、断连或升级故障对人工看盘、画线、盘面预警及模拟交易零阻塞。
-- 图表自定义技术指标与 Python 底座、DSH PTC 运行时必须通过共享黄金测试向量及紧凑交易柱序列契约（`SessionCompactBars`）保持数值对齐。
+- 图表技术指标与 DSH PTC 运行时不自行计算，统一消费 Python 底座按紧凑交易柱序列契约（`SessionCompactBars`）产出的结果，从源头避免数值漂移（见 ADR-0008）。

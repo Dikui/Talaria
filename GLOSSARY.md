@@ -50,6 +50,10 @@ _Avoid_: News stream, cron schedule
 附着在特定交易标的时间-价格坐标系上的结构化几何图元（如支撑阻力线、趋势通道、区间标注），严格区分人工手绘标注与经价格范围校验的智能体建议标注。
 _Avoid_: Canvas shape, raw drawing JSON
 
+**Key Level（关键位）**:
+由确定性算法仅基于截止时刻前已可见数据识别出的重要价格或价格区间（如确认后的摆动高低点、时段参考位、成交量分布价位、缺口与整数关口），具有跨快照稳定的身份、强度评分与有效状态，人与智能体共享引用。
+_Avoid_: AI level, guessed support, drawn line
+
 **Mark Price（标记价格）**:
 衍生品场所综合现货指数与基差计算的公允参考价格，专门用于核算未实现盈亏与判定维持保证金强平，防止单所异常插针误触发强平。
 _Avoid_: Last trade price, mid price
@@ -110,13 +114,17 @@ _Avoid_: Raw order, LLM JSON command
 同一虚拟子账户在同一交易标的上从零建仓、同向合并加仓直至全部平仓或强平归零的单一方向完整持仓生命周期。
 _Avoid_: Overlapping ticket, hedge leg
 
-**Triple Barrier（四重保护屏障）**:
-绑定在单笔交易计划上的本地自治退出边界集合，包含硬止损下界、止盈上界、最长持仓时间垂直边界以及可选的激活式移动止损规则。
-_Avoid_: Manual stop, next-turn LLM exit
+**Exit Barrier Set（四重保护屏障）**:
+绑定在单一仓位回合上的本地自治退出边界集合，包含硬止损、止盈目标、最长持仓时间垂直边界以及可选的激活式移动止损规则；同向加仓沿用回合现有屏障。
+_Avoid_: Triple Barrier, manual stop, next-turn LLM exit
 
 **Position Executor（仓位生命周期执行器）**:
-在确定性执行层内独立托管单笔获批执行计划从挂单建仓、部分成交调整到触发保护屏障平仓全过程的有限状态机。
+在确定性执行层内独立托管单一仓位回合从挂单建仓、部分成交、同向加仓合并到触发保护屏障平仓全过程的有限状态机。
 _Avoid_: Order wrapper, stateless webhook
+
+**Risk Reservation（风险预留）**:
+已通过组合风控放行、但尚未在权威账本中可见的风险单元、保证金与仓位回合占用，在对应执行事件入账或计划撤销后释放，用于防止并发计划基于过期账户状态重复放行。
+_Avoid_: Pending cache, soft lock
 
 **Trading State（系统交易状态）**:
 控制执行出口放行范围的三态全局或账户级开关，严格区分为正常交易（`ACTIVE`）、仅允许合规减仓（`REDUCING`）与停发新单（`HALTED`）。
@@ -129,12 +137,16 @@ _Avoid_: Kill switch, pause button
 _Avoid_: Agent memory, portfolio cache
 
 **Decision Latency（决策延迟 `Δt`）**:
-从证据快照冻结时刻到执行计划最终抵达执行层之间的真实或模拟耗时，模拟器必须越过该时间偏移后的盘口方可判定成交。
+从计划提交时冻结的证据快照时刻到执行计划最终抵达执行层之间的真实或模拟耗时，模拟器必须越过该时间偏移后的盘口方可判定成交；人工审阅草案的时长不计入其中。
 _Avoid_: Zero-delay fill, bar-close fill
 
 **Shadow Run（实时影子模拟）**:
 接入真实实时市场行情流与人机完整分析链路、但在执行接口后由本地高保真模拟器撮合记账而不向外部场所发送真实订单的验证运行态。
 _Avoid_: Toy backtest, dry-run print
+
+**Evaluation Evidence Tier（评估证据等级）**:
+按所用模型训练数据截止日对智能体评估结果划分的可信等级，严格区分实时前向（`SHADOW_FORWARD`）、截止日之后回放（`POST_CUTOFF_REPLAY`）与仅供诊断的截止日之前回放（`DIAGNOSTIC`），只有前两类可作晋升依据。
+_Avoid_: Backtest score, contamination-free claim
 
 **Trade Journal（交易复盘日志）**:
 将已执行计划、当时盘面与图表快照、人工主观笔记、智能体推理轨迹及全成本归因结果绑定在一起的结构化复盘档案。
