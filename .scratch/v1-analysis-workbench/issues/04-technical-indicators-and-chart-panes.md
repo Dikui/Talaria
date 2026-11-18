@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 纯函数算子面向紧凑交易柱序列：输入长度 N 输出等长 N，预热期输出前导空值；`NO_TRADES` 柱保态递推；遇 `FEED_GAP` 立即输出空值并重跑完整预热期（以 02 契约中的柱状态驱动，可用注入数据测试，不依赖 03）。批量计算与增量更新结果一致。
 - [x] 黄金测试向量固化各算子的标准输入、前导空值长度、`NO_TRADES` 递推与 `FEED_GAP` 重预热结果，纳入契约回归。
@@ -50,3 +50,12 @@
 
 - 未实现 `WS subscribe_indicators` 的指标推送字面语义；采用任务单允许的降级路径：WS bar 触发 550ms 去抖，再带 `live=1` 调 GET（默认参数）或 POST（非默认参数），由后端 `recent_bars` 追加尾段并在 Python 重算。前端不做指标数学。
 - TA-Lib/talipp 尚未接入运行时适配器；当前唯一权威是纯 Python 算子核，二者及黄金向量作为后续交叉校验与回归基准。
+
+## Lead 验收
+
+2026-11-19 合并 `v1-analysis-workbench` 任务单 04，合并提交 `8d80990 Merge branch 'ticket-04-indicators'`（分支末提交 `bafc47c`）。
+
+- 合并后主分支验证：`uv run pytest -q` → 185 passed, 1 deselected（仅 Starlette/httpx 弃用 warning）；`uv run talaria contract-check` → 零漂移；`pnpm -C dsh typecheck` 通过；`pnpm -C dsh --filter @talaria/desk-ui test` → 42 passed（8 文件）；`pnpm -C dsh build` 通过（JS 490.62 kB / CSS 13.55 kB）。
+- 审查确认：主图指标显式 `paneId:"candle_pane"` 且 `isStack=true`，EMA/SMA/BOLL/VWAP 共用主图；RSI/ATR 各自副图，`overrideIndicator` 复用 paneId；`calc` 只消费后端序列，`Number` 仅在 `indicatorData.ts` 的 Canvas 最后一跳；`live=1` 由 `FeedSupervisor.recent_bars` 追加快照末尾之后的实时尾段，Python 重算，前端不保留指标数学。
+- 截图已复制到主仓库 `.scratch/tasks/ticket-04/`（`11`–`18` 共 8 张验收图，早期 `00`–`06` 为排障记录）。
+- 接受已知限制：`subscribe_indicators` 的字面 WS 推送未实现，按允许的降级路径（WS bar 触发去抖查询 + Python 尾段重算）交付；TA-Lib/talipp 依赖已锁定并登记许可，暂未接运行时适配器，纯 Python 算子核为唯一权威。
