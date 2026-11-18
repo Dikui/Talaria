@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 评估命令输入标的、周期、时间范围、ATR 倍数与随机基线样本数，按 `kind` 输出反应率、样本量与随机基线对照；随机基线使用固定种子可复现。
 - [x] 评估过程逐时点调用关键位引擎（只用截止时刻前数据），测试断言评估不引入前视。
@@ -43,3 +43,10 @@
   - 只支持 crypto perp pack 的标的；`--data-dir` 仅回退读取 RawStore，不做 fixture 与 raw 的合并。
   - 未做浏览器验收（本任务只要求机器可读输出）。
 - 本分支未合并、未推送；Status 保持 `ready-for-agent`。
+
+### Lead 验收
+
+- 合并 `f8b0d69 Merge branch 'ticket-12-key-level-evaluation'`（11 已先合入）。main 重跑 `uv run pytest -q` → 357 passed, 1 deselected；`uv run talaria contract-check` 零漂移。
+- 合并后用真实命令冒烟：`uv run talaria evaluate-levels --instrument BTC-USDT-PERP --timeframe 1m --from 2026-11-01T08:00:00+08:00 --to 2026-11-01T18:00:00+08:00 --atr-multiple 1.0 --baseline-samples 20 --seed 42 --json`，输出 `method_version=key-levels@2`、17 个类别（含 POC/VAH/VAL/ANCHORED_VWAP/LIQUIDATION_ZONE）、`total_sample_count=1896`；类别自动覆盖 11 新增类型，符合“无需改评估代码”。
+- 注意：锚定 VWAP 每个 cutoff 产生新 level_id，样本数很大（1721），反应率统计会被高频位主导；作为离线参考可接受，后续若要更稳健应按类别分层/去重，记录为已知限制。
+- 任务单 4 项验收均有测试/命令对应，无浏览器要求。
