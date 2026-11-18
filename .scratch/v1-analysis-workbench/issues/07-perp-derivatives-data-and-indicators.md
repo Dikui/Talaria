@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0002](../../../docs/adr/0002-capability-traits-and-market-packs.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 连接器免密钥回填 `Mark Price` K 线、`Funding Settlement` 历史与 `5min+` 持仓量（游标翻页），并订阅实时 `Mark Price`、资金费率与持仓量；衍生品特征通过加密永续 `Market Pack` 挂载，核心层无市场分支。
 - [x] 上述数据带五重时点进入快照，`HISTORICAL_PIT` 截断正确。
@@ -54,3 +54,12 @@
 - 快照中的下次结算时间按 `Funding Settlement` 的 `ts_event + 8h` 与快照 cutoff 推算首个未来结算，不依赖实时 WS 的 `nextFundingTime`；实时值到达后前端会覆盖摘要。
 - 衍生品 sidecar 与 K 线 parquet 分文件存储，但读取统一经 `SnapshotStore` 清单，未引入新的旁路读取方式。
 - 本分支未合并、未推送；`Status` 保持 `ready-for-agent`，由 lead 在合并后处理。
+
+
+### Lead 合并验收（2026-11-19）
+
+- 合并 `ba59350 Merge branch 'ticket-07-derivatives'`，与 09 的 `App.tsx`/`styles.css`/`api.ts` 自动合并成功，无冲突；`contract-check` 零漂移。
+- 合并后全量：`uv run pytest -q` → 303 passed, 1 deselected；`pnpm -C dsh typecheck` 通过；desk-ui 87 passed；plugin 12 passed；`pnpm -C dsh build` 成功。
+- 目视复核截图：1440 浅色顶栏显示标记价 68700.9、资金费率 -0.0200%、下次结算倒计时、持仓量 100,125.17；1440 深色可同时开 `FUNDING_QUANTILE(30)` 与 `OI_DIVERGENCE(30)` 副图，主图未塌陷；`1000BONK-USDT-PERP` 无 OI 时显示“该合约暂无持仓量历史，OI 背离暂不可计算。”空态；390 只读保留状态区最小读数。
+- 接受已知限制：真实 Bybit 联网未验证（CloudFront 地域限制，fixture 回归）；资金费率分位默认 30；`next_funding_ts` 由历史结算 + 8h 推算，实时 WS 值覆盖，非严格 PIT；衍生品 sidecar 与 K 线分文件但统一走 `SnapshotStore` 清单。
+- 截图已复制到 `.scratch/tasks/ticket-07/`（4 张）；worktree 与分支在关闭后删除。
