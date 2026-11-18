@@ -43,3 +43,27 @@ class FeatureNotImplementedError(TalariaError):
 
 class InvalidRequestError(TalariaError):
     code = "VALIDATION_ERROR"
+
+
+class SingleWriterViolationError(TalariaError):
+    """同一进程内对同一个 SQLite 库打开了第二个写者。"""
+
+    code = "SINGLE_WRITER_VIOLATION"
+
+
+class ColdStoreError(TalariaError):
+    """冷库发布的基类错误。"""
+
+    code = "COLD_STORE_ERROR"
+
+
+class ColdStoreIntegrityError(ColdStoreError):
+    """内容哈希或不可变文件校验失败。"""
+
+    code = "COLD_STORE_INTEGRITY"
+
+
+class ColdStoreQualityError(ColdStoreError):
+    """staging 批次未通过完整性/单调性/精度质检。"""
+
+    code = "COLD_STORE_QUALITY"

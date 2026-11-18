@@ -1,19 +1,60 @@
-"""快照编排：确保历史 → 按 cutoff 紧凑化 → 原子写 Parquet → 登记清单。"""
+"""快照编排：确保历史 → 合并热端切片 → 按 cutoff 紧凑化 → 原子写 Parquet → 登记清单。"""
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 from talaria.foundation.bars import CompactBar
-from talaria.foundation.connector import MarketDataConnector
+from talaria.foundation.connector import MarketDataConnector, RawBar
+from talaria.foundation.errors import ColdStoreError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
 from talaria.perception.backfill import BackfillPolicy, ensure_history
+from talaria.perception.cold_publisher import ColdBarPublisher
 from talaria.perception.compaction import compact_series
+from talaria.perception.hot_buffer import HotBarProvider
 from talaria.perception.raw_store import RawStore
-from talaria.perception.snapshot_store import SnapshotStore, write_snapshot_parquet
+from talaria.perception.snapshot_store import (
+    SnapshotBar,
+    SnapshotStore,
+    write_snapshot_parquet,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _merge_bars(archived: Sequence[RawBar], hot: Sequence[RawBar]) -> list[RawBar]:
+    """按事件时间合并；同一根柱取后摄入的版本，避免旧热端覆盖已归档修订。"""
+
+    merged = {bar.ts_event: bar for bar in archived}
+    for bar in hot:
+        existing = merged.get(bar.ts_event)
+        if existing is None or bar.ts_ingested >= existing.ts_ingested:
+            merged[bar.ts_event] = bar
+    return [merged[key] for key in sorted(merged)]
+
+
+def _snapshot_entries(
+    bars: Sequence[CompactBar],
+    raw_bars: Sequence[RawBar],
+    *,
+    cutoff_ts: int,
+) -> list[SnapshotBar]:
+    """为紧凑序列补齐 Committed Time；缺口柱沿用其后真实柱的提交时刻。"""
+
+    committed_by_ts = {bar.ts_event: bar.ts_committed for bar in raw_bars}
+    entries: list[SnapshotBar] = []
+    following_committed = cutoff_ts
+    for bar in reversed(bars):
+        committed = committed_by_ts.get(bar.timestamp)
+        if committed is not None:
+            following_committed = committed
+        entries.append(SnapshotBar(bar=bar, ts_committed=following_committed))
+    entries.reverse()
+    return entries
 
 
 class SnapshotBuilder:
@@ -26,6 +67,8 @@ class SnapshotBuilder:
         snapshot_store: SnapshotStore,
         policy: BackfillPolicy,
         now_ms: Callable[[], int],
+        hot_bars: HotBarProvider | None = None,
+        cold_publishers: Mapping[tuple[str, str], ColdBarPublisher] | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._connector = connector
@@ -33,6 +76,8 @@ class SnapshotBuilder:
         self._snapshot_store = snapshot_store
         self._policy = policy
         self._now_ms = now_ms
+        self._hot_bars = hot_bars
+        self._cold_publishers = cold_publishers
 
     def build(
         self,
@@ -43,8 +88,9 @@ class SnapshotBuilder:
         now = self._now_ms()
         cutoff = request.cutoff_ts if request.cutoff_ts is not None else now
         snapshot_id = uuid.uuid4().hex
-        frames: list[tuple[str, Sequence[CompactBar]]] = []
+        frames: list[tuple[str, Sequence[SnapshotBar]]] = []
         bar_counts: dict[str, int] = {}
+        committed_ts: int | None = None
 
         for timeframe in request.timeframes:
             ensure_history(
@@ -55,10 +101,36 @@ class SnapshotBuilder:
                 cutoff_ts=cutoff,
                 policy=self._policy,
             )
-            raw_bars = self._raw_store.read(instrument.symbol, timeframe)
+            archived = self._raw_store.read(instrument.symbol, timeframe)
+            hot = (
+                self._hot_bars.recent_bars(
+                    instrument_id=instrument.instrument_id, timeframe=timeframe
+                )
+                if self._hot_bars is not None
+                else ()
+            )
+            raw_bars = _merge_bars(archived, hot)
+            self._publish_cold(
+                instrument=instrument,
+                timeframe=timeframe,
+                raw_bars=raw_bars,
+                cutoff_ts=cutoff,
+            )
             compact = compact_series(raw_bars, timeframe=timeframe, cutoff_ts=cutoff)
-            frames.append((timeframe, compact))
+            entries = _snapshot_entries(compact, raw_bars, cutoff_ts=cutoff)
+            frames.append((timeframe, entries))
             bar_counts[timeframe] = len(compact)
+            if entries:
+                frame_committed = max(
+                    entry.ts_committed
+                    for entry in entries
+                    if entry.ts_committed is not None
+                )
+                committed_ts = (
+                    frame_committed
+                    if committed_ts is None
+                    else max(committed_ts, frame_committed)
+                )
 
         meta = SnapshotMeta(
             snapshot_id=snapshot_id,
@@ -71,8 +143,36 @@ class SnapshotBuilder:
         )
         parquet_path = write_snapshot_parquet(self._data_dir, snapshot_id, frames)
         try:
-            self._snapshot_store.register(meta, parquet_path)
+            self._snapshot_store.register(meta, parquet_path, committed_ts=committed_ts)
         except Exception:
             (self._data_dir / parquet_path).unlink(missing_ok=True)
             raise
         return meta
+
+    def _publish_cold(
+        self,
+        *,
+        instrument: InstrumentSpec,
+        timeframe: str,
+        raw_bars: Sequence[RawBar],
+        cutoff_ts: int,
+    ) -> None:
+        """尽力把快照可见柱增量写入冷库；冷库故障绝不阻塞快照主路径。"""
+
+        if self._cold_publishers is None:
+            return
+        publisher = self._cold_publishers.get((instrument.instrument_id, timeframe))
+        if publisher is None:
+            return
+        visible = [bar for bar in raw_bars if bar.ts_available <= cutoff_ts]
+        if not visible:
+            return
+        try:
+            publisher.publish_snapshot_bars(visible)
+        except ColdStoreError as exc:
+            logger.warning(
+                "冷库发布失败，快照继续（%s %s）：%s",
+                instrument.instrument_id,
+                timeframe,
+                exc,
+            )

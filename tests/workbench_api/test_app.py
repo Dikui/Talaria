@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+from talaria.perception.cold_store import ColdStore
 from talaria.workbench_api.app import create_app
 from talaria.workbench_api.settings import AppSettings
 
@@ -272,6 +274,19 @@ def test_feed_failure_maps_to_503(tmp_path, dist_dir) -> None:
     assert response.json()["code"] == "FEED_UNAVAILABLE"
 
 
+def test_lifespan_creates_and_checkpoints_collaboration_state(
+    tmp_path, fixture_dir, dist_dir
+) -> None:
+    app = create_app(_app_settings(tmp_path, fixture_dir, dist=dist_dir))
+    with TestClient(app):
+        pass
+
+    db = tmp_path / "data" / "state" / "collaboration_state.sqlite"
+    assert db.is_file()
+    wal = Path(f"{db}-wal")
+    assert not wal.exists() or wal.stat().st_size == 0
+
+
 def test_validation_error_is_wrapped_in_error_response(client) -> None:
     response = client.post(
         "/api/snapshots", content=json.dumps({}), headers={**AUTH, "Content-Type": "application/json"}
@@ -280,3 +295,40 @@ def test_validation_error_is_wrapped_in_error_response(client) -> None:
     payload = response.json()
     assert payload["code"] == "VALIDATION_ERROR"
     assert "instrument_id" in payload["message"]
+
+
+def test_daemon_snapshot_publishes_cold_bars_and_restart_reads(
+    tmp_path, fixture_dir, dist_dir
+) -> None:
+    settings = _app_settings(tmp_path, fixture_dir, dist=dist_dir)
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    assert instrument is not None
+    app = create_app(settings)
+    with TestClient(app) as client:
+        first = _create(client)
+        assert first.status_code == 200
+        cold = app.state.cold_store
+        generations = cold.generations(instrument, "1m")
+        assert len(generations) == 1
+        assert generations[0].bars > 0
+
+        second = _create(client)
+        assert second.status_code == 200
+        assert cold.generations(instrument, "1m") == generations
+
+    assert (settings.data_dir / "data" / "data_manifest.sqlite").is_file()
+    assert not list(settings.data_dir.rglob("*-wal"))
+
+    reopened = ColdStore(settings.data_dir)
+    try:
+        assert reopened.generations(instrument, "1m") == generations
+        bars = reopened.read_bars(instrument, "1m")
+        assert bars
+        assert bars[-1].ts_event == generations[0].last_ts
+    finally:
+        reopened.close()
+
+    restarted = create_app(settings)
+    with TestClient(restarted) as client:
+        response = client.get(f"/api/snapshots/{first.json()['snapshot_id']}")
+        assert response.status_code == 200
