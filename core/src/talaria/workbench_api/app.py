@@ -45,6 +45,7 @@ from talaria.foundation.drawings import (
 from talaria.foundation.errors import (
     FeedUnavailableError,
     InvalidRequestError,
+    NotFoundError,
     TalariaError,
 )
 from talaria.foundation.derivatives import DerivativeBundle
@@ -63,7 +64,9 @@ from talaria.foundation.indicators import (
 )
 from talaria.foundation.key_levels import (
     EvidenceClass,
+    KeyLevelAdoptionRequest,
     KeyLevelCategory,
+    KeyLevelFeedbackSummary,
     KeyLevelIgnoreList,
     KeyLevelIgnoreRequest,
     KeyLevelParams,
@@ -319,7 +322,9 @@ def create_app(
             queue=state_writer, pack=CRYPTO_PERP_PACK, now_ms=settings.now_ms
         )
         app.state.key_level_feedback = KeyLevelFeedbackService(
-            state_writer=state_writer
+            state_writer=state_writer,
+            drawings=app.state.drawing_service,
+            now_ms=settings.now_ms,
         )
         scheduler = (
             RealtimeSubscriptionScheduler(
@@ -813,6 +818,36 @@ def create_app(
         payload: KeyLevelIgnoreRequest, request: Request
     ) -> KeyLevelIgnoreList:
         return await request.app.state.key_level_feedback.set_ignored(payload)
+
+    @app.post("/api/key-levels/{level_id}/adopt", response_model=DrawingRecord)
+    async def adopt_key_level(
+        level_id: str, payload: KeyLevelAdoptionRequest, request: Request
+    ) -> DrawingRecord:
+        if payload.timeframe not in SUPPORTED_TIMEFRAMES:
+            raise InvalidRequestError(f"不支持的周期 {payload.timeframe!r}")
+        level_set = service(request).get_key_levels(
+            payload.snapshot_id, timeframe=payload.timeframe
+        )
+        level = next(
+            (item for item in level_set.levels if item.level_id == level_id),
+            None,
+        )
+        if level is None:
+            raise NotFoundError(f"关键位 {level_id} 不存在")
+        return await request.app.state.key_level_feedback.adopt(
+            level,
+            snapshot_id=payload.snapshot_id,
+            timeframe=payload.timeframe,
+        )
+
+    @app.get(
+        "/api/key-levels/feedback", response_model=KeyLevelFeedbackSummary
+    )
+    async def key_level_feedback(
+        request: Request,
+        instrument_id: str = Query(..., description="标的"),
+    ) -> KeyLevelFeedbackSummary:
+        return await request.app.state.key_level_feedback.feedback(instrument_id)
 
     @app.post("/api/operators/compute", response_model=IndicatorSeries)
     def compute_operator(

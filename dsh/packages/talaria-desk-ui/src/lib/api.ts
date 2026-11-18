@@ -19,6 +19,7 @@ import type {
   IndicatorSeries,
   InstrumentSpec,
   KeyLevelCategory,
+  KeyLevelFeedbackSummary,
   KeyLevelIgnoreList,
   KeyLevelSet,
   OperatorRequest,
@@ -336,6 +337,24 @@ export const api = {
       level_id: levelId,
       ignored,
     });
+  },
+
+  keyLevelFeedback(instrumentId: string): Promise<KeyLevelFeedbackSummary> {
+    return getJson<KeyLevelFeedbackSummary>(
+      `/api/key-levels/feedback?instrument_id=${encodeURIComponent(instrumentId)}`,
+    );
+  },
+
+  adoptKeyLevel(
+    levelId: string,
+    snapshotId: string,
+    timeframe: string,
+  ): Promise<DrawingRecord> {
+    return writeJson<DrawingRecord>(
+      `/api/key-levels/${encodeURIComponent(levelId)}/adopt`,
+      "POST",
+      { snapshot_id: snapshotId, timeframe },
+    );
   },
 
   alerts(status?: AlertStatus): Promise<AlertListResponse> {

@@ -163,6 +163,32 @@ class KeyLevelIgnoreList(ContractModel):
     entries: list[KeyLevelIgnoreRecord] = Field(default_factory=list)
 
 
+class KeyLevelAdoptionRequest(ContractModel):
+    """把某条系统关键位采纳为独立人工画线；快照提供该位当时的投影。"""
+
+    snapshot_id: str = Field(min_length=1, max_length=64)
+    timeframe: str = Field(min_length=1, max_length=8)
+
+
+class KeyLevelAdoptionRecord(ContractModel):
+    """采纳记录：只做来源追踪，画线本身与系统关键位完全解耦。"""
+
+    instrument_id: str
+    level_id: str
+    snapshot_id: str
+    drawing_id: str
+    adopted_ts: int
+    timeframe: str
+
+
+class KeyLevelFeedbackSummary(ContractModel):
+    """单标的的关键位质量反馈汇总；供离线评估与前端持久状态使用。"""
+
+    instrument_id: str
+    adopted_level_ids: list[str] = Field(default_factory=list)
+    ignored_level_ids: list[str] = Field(default_factory=list)
+
+
 @dataclass(frozen=True, slots=True)
 class SessionProfile:
     """从市场包 Trait 投影出的时段配置；核心引擎不内置任何时区或交易所。"""

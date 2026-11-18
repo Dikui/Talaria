@@ -2174,6 +2174,7 @@ button:disabled {
 
 .key-level-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 6px;
   padding: 5px 6px;
@@ -2263,6 +2264,79 @@ button:disabled {
 
 .key-level-ignore:disabled {
   opacity: 0.5;
+  cursor: default;
+}
+
+.key-level-adopted-badge {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 9px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.key-level-actions {
+  flex: none;
+  display: flex;
+}
+
+.key-level-actions-toggle {
+  width: 22px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.key-level-actions-toggle:hover,
+.key-level-actions-toggle[aria-expanded="true"] {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.key-level-actions-menu {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.key-level-actions-menu button {
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.key-level-actions-menu button:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.key-level-actions-menu button:disabled {
+  color: var(--text-muted);
+  opacity: 0.6;
   cursor: default;
 }
 
@@ -2844,5 +2918,16 @@ button:disabled {
 
   .alerts-panel {
     padding-bottom: 4px;
+  }
+}
+
+@media (max-width: 400px) {
+  .key-level-actions,
+  .key-level-adopted-badge {
+    display: none;
+  }
+
+  .key-level-actions-menu {
+    display: none;
   }
 }

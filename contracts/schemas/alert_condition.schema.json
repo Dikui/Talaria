@@ -1,11 +1,12 @@
 {
   "$defs": {
     "AlertConditionKind": {
-      "description": "规则条件的三种来源；前端不复制任何指标或几何数学。",
+      "description": "规则条件的来源；前端不复制任何指标、几何或关键位数学。",
       "enum": [
         "METRIC_THRESHOLD",
         "INDICATOR_SIGNAL",
-        "OVERLAY_CROSS"
+        "OVERLAY_CROSS",
+        "LEVEL_EVENT"
       ],
       "title": "AlertConditionKind",
       "type": "string"
@@ -17,6 +18,16 @@
         "BELOW"
       ],
       "title": "AlertDirection",
+      "type": "string"
+    },
+    "AlertLevelEvent": {
+      "description": "关键位事件：盘中触及、收盘突破、突破后的回踩确认。",
+      "enum": [
+        "TOUCH",
+        "BREAK",
+        "RETEST"
+      ],
+      "title": "AlertLevelEvent",
       "type": "string"
     },
     "AlertMetric": {
@@ -56,6 +67,30 @@
       ],
       "title": "IndicatorName",
       "type": "string"
+    },
+    "KeyLevelKind": {
+      "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+      "enum": [
+        "SWING_HIGH",
+        "SWING_LOW",
+        "PREV_DAY_HIGH",
+        "PREV_DAY_LOW",
+        "PREV_DAY_CLOSE",
+        "WEEK_OPEN",
+        "MONTH_OPEN",
+        "OPENING_RANGE",
+        "SESSION_HIGH",
+        "SESSION_LOW",
+        "GAP",
+        "ROUND_NUMBER",
+        "POC",
+        "VAH",
+        "VAL",
+        "ANCHORED_VWAP",
+        "LIQUIDATION_ZONE"
+      ],
+      "title": "KeyLevelKind",
+      "type": "string"
     }
   },
   "additionalProperties": false,
@@ -87,7 +122,15 @@
       "title": "Compare Period"
     },
     "direction": {
-      "$ref": "#/$defs/AlertDirection"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AlertDirection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "drawing_id": {
       "anyOf": [
@@ -143,6 +186,41 @@
     "kind": {
       "$ref": "#/$defs/AlertConditionKind"
     },
+    "level_event": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AlertLevelEvent"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "level_id": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Level Id"
+    },
+    "level_kind": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/KeyLevelKind"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "metric": {
       "anyOf": [
         {
@@ -193,8 +271,7 @@
     }
   },
   "required": [
-    "kind",
-    "direction"
+    "kind"
   ],
   "title": "AlertCondition",
   "type": "object"

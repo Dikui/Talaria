@@ -32,7 +32,9 @@ export type QuoteSource = "SUPERVISOR" | "SNAPSHOT" | "UNAVAILABLE";
 
 export type DegradationReason = "QUOTA" | "NO_FEED";
 
-export type AlertConditionKind = "METRIC_THRESHOLD" | "INDICATOR_SIGNAL" | "OVERLAY_CROSS";
+export type AlertConditionKind = "METRIC_THRESHOLD" | "INDICATOR_SIGNAL" | "OVERLAY_CROSS" | "LEVEL_EVENT";
+
+export type AlertLevelEvent = "TOUCH" | "BREAK" | "RETEST";
 
 export type AlertMetric = "last_price" | "bid_price" | "ask_price" | "mark_price" | "funding_rate" | "open_interest";
 
@@ -323,6 +325,23 @@ export interface KeyLevelIgnoreList {
   instrument_id: string;
   entries?: KeyLevelIgnoreRecord[];
 }
+export interface KeyLevelAdoptionRequest {
+  snapshot_id: string;
+  timeframe: string;
+}
+export interface KeyLevelAdoptionRecord {
+  instrument_id: string;
+  level_id: string;
+  snapshot_id: string;
+  drawing_id: string;
+  adopted_ts: number;
+  timeframe: string;
+}
+export interface KeyLevelFeedbackSummary {
+  instrument_id: string;
+  adopted_level_ids?: string[];
+  ignored_level_ids?: string[];
+}
 export interface WatchlistGroupCreate {
   name: string;
 }
@@ -369,7 +388,7 @@ export interface Watchlist {
 }
 export interface AlertCondition {
   kind: AlertConditionKind;
-  direction: AlertDirection;
+  direction?: AlertDirection | null;
   metric?: AlertMetric | null;
   threshold?: DecimalString | null;
   indicator?: IndicatorName | null;
@@ -380,6 +399,9 @@ export interface AlertCondition {
   drawing_id?: string | null;
   overlay_mode?: AlertOverlayMode | null;
   overlay_ratio?: DecimalString | null;
+  level_id?: string | null;
+  level_event?: AlertLevelEvent | null;
+  level_kind?: KeyLevelKind | null;
 }
 export interface AlertCreate {
   instrument_id: string;

@@ -1,11 +1,12 @@
 {
   "$defs": {
     "AlertConditionKind": {
-      "description": "规则条件的三种来源；前端不复制任何指标或几何数学。",
+      "description": "规则条件的来源；前端不复制任何指标、几何或关键位数学。",
       "enum": [
         "METRIC_THRESHOLD",
         "INDICATOR_SIGNAL",
-        "OVERLAY_CROSS"
+        "OVERLAY_CROSS",
+        "LEVEL_EVENT"
       ],
       "title": "AlertConditionKind",
       "type": "string"

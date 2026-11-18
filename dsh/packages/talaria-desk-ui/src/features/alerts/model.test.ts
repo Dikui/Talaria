@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { AlertRecord } from "@talaria/contracts";
 
 import {
+  ALERT_LEVEL_EVENTS,
   alertsForTab,
+  buildAlertCondition,
   buildAlertCreate,
   compareAlerts,
   conditionSummary,
@@ -195,5 +197,46 @@ describe("alert summaries", () => {
     expect(formatCooldown(0)).toBe("无冷却");
     expect(formatCooldown(120_000)).toBe("2 分钟");
     expect(formatCooldown(1_500)).toBe("1500 毫秒");
+  });
+});
+
+describe("level event alerts", () => {
+  it("defaults a key level seed to LEVEL_EVENT with TOUCH", () => {
+    const form = defaultAlertForm("BTC-USDT-PERP", "1m", {
+      levelId: "kl_0123456789abcdef",
+      levelKind: "PREV_DAY_HIGH",
+    });
+    expect(form.kind).toBe("LEVEL_EVENT");
+    expect(form.levelId).toBe("kl_0123456789abcdef");
+    expect(form.levelEvent).toBe("TOUCH");
+    expect(form.levelKind).toBe("PREV_DAY_HIGH");
+    expect(validateAlertForm(form)).toBeNull();
+  });
+
+  it("offers TOUCH, BREAK and RETEST and builds only level fields", () => {
+    expect(ALERT_LEVEL_EVENTS).toEqual(["TOUCH", "BREAK", "RETEST"]);
+    const form = {
+      ...defaultAlertForm("BTC-USDT-PERP", "1m", {
+        levelId: "kl_0123456789abcdef",
+        levelKind: "POC",
+      }),
+      levelEvent: "RETEST" as const,
+    };
+    expect(buildAlertCondition(form)).toEqual({
+      kind: "LEVEL_EVENT",
+      level_id: "kl_0123456789abcdef",
+      level_event: "RETEST",
+      level_kind: "POC",
+    });
+    expect(conditionSummary(buildAlertCondition(form))).toContain(
+      "kl_0123456789abcdef",
+    );
+  });
+
+  it("rejects a LEVEL_EVENT without a level id", () => {
+    const form = defaultAlertForm("BTC-USDT-PERP", "1m");
+    expect(validateAlertForm({ ...form, kind: "LEVEL_EVENT" })).toContain(
+      "level_id",
+    );
   });
 });
