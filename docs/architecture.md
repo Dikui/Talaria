@@ -166,7 +166,7 @@ Talaria/
 │       ├── talaria-desk-ui/            # 【O2-前端核心】零 DSH 耦合的 React + KLineChart v10 画线/预警/日历/下单/复盘组件包
 │       ├── dsh-bridge/                 # DSH 宿主与 Python 底座受控通信桥、单调执行守卫
 │       ├── dsh-strategy-agents/        # 【归属 L2】静态纪律前缀、PTC 同口径算子绑定、市场领域 Skills
-│       └── dsh-workbench/              # 【O2-插件壳】talaria-desk / talaria-auto / talaria-eval Profile 与 ui-slots 挂载壳
+│       └── dsh-workbench/              # 【O2-插件壳】talaria-desk / talaria-auto / talaria-eval Profile 与 DSH 插槽挂载壳
 ├── tests/                              # 与分层同构的契约测试、算子黄金对齐测试与仿真复式账本回归测试
 └── docs/
     ├── architecture.md                 # 本架构规范
@@ -378,7 +378,7 @@ class ExecutionEngine(Protocol):
 flowchart LR
   Browser["浏览器工作台 (talaria-desk-ui)"]
   Daemon["Python 确定性守护进程 (talaria-daemon :8765)"]
-  DSHWeb["DSH 协同宿主 (dsh web --profile talaria-desk :3080)"]
+  DSHWeb["DSH 协同宿主 (dsh --profile talaria-desk :3080)"]
   DSHAuto["DSH 自治/回测子进程 (talaria-auto / talaria-eval via stdio SDK)"]
 
   Browser <-->|"通道 1 & 2：本地 HTTP/WS 快通道 (行情/预警/画线/草案确认/紧急平仓)"| Daemon
@@ -388,9 +388,9 @@ flowchart LR
 ```
 
 - **权限物理隔离**：`talaria-desk`（Web 协同 Profile）在 `cordis.patch.yml` 层物理不挂载直接提交正式计划工具，智能体在协同会话中只能写 `StagedPlanDraft` 待人工确认；自治子账户（`talaria-auto`）与历史回测（`talaria-eval`）均基于 `sdk-minimal` 物理剔除 `shell`、外网与文件写权限，统一由 Python 经官方 `deepseek-harness-sdk`（`stdio`）受控调用，实现实时自治与历史回测 100% 路径同构。
-- **版本基线与探针**：截至 2026-11-19，DSH 尚无 stable release，本机基线锁定 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`（`ui-slots 0.0.1-rc.1`、`typert` 仍为 0.x 预览版）；`dsh_bin` 显式指向本机 rc.3 可执行文件并显式设置 `dsh_home`，升级 DSH 或 SDK 前必须重跑 `dsh --dump-config --profile <name>` 与确定性探针。
+- **版本基线与探针**：截至 2026-11-19，DSH 尚无 stable release，本机基线锁定 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`；`typert` 仍为 0.x 预览版。客户端插槽（`ctx.slots`、`ctx.sidebarRightTabs`）由 DSH 0.2.2-rc.3 安装包自带，不再依赖单独发布的 `ui-slots 0.0.1-rc.1`。`dsh_bin` 显式指向本机 rc.3 可执行文件并显式设置 `dsh_home`，升级 DSH 或 SDK 前必须重跑 `dsh --profile <name> --dump-config` 与确定性探针。
 - **三种轻量化运行态（零 Docker / 零 Redis / 零 Kafka）**：
-  1. `talaria up`（日常实时 `Shadow Run`）：启动 `talaria-daemon` + `dsh web --profile talaria-desk`（加 `--solo` 参数时仅启动 `talaria-daemon` 单个进程，直接访问 `http://127.0.0.1:8765/desk` 纯人工独立看盘模拟）；
+  1. `talaria up`（日常实时 `Shadow Run`）：启动 `talaria-daemon` + `dsh --profile talaria-desk --no-open --port <dsh_port>`（加 `--solo` 参数时仅启动 `talaria-daemon` 单个进程，直接访问 `http://127.0.0.1:8765/desk` 纯人工独立看盘模拟）。双进程模式下，`talaria up` 在 `$TALARIA_DATA_DIR/runtime/dsh-bridge.json`（0600）写入回环基址与 Bearer Token，并在 `/api/collaboration` 暴露宿主状态；DSH 缺失或启动失败时只把宿主标记为 `offline`、打印中文修复提示，Python 守护进程与 `/desk` 快通道继续服务，不阻塞 `--solo`；
   2. `talaria replay`（历史批量回放）：单进程虚拟时钟回放，含智能体时按需池化拉起 `talaria-eval` 子进程；
   3. `talaria optimize --workers N`（多进程参数寻优）：$N$ 个只读共享冷库 Parquet 的 Worker 在各自 `:memory:` 内存账本中并发跑回测，结果追加写文件锁日志。
 
@@ -411,4 +411,4 @@ flowchart LR
 ### 5.3 异常降级与跨缝隙自动化契约门禁
 
 1. **优雅降级**：外部数据源在供流窗口内传输失联时置 `STALE` 挂起新触发，策略强制 `Abstain`，持续超限子账户自动降级 `REDUCING`；DSH 超时或离线时自动降级 `Abstain(MODEL_TIMEOUT)`，本地快通道人工看盘、画线、盘面预警弹窗与存量仓位四重保护屏障 100% 无损运行。
-2. **五项自动化契约回归检查**：① Python `foundation` 导出 JSON Schema 与 `@talaria/contracts` 零漂移及十进制字符串类型断言；② DSH 工具 Schema 经 `assertSupportedJsonSchema` 子集规则（零根级 `$schema`、零未展开 `$defs`）静态门禁；③ `talaria-desk / talaria-auto / talaria-eval` 三个 Profile 的权限配置快照断言（`dsh --dump-config --profile <name>`，输出为含 `!!js` 的 YAML 风格文本而非 JSON），以及单调执行守卫的行为测试（守卫不出现在 dump 输出中，必须构造 `ctx.tools.guard` 场景断言其拦截历史轨迹 `fork` 重放）；④ `contracts/operator_vectors/` Python 算子与关键位算法黄金回归测试（含 `NO_TRADES` 与 `FEED_GAP` 重预热、摆动点确认延迟无前视断言）；⑤ 守护进程仅绑定 `127.0.0.1` 回环地址与会话随机 Bearer Token 鉴权基线断言。
+2. **五项自动化契约回归检查**：① Python `foundation` 导出 JSON Schema 与 `@talaria/contracts` 零漂移及十进制字符串类型断言；② DSH 工具 Schema 经 `assertSupportedJsonSchema` 子集规则（零根级 `$schema`、零未展开 `$defs`）静态门禁；③ `talaria-desk / talaria-auto / talaria-eval` 三个 Profile 的权限配置快照断言（`dsh --profile <name> --dump-config`，输出为含 `!!js` 的 YAML 风格文本而非 JSON），以及单调执行守卫的行为测试（守卫经运行时 `ctx.tools.guard` 注册，不出现在 dump 输出中，必须构造 `ctx.tools.guard` 场景断言其拦截历史轨迹 `fork` 重放；09 已实现 `talaria-desk` 的快照与守卫行为测试，`talaria-auto / talaria-eval` 留待 M2）；④ `contracts/operator_vectors/` Python 算子与关键位算法黄金回归测试（含 `NO_TRADES` 与 `FEED_GAP` 重预热、摆动点确认延迟无前视断言）；⑤ 守护进程仅绑定 `127.0.0.1` 回环地址与会话随机 Bearer Token 鉴权基线断言。

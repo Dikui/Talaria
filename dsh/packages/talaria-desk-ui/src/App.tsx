@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Chart } from "klinecharts";
 
 import type {
@@ -15,6 +15,7 @@ import {
   FeedHealthBadge,
   OrderBookSummary,
 } from "./features/feed/FeedIndicators";
+import { useCollaborationStatus } from "./features/collaboration/useCollaborationStatus";
 import { feedBadgeView } from "./features/feed/health";
 import { useMarketStream } from "./features/feed/useMarketStream";
 import { InstrumentSelect } from "./features/instruments/InstrumentSelect";
@@ -80,7 +81,13 @@ function feedLabel(feedMode: string | null): string {
   return "行情源未知";
 }
 
-export default function App() {
+export interface DeskWorkbenchProps {
+  /** true 时渲染在 DSH 插槽内：不覆盖宿主主题，铺满插槽高度。 */
+  embedded?: boolean;
+}
+
+export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
+  const shellRef = useRef<HTMLDivElement>(null);
   const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
   const [instrumentId, setInstrumentId] = useState(DEFAULT_INSTRUMENT);
   const [timeframe, setTimeframe] = useState<string>("1m");
@@ -104,11 +111,18 @@ export default function App() {
   const [drawingManagerOpen, setDrawingManagerOpen] = useState(false);
   const readOnlyViewport = useReadOnlyViewport();
   const stream = useMarketStream(instrumentId, timeframe);
+  const collaboration = useCollaborationStatus();
 
   useEffect(() => {
-    applyTheme(theme);
+    if (embedded) {
+      if (shellRef.current !== null) {
+        applyTheme(theme, shellRef.current);
+      }
+    } else {
+      applyTheme(theme);
+    }
     localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }, [theme]);
+  }, [theme, embedded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -341,7 +355,13 @@ export default function App() {
   });
 
   return (
-    <div className="app-shell">
+    <div
+      ref={shellRef}
+      className={`talaria-desk app-shell ${
+        embedded ? "talaria-desk--embedded" : "talaria-desk--standalone"
+      }`}
+      data-theme={theme}
+    >
       <header className="app-header">
         <div className="brand">
           <h1>Talaria 分析工作台</h1>
@@ -374,6 +394,14 @@ export default function App() {
               data-testid="feed-mode"
             >
               {feedLabel(effectiveFeedMode)}
+            </span>
+            <span
+              className={`host-badge host-badge--${collaboration.tone}`}
+              data-testid="host-status"
+              role="status"
+              title={collaboration.status?.message ?? "正在检测协同宿主"}
+            >
+              {collaboration.label}
             </span>
             <FeedHealthBadge
               health={stream.feedHealth}
@@ -529,4 +557,8 @@ export default function App() {
       </footer>
     </div>
   );
+}
+
+export default function App() {
+  return <DeskWorkbench />;
 }

@@ -22,6 +22,15 @@ export interface HealthStatus {
   feed_mode: string;
 }
 
+/** ``/api/collaboration``：宿主状态只做展示，不参与图表快通道。 */
+export interface CollaborationStatus {
+  mode: "solo" | "dual";
+  host: "disabled" | "starting" | "online" | "offline" | "stopped" | string;
+  url: string | null;
+  detail?: string;
+  message: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -32,6 +41,31 @@ export class ApiError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+let apiBaseUrl = "";
+let apiToken: string | null = null;
+
+/** 嵌入 DSH 时由插件注入回环守护进程地址与短期 Bearer token。 */
+export function configureApi(config: {
+  baseUrl?: string;
+  token?: string | null;
+}): void {
+  apiBaseUrl = (config.baseUrl ?? "").replace(/\/$/, "");
+  apiToken = config.token ?? null;
+}
+
+export function getApiBaseUrl(): string {
+  return apiBaseUrl;
+}
+
+function apiPath(path: string): string {
+  return apiBaseUrl ? `${apiBaseUrl}${path}` : path;
+}
+
+function authorizationHeader(): Record<string, string> {
+  const token = apiToken ?? readSessionToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 function readSessionToken(): string {
@@ -57,7 +91,9 @@ async function parseError(response: Response): Promise<ApiError> {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(path, { headers: { Accept: "application/json" } });
+  const response = await fetch(apiPath(path), {
+    headers: { Accept: "application/json", ...authorizationHeader() },
+  });
   if (!response.ok) {
     throw await parseError(response);
   }
@@ -69,13 +105,12 @@ async function writeJson<T>(
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   body?: unknown,
 ): Promise<T> {
-  const token = readSessionToken();
-  const response = await fetch(path, {
+  const response = await fetch(apiPath(path), {
     method,
     headers: {
       Accept: "application/json",
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...authorizationHeader(),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -100,6 +135,10 @@ async function deleteJson<T>(path: string): Promise<T> {
 export const api = {
   health(): Promise<HealthStatus> {
     return getJson<HealthStatus>("/api/health");
+  },
+
+  collaboration(): Promise<CollaborationStatus> {
+    return getJson<CollaborationStatus>("/api/collaboration");
   },
 
   instruments(): Promise<InstrumentSpec[]> {

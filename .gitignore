@@ -20,3 +20,7 @@ dist/
 
 # 本地任务产物（截图、临时数据）
 .DS_Store
+
+# DSH 客户端插件构建产物（talaria dsh-install 会先构建）
+dsh/packages/talaria-dsh-plugin/client/index.js
+dsh/packages/talaria-dsh-plugin/.client-build/

@@ -16,4 +16,4 @@ status: accepted
 - **自治与回测完全同构，协同与自治权限硬隔离**：实时自治子账户与历史逐期回测均由 Python 经 `deepseek-harness-sdk` 驱动精简 `sdk-minimal` 派生 Profile；`dsh web`（`talaria-desk`）专职服务人机协同，物理不挂载跳过人工确认的自动下单工具。
 - **故障与越权隔离**：即使 DSH 会话崩溃、推理超时、从历史轨迹分支（`fork`）重放、受外部新闻提示注入，或上游 `0.x` 插件 API 变动，也不会阻塞人工看盘与紧急避险，不会污染权威资金账本，更无法绕过 Python 侧硬风控。
 - **契约维护要求**：跨语言边界以 Python 底座契约模型为单一事实源导出 JSON Schema 快照（金额与价格一律采用十进制字符串），由构建工具自动生成 TypeScript 类型及符合 `@deepseek-ai/dsh-mcp-client` 校验子集（剥离根级 `$schema` 与展开 `$defs`）的工具定义。
-- **版本基线（2026-11-19 核实）**：DSH 尚无 stable release，锁定本机基线 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`；`ui-slots 0.0.1-rc.1` 为 BSD-3 且与 0.2.2 线的 MIT 许可存在漂移，`typert` 仍为 0.x 预览版，使用前需复核。`turn/end` 事件不含 usage 且 `deriveTurnTokenUsage` 非公开导出，认知成本采集须在 bridge 侧自行折叠 attempt 事件。
+- **版本基线（2026-11-19 核实）**：DSH 尚无 stable release，锁定本机基线 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`；~~`ui-slots 0.0.1-rc.1` 为 BSD-3 且与 0.2.2 线的 MIT 许可存在漂移~~（2026-11-19 任务 09 实测：rc.3 安装包已自带 `ctx.slots` / `ctx.sidebarRightTabs`，看盘组件不依赖单独发布的 ui-slots 包；该包版本不再作为基线），`typert` 仍为 0.x 预览版，使用前需复核。`turn/end` 事件不含 usage 且 `deriveTurnTokenUsage` 非公开导出，认知成本采集须在 bridge 侧自行折叠 attempt 事件。
