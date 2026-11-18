@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 成交量位与锚定 VWAP 按截止时刻无前视计算，接入 10 的稳定身份、强度与状态机制，补黄金向量。
 - [x] 清算密集区算法的杠杆假设作为版本参数显式记录；类别标为 `ESTIMATED`，`get_key_levels` 可按观测 / 估算筛选。
@@ -59,3 +59,10 @@
 - 快照数据存在截止滞后，`session` 锚点在数据缺失时回退到最后一个数据 UTC 日界，避免 `formed_ts > ts_available`；实时数据无此回退。
 - UI 未提供锚点/杠杆参数的编辑入口，参数通过 API 与 `KeyLevelParams` 配置并在契约/API 中只读展示。
 - 本分支未合并、未推送。
+
+### Lead 验收
+
+- 合并 `e8de2e5 Merge branch 'ticket-11-volume-liquidation-levels'`；main 重跑 `uv run pytest -q` → 338 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 99 passed（15 files）；`pnpm -C dsh build` 通过（Vite chunk 提示可接受）。
+- 目视 7 张截图：1440 浅/深成交量位与估算清算差异化图例、`ESTIMATED` 角标、证据筛选、390 只读、OI 不足空态、长标签裁剪均符合验收。
+- 接受已知限制：清算密集区为 OI×杠杆估算，不含强平引擎/维持保证金分层/资金费率；UI 未提供锚点/杠杆参数编辑入口；`session` 锚点在快照数据缺失时回退到最后一个 UTC 日界。
+- 截图已复制到 `.scratch/tasks/ticket-11/`（gitignored）。
