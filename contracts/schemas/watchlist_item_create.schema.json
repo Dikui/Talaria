@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "description": "向手工分组添加标的。",
+  "properties": {
+    "group_id": {
+      "minLength": 1,
+      "title": "Group Id",
+      "type": "string"
+    },
+    "instrument_id": {
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "group_id",
+    "instrument_id"
+  ],
+  "title": "WatchlistItemCreate",
+  "type": "object"
+}

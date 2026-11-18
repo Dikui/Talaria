@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "description": "创建手工分组。",
+  "properties": {
+    "name": {
+      "maxLength": 60,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "WatchlistGroupCreate",
+  "type": "object"
+}

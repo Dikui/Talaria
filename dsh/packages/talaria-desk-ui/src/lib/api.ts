@@ -13,6 +13,7 @@ import type {
   InstrumentSpec,
   OperatorRequest,
   SnapshotMeta,
+  Watchlist,
 } from "@talaria/contracts";
 
 export interface HealthStatus {
@@ -64,8 +65,8 @@ async function getJson<T>(path: string): Promise<T> {
 }
 
 async function writeJson<T>(
-  method: "POST" | "PATCH" | "DELETE",
   path: string,
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
   body?: unknown,
 ): Promise<T> {
   const token = readSessionToken();
@@ -85,15 +86,15 @@ async function writeJson<T>(
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  return writeJson<T>("POST", path, body);
+  return writeJson<T>(path, "POST", body);
 }
 
 async function patchJson<T>(path: string, body: unknown): Promise<T> {
-  return writeJson<T>("PATCH", path, body);
+  return writeJson<T>(path, "PATCH", body);
 }
 
 async function deleteJson<T>(path: string): Promise<T> {
-  return writeJson<T>("DELETE", path);
+  return writeJson<T>(path, "DELETE");
 }
 
 export const api = {
@@ -226,5 +227,53 @@ export const api = {
     return deleteJson<DrawingClearResponse>(
       `/api/drawings?instrument_id=${encodeURIComponent(instrumentId)}`,
     );
+  },
+
+  watchlist(): Promise<Watchlist> {
+    return getJson<Watchlist>("/api/watchlist");
+  },
+
+  createWatchlistGroup(name: string): Promise<Watchlist> {
+    return writeJson<Watchlist>("/api/watchlist/groups", "POST", { name });
+  },
+
+  renameWatchlistGroup(groupId: string, name: string): Promise<Watchlist> {
+    return writeJson<Watchlist>(
+      `/api/watchlist/groups/${encodeURIComponent(groupId)}`,
+      "PATCH",
+      { name },
+    );
+  },
+
+  deleteWatchlistGroup(groupId: string): Promise<Watchlist> {
+    return writeJson<Watchlist>(
+      `/api/watchlist/groups/${encodeURIComponent(groupId)}`,
+      "DELETE",
+    );
+  },
+
+  orderWatchlistGroups(ids: string[]): Promise<Watchlist> {
+    return writeJson<Watchlist>("/api/watchlist/groups/order", "PUT", { ids });
+  },
+
+  addWatchlistItem(groupId: string, instrumentId: string): Promise<Watchlist> {
+    return writeJson<Watchlist>("/api/watchlist/items", "POST", {
+      group_id: groupId,
+      instrument_id: instrumentId,
+    });
+  },
+
+  removeWatchlistItem(instrumentId: string): Promise<Watchlist> {
+    return writeJson<Watchlist>(
+      `/api/watchlist/items/${encodeURIComponent(instrumentId)}`,
+      "DELETE",
+    );
+  },
+
+  orderWatchlistItems(groupId: string, ids: string[]): Promise<Watchlist> {
+    return writeJson<Watchlist>("/api/watchlist/items/order", "PUT", {
+      group_id: groupId,
+      ids,
+    });
   },
 };

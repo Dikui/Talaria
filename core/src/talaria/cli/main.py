@@ -91,6 +91,9 @@ def _cmd_up(args: argparse.Namespace) -> int:
     if args.replay_speed <= 0:
         print(f"回放速度必须为正数：{args.replay_speed}", file=sys.stderr)
         return 2
+    if args.realtime_quota <= 0:
+        print(f"实时订阅配额必须为正数：{args.realtime_quota}", file=sys.stderr)
+        return 2
     settings = AppSettings(
         data_dir=data_dir,
         dist_dir=dist_dir,
@@ -99,6 +102,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
         replay_speed=args.replay_speed,
         bybit_base_url=args.bybit_base_url,
         backfill_bars=args.backfill_bars,
+        realtime_quota=args.realtime_quota,
     )
     from talaria.workbench_api.app import create_app
 
@@ -166,6 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3000,
         help="首次回填目标根数（默认 3000）",
+    )
+    up.add_argument(
+        "--realtime-quota",
+        type=int,
+        default=8,
+        help="实时订阅配额（当前图表 + 自选；默认 8）",
     )
     up.add_argument(
         "--replay-events",

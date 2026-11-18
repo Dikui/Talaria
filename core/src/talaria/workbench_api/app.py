@@ -56,6 +56,14 @@ from talaria.foundation.snapshot import (
     SnapshotRequest,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
+from talaria.foundation.watchlist import (
+    Watchlist,
+    WatchlistGroupCreate,
+    WatchlistGroupUpdate,
+    WatchlistItemCreate,
+    WatchlistItemOrder,
+    WatchlistOrder,
+)
 from talaria.packs.crypto_perp import (
     CRYPTO_PERP_PACK,
     BybitLinearConnector,
@@ -74,6 +82,8 @@ from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.service import WorkbenchService
 from talaria.workbench_api.settings import AppSettings
 from talaria.workbench_api.state_store import StateWriterQueue
+from talaria.workbench_api.subscriptions import RealtimeSubscriptionScheduler
+from talaria.workbench_api.watchlist import WatchlistService
 
 AUTH_SCHEME = "Bearer"
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -231,6 +241,23 @@ def create_app(settings: AppSettings) -> FastAPI:
         app.state.drawing_service = DrawingService(
             queue=state_writer, pack=CRYPTO_PERP_PACK, now_ms=settings.now_ms
         )
+        scheduler = (
+            RealtimeSubscriptionScheduler(
+                supervisor, quota=settings.realtime_quota
+            )
+            if supervisor is not None
+            else None
+        )
+        watchlist = WatchlistService(
+            state_writer=state_writer,
+            instruments=instruments,
+            connector=connector,
+            supervisor=supervisor,
+            scheduler=scheduler,
+            now_ms=settings.now_ms,
+        )
+        app.state.subscription_scheduler = scheduler
+        app.state.watchlist = watchlist
         try:
             yield
         finally:
@@ -375,6 +402,60 @@ def create_app(settings: AppSettings) -> FastAPI:
             price_min=price_min,
             price_max=price_max,
         )
+    @app.get("/api/watchlist", response_model=Watchlist)
+    async def get_watchlist(request: Request) -> Watchlist:
+        return await request.app.state.watchlist.get_watchlist()
+
+    @app.post("/api/watchlist/groups", response_model=Watchlist)
+    async def create_watchlist_group(
+        request: Request, payload: WatchlistGroupCreate
+    ) -> Watchlist:
+        return await request.app.state.watchlist.create_group(payload.name)
+
+    @app.put("/api/watchlist/groups/order", response_model=Watchlist)
+    async def order_watchlist_groups(
+        request: Request, payload: WatchlistOrder
+    ) -> Watchlist:
+        return await request.app.state.watchlist.order_groups(payload.ids)
+
+    @app.patch("/api/watchlist/groups/{group_id}", response_model=Watchlist)
+    async def rename_watchlist_group(
+        request: Request, group_id: str, payload: WatchlistGroupUpdate
+    ) -> Watchlist:
+        return await request.app.state.watchlist.rename_group(
+            group_id, payload.name
+        )
+
+    @app.delete("/api/watchlist/groups/{group_id}", response_model=Watchlist)
+    async def delete_watchlist_group(
+        request: Request, group_id: str
+    ) -> Watchlist:
+        return await request.app.state.watchlist.delete_group(group_id)
+
+    @app.post("/api/watchlist/items", response_model=Watchlist)
+    async def add_watchlist_item(
+        request: Request, payload: WatchlistItemCreate
+    ) -> Watchlist:
+        return await request.app.state.watchlist.add_item(
+            payload.group_id, payload.instrument_id
+        )
+
+    @app.put("/api/watchlist/items/order", response_model=Watchlist)
+    async def order_watchlist_items(
+        request: Request, payload: WatchlistItemOrder
+    ) -> Watchlist:
+        return await request.app.state.watchlist.order_items(
+            payload.group_id, payload.ids
+        )
+
+    @app.delete(
+        "/api/watchlist/items/{instrument_id}",
+        response_model=Watchlist,
+    )
+    async def remove_watchlist_item(
+        request: Request, instrument_id: str
+    ) -> Watchlist:
+        return await request.app.state.watchlist.remove_item(instrument_id)
 
     @app.post("/api/snapshots", response_model=SnapshotMeta)
     def create_snapshot(payload: SnapshotRequest, request: Request) -> SnapshotMeta:
@@ -493,9 +574,17 @@ def create_app(settings: AppSettings) -> FastAPI:
             except (WebSocketDisconnect, RuntimeError):
                 return
 
+        scheduler: RealtimeSubscriptionScheduler = (
+            websocket.app.state.subscription_scheduler
+        )
+        watchlist: WatchlistService = websocket.app.state.watchlist
         queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=WS_QUEUE_MAX)
         subscriptions: set[tuple[str, str]] = set()
         retainers: dict[tuple[str, str], int] = websocket.app.state.ws_subscribers
+
+        async def rebalance_watchlist() -> None:
+            with contextlib.suppress(TalariaError):
+                await watchlist.rebalance()
 
         def listener(event: FeedEvent) -> None:
             if not _wanted(event, subscriptions):
@@ -531,9 +620,7 @@ def create_app(settings: AppSettings) -> FastAPI:
                         continue
                     subscriptions.add(key)
                     try:
-                        supervisor.subscribe(
-                            instrument_id=instrument_id, timeframe=timeframe
-                        )
+                        scheduler.acquire_chart(key)
                     except TalariaError as exc:
                         subscriptions.discard(key)
                         await websocket.send_json(
@@ -545,15 +632,15 @@ def create_app(settings: AppSettings) -> FastAPI:
                         )
                         continue
                     retain(key)
+                    await rebalance_watchlist()
                 elif op == "unsubscribe":
                     if key not in subscriptions:
                         continue
                     subscriptions.discard(key)
                     release(key)
+                    scheduler.release_chart(key)
                     if retainers.get(key, 0) == 0:
-                        supervisor.unsubscribe(
-                            instrument_id=instrument_id, timeframe=timeframe
-                        )
+                        await rebalance_watchlist()
                 else:
                     await websocket.send_json(
                         {
@@ -571,10 +658,8 @@ def create_app(settings: AppSettings) -> FastAPI:
                 await sender
             for key in subscriptions:
                 release(key)
-                if retainers.get(key, 0) == 0:
-                    supervisor.unsubscribe(
-                        instrument_id=key[0], timeframe=key[1]
-                    )
+                scheduler.release_chart(key)
+            await rebalance_watchlist()
 
     dist_dir = settings.dist_dir
     index_path = dist_dir / "index.html"

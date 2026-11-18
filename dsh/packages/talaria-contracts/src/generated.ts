@@ -16,6 +16,12 @@ export type DrawingKind = "HORIZONTAL_LINE" | "RAY" | "SEGMENT" | "PARALLEL_CHAN
 
 export type DrawingLineStyle = "solid" | "dashed" | "dotted";
 
+export type WatchlistGroupKind = "MANUAL" | "SCANNER_FOCUS";
+
+export type QuoteSource = "SUPERVISOR" | "SNAPSHOT" | "UNAVAILABLE";
+
+export type DegradationReason = "QUOTA" | "NO_FEED";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -206,4 +212,48 @@ export interface ChartView {
   timeframe: string;
   window: ChartViewWindow;
   drawings: DrawingRecord[];
+}
+export interface WatchlistGroupCreate {
+  name: string;
+}
+export interface WatchlistGroupUpdate {
+  name: string;
+}
+export interface WatchlistItemCreate {
+  group_id: string;
+  instrument_id: string;
+}
+export interface WatchlistOrder {
+  ids: string[];
+}
+export interface WatchlistItemOrder {
+  group_id: string;
+  ids: string[];
+}
+export interface WatchlistItem {
+  instrument_id: string;
+  position: number;
+  latest_price?: DecimalString | null;
+  change_pct?: DecimalString | null;
+  quote_ts?: number | null;
+  quote_source: QuoteSource;
+  realtime: boolean;
+  feed_status?: FeedHealthStatus | null;
+  stale: boolean;
+  degraded: boolean;
+  degradation_reason?: DegradationReason | null;
+}
+export interface WatchlistGroup {
+  group_id: string;
+  name: string;
+  position: number;
+  kind: WatchlistGroupKind;
+  is_system: boolean;
+  items: WatchlistItem[];
+}
+export interface Watchlist {
+  groups: WatchlistGroup[];
+  realtime_quota: number;
+  realtime_used: number;
+  generated_ts: number;
 }

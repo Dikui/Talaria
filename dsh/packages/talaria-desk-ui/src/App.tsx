@@ -35,6 +35,7 @@ import { DrawingToolbar } from "./features/drawings/DrawingToolbar";
 import { useDrawings } from "./features/drawings/useDrawings";
 import { useReadOnlyViewport } from "./features/drawings/useReadOnlyViewport";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
+import { WatchlistPanel } from "./features/watchlist/WatchlistPanel";
 import { ApiError, api } from "./lib/api";
 import { toKLineSeries } from "./lib/chartData";
 import { applyTheme, resolveInitialTheme, THEME_STORAGE_KEY, type Theme } from "./lib/theme";
@@ -417,6 +418,12 @@ export default function App() {
           now={stream.now}
           live={streamLive}
           connection={stream.connection}
+        />
+
+        <WatchlistPanel
+          instruments={instruments}
+          selectedInstrumentId={instrumentId}
+          onSelect={setInstrumentId}
         />
 
         <section className="chart-panel" aria-label="K 线主图">

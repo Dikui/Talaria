@@ -58,6 +58,19 @@ from talaria.foundation.snapshot import (
     SnapshotRequest,
 )
 from talaria.foundation.types import DECIMAL_PATTERN, PrecisionTier, TemporalStamp
+from talaria.foundation.watchlist import (
+    DegradationReason,
+    QuoteSource,
+    Watchlist,
+    WatchlistGroup,
+    WatchlistGroupCreate,
+    WatchlistGroupKind,
+    WatchlistGroupUpdate,
+    WatchlistItem,
+    WatchlistItemCreate,
+    WatchlistItemOrder,
+    WatchlistOrder,
+)
 
 #: 显式的模型顺序决定生成文件顺序与 TS 输出顺序，避免依赖导入副作用。
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
@@ -89,6 +102,14 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "drawing_clear_response": DrawingClearResponse,
     "chart_view_window": ChartViewWindow,
     "chart_view": ChartView,
+    "watchlist_group_create": WatchlistGroupCreate,
+    "watchlist_group_update": WatchlistGroupUpdate,
+    "watchlist_item_create": WatchlistItemCreate,
+    "watchlist_order": WatchlistOrder,
+    "watchlist_item_order": WatchlistItemOrder,
+    "watchlist_item": WatchlistItem,
+    "watchlist_group": WatchlistGroup,
+    "watchlist": Watchlist,
 }
 
 #: 枚举的固定输出顺序。
@@ -100,6 +121,9 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     IndicatorName,
     DrawingKind,
     DrawingLineStyle,
+    WatchlistGroupKind,
+    QuoteSource,
+    DegradationReason,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
@@ -122,6 +146,8 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "price",
         "price_min",
         "price_max",
+        "latest_price",
+        "change_pct",
     }
 )
 
