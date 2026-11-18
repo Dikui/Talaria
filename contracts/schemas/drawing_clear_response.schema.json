@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "description": "按 Instrument 清理的软删除计数。",
+  "properties": {
+    "cleared": {
+      "title": "Cleared",
+      "type": "integer"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "cleared"
+  ],
+  "title": "DrawingClearResponse",
+  "type": "object"
+}

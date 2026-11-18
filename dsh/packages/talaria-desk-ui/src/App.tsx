@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import type { Chart } from "klinecharts";
 
 import type {
   CompactBar,
@@ -27,6 +28,12 @@ import {
   type IndicatorSetting,
   type IndicatorSettings,
 } from "./features/indicators/config";
+import { DrawingInspector } from "./features/drawings/DrawingInspector";
+import { DrawingManager } from "./features/drawings/DrawingManager";
+import { DrawingOverlay } from "./features/drawings/DrawingOverlay";
+import { DrawingToolbar } from "./features/drawings/DrawingToolbar";
+import { useDrawings } from "./features/drawings/useDrawings";
+import { useReadOnlyViewport } from "./features/drawings/useReadOnlyViewport";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
 import { ApiError, api } from "./lib/api";
 import { toKLineSeries } from "./lib/chartData";
@@ -92,6 +99,9 @@ export default function App() {
   const [indicatorBundle, setIndicatorBundle] = useState<IndicatorBundle | null>(null);
   const [indicatorsLoading, setIndicatorsLoading] = useState(false);
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
+  const [chart, setChart] = useState<Chart | null>(null);
+  const [drawingManagerOpen, setDrawingManagerOpen] = useState(false);
+  const readOnlyViewport = useReadOnlyViewport();
   const stream = useMarketStream(instrumentId, timeframe);
 
   useEffect(() => {
@@ -321,6 +331,13 @@ export default function App() {
       : streamLive
         ? `${badge.label} · 已推送 ${stream.bars.length} 根`
         : "离线样本（无实时流）";
+  const drawings = useDrawings({
+    chart,
+    instrumentId,
+    timeframe,
+    pricePrecision,
+    readOnly: readOnlyViewport,
+  });
 
   return (
     <div className="app-shell">
@@ -439,21 +456,47 @@ export default function App() {
                   loading={indicatorsLoading}
                   error={indicatorError}
                 />
+                {!readOnlyViewport && (
+                  <DrawingToolbar
+                    controller={drawings}
+                    managerOpen={drawingManagerOpen}
+                    onToggleManager={() => setDrawingManagerOpen((open) => !open)}
+                  />
+                )}
                 <MarketChart
-                key={snapshot.snapshot_id}
-                instrumentId={instrumentId}
-                timeframe={timeframe}
-                pricePrecision={pricePrecision}
-                volumePrecision={volumePrecision}
-                theme={theme}
-                initialBars={bars}
-                initialHasMoreForward={hasMoreForward}
-                loadOlder={loadOlder}
-                liveBars={stream.bars}
-                indicatorSeries={visibleIndicators?.series ?? []}
-                onStats={setStats}
-                onLoadError={(caught) => setError(describeError(caught))}
-              />
+                  key={snapshot.snapshot_id}
+                  instrumentId={instrumentId}
+                  timeframe={timeframe}
+                  pricePrecision={pricePrecision}
+                  volumePrecision={volumePrecision}
+                  theme={theme}
+                  initialBars={bars}
+                  initialHasMoreForward={hasMoreForward}
+                  loadOlder={loadOlder}
+                  liveBars={stream.bars}
+                  indicatorSeries={visibleIndicators?.series ?? []}
+                  onStats={setStats}
+                  onLoadError={(caught) => setError(describeError(caught))}
+                  overlay={<DrawingOverlay chart={chart} controller={drawings} />}
+                  onChartReady={setChart}
+                />
+                {!readOnlyViewport && drawings.error !== null && (
+                  <div className="drawing-error" role="alert" data-testid="drawing-error">
+                    <span>{drawings.error}</span>
+                    <button type="button" aria-label="关闭画线错误" onClick={drawings.clearError}>
+                      ×
+                    </button>
+                  </div>
+                )}
+                {!readOnlyViewport && drawings.selected !== null && (
+                  <DrawingInspector controller={drawings} timeframe={timeframe} />
+                )}
+                {!readOnlyViewport && drawingManagerOpen && (
+                  <DrawingManager
+                    controller={drawings}
+                    onClose={() => setDrawingManagerOpen(false)}
+                  />
+                )}
               </>
             )
           )}

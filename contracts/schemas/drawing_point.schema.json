@@ -1,0 +1,22 @@
+{
+  "additionalProperties": false,
+  "description": "一个锚点：UTC 毫秒时间戳 + 十进制字符串价格。",
+  "properties": {
+    "price": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Price",
+      "type": "string"
+    },
+    "ts": {
+      "minimum": 0,
+      "title": "Ts",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "ts",
+    "price"
+  ],
+  "title": "DrawingPoint",
+  "type": "object"
+}

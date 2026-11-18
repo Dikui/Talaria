@@ -1,0 +1,132 @@
+{
+  "$defs": {
+    "DrawingLineStyle": {
+      "description": "线型只影响前端绘制，不影响坐标语义。",
+      "enum": [
+        "solid",
+        "dashed",
+        "dotted"
+      ],
+      "title": "DrawingLineStyle",
+      "type": "string"
+    },
+    "DrawingPoint": {
+      "additionalProperties": false,
+      "description": "一个锚点：UTC 毫秒时间戳 + 十进制字符串价格。",
+      "properties": {
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "ts": {
+          "minimum": 0,
+          "title": "Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ts",
+        "price"
+      ],
+      "title": "DrawingPoint",
+      "type": "object"
+    },
+    "DrawingStyle": {
+      "additionalProperties": false,
+      "description": "画线样式；后端只做范围校验，不解释颜色。",
+      "properties": {
+        "color": {
+          "default": "#4c8dff",
+          "maxLength": 32,
+          "minLength": 4,
+          "title": "Color",
+          "type": "string"
+        },
+        "fill_opacity": {
+          "default": 0.12,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Fill Opacity",
+          "type": "number"
+        },
+        "line_style": {
+          "$ref": "#/$defs/DrawingLineStyle",
+          "default": "solid"
+        },
+        "line_width": {
+          "default": 1,
+          "maximum": 6,
+          "minimum": 1,
+          "title": "Line Width",
+          "type": "integer"
+        }
+      },
+      "title": "DrawingStyle",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "移动/改点/改文本/改样式；至少提供一个字段，``kind`` 不可变。",
+  "properties": {
+    "points": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/DrawingPoint"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Points"
+    },
+    "style": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DrawingStyle"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "text": {
+      "anyOf": [
+        {
+          "maxLength": 500,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Text"
+    },
+    "visible_timeframes": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Visible Timeframes"
+    }
+  },
+  "title": "DrawingPatch",
+  "type": "object"
+}

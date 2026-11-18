@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
   dispose,
   init,
@@ -115,6 +115,10 @@ interface MarketChartProps {
   indicatorSeries?: IndicatorSeries[];
   onStats: (stats: ChartStats) => void;
   onLoadError: (error: unknown) => void;
+  /** 画线覆盖层：与 KLineChart 同尺寸的 SVG，父组件负责传入。 */
+  overlay?: ReactNode;
+  /** 图表实例挂载/销毁通知，供覆盖层做坐标投影。 */
+  onChartReady?: (chart: Chart | null) => void;
 }
 
 /**
@@ -139,6 +143,8 @@ export function MarketChart({
   indicatorSeries,
   onStats,
   onLoadError,
+  overlay,
+  onChartReady,
 }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -149,6 +155,8 @@ export function MarketChart({
   const barCallbackRef = useRef<((data: KLineData) => void) | null>(null);
   const pendingLiveRef = useRef<KlineEvent[]>([]);
   const deliveredRef = useRef<Map<number, number>>(new Map());
+  const onChartReadyRef = useRef(onChartReady);
+  onChartReadyRef.current = onChartReady;
 
   const flushLive = useCallback(() => {
     const callback = barCallbackRef.current;
@@ -197,6 +205,7 @@ export function MarketChart({
       return;
     }
     chartRef.current = chart;
+    onChartReadyRef.current?.(chart);
     chart.setStyles(theme);
     chart.setSymbol({
       ticker: instrumentId,
@@ -273,6 +282,7 @@ export function MarketChart({
       barCallbackRef.current = null;
       pendingLiveRef.current = [];
       deliveredRef.current.clear();
+      onChartReadyRef.current?.(null);
       dispose(chart);
       chartRef.current = null;
     };
@@ -331,6 +341,7 @@ export function MarketChart({
   return (
     <div className="chart-stage">
       <div className="market-chart" data-testid="market-chart" ref={containerRef} />
+      {overlay}
     </div>
   );
 }

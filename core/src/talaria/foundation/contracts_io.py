@@ -18,6 +18,20 @@ from typing import Annotated, Any, Iterable, Literal, Union, get_args, get_origi
 from pydantic import BaseModel
 
 from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.foundation.drawings import (
+    ChartView,
+    ChartViewWindow,
+    DrawingClearResponse,
+    DrawingCreate,
+    DrawingKind,
+    DrawingLineStyle,
+    DrawingListResponse,
+    DrawingPatch,
+    DrawingPoint,
+    DrawingRecord,
+    DrawingStyle,
+    DrawingVersionList,
+)
 from talaria.foundation.feed import (
     FeedHealthEvent,
     FeedHealthReport,
@@ -65,6 +79,16 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "indicator_request": IndicatorRequest,
     "operator_request": OperatorRequest,
     "indicator_bundle": IndicatorBundle,
+    "drawing_point": DrawingPoint,
+    "drawing_style": DrawingStyle,
+    "drawing_create": DrawingCreate,
+    "drawing_patch": DrawingPatch,
+    "drawing_record": DrawingRecord,
+    "drawing_list_response": DrawingListResponse,
+    "drawing_version_list": DrawingVersionList,
+    "drawing_clear_response": DrawingClearResponse,
+    "chart_view_window": ChartViewWindow,
+    "chart_view": ChartView,
 }
 
 #: 枚举的固定输出顺序。
@@ -74,6 +98,8 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     FeedHealthStatus,
     SnapshotMode,
     IndicatorName,
+    DrawingKind,
+    DrawingLineStyle,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
@@ -93,6 +119,9 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "ask_price",
         "ask_size",
         "std_dev",
+        "price",
+        "price_min",
+        "price_max",
     }
 )
 

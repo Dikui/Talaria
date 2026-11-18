@@ -1,5 +1,12 @@
 import type {
   ChartPage,
+  ChartView,
+  DrawingClearResponse,
+  DrawingCreate,
+  DrawingListResponse,
+  DrawingPatch,
+  DrawingRecord,
+  DrawingVersionList,
   ErrorResponse,
   IndicatorBundle,
   IndicatorSeries,
@@ -56,21 +63,37 @@ async function getJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function writeJson<T>(
+  method: "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T> {
   const token = readSessionToken();
   const response = await fetch(path, {
-    method: "POST",
+    method,
     headers: {
       Accept: "application/json",
-      "Content-Type": "application/json",
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (!response.ok) {
     throw await parseError(response);
   }
   return (await response.json()) as T;
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  return writeJson<T>("POST", path, body);
+}
+
+async function patchJson<T>(path: string, body: unknown): Promise<T> {
+  return writeJson<T>("PATCH", path, body);
+}
+
+async function deleteJson<T>(path: string): Promise<T> {
+  return writeJson<T>("DELETE", path);
 }
 
 export const api = {
@@ -136,6 +159,72 @@ export const api = {
     }
     return getJson<ChartPage>(
       `/api/snapshots/${encodeURIComponent(snapshotId)}/bars?${query.toString()}`,
+    );
+  },
+
+  drawings(
+    instrumentId: string,
+    timeframe: string,
+    window: { from_ts?: number; to_ts?: number } = {},
+  ): Promise<DrawingListResponse> {
+    const query = new URLSearchParams({ instrument_id: instrumentId, timeframe });
+    if (window.from_ts !== undefined) query.set("from_ts", String(window.from_ts));
+    if (window.to_ts !== undefined) query.set("to_ts", String(window.to_ts));
+    return getJson<DrawingListResponse>(`/api/drawings?${query.toString()}`);
+  },
+
+  chartView(params: {
+    instrument_id: string;
+    timeframe: string;
+    from_ts: number;
+    to_ts: number;
+    price_min: string;
+    price_max: string;
+  }): Promise<ChartView> {
+    const query = new URLSearchParams({
+      instrument_id: params.instrument_id,
+      timeframe: params.timeframe,
+      from_ts: String(params.from_ts),
+      to_ts: String(params.to_ts),
+      price_min: params.price_min,
+      price_max: params.price_max,
+    });
+    return getJson<ChartView>(`/api/chart-view?${query.toString()}`);
+  },
+
+  createDrawing(payload: DrawingCreate): Promise<DrawingRecord> {
+    return postJson<DrawingRecord>("/api/drawings", payload);
+  },
+
+  patchDrawing(drawingId: string, patch: DrawingPatch): Promise<DrawingRecord> {
+    return patchJson<DrawingRecord>(
+      `/api/drawings/${encodeURIComponent(drawingId)}`,
+      patch,
+    );
+  },
+
+  deleteDrawing(drawingId: string): Promise<DrawingRecord> {
+    return deleteJson<DrawingRecord>(
+      `/api/drawings/${encodeURIComponent(drawingId)}`,
+    );
+  },
+
+  restoreDrawing(drawingId: string): Promise<DrawingRecord> {
+    return postJson<DrawingRecord>(
+      `/api/drawings/${encodeURIComponent(drawingId)}/restore`,
+      undefined,
+    );
+  },
+
+  drawingVersions(drawingId: string): Promise<DrawingVersionList> {
+    return getJson<DrawingVersionList>(
+      `/api/drawings/${encodeURIComponent(drawingId)}/versions`,
+    );
+  },
+
+  clearDrawings(instrumentId: string): Promise<DrawingClearResponse> {
+    return deleteJson<DrawingClearResponse>(
+      `/api/drawings?instrument_id=${encodeURIComponent(instrumentId)}`,
     );
   },
 };

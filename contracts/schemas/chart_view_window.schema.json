@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "description": "``get_chart_view`` 返回的可视时间-价格窗口。",
+  "properties": {
+    "from_ts": {
+      "title": "From Ts",
+      "type": "integer"
+    },
+    "price_max": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Price Max",
+      "type": "string"
+    },
+    "price_min": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Price Min",
+      "type": "string"
+    },
+    "to_ts": {
+      "title": "To Ts",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "from_ts",
+    "to_ts",
+    "price_min",
+    "price_max"
+  ],
+  "title": "ChartViewWindow",
+  "type": "object"
+}

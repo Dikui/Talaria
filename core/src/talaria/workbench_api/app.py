@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import secrets
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -21,6 +22,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from talaria import __version__
 from talaria.feed.supervisor import FeedSupervisor
+from talaria.foundation.drawings import (
+    ChartView,
+    DrawingClearResponse,
+    DrawingCreate,
+    DrawingListResponse,
+    DrawingPatch,
+    DrawingRecord,
+    DrawingVersionList,
+)
 from talaria.foundation.errors import (
     FeedUnavailableError,
     InvalidRequestError,
@@ -60,6 +70,7 @@ from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.replay import ReplayFeed
+from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.service import WorkbenchService
 from talaria.workbench_api.settings import AppSettings
 from talaria.workbench_api.state_store import StateWriterQueue
@@ -72,6 +83,7 @@ ERROR_STATUS: dict[str, int] = {
     "NOT_FOUND": 404,
     "INSTRUMENT_NOT_FOUND": 404,
     "SNAPSHOT_NOT_FOUND": 404,
+    "DRAWING_NOT_FOUND": 404,
     "FEED_UNAVAILABLE": 503,
     "NOT_IMPLEMENTED": 501,
     "INTERNAL": 500,
@@ -216,6 +228,9 @@ def create_app(settings: AppSettings) -> FastAPI:
         state_writer = StateWriterQueue(settings.data_dir, now_ms=settings.now_ms)
         await state_writer.start()
         app.state.state_writer = state_writer
+        app.state.drawing_service = DrawingService(
+            queue=state_writer, pack=CRYPTO_PERP_PACK, now_ms=settings.now_ms
+        )
         try:
             yield
         finally:
@@ -265,6 +280,9 @@ def create_app(settings: AppSettings) -> FastAPI:
     def service(request: Request) -> WorkbenchService:
         return request.app.state.service
 
+    def drawings(request: Request) -> DrawingService:
+        return request.app.state.drawing_service
+
     @app.get("/api/health")
     def health(request: Request) -> dict[str, object]:
         active = service(request)
@@ -282,6 +300,81 @@ def create_app(settings: AppSettings) -> FastAPI:
     @app.get("/api/instruments", response_model=list[InstrumentSpec])
     def instruments(request: Request) -> list[InstrumentSpec]:
         return list(service(request).instruments())
+
+    @app.get("/api/drawings", response_model=DrawingListResponse)
+    async def list_drawings(
+        request: Request,
+        instrument_id: str = Query(..., description="标的 id"),
+        timeframe: str = Query(..., description="当前 K 线周期"),
+        from_ts: int | None = Query(None, ge=0, description="可视窗口左边界（UTC 毫秒）"),
+        to_ts: int | None = Query(None, ge=0, description="可视窗口右边界（UTC 毫秒）"),
+    ) -> DrawingListResponse:
+        return await drawings(request).list_drawings(
+            instrument_id, timeframe, from_ts=from_ts, to_ts=to_ts
+        )
+
+    @app.post("/api/drawings", response_model=DrawingRecord, status_code=201)
+    async def create_drawing(
+        payload: DrawingCreate, request: Request
+    ) -> DrawingRecord:
+        return await drawings(request).create_drawing(payload)
+
+    @app.delete("/api/drawings", response_model=DrawingClearResponse)
+    async def clear_drawings(
+        request: Request,
+        instrument_id: str = Query(..., description="要清理的标的 id"),
+    ) -> DrawingClearResponse:
+        cleared = await drawings(request).clear_drawings(instrument_id)
+        return DrawingClearResponse(instrument_id=instrument_id, cleared=cleared)
+
+    @app.get("/api/drawings/{drawing_id}", response_model=DrawingRecord)
+    async def get_drawing(
+        drawing_id: str,
+        request: Request,
+        version: int | None = Query(None, ge=1, description="读取指定历史版本"),
+    ) -> DrawingRecord:
+        return await drawings(request).get_drawing(drawing_id, version=version)
+
+    @app.get(
+        "/api/drawings/{drawing_id}/versions", response_model=DrawingVersionList
+    )
+    async def get_drawing_versions(
+        drawing_id: str, request: Request
+    ) -> DrawingVersionList:
+        return await drawings(request).list_versions(drawing_id)
+
+    @app.patch("/api/drawings/{drawing_id}", response_model=DrawingRecord)
+    async def patch_drawing(
+        drawing_id: str, payload: DrawingPatch, request: Request
+    ) -> DrawingRecord:
+        return await drawings(request).patch_drawing(drawing_id, payload)
+
+    @app.delete("/api/drawings/{drawing_id}", response_model=DrawingRecord)
+    async def delete_drawing(drawing_id: str, request: Request) -> DrawingRecord:
+        return await drawings(request).delete_drawing(drawing_id)
+
+    @app.post("/api/drawings/{drawing_id}/restore", response_model=DrawingRecord)
+    async def restore_drawing(drawing_id: str, request: Request) -> DrawingRecord:
+        return await drawings(request).restore_drawing(drawing_id)
+
+    @app.get("/api/chart-view", response_model=ChartView)
+    async def get_chart_view(
+        request: Request,
+        instrument_id: str = Query(..., description="标的 id"),
+        timeframe: str = Query(..., description="K 线周期"),
+        from_ts: int = Query(..., ge=0, description="可视时间窗左边界（UTC 毫秒）"),
+        to_ts: int = Query(..., ge=0, description="可视时间窗右边界（UTC 毫秒）"),
+        price_min: Decimal = Query(..., description="可视价格窗下界（十进制字符串）"),
+        price_max: Decimal = Query(..., description="可视价格窗上界（十进制字符串）"),
+    ) -> ChartView:
+        return await drawings(request).get_chart_view(
+            instrument_id,
+            timeframe,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            price_min=price_min,
+            price_max=price_max,
+        )
 
     @app.post("/api/snapshots", response_model=SnapshotMeta)
     def create_snapshot(payload: SnapshotRequest, request: Request) -> SnapshotMeta:
