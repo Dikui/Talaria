@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "SnapshotMode": {
+      "description": "快照的时间语义。",
+      "enum": [
+        "HISTORICAL_PIT",
+        "OBSERVED_REPLAY"
+      ],
+      "title": "SnapshotMode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "快照清单：读取时只使用这里记录的字段与文件路径。",
+  "properties": {
+    "bar_counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Bar Counts",
+      "type": "object"
+    },
+    "created_ts": {
+      "title": "Created Ts",
+      "type": "integer"
+    },
+    "cutoff_ts": {
+      "title": "Cutoff Ts",
+      "type": "integer"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "mode": {
+      "$ref": "#/$defs/SnapshotMode"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Timeframes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "instrument_id",
+    "timeframes",
+    "cutoff_ts",
+    "created_ts",
+    "mode",
+    "bar_counts"
+  ],
+  "title": "SnapshotMeta",
+  "type": "object"
+}

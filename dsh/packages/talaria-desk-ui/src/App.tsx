@@ -1,0 +1,305 @@
+import { useCallback, useEffect, useState } from "react";
+
+import type {
+  CompactBar,
+  InstrumentSpec,
+  SnapshotMeta,
+} from "@talaria/contracts";
+
+import { InstrumentSelect } from "./features/instruments/InstrumentSelect";
+import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
+import { ApiError, api } from "./lib/api";
+import { toKLineSeries } from "./lib/chartData";
+import { applyTheme, resolveInitialTheme, THEME_STORAGE_KEY, type Theme } from "./lib/theme";
+
+const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
+const DEFAULT_INSTRUMENT = "BTC-USDT-PERP";
+const PAGE_SIZE = 300;
+
+const cutoffFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+interface ErrorInfo {
+  code: string;
+  message: string;
+}
+
+function describeError(error: unknown): ErrorInfo {
+  if (error instanceof ApiError) {
+    return { code: error.code, message: error.message };
+  }
+  if (error instanceof Error) {
+    return { code: "CLIENT_ERROR", message: error.message };
+  }
+  return { code: "UNKNOWN_ERROR", message: "未知错误" };
+}
+
+function feedLabel(feedMode: string | null): string {
+  if (feedMode === "fixture") {
+    return "离线样本";
+  }
+  if (feedMode === "bybit") {
+    return "Bybit";
+  }
+  return "行情源未知";
+}
+
+export default function App() {
+  const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
+  const [instrumentId, setInstrumentId] = useState(DEFAULT_INSTRUMENT);
+  const [timeframe, setTimeframe] = useState<string>("1m");
+  const [feedMode, setFeedMode] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<SnapshotMeta | null>(null);
+  const [bars, setBars] = useState<CompactBar[]>([]);
+  const [hasMoreForward, setHasMoreForward] = useState(false);
+  const [stats, setStats] = useState<ChartStats>({ loaded: 0, gaps: 0 });
+  const [loading, setLoading] = useState(true);
+  const [initialFailed, setInitialFailed] = useState(false);
+  const [error, setError] = useState<ErrorInfo | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [theme, setTheme] = useState<Theme>(() => resolveInitialTheme());
+
+  useEffect(() => {
+    applyTheme(theme);
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .health()
+      .then((health) => {
+        if (!cancelled) {
+          setFeedMode(health.feed_mode);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFeedMode(null);
+        }
+      });
+    api
+      .instruments()
+      .then((items) => {
+        if (!cancelled) {
+          setInstruments(items);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setInstruments([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setInitialFailed(false);
+    setError(null);
+    setSnapshot(null);
+    setBars([]);
+    setStats({ loaded: 0, gaps: 0 });
+    setHasMoreForward(false);
+
+    (async () => {
+      try {
+        const meta = await api.createSnapshot(instrumentId, [timeframe]);
+        if (cancelled) {
+          return;
+        }
+        const page = await api.bars(meta.snapshot_id, timeframe, {
+          limit: PAGE_SIZE,
+        });
+        if (cancelled) {
+          return;
+        }
+        setSnapshot(meta);
+        setBars(page.bars);
+        setHasMoreForward(page.has_more_forward);
+        const series = toKLineSeries(page.bars);
+        setStats({ loaded: series.points.length, gaps: series.gapCount });
+        if (page.bars.length === 0 || meta.bar_counts[timeframe] === 0) {
+          setInitialFailed(true);
+          setError({
+            code: "EMPTY_SNAPSHOT",
+            message: "快照中没有可展示的历史 K 线。",
+          });
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setInitialFailed(true);
+          setError(describeError(caught));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [instrumentId, timeframe, refreshNonce]);
+
+  const loadOlder = useCallback(
+    async (beforeTs: number): Promise<OlderPage> => {
+      if (!snapshot) {
+        return { bars: [], hasMoreForward: false };
+      }
+      const page = await api.bars(snapshot.snapshot_id, timeframe, {
+        limit: PAGE_SIZE,
+        beforeTs,
+      });
+      return { bars: page.bars, hasMoreForward: page.has_more_forward };
+    },
+    [snapshot, timeframe],
+  );
+
+  const pricePrecision =
+    instruments.find((item) => item.instrument_id === instrumentId)
+      ?.price_precision ?? 2;
+  const volumePrecision =
+    instruments.find((item) => item.instrument_id === instrumentId)
+      ?.qty_precision ?? 3;
+
+  const showEmpty = !loading && (initialFailed || stats.loaded === 0);
+  const refresh = () => setRefreshNonce((nonce) => nonce + 1);
+
+  return (
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="brand">
+          <h1>Talaria 分析工作台</h1>
+          <p className="brand-subtitle">本地历史行情 · 确定性快照</p>
+        </div>
+        <div className="header-controls">
+          <InstrumentSelect
+            instruments={instruments}
+            value={instrumentId}
+            disabled={loading}
+            onChange={setInstrumentId}
+          />
+          <div className="timeframes" role="group" aria-label="K 线周期">
+            {TIMEFRAMES.map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={`timeframe-button${item === timeframe ? " is-active" : ""}`}
+                aria-pressed={item === timeframe}
+                disabled={loading}
+                onClick={() => setTimeframe(item)}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+          <div className="header-actions">
+            <span
+              className={`feed-badge feed-badge--${feedMode ?? "unknown"}`}
+              data-testid="feed-mode"
+            >
+              {feedLabel(feedMode)}
+            </span>
+            <button
+              type="button"
+              className="ghost-button"
+              aria-label={theme === "dark" ? "切换为浅色主题" : "切换为深色主题"}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              {theme === "dark" ? "浅色" : "深色"}
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={refresh}
+              disabled={loading}
+            >
+              刷新快照
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="workspace">
+        {error !== null && (
+          <div className="error-banner" role="alert" data-testid="error-banner">
+            <strong>{error.code}</strong>
+            <span>{error.message}</span>
+          </div>
+        )}
+
+        <section className="chart-panel" aria-label="K 线主图">
+          {loading ? (
+            <div className="loading-state" data-testid="loading-state" aria-live="polite">
+              <div className="skeleton" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+                <span />
+                <span />
+                <span />
+              </div>
+              <p>正在回填历史 K 线…</p>
+            </div>
+          ) : showEmpty ? (
+            <div className="empty-state" data-testid="empty-state">
+              <div className="empty-mark" aria-hidden="true">
+                K
+              </div>
+              <h2>尚未加载到历史行情</h2>
+              <p>
+                请检查网络连接；也可以使用 <code>--fixture-dir</code>{" "}
+                启动离线样本模式后再试。
+              </p>
+              <button type="button" className="primary-button" onClick={refresh}>
+                重试
+              </button>
+            </div>
+          ) : (
+            snapshot && (
+              <MarketChart
+                key={snapshot.snapshot_id}
+                instrumentId={instrumentId}
+                timeframe={timeframe}
+                pricePrecision={pricePrecision}
+                volumePrecision={volumePrecision}
+                theme={theme}
+                initialBars={bars}
+                initialHasMoreForward={hasMoreForward}
+                loadOlder={loadOlder}
+                onStats={setStats}
+                onLoadError={(caught) => setError(describeError(caught))}
+              />
+            )
+          )}
+        </section>
+      </main>
+
+      <footer className="status-bar" data-testid="status-bar" aria-live="polite">
+        {snapshot ? (
+          <>
+            <span>快照 {snapshot.snapshot_id.slice(0, 8)}</span>
+            <span className="status-divider">·</span>
+            <span>截止 {cutoffFormatter.format(new Date(snapshot.cutoff_ts))}</span>
+            <span className="status-divider">·</span>
+            <span data-testid="loaded-count">已加载 {stats.loaded} 根</span>
+            <span className="status-divider">·</span>
+            <span data-testid="gap-count">断流 {stats.gaps} 处</span>
+          </>
+        ) : (
+          <span>{loading ? "正在准备快照…" : "尚未创建快照"}</span>
+        )}
+      </footer>
+    </div>
+  );
+}

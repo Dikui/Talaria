@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "SnapshotMode": {
+      "description": "快照的时间语义。",
+      "enum": [
+        "HISTORICAL_PIT",
+        "OBSERVED_REPLAY"
+      ],
+      "title": "SnapshotMode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "创建快照的请求。``cutoff_ts`` 为空时使用服务端当前时间。",
+  "properties": {
+    "cutoff_ts": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cutoff Ts"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "mode": {
+      "$ref": "#/$defs/SnapshotMode",
+      "default": "HISTORICAL_PIT"
+    },
+    "timeframes": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Timeframes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "timeframes"
+  ],
+  "title": "SnapshotRequest",
+  "type": "object"
+}
