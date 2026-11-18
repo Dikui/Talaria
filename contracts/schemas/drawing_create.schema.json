@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "DrawingKind": {
+      "description": "任务单 05 支持的七种人工画线图元。",
+      "enum": [
+        "HORIZONTAL_LINE",
+        "RAY",
+        "SEGMENT",
+        "PARALLEL_CHANNEL",
+        "FIB_RETRACEMENT",
+        "RECTANGLE",
+        "TEXT_LABEL"
+      ],
+      "title": "DrawingKind",
+      "type": "string"
+    },
+    "DrawingLineStyle": {
+      "description": "线型只影响前端绘制，不影响坐标语义。",
+      "enum": [
+        "solid",
+        "dashed",
+        "dotted"
+      ],
+      "title": "DrawingLineStyle",
+      "type": "string"
+    },
+    "DrawingPoint": {
+      "additionalProperties": false,
+      "description": "一个锚点：UTC 毫秒时间戳 + 十进制字符串价格。",
+      "properties": {
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "ts": {
+          "minimum": 0,
+          "title": "Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ts",
+        "price"
+      ],
+      "title": "DrawingPoint",
+      "type": "object"
+    },
+    "DrawingStyle": {
+      "additionalProperties": false,
+      "description": "画线样式；后端只做范围校验，不解释颜色。",
+      "properties": {
+        "color": {
+          "default": "#4c8dff",
+          "maxLength": 32,
+          "minLength": 4,
+          "title": "Color",
+          "type": "string"
+        },
+        "fill_opacity": {
+          "default": 0.12,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Fill Opacity",
+          "type": "number"
+        },
+        "line_style": {
+          "$ref": "#/$defs/DrawingLineStyle",
+          "default": "solid"
+        },
+        "line_width": {
+          "default": 1,
+          "maximum": 6,
+          "minimum": 1,
+          "title": "Line Width",
+          "type": "integer"
+        }
+      },
+      "title": "DrawingStyle",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "创建画线请求；缺失字段使用默认值。",
+  "properties": {
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/DrawingKind"
+    },
+    "points": {
+      "items": {
+        "$ref": "#/$defs/DrawingPoint"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Points",
+      "type": "array"
+    },
+    "style": {
+      "$ref": "#/$defs/DrawingStyle"
+    },
+    "text": {
+      "default": "",
+      "maxLength": 500,
+      "title": "Text",
+      "type": "string"
+    },
+    "visible_timeframes": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 16,
+      "title": "Visible Timeframes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "kind",
+    "points"
+  ],
+  "title": "DrawingCreate",
+  "type": "object"
+}

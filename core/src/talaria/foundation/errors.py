@@ -29,6 +29,10 @@ class SnapshotNotFoundError(NotFoundError):
     code = "SNAPSHOT_NOT_FOUND"
 
 
+class DrawingNotFoundError(NotFoundError):
+    code = "DRAWING_NOT_FOUND"
+
+
 class FeedUnavailableError(TalariaError):
     code = "FEED_UNAVAILABLE"
 

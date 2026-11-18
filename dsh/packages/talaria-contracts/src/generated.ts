@@ -12,6 +12,10 @@ export type SnapshotMode = "HISTORICAL_PIT" | "OBSERVED_REPLAY";
 
 export type IndicatorName = "EMA" | "SMA" | "RSI" | "ATR" | "BOLL" | "VWAP";
 
+export type DrawingKind = "HORIZONTAL_LINE" | "RAY" | "SEGMENT" | "PARALLEL_CHANNEL" | "FIB_RETRACEMENT" | "RECTANGLE" | "TEXT_LABEL";
+
+export type DrawingLineStyle = "solid" | "dashed" | "dotted";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -140,4 +144,66 @@ export interface IndicatorBundle {
   instrument_id: string;
   timeframe: string;
   series: IndicatorSeries[];
+}
+export interface DrawingPoint {
+  ts: number;
+  price: DecimalString;
+}
+export interface DrawingStyle {
+  color?: string;
+  line_width?: number;
+  line_style?: DrawingLineStyle;
+  fill_opacity?: number;
+}
+export interface DrawingCreate {
+  instrument_id: string;
+  kind: DrawingKind;
+  visible_timeframes?: string[];
+  points: DrawingPoint[];
+  text?: string;
+  style?: DrawingStyle;
+}
+export interface DrawingPatch {
+  visible_timeframes?: string[] | null;
+  points?: DrawingPoint[] | null;
+  text?: string | null;
+  style?: DrawingStyle | null;
+}
+export interface DrawingRecord {
+  drawing_id: string;
+  instrument_id: string;
+  kind: DrawingKind;
+  visible_timeframes: string[];
+  points: DrawingPoint[];
+  text: string;
+  style: DrawingStyle;
+  version: number;
+  created_ts: number;
+  updated_ts: number;
+  deleted_at?: number | null;
+}
+export interface DrawingListResponse {
+  instrument_id: string;
+  timeframe: string;
+  drawings: DrawingRecord[];
+}
+export interface DrawingVersionList {
+  drawing_id: string;
+  versions: DrawingRecord[];
+}
+export interface DrawingClearResponse {
+  instrument_id: string;
+  cleared: number;
+}
+export interface ChartViewWindow {
+  from_ts: number;
+  to_ts: number;
+  price_min: DecimalString;
+  price_max: DecimalString;
+}
+export interface ChartView {
+  instrument: InstrumentSpec;
+  timeframe: string;
+  window: ChartViewWindow;
+  drawings: DrawingRecord[];
 }

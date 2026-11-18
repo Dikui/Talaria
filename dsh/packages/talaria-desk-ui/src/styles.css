@@ -976,3 +976,352 @@ button:disabled {
     font-size: 10.5px;
   }
 }
+
+/* ---- 画线（任务单 05） ---- */
+.drawing-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted);
+  font-size: 12px;
+}
+
+.drawing-tools,
+.drawing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.drawing-actions {
+  margin-left: auto;
+}
+
+.drawing-tool,
+.drawing-action {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.6;
+}
+
+.drawing-tool:hover,
+.drawing-action:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.drawing-tool.is-active,
+.drawing-action.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.drawing-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.drawing-action.is-danger {
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.drawing-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 46%;
+}
+
+.drawing-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.drawing-surface {
+  display: block;
+  pointer-events: none;
+}
+
+.drawing-shape.is-selected {
+  filter: drop-shadow(0 0 3px rgb(154 103 0 / 55%));
+}
+
+.drawing-label text {
+  font-size: 11px;
+  fill: var(--text);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.drawing-label--price text {
+  fill: var(--accent-strong);
+}
+
+.drawing-label--fib text {
+  fill: var(--text-muted);
+  font-size: 10px;
+}
+
+.drawing-label-bg {
+  fill: var(--surface);
+  opacity: 0.82;
+}
+
+.drawing-anchor-dot {
+  fill: var(--accent);
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
+
+.drawing-draft-dot {
+  fill: #f5a623;
+  stroke: #ffffff;
+  stroke-width: 1.5;
+}
+
+.drawing-inspector,
+.drawing-manager {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 7;
+  width: 248px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+}
+
+.drawing-manager {
+  width: 292px;
+  max-height: 70%;
+}
+
+.drawing-inspector-header,
+.drawing-manager-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.drawing-manager-count {
+  color: var(--text-muted);
+}
+
+.drawing-version {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
+.drawing-inspector-close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.drawing-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drawing-field > span {
+  color: var(--text-muted);
+}
+
+.drawing-field input,
+.drawing-field select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--text);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.drawing-swatches {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.drawing-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.drawing-swatch.is-active {
+  border-color: var(--text);
+}
+
+.drawing-width {
+  width: 24px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.drawing-width.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.drawing-inspector-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.drawing-versions {
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+  max-height: 140px;
+  overflow: auto;
+}
+
+.drawing-versions ul,
+.drawing-manager-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.drawing-versions li {
+  display: flex;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.drawing-versions li.is-current {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.drawing-versions em {
+  color: var(--danger);
+  font-style: normal;
+}
+
+.drawing-manager-list {
+  overflow: auto;
+}
+
+.drawing-manager-list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px dashed var(--border);
+  padding-bottom: 3px;
+}
+
+.drawing-manager-select {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.drawing-manager-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawing-manager-delete {
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.drawing-manager-empty {
+  color: var(--text-muted);
+  margin: 0;
+  padding: 8px 0;
+  line-height: 1.6;
+}
+
+.drawing-error {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 70%;
+  padding: 6px 10px;
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.drawing-error button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+@media (max-width: 720px) {
+  .drawing-toolbar {
+    display: none;
+  }
+
+  .drawing-inspector,
+  .drawing-manager {
+    display: none;
+  }
+}

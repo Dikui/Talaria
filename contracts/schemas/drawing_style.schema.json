@@ -1,0 +1,45 @@
+{
+  "$defs": {
+    "DrawingLineStyle": {
+      "description": "线型只影响前端绘制，不影响坐标语义。",
+      "enum": [
+        "solid",
+        "dashed",
+        "dotted"
+      ],
+      "title": "DrawingLineStyle",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "画线样式；后端只做范围校验，不解释颜色。",
+  "properties": {
+    "color": {
+      "default": "#4c8dff",
+      "maxLength": 32,
+      "minLength": 4,
+      "title": "Color",
+      "type": "string"
+    },
+    "fill_opacity": {
+      "default": 0.12,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Fill Opacity",
+      "type": "number"
+    },
+    "line_style": {
+      "$ref": "#/$defs/DrawingLineStyle",
+      "default": "solid"
+    },
+    "line_width": {
+      "default": 1,
+      "maximum": 6,
+      "minimum": 1,
+      "title": "Line Width",
+      "type": "integer"
+    }
+  },
+  "title": "DrawingStyle",
+  "type": "object"
+}
