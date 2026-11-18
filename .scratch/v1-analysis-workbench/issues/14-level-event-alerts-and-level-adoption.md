@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 预警引擎新增 `LEVEL_EVENT` 条件：按 `level_id` 跟踪触及、突破、回踩；关键位状态变化（如 `FLIPPED`）后预警按最新状态判定。
 - [x] 关键位“采纳”复制为 `HUMAN_DRAWING` 图元（之后与系统关键位独立），采纳记录与 10 的“忽略”一起持久化为质量反馈。
@@ -52,3 +52,11 @@
 - 默认 provider 每个 cutoff 重新计算一次关键位并缓存，关键位数量较多时大盘会有额外计算开销。
 - 画线管理文本沿用既有单行截断样式，超长 `level_id` 在窄面板内以省略/裁剪呈现，不撑破布局。
 - 前端自动化测试仍为纯 model 测试（仓库未装 DOM 测试库），交互与 390 只读以浏览器截图验收。
+
+
+### Lead 验收
+
+- 合并 `1bb4f71 Merge branch 'ticket-14-level-event-alerts'`；main 重跑 `uv run pytest -q` → 402 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 118 passed（16 files）；`pnpm -C dsh build` 通过（571.67 kB JS / 40.37 kB CSS，仅 chunk 提示）。
+- 目视截图：1440 浅色关键位浮层含“挂预警 / 采纳为画线 / 忽略”与“已采纳”状态；1440 深色挂预警表单预填 level_id 与 `LEVEL_EVENT`；采纳后 HUMAN_DRAWING 与画线管理来源文本；390 操作隐藏、只读；空态正常。
+- 代码审查：LEVEL_EVENT 契约/引擎新增 `AlertLevelEvent(TOUCH|BREAK|RETEST)`，BREAK 仅 confirmed 收盘且要求关键位非 ACTIVE；RETEST 记突破方向并回踩确认，同一序列只触发一次；FLIPPED 按最新价格侧翻转；复用 13 的边沿/冷却/单次/STALE 挂起/冻结 snapshot_id。采纳经 `DrawingService` 复制为独立画线，`key_level_adoptions` 经 `StateWriterQueue` 落库，重复采纳幂等，画线删除后允许重新采纳；`GET /api/key-levels/feedback` 汇总采纳/忽略。
+- 接受已知限制：RETEST 序列仅进程内保存；默认 provider 每个 cutoff 重算关键位（有缓存）；采纳不跟随系统位后续变化。
