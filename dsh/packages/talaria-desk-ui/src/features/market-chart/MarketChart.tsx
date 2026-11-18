@@ -2,19 +2,93 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   dispose,
   init,
+  registerIndicator,
   type Chart,
   type DataLoader,
   type DataLoaderSubscribeBarParams,
   type DataLoaderUnsubscribeBarParams,
+  type IndicatorCreate,
+  type IndicatorFigure,
   type KLineData,
 } from "klinecharts";
 
-import type { CompactBar, KlineEvent } from "@talaria/contracts";
+import type {
+  CompactBar,
+  IndicatorSeries,
+  KlineEvent,
+} from "@talaria/contracts";
 
 import { toKLineData, toKLineSeries, toPeriod } from "../../lib/chartData";
+import { alignIndicatorRows } from "../../lib/indicatorData";
+import {
+  INDICATOR_CHANNELS,
+  INDICATOR_COLORS,
+} from "../indicators/config";
 import type { Theme } from "../../lib/theme";
 
 import { shouldDeliverLiveBar } from "./liveDelivery";
+
+type IndicatorRow = Record<string, number | null>;
+
+const OVERLAY_TEMPLATE = "talaria_overlay";
+const STUDY_TEMPLATE = "talaria_study";
+const INDICATOR_ID_PREFIX = "talaria-";
+/** KLineChart 主图（K 线）窗格的固定 id；主图指标必须显式挂到这里。 */
+const CANDLE_PANE_ID = "candle_pane";
+
+/**
+ * 只为 KLineChart 注册一次模板；所有指标数学都在 Python。
+ * 每次数据更新只替换 calc 闭包，由 overrideIndicator 触发重算。
+ */
+registerIndicator<IndicatorRow>({
+  name: OVERLAY_TEMPLATE,
+  shortName: "指标",
+  series: "price",
+  figures: [{ key: "value", title: "值", type: "line" }],
+  calc: () => [],
+});
+registerIndicator<IndicatorRow>({
+  name: STUDY_TEMPLATE,
+  shortName: "指标",
+  series: "normal",
+  figures: [{ key: "value", title: "值", type: "line" }],
+  calc: () => [],
+});
+
+function figuresFor(series: IndicatorSeries): IndicatorFigure[] {
+  const channels = INDICATOR_CHANNELS[series.name];
+  return channels.map((channel) => ({
+    key: channel,
+    title:
+      series.name === "BOLL"
+        ? { mid: "中轨", upper: "上轨", lower: "下轨" }[channel]
+        : series.name,
+    type: "line",
+    styles: () => ({ color: INDICATOR_COLORS[series.name] }),
+  }));
+}
+
+function calcFor(series: IndicatorSeries) {
+  return (dataList: KLineData[]): IndicatorRow[] =>
+    alignIndicatorRows(dataList, series);
+}
+
+function indicatorCreate(
+  series: IndicatorSeries,
+  existingPaneId?: string,
+): IndicatorCreate {
+  const isSub = series.pane === "sub";
+  return {
+    id: `${INDICATOR_ID_PREFIX}${series.name}`,
+    name: isSub ? STUDY_TEMPLATE : OVERLAY_TEMPLATE,
+    shortName: series.name,
+    series: isSub ? "normal" : "price",
+    // 主图指标覆盖在 K 线窗格；副图沿用已有窗格，首次创建交给 KLineChart 新建。
+    paneId: isSub ? existingPaneId : CANDLE_PANE_ID,
+    figures: figuresFor(series),
+    calc: calcFor(series),
+  };
+}
 
 export interface OlderPage {
   bars: CompactBar[];
@@ -37,6 +111,8 @@ interface MarketChartProps {
   loadOlder: (beforeTs: number) => Promise<OlderPage>;
   /** 实时增量：同 timestamp 更新、新 timestamp 追加；FEED_GAP 不进 dataList。 */
   liveBars?: KlineEvent[];
+  /** 后端 Python 算子产出的指标序列；只渲染，不在前端计算。 */
+  indicatorSeries?: IndicatorSeries[];
   onStats: (stats: ChartStats) => void;
   onLoadError: (error: unknown) => void;
 }
@@ -60,6 +136,7 @@ export function MarketChart({
   initialHasMoreForward,
   loadOlder,
   liveBars,
+  indicatorSeries,
   onStats,
   onLoadError,
 }: MarketChartProps) {
@@ -207,5 +284,53 @@ export function MarketChart({
     chartRef.current?.setStyles(theme);
   }, [theme]);
 
-  return <div className="market-chart" data-testid="market-chart" ref={containerRef} />;
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (chart === null) {
+      return;
+    }
+    const seriesList = indicatorSeries ?? [];
+    const activeIds = new Set(
+      seriesList.map((series) => `${INDICATOR_ID_PREFIX}${series.name}`),
+    );
+    for (const indicator of chart.getIndicators()) {
+      if (
+        indicator.id.startsWith(INDICATOR_ID_PREFIX) &&
+        !activeIds.has(indicator.id)
+      ) {
+        chart.removeIndicator({ id: indicator.id });
+      }
+    }
+    for (const series of seriesList) {
+      const existing = chart.getIndicators({
+        id: `${INDICATOR_ID_PREFIX}${series.name}`,
+      });
+      if (existing.length === 0) {
+        // 主图指标共用 candle_pane：非 stack 创建会清空该窗格已有指标，
+        // 因此主图必须 isStack=true；副图各自独立窗格，保持 false。
+        chart.createIndicator(
+          indicatorCreate(series),
+          series.pane === "main",
+        );
+      } else {
+        // 换新闭包，让 KLineChart 用最新后端序列重算；前端不保留旧值。
+        // 副图沿用原 paneId，避免参数更新时重复创建窗格。
+        chart.overrideIndicator(indicatorCreate(series, existing[0].paneId));
+      }
+    }
+    for (const indicator of chart.getIndicators()) {
+      if (
+        indicator.id.startsWith(INDICATOR_ID_PREFIX) &&
+        indicator.paneId !== CANDLE_PANE_ID
+      ) {
+        chart.setPaneOptions({ id: indicator.paneId, height: 132 });
+      }
+    }
+  }, [indicatorSeries]);
+
+  return (
+    <div className="chart-stage">
+      <div className="market-chart" data-testid="market-chart" ref={containerRef} />
+    </div>
+  );
 }

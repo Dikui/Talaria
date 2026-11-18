@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
+from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector
 from talaria.foundation.errors import (
     FeatureNotImplementedError,
@@ -12,7 +13,20 @@ from talaria.foundation.errors import (
     InvalidRequestError,
     SnapshotNotFoundError,
 )
+from talaria.foundation.indicators import (
+    IndicatorBundle,
+    IndicatorName,
+    IndicatorParams,
+    IndicatorPoint,
+    IndicatorSeries,
+    IndicatorSummary,
+)
 from talaria.foundation.market import InstrumentSpec, MarketPack
+from talaria.foundation.operators import (
+    IndicatorSpec,
+    compute_series,
+    spec_from_params,
+)
 from talaria.foundation.snapshot import (
     ChartPage,
     SnapshotMeta,
@@ -80,14 +94,7 @@ class WorkbenchService:
         limit: int,
         before_ts: int | None,
     ) -> ChartPage:
-        record = self._snapshot_store.get(snapshot_id)
-        if record is None:
-            raise SnapshotNotFoundError(f"未知快照：{snapshot_id}")
-        meta = record.meta
-        if timeframe not in meta.timeframes:
-            raise SnapshotNotFoundError(f"快照 {snapshot_id} 不包含周期 {timeframe}")
-
-        all_bars = read_snapshot_bars(self._data_dir, record.parquet_path, timeframe)
+        meta, all_bars = self._snapshot_bars(snapshot_id, timeframe)
         eligible = [
             bar for bar in all_bars if before_ts is None or bar.timestamp < before_ts
         ]
@@ -107,4 +114,130 @@ class WorkbenchService:
             bars=window,
             has_more_forward=has_more_forward,
             has_more_backward=has_more_backward,
+        )
+
+    def get_indicators(
+        self,
+        snapshot_id: str,
+        *,
+        timeframe: str,
+        names: Sequence[str],
+        limit: int,
+        params: Mapping[str, IndicatorParams | Mapping[str, Any]] | None = None,
+        extra_bars: Sequence[CompactBar] = (),
+    ) -> IndicatorBundle:
+        """默认参数计算一组指标；窗口取快照末尾，但预热使用完整历史。
+
+        ``extra_bars`` 只用于 WS bar 触发的降级增量路径：快照仍是历史真源，
+        实时尾段追加在其后参与同一套算子计算。
+        """
+        meta, bars = self._snapshot_bars(snapshot_id, timeframe)
+        bars = self._with_extra_bars(bars, extra_bars)
+        unique_names = list(dict.fromkeys(names))
+        specs: list[IndicatorSpec] = []
+        for name in unique_names:
+            raw = params.get(name) if params is not None else None
+            if isinstance(raw, IndicatorParams):
+                raw = raw.model_dump(exclude_none=True)
+            try:
+                specs.append(spec_from_params(name, raw))
+            except ValueError as exc:
+                raise InvalidRequestError(str(exc)) from exc
+        result = [self._series(meta, bars, spec, limit) for spec in specs]
+        return IndicatorBundle(
+            snapshot_id=snapshot_id,
+            instrument_id=meta.instrument_id,
+            timeframe=timeframe,
+            series=result,
+        )
+
+    def compute_operator(
+        self,
+        snapshot_id: str,
+        *,
+        timeframe: str,
+        operator: IndicatorName | str,
+        limit: int,
+        params: IndicatorParams | Mapping[str, Any] | None = None,
+        extra_bars: Sequence[CompactBar] = (),
+    ) -> IndicatorSeries:
+        """允许非默认参数的单指标计算；语义与批量指标完全一致。"""
+        meta, bars = self._snapshot_bars(snapshot_id, timeframe)
+        bars = self._with_extra_bars(bars, extra_bars)
+        if isinstance(params, IndicatorParams):
+            params = params.model_dump(exclude_none=True)
+        try:
+            spec = spec_from_params(operator, params)
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        return self._series(meta, bars, spec, limit)
+
+    @staticmethod
+    def _with_extra_bars(
+        bars: Sequence[CompactBar], extra_bars: Sequence[CompactBar]
+    ) -> list[CompactBar]:
+        if not extra_bars:
+            return list(bars)
+        merged = {bar.timestamp: bar for bar in bars}
+        for bar in extra_bars:
+            merged[bar.timestamp] = bar
+        return [merged[timestamp] for timestamp in sorted(merged)]
+
+    def _snapshot_bars(
+        self, snapshot_id: str, timeframe: str
+    ) -> tuple[SnapshotMeta, list[CompactBar]]:
+        record = self._snapshot_store.get(snapshot_id)
+        if record is None:
+            raise SnapshotNotFoundError(f"未知快照：{snapshot_id}")
+        meta = record.meta
+        if timeframe not in meta.timeframes:
+            raise SnapshotNotFoundError(f"快照 {snapshot_id} 不包含周期 {timeframe}")
+        bars = [
+            bar
+            for bar in read_snapshot_bars(self._data_dir, record.parquet_path, timeframe)
+            if bar.ts_available <= meta.cutoff_ts
+        ]
+        return meta, bars
+
+    @staticmethod
+    def _series(
+        meta: SnapshotMeta,
+        bars: Sequence[CompactBar],
+        spec: IndicatorSpec,
+        limit: int,
+    ) -> IndicatorSeries:
+        state = compute_series(bars, spec)
+        window_bars = bars[-limit:]
+        window_points = state.points[-limit:]
+        points: list[IndicatorPoint] = []
+        for bar, values in zip(window_bars, window_points, strict=True):
+            points.append(IndicatorPoint(timestamp=bar.timestamp, values=dict(values)))
+        latest = dict(points[-1].values) if points else {c: None for c in spec.channels}
+        warmup_bars = next(
+            (
+                index
+                for index, point in enumerate(points)
+                if all(value is not None for value in point.values.values())
+            ),
+            len(points),
+        )
+        valid_points = sum(
+            1
+            for point in points
+            if all(value is not None for value in point.values.values())
+        )
+        return IndicatorSeries(
+            name=spec.name,
+            pane="sub" if spec.pane == "sub" else "main",
+            params=IndicatorParams(
+                period=int(spec.period),
+                std_dev=spec.std_dev,
+                anchor=spec.anchor,
+            ),
+            points=points,
+            summary=IndicatorSummary(
+                latest=latest,
+                warmup_bars=warmup_bars,
+                valid_points=valid_points,
+            ),
         )

@@ -1,0 +1,202 @@
+{
+  "$defs": {
+    "IndicatorName": {
+      "description": "第一版支持的六个技术指标。",
+      "enum": [
+        "EMA",
+        "SMA",
+        "RSI",
+        "ATR",
+        "BOLL",
+        "VWAP"
+      ],
+      "title": "IndicatorName",
+      "type": "string"
+    },
+    "IndicatorParams": {
+      "additionalProperties": false,
+      "description": "一个指标实例的参数；BOLL 额外使用 ``std_dev``。",
+      "properties": {
+        "anchor": {
+          "anyOf": [
+            {
+              "enum": [
+                "snapshot",
+                "session"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        },
+        "period": {
+          "maximum": 5000,
+          "minimum": 1,
+          "title": "Period",
+          "type": "integer"
+        },
+        "std_dev": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Std Dev"
+        }
+      },
+      "required": [
+        "period"
+      ],
+      "title": "IndicatorParams",
+      "type": "object"
+    },
+    "IndicatorPoint": {
+      "additionalProperties": false,
+      "description": "一根紧凑柱上的指标值；键为通道名（BOLL 为 mid/upper/lower）。",
+      "properties": {
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "integer"
+        },
+        "values": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Values",
+          "type": "object"
+        }
+      },
+      "required": [
+        "timestamp",
+        "values"
+      ],
+      "title": "IndicatorPoint",
+      "type": "object"
+    },
+    "IndicatorSeries": {
+      "additionalProperties": false,
+      "description": "一个指标实例的完整序列；``points`` 与请求窗口严格等长同序。",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/IndicatorName"
+        },
+        "pane": {
+          "enum": [
+            "main",
+            "sub"
+          ],
+          "title": "Pane",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/IndicatorParams"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/IndicatorPoint"
+          },
+          "title": "Points",
+          "type": "array"
+        },
+        "summary": {
+          "$ref": "#/$defs/IndicatorSummary"
+        }
+      },
+      "required": [
+        "name",
+        "pane",
+        "params",
+        "points",
+        "summary"
+      ],
+      "title": "IndicatorSeries",
+      "type": "object"
+    },
+    "IndicatorSummary": {
+      "additionalProperties": false,
+      "description": "序列末端的可用值，以及预热与有效点数。",
+      "properties": {
+        "latest": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": "Latest",
+          "type": "object"
+        },
+        "valid_points": {
+          "minimum": 0,
+          "title": "Valid Points",
+          "type": "integer"
+        },
+        "warmup_bars": {
+          "minimum": 0,
+          "title": "Warmup Bars",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "latest",
+        "warmup_bars",
+        "valid_points"
+      ],
+      "title": "IndicatorSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "同一快照、周期下的一组指标序列。",
+  "properties": {
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "series": {
+      "items": {
+        "$ref": "#/$defs/IndicatorSeries"
+      },
+      "title": "Series",
+      "type": "array"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "instrument_id",
+    "timeframe",
+    "series"
+  ],
+  "title": "IndicatorBundle",
+  "type": "object"
+}

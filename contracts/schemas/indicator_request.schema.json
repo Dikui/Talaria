@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "IndicatorParams": {
+      "additionalProperties": false,
+      "description": "一个指标实例的参数；BOLL 额外使用 ``std_dev``。",
+      "properties": {
+        "anchor": {
+          "anyOf": [
+            {
+              "enum": [
+                "snapshot",
+                "session"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        },
+        "period": {
+          "maximum": 5000,
+          "minimum": 1,
+          "title": "Period",
+          "type": "integer"
+        },
+        "std_dev": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Std Dev"
+        }
+      },
+      "required": [
+        "period"
+      ],
+      "title": "IndicatorParams",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "批量指标请求；省略参数时使用各指标默认值。",
+  "properties": {
+    "limit": {
+      "anyOf": [
+        {
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limit"
+    },
+    "names": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 6,
+      "minItems": 1,
+      "title": "Names",
+      "type": "array"
+    },
+    "params": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/IndicatorParams"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Params"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "timeframe",
+    "names"
+  ],
+  "title": "IndicatorRequest",
+  "type": "object"
+}

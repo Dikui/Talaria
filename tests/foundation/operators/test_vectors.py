@@ -1,0 +1,96 @@
+"""黄金向量回归：逐值锁定前导空值、NO_TRADES、FEED_GAP 重预热与增量一致。"""
+
+from __future__ import annotations
+
+import json
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from talaria.foundation.bars import CompactBar
+from talaria.foundation.operators import (
+    compute_series,
+    spec_from_params,
+    update_series,
+)
+
+pytestmark = [pytest.mark.small, pytest.mark.regression]
+
+VECTOR_DIR = Path(__file__).resolve().parents[3] / "contracts" / "operator_vectors"
+VECTOR_PATHS = sorted(VECTOR_DIR.glob("*.json"))
+
+
+def _bars(raw: list[dict]) -> list[CompactBar]:
+    return [
+        CompactBar(
+            timestamp=1_700_000_000_000 + item["offset"] * 60_000,
+            open=Decimal(item["open"]) if item["open"] is not None else None,
+            high=Decimal(item["high"]) if item["high"] is not None else None,
+            low=Decimal(item["low"]) if item["low"] is not None else None,
+            close=Decimal(item["close"]) if item["close"] is not None else None,
+            volume=Decimal(item["volume"]) if item["volume"] is not None else None,
+            turnover=Decimal(item["turnover"]) if item["turnover"] is not None else None,
+            status=item["status"],
+            ts_available=1_700_000_000_000 + (item["offset"] + 1) * 60_000,
+            precision="SECOND_VERIFIED",
+        )
+        for item in raw
+    ]
+
+
+@pytest.mark.parametrize("path", VECTOR_PATHS, ids=lambda path: path.stem)
+def test_vector_values_match_exactly(path: Path) -> None:
+    vector = json.loads(path.read_text(encoding="utf-8"))
+    spec = spec_from_params(vector["operator"], vector["params"])
+    bars = _bars(vector["bars"])
+    points = compute_series(bars, spec).points
+    expected = vector["expected"]
+
+    assert len(points) == len(expected) == len(bars)
+    for index, (point, want) in enumerate(zip(points, expected, strict=True)):
+        for channel, raw_value in want.items():
+            want_value = None if raw_value is None else Decimal(raw_value)
+            assert point[channel] == want_value, (
+                f"{vector['operator']}[{index}].{channel}={point[channel]!r}，"
+                f"期望 {want_value!r}"
+            )
+
+    leading = next(
+        (index for index, point in enumerate(points) if any(v is not None for v in point.values())),
+        len(points),
+    )
+    assert leading == vector["warmup_bars"]
+
+
+@pytest.mark.parametrize("path", VECTOR_PATHS, ids=lambda path: path.stem)
+def test_batch_and_incremental_match_for_every_split(path: Path) -> None:
+    vector = json.loads(path.read_text(encoding="utf-8"))
+    spec = spec_from_params(vector["operator"], vector["params"])
+    bars = _bars(vector["bars"])
+    batch = compute_series(bars, spec)
+
+    for split in range(len(bars) + 1):
+        state = compute_series(bars[:split], spec)
+        state = update_series(state, bars[split:], spec)
+        assert state.points == batch.points
+
+
+@pytest.mark.parametrize("path", VECTOR_PATHS, ids=lambda path: path.stem)
+def test_feed_gap_null_then_full_rewarmup(path: Path) -> None:
+    vector = json.loads(path.read_text(encoding="utf-8"))
+    spec = spec_from_params(vector["operator"], vector["params"])
+    bars = _bars(vector["bars"])
+    points = compute_series(bars, spec).points
+    channels = tuple(vector["expected"][0])
+
+    gap_index = next(
+        index for index, item in enumerate(vector["bars"]) if item["status"] == "FEED_GAP"
+    )
+    assert all(value is None for value in points[gap_index].values())
+    warmup = vector["warmup_bars"]
+    if warmup:
+        rewarm = points[gap_index + 1 : gap_index + 1 + warmup]
+        assert len(rewarm) == warmup
+        assert all(all(value is None for value in point.values()) for point in rewarm)
+    assert any(value is not None for value in points[gap_index + 1 + warmup].values())

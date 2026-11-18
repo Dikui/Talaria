@@ -21,7 +21,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from talaria import __version__
 from talaria.feed.supervisor import FeedSupervisor
-from talaria.foundation.errors import FeedUnavailableError, TalariaError
+from talaria.foundation.errors import (
+    FeedUnavailableError,
+    InvalidRequestError,
+    TalariaError,
+)
 from talaria.foundation.feed import (
     FeedEvent,
     FeedHealthEvent,
@@ -29,8 +33,18 @@ from talaria.foundation.feed import (
     KlineEvent,
     OrderBookEvent,
 )
+from talaria.foundation.indicators import (
+    IndicatorBundle,
+    IndicatorSeries,
+    OperatorRequest,
+)
 from talaria.foundation.market import InstrumentSpec
-from talaria.foundation.snapshot import ChartPage, ErrorResponse, SnapshotMeta, SnapshotRequest
+from talaria.foundation.snapshot import (
+    ChartPage,
+    ErrorResponse,
+    SnapshotMeta,
+    SnapshotRequest,
+)
 from talaria.packs.crypto_perp import (
     CRYPTO_PERP_PACK,
     BybitLinearConnector,
@@ -258,6 +272,81 @@ def create_app(settings: AppSettings) -> FastAPI:
             timeframe=timeframe,
             limit=limit,
             before_ts=before_ts,
+        )
+
+    @app.get(
+        "/api/snapshots/{snapshot_id}/indicators", response_model=IndicatorBundle
+    )
+    def get_indicators(
+        snapshot_id: str,
+        request: Request,
+        timeframe: str = Query(..., description="K 线周期"),
+        names: str = Query(..., description="逗号分隔的指标名，如 EMA,RSI"),
+        limit: int = Query(300, ge=1, le=5000, description="返回最近 N 个点"),
+        live: bool = Query(
+            False, description="追加 WS 已接收的实时尾段（降级增量路径）"
+        ),
+    ) -> IndicatorBundle:
+        indicators = [item.strip().upper() for item in names.split(",") if item.strip()]
+        if not indicators:
+            raise InvalidRequestError("names 至少要包含一个指标")
+        workbench = service(request)
+        extra_bars = []
+        supervisor: FeedSupervisor | None = request.app.state.supervisor
+        if live and supervisor is not None:
+            # 冻结快照的最后时间戳之后才是实时尾段；WS 同 timestamp 的修订由
+            # supervisor 去重后只返回最新一版。
+            page = workbench.get_bars(
+                snapshot_id,
+                timeframe=timeframe,
+                limit=1,
+                before_ts=None,
+            )
+            after_ts = page.bars[-1].timestamp if page.bars else None
+            extra_bars = supervisor.recent_bars(
+                instrument_id=page.instrument_id,
+                timeframe=timeframe,
+                after_ts=after_ts,
+            )
+        return workbench.get_indicators(
+            snapshot_id,
+            timeframe=timeframe,
+            names=indicators,
+            limit=limit,
+            extra_bars=extra_bars,
+        )
+
+    @app.post("/api/operators/compute", response_model=IndicatorSeries)
+    def compute_operator(
+        payload: OperatorRequest,
+        request: Request,
+        live: bool = Query(
+            False, description="追加 WS 已接收的实时尾段（降级增量路径）"
+        ),
+    ) -> IndicatorSeries:
+        workbench = service(request)
+        extra_bars = []
+        supervisor: FeedSupervisor | None = request.app.state.supervisor
+        if live and supervisor is not None:
+            page = workbench.get_bars(
+                payload.snapshot_id,
+                timeframe=payload.timeframe,
+                limit=1,
+                before_ts=None,
+            )
+            after_ts = page.bars[-1].timestamp if page.bars else None
+            extra_bars = supervisor.recent_bars(
+                instrument_id=page.instrument_id,
+                timeframe=payload.timeframe,
+                after_ts=after_ts,
+            )
+        return workbench.compute_operator(
+            payload.snapshot_id,
+            timeframe=payload.timeframe,
+            operator=payload.operator,
+            limit=payload.limit or 300,
+            params=payload.params,
+            extra_bars=extra_bars,
         )
 
     @app.websocket("/ws/desk")

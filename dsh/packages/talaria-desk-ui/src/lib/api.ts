@@ -1,7 +1,10 @@
 import type {
   ChartPage,
   ErrorResponse,
+  IndicatorBundle,
+  IndicatorSeries,
   InstrumentSpec,
+  OperatorRequest,
   SnapshotMeta,
 } from "@talaria/contracts";
 
@@ -88,6 +91,35 @@ export const api = {
       timeframes,
       mode: "HISTORICAL_PIT",
     });
+  },
+
+  indicators(
+    snapshotId: string,
+    timeframe: string,
+    names: string[],
+    limit = 300,
+    live = false,
+  ): Promise<IndicatorBundle> {
+    const query = new URLSearchParams({
+      timeframe,
+      names: names.join(","),
+      limit: String(limit),
+    });
+    if (live) query.set("live", "1");
+    return getJson<IndicatorBundle>(
+      `/api/snapshots/${encodeURIComponent(snapshotId)}/indicators?${query.toString()}`,
+    );
+  },
+
+  computeOperator(
+    request: OperatorRequest,
+    live = false,
+  ): Promise<IndicatorSeries> {
+    const suffix = live ? "?live=1" : "";
+    return postJson<IndicatorSeries>(
+      `/api/operators/compute${suffix}`,
+      request,
+    );
   },
 
   bars(

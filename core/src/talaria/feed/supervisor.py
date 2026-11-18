@@ -265,6 +265,24 @@ class FeedSupervisor(MarketEventFeed):
             channels=channels,
         )
 
+    def recent_bars(
+        self,
+        *,
+        instrument_id: str,
+        timeframe: str,
+        after_ts: int | None = None,
+    ) -> list[CompactBar]:
+        """返回当前订阅通道内按 timestamp 去重后的最新柱（可按时间截断）。
+
+        只读快照，不改变状态机；供指标查询在冻结快照之后追加实时尾段。
+        """
+        series = self._series.get((instrument_id, timeframe), {})
+        return [
+            series[timestamp].bar
+            for timestamp in sorted(series)
+            if after_ts is None or timestamp > after_ts
+        ]
+
     # ------------------------------------------------------------------ 事件整理
 
     def _accept_kline(self, event: KlineEvent, now: int) -> None:

@@ -10,6 +10,8 @@ dependencies = [
   "httpx>=0.28,<1",
   "pyarrow>=26,<27",
   "websockets>=15,<16",
+  "TA-Lib==0.8.3",
+  "talipp==2.7.0",
 ]
 
 [project.scripts]
