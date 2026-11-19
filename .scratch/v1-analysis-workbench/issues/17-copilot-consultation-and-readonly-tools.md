@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)（§3.6）、[ADR-0001](../../../docs/adr/0001-dual-plane-dsh-and-python-core.md)、[ADR-0004](../../../docs/adr/0004-dual-mode-intraday-cognition-and-scanner-gate.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 在 09 的桥上补齐 `get_indicators`、`get_key_levels`、`compute_operator`、`get_chart_view` 工具，PTC 运行时绑定同口径 Python 算子；提示词按“静态分析纪律前缀 → 加密永续 `Market Pack` 领域技能 → 当前快照增量”三段组装，不接入绕过快照的外部行情源。
 - [x] 框选或点击会诊时，前端先经快通道冻结 `snapshot_id`，再拼装会诊包（`Instrument`、周期、可视范围、框选区间、有效 `HUMAN_DRAWING`、窗口内 `Catalyst Calendar` 事件（初版为空）与自然语言问题）。
@@ -73,3 +73,11 @@
 - 轨迹补扫目前由 `usage-scan` 命令触发，未在守护进程内定时轮询；需要常驻补扫时可挂到既有调度器。
 - 真实模型会话冒烟未在本分支执行，宿主链路由离线录制与 mock host 覆盖。
 - 框选依赖图表库的可见区间与像素反投影；极窄区间（< 6px）会被忽略。
+
+
+### Lead 验收
+
+- 合并 `5917421 Merge branch 'ticket-17-copilot-consultation'`；与 14/15 的 `contracts_io.py`/`generated.ts`/`App.tsx`/`styles.css` 冲突已手工保留双方（右栏 tab 与扫描器 dock、关键位采纳并存；contracts/TS 以 `contract-check --write` 重新生成为准）。main 重跑 `uv run pytest -q` → 458 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 138 passed（19 files）；`pnpm -C dsh build` 通过（596.39 kB JS / 55.87 kB CSS，仅 chunk 提示）。
+- 目视截图：1440 浅/深协同面板、框选覆盖层、长 Setup Insight + 证据折叠、空会话、宿主离线、390 结果均符合验收；右栏可在“预警 / 协同会诊”间切换，390 隐藏框选入口。
+- 代码审查：四个只读工具要求同一 snapshot_id，经回环 Bearer 桥调用 Python，指标不在 JS 重算；会诊先冻结快照再异步跑宿主；Abstain 四类 + 宿主离线/输出非法兜底；Token 按 `(dsh_session_id, dsh_turn_id)` 幂等、缺失保持 NULL、`usage-scan` 可补扫；宿主慢/停不阻塞 `/desk` 快通道。
+- 接受已知限制：Catalyst Calendar 初版为空；`usage-scan` 手动触发未接守护进程定时调度；真实模型会话未跑（可选）；框选 <6px 忽略。
