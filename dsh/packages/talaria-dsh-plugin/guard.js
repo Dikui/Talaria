@@ -10,6 +10,12 @@
  * 结果，因此不可能把上游的拒绝翻回允许。
  */
 
+/** 智能体唯一允许的两项受控写入：标注与预警草案。 */
+export const AGENT_WRITE_TOOLS = Object.freeze(new Set([
+  'write_agent_overlay',
+  'create_alert',
+]))
+
 export const READ_ONLY_TOOLS = Object.freeze(new Set([
   'get_snapshot',
   'get_indicators',
@@ -69,7 +75,11 @@ export function inheritedWriteFingerprints(session, isWrite = (name) => !READ_ON
   return fingerprints
 }
 
-export function createDeskGuard({ getSession, allowlist = READ_ONLY_TOOLS } = {}) {
+export function createDeskGuard({
+  getSession,
+  allowlist = READ_ONLY_TOOLS,
+  writeAllowlist = AGENT_WRITE_TOOLS,
+} = {}) {
   return function talariaDeskGuard(execution) {
     if (allowlist.has(execution.name)) {
       return undefined
@@ -81,6 +91,9 @@ export function createDeskGuard({ getSession, allowlist = READ_ONLY_TOOLS } = {}
         return `talaria-desk 单调守卫：${execution.name} 与 fork 前历史轨迹中的写操作完全相同，拒绝重放该历史写操作。`
       }
     }
-    return `talaria-desk 权限边界：${execution.name} 不在只读工具白名单内，已拦截；看盘请使用 get_snapshot。`
+    if (!writeAllowlist.has(execution.name)) {
+      return `talaria-desk 权限边界：${execution.name} 不在只读工具白名单内，已拦截；看盘请使用 get_snapshot。`
+    }
+    return undefined
   }
 }

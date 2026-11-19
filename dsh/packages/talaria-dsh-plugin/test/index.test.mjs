@@ -86,7 +86,7 @@ async function waitFor(check, timeoutMs = 2000) {
   throw new Error('等待超时')
 }
 
-test('registers four read-only tools plus get_snapshot and the desk guard', () => {
+test('registers five read-only tools plus the two controlled writes and the desk guard', () => {
   const registered = []
   let guarded = 0
   const ctx = {
@@ -112,10 +112,12 @@ test('registers four read-only tools plus get_snapshot and the desk guard', () =
     registered.map((tool) => tool.name).sort(),
     [
       'compute_operator',
+      'create_alert',
       'get_chart_view',
       'get_indicators',
       'get_key_levels',
       'get_snapshot',
+      'write_agent_overlay',
     ],
   )
   for (const tool of registered) {
@@ -125,6 +127,10 @@ test('registers four read-only tools plus get_snapshot and the desk guard', () =
       assert.equal(tool.parameters.required[0], 'snapshot_id')
     }
   }
+  const byName = Object.fromEntries(registered.map((tool) => [tool.name, tool]))
+  assert.equal('draft' in byName.create_alert.parameters.properties, false)
+  assert.equal('status' in byName.write_agent_overlay.parameters.properties, false)
+  assert.equal('status' in byName.create_alert.parameters.properties, false)
   assert.equal(guarded, 1)
 })
 

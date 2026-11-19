@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cleared": {
+      "title": "Cleared",
+      "type": "integer"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Session Id"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "session_id",
+    "cleared"
+  ],
+  "title": "AnnotationClearResponse",
+  "type": "object"
+}

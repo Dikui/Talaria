@@ -266,6 +266,47 @@ export function createBridge(config = {}) {
     return { snapshot_id: args.snapshot_id, ...view }
   }
 
+  async function writeAgentOverlay(args, signal) {
+    const meta = await getSnapshot(args.snapshot_id, signal)
+    assertBound(meta, args)
+    const body = await requestJson('POST', '/api/annotations', { body: args, signal })
+    if (body?.snapshot_id !== args.snapshot_id) {
+      throw new BridgeError('标注结果没有绑定请求的 snapshot_id，已拒绝。', {
+        code: 'TALARIA_BRIDGE_PROTOCOL',
+      })
+    }
+    if (body?.status !== 'ACTIVE') {
+      throw new BridgeError('标注未以 ACTIVE 状态落库，已拒绝该结果。', {
+        code: 'TALARIA_BRIDGE_PROTOCOL',
+      })
+    }
+    return body
+  }
+
+  async function createAlertDraft(args, signal) {
+    const meta = await getSnapshot(args.snapshot_id, signal)
+    assertBound(meta, args)
+    const body = await requestJson('POST', '/api/alerts', {
+      body: {
+        instrument_id: args.instrument_id,
+        timeframe: args.timeframe,
+        condition: args.condition,
+        note: args.note ?? '',
+        repeat: args.repeat ?? true,
+        cooldown_ms: args.cooldown_ms ?? 60000,
+        expires_at: args.expires_at ?? null,
+        draft: true,
+      },
+      signal,
+    })
+    if (body?.status !== 'DRAFT') {
+      throw new BridgeError('预警未以 DRAFT 状态创建；智能体只能提交草案，已拒绝该结果。', {
+        code: 'TALARIA_BRIDGE_PROTOCOL',
+      })
+    }
+    return body
+  }
+
   async function reportUsage(report, signal) {
     return requestJson('POST', '/api/collaboration/usage', { body: report, signal })
   }
@@ -285,6 +326,8 @@ export function createBridge(config = {}) {
     getKeyLevels,
     computeOperator,
     getChartView,
+    writeAgentOverlay,
+    createAlertDraft,
     submitResult,
     reportUsage,
     credential,
@@ -422,5 +465,69 @@ export function renderChartView(_args, value) {
   return [{
     type: 'text',
     text: `快照 ${value.snapshot_id} · ${value.instrument?.instrument_id ?? ''} ${value.timeframe} 视窗 ${window.from_ts}–${window.to_ts}，价格 ${window.price_min}–${window.price_max}；人工画线 ${drawings || '无'}。`,
+  }]
+}
+
+
+export const AGENT_ANNOTATION_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'annotation_id',
+    'snapshot_id',
+    'instrument_id',
+    'timeframe',
+    'session_id',
+    'round',
+    'status',
+    'label',
+    'price_low',
+    'price_high',
+    'ts_anchor',
+    'evidence_refs',
+  ],
+  properties: {
+    annotation_id: { type: 'string' },
+    snapshot_id: { type: 'string' },
+    instrument_id: { type: 'string' },
+    timeframe: { type: 'string' },
+    session_id: { type: 'string' },
+    round: { type: 'integer' },
+    status: { type: 'string', enum: ['ACTIVE', 'ADOPTED', 'DISMISSED', 'ARCHIVED'] },
+    label: { type: 'string' },
+    price_low: { type: 'string' },
+    price_high: { type: 'string' },
+    ts_anchor: { type: 'integer' },
+    evidence_refs: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+}
+
+export const ALERT_DRAFT_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['alert_id', 'instrument_id', 'timeframe', 'status', 'note'],
+  properties: {
+    alert_id: { type: 'string' },
+    instrument_id: { type: 'string' },
+    timeframe: { type: 'string' },
+    status: { type: 'string', enum: ['DRAFT', 'ARMED', 'COOLDOWN', 'EXPIRED', 'DISABLED'] },
+    note: { type: 'string' },
+  },
+}
+
+export function renderAgentAnnotation(_args, value) {
+  const evidence = (value.evidence_refs ?? [])
+    .map((item) => item.level_id ?? `K线 ${item.kline_ts}`)
+    .join('，')
+  return [{
+    type: 'text',
+    text: `智能体标注 ${value.annotation_id} 已写入快照 ${value.snapshot_id}（${value.instrument_id} ${value.timeframe}），第 ${value.round} 轮；价格 ${value.price_low}–${value.price_high}，证据 ${evidence || '无'}。该标注为虚线建议，需人工采纳后才会成为画线。`,
+  }]
+}
+
+export function renderAlertDraft(_args, value) {
+  return [{
+    type: 'text',
+    text: `预警草案 ${value.alert_id}（${value.instrument_id} ${value.timeframe}）已创建，状态 ${value.status}；请人工在预警面板确认后才会激活，草案本身不会触发。`,
   }]
 }

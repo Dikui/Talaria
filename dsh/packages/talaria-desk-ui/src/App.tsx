@@ -13,6 +13,10 @@ import type {
 } from "@talaria/contracts";
 
 import { AlertPanel, AlertToast, type AlertFormSeed } from "./features/alerts/AlertPanel";
+import { AnnotationLayer } from "./features/annotations/AnnotationLayer";
+import { AnnotationPanel } from "./features/annotations/AnnotationPanel";
+import { activeAnnotations } from "./features/annotations/model";
+import { useAnnotations } from "./features/annotations/useAnnotations";
 import { useAlerts } from "./features/alerts/useAlerts";
 import { DerivativeSummary } from "./features/derivatives/DerivativeSummary";
 import {
@@ -478,6 +482,8 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     pricePrecision,
     readOnly: readOnlyViewport,
   });
+  const annotations = useAnnotations({ instrumentId });
+  const activeAnnotationCount = activeAnnotations(annotations.annotations).length;
   const keyLevels = useKeyLevels({
     snapshotId: snapshot?.snapshot_id ?? null,
     instrumentId,
@@ -513,6 +519,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
       <RightDockTabs
         active={rightTab}
         alertUnread={alerts.unread}
+        annotationCount={activeAnnotationCount}
         onSelect={(tab) => {
           setRightTab(tab);
           if (tab === "alerts") alerts.markSeen();
@@ -620,6 +627,16 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
             </button>
             <button
               type="button"
+              className={`ghost-button annotations-toggle${rightTab === "annotations" ? " is-active" : ""}`}
+              aria-pressed={rightTab === "annotations"}
+              onClick={() => {
+                setRightTab(rightTab === "annotations" ? null : "annotations");
+              }}
+            >
+              标注{activeAnnotationCount > 0 ? ` ${activeAnnotationCount}` : ""}
+            </button>
+            <button
+              type="button"
               className={`ghost-button collaboration-toggle${rightTab === "collab" ? " is-active" : ""}`}
               aria-pressed={rightTab === "collab"}
               onClick={() => {
@@ -691,6 +708,21 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
             onLocate={locateTrigger}
             onClose={() => setRightTab(null)}
             tabBar={dockTabs}
+          />
+        )}
+
+        {rightTab === "annotations" && (
+          <AnnotationPanel
+            controller={annotations}
+            instrumentId={instrumentId}
+            snapshotId={snapshot?.snapshot_id ?? null}
+            readOnly={readOnlyViewport}
+            tabBar={dockTabs}
+            onClose={() => setRightTab(null)}
+            onAdopted={() => {
+              drawings.refresh();
+            }}
+            onError={(message) => setError({ code: "ANNOTATION_ERROR", message })}
           />
         )}
 
@@ -792,6 +824,27 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                         levels={visibleLevels}
                         pricePrecision={pricePrecision}
                         rightInset={keyLevelInset}
+                      />
+                      <AnnotationLayer
+                        chart={chart}
+                        annotations={annotations.annotations}
+                        timeframe={timeframe}
+                        readOnly={readOnlyViewport}
+                        onAdopt={(annotation) => {
+                          void annotations
+                            .adopt(annotation.annotation_id)
+                            .then((record) => {
+                              if (
+                                record?.adopted_drawing_id !== null &&
+                                record?.adopted_drawing_id !== undefined
+                              ) {
+                                drawings.refresh();
+                              }
+                            });
+                        }}
+                        onDismiss={(annotation) => {
+                          void annotations.dismiss(annotation.annotation_id);
+                        }}
                       />
                       <DrawingOverlay chart={chart} controller={drawings} />
                       <SelectionOverlay

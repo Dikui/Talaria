@@ -70,3 +70,40 @@ test('inherited fingerprints ignore read-only history and normalize key order', 
   assert.equal(prints.has(callFingerprint('place_order', { qty: '0.1', symbol: 'BTC-USDT-PERP' })), true)
   assert.equal(prints.has(callFingerprint('get_snapshot', { instrument_id: 'BTC-USDT-PERP' })), false)
 })
+
+test('controlled writes pass the boundary but are still guarded against fork replay', () => {
+  const seeded = fakeSession([
+    {
+      type: 'tool/call',
+      seq: 0,
+      data: {
+        name: 'write_agent_overlay',
+        arguments: '{"snapshot_id":"snap-abc","instrument_id":"BTC-USDT-PERP"}',
+      },
+    },
+  ])
+  const guard = createDeskGuard({ getSession: () => seeded })
+  assert.match(
+    guard({
+      name: 'write_agent_overlay',
+      arguments: { snapshot_id: 'snap-abc', instrument_id: 'BTC-USDT-PERP' },
+    }),
+    /单调守卫/,
+  )
+  assert.equal(
+    guard({
+      name: 'write_agent_overlay',
+      arguments: { snapshot_id: 'snap-abc', instrument_id: 'ETH-USDT-PERP' },
+    }),
+    undefined,
+  )
+  assert.equal(guard({ name: 'create_alert', arguments: { snapshot_id: 'snap-abc' } }), undefined)
+})
+
+test('controlled writes pass in a fresh session but other writes still fail', () => {
+  const guard = createDeskGuard({ getSession: () => fakeSession([], { seeded: false }) })
+  assert.equal(guard({ name: 'write_agent_overlay', arguments: {} }), undefined)
+  assert.equal(guard({ name: 'create_alert', arguments: {} }), undefined)
+  assert.match(guard({ name: 'place_order', arguments: {} }), /权限边界/)
+  assert.match(guard({ name: 'delete_drawing', arguments: {} }), /权限边界/)
+})

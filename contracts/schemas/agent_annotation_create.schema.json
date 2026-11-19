@@ -1,0 +1,138 @@
+{
+  "$defs": {
+    "AnnotationEvidence": {
+      "additionalProperties": false,
+      "description": "一条可核验证据：引用快照内关键位，或引用窗口内的具体 K 线。\n\n``level_id`` 与 ``kline_ts`` 必须恰好提供一个。K 线时间戳允许与真实\nbar 相差一根周期以内（由服务端按 ``timeframe`` 显式判定）。",
+      "properties": {
+        "kline_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kline Ts"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Level Id"
+        },
+        "note": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "title": "AnnotationEvidence",
+      "type": "object"
+    },
+    "AnnotationKind": {
+      "description": "标注几何：水平线或价格带；与人工画线保持独立图层。",
+      "enum": [
+        "LEVEL",
+        "ZONE"
+      ],
+      "title": "AnnotationKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "智能体写入载荷；状态永远由服务端决定，客户端不能指定。",
+  "properties": {
+    "evidence_refs": {
+      "items": {
+        "$ref": "#/$defs/AnnotationEvidence"
+      },
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/AnnotationKind"
+    },
+    "label": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    },
+    "price_high": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Price High",
+      "type": "string"
+    },
+    "price_low": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Price Low",
+      "type": "string"
+    },
+    "rationale": {
+      "default": "",
+      "maxLength": 2000,
+      "title": "Rationale",
+      "type": "string"
+    },
+    "round": {
+      "minimum": 0,
+      "title": "Round",
+      "type": "integer"
+    },
+    "session_id": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "maxLength": 8,
+      "minLength": 1,
+      "title": "Timeframe",
+      "type": "string"
+    },
+    "ts_anchor": {
+      "minimum": 0,
+      "title": "Ts Anchor",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "instrument_id",
+    "timeframe",
+    "session_id",
+    "round",
+    "kind",
+    "label",
+    "price_low",
+    "price_high",
+    "ts_anchor"
+  ],
+  "title": "AgentAnnotationCreate",
+  "type": "object"
+}

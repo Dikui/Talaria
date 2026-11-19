@@ -33,6 +33,15 @@ from talaria.foundation.alerts import (
     AlertTriggerListResponse,
     AlertTriggerRecord,
 )
+from talaria.foundation.annotations import (
+    AgentAnnotationCreate,
+    AgentAnnotationRecord,
+    AnnotationAdoptResponse,
+    AnnotationClearRequest,
+    AnnotationClearResponse,
+    AnnotationListResponse,
+    AnnotationSessionsResponse,
+)
 from talaria.foundation.collaboration import (
     ConsultationListResponse,
     ConsultationRecord,
@@ -124,6 +133,7 @@ from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.replay import ReplayFeed
 from talaria.workbench_api.alert_service import AlertService
+from talaria.workbench_api.annotation_service import AnnotationService
 from talaria.workbench_api.collaboration_service import CollaborationService
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.key_level_feedback import KeyLevelFeedbackService
@@ -146,6 +156,15 @@ ERROR_STATUS: dict[str, int] = {
     "SNAPSHOT_NOT_FOUND": 404,
     "DRAWING_NOT_FOUND": 404,
     "ALERT_NOT_FOUND": 404,
+    "ANNOTATION_NOT_FOUND": 404,
+    "SNAPSHOT_MISMATCH": 422,
+    "EVIDENCE_EMPTY": 422,
+    "EVIDENCE_UNRESOLVED": 422,
+    "PRICE_INVALID": 422,
+    "PRICE_NOT_TICK_ALIGNED": 422,
+    "PRICE_OUT_OF_BOUNDS": 422,
+    "TIME_BEFORE_SNAPSHOT": 422,
+    "TIME_TOO_FAR_FUTURE": 422,
     "CONSULTATION_NOT_FOUND": 404,
     "FEED_UNAVAILABLE": 503,
     "NOT_IMPLEMENTED": 501,
@@ -361,6 +380,13 @@ def create_app(
         app.state.state_writer = state_writer
         app.state.drawing_service = DrawingService(
             queue=state_writer, pack=CRYPTO_PERP_PACK, now_ms=settings.now_ms
+        )
+        app.state.annotation_service = AnnotationService(
+            queue=state_writer,
+            workbench=app.state.service,
+            drawings=app.state.drawing_service,
+            pack=CRYPTO_PERP_PACK,
+            now_ms=settings.now_ms,
         )
         app.state.collaboration_service = CollaborationService(
             queue=state_writer,
@@ -595,6 +621,9 @@ def create_app(
     def collaborations(request: Request) -> CollaborationService:
         return request.app.state.collaboration_service
 
+    def annotations(request: Request) -> AnnotationService:
+        return request.app.state.annotation_service
+
     @app.get("/api/health")
     def health(request: Request) -> dict[str, object]:
         active = service(request)
@@ -816,6 +845,58 @@ def create_app(
         request: Request, instrument_id: str
     ) -> Watchlist:
         return await request.app.state.watchlist.remove_item(instrument_id)
+
+    @app.post("/api/annotations", response_model=AgentAnnotationRecord, status_code=201)
+    async def create_annotation(
+        payload: AgentAnnotationCreate, request: Request
+    ) -> AgentAnnotationRecord:
+        return await annotations(request).create_annotation(payload)
+
+    @app.get("/api/annotations", response_model=AnnotationListResponse)
+    async def list_annotations(
+        request: Request,
+        instrument_id: str | None = Query(default=None),
+        snapshot_id: str | None = Query(default=None),
+        session_id: str | None = Query(default=None),
+        include_archived: bool = Query(default=False),
+    ) -> AnnotationListResponse:
+        return await annotations(request).list_annotations(
+            instrument_id=instrument_id,
+            snapshot_id=snapshot_id,
+            session_id=session_id,
+            include_archived=include_archived,
+        )
+
+    @app.get("/api/annotations/sessions", response_model=AnnotationSessionsResponse)
+    async def list_annotation_sessions(request: Request) -> AnnotationSessionsResponse:
+        return await annotations(request).list_sessions()
+
+    @app.post(
+        "/api/annotations/{annotation_id}/adopt",
+        response_model=AnnotationAdoptResponse,
+    )
+    async def adopt_annotation(
+        annotation_id: str, request: Request
+    ) -> AnnotationAdoptResponse:
+        return await annotations(request).adopt(annotation_id)
+
+    @app.post(
+        "/api/annotations/{annotation_id}/dismiss",
+        response_model=AgentAnnotationRecord,
+    )
+    async def dismiss_annotation(
+        annotation_id: str, request: Request
+    ) -> AgentAnnotationRecord:
+        return await annotations(request).dismiss(annotation_id)
+
+    @app.post(
+        "/api/annotations/clear",
+        response_model=AnnotationClearResponse,
+    )
+    async def clear_annotations(
+        payload: AnnotationClearRequest, request: Request
+    ) -> AnnotationClearResponse:
+        return await annotations(request).clear(payload)
 
     @app.get("/api/alerts", response_model=AlertListResponse)
     async def list_alerts(

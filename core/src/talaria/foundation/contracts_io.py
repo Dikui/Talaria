@@ -32,6 +32,22 @@ from talaria.foundation.alerts import (
     AlertTriggerListResponse,
     AlertTriggerRecord,
 )
+from talaria.foundation.annotations import (
+    AgentAnnotationCreate,
+    AgentAnnotationRecord,
+    AnnotationAdoptResponse,
+    AnnotationAdoptionRecord,
+    AnnotationClearRequest,
+    AnnotationClearResponse,
+    AnnotationEvidence,
+    AnnotationKind,
+    AnnotationListResponse,
+    AnnotationSessionSummary,
+    AnnotationSessionsResponse,
+    AnnotationStatus,
+    CreateAlertDraftInput,
+    WriteAgentOverlayInput,
+)
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.drawings import (
     ChartView,
@@ -232,6 +248,16 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "usage_report_response": UsageReportResponse,
     "usage_summary": UsageSummary,
     "usage_summary_response": UsageSummaryResponse,
+    "annotation_evidence": AnnotationEvidence,
+    "agent_annotation_create": AgentAnnotationCreate,
+    "agent_annotation_record": AgentAnnotationRecord,
+    "annotation_list_response": AnnotationListResponse,
+    "annotation_session_summary": AnnotationSessionSummary,
+    "annotation_sessions_response": AnnotationSessionsResponse,
+    "annotation_adoption_record": AnnotationAdoptionRecord,
+    "annotation_adopt_response": AnnotationAdoptResponse,
+    "annotation_clear_request": AnnotationClearRequest,
+    "annotation_clear_response": AnnotationClearResponse,
 }
 
 #: 枚举的固定输出顺序。
@@ -264,6 +290,8 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     ConsultationStatus,
     SetupDirection,
     EvidenceKind,
+    AnnotationKind,
+    AnnotationStatus,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
@@ -325,6 +353,14 @@ DSH_TOOL_SPECS: dict[str, tuple[type[BaseModel], str]] = {
         GetChartViewInput,
         "读取已冻结快照内的可视窗口与有效人工画线；只读。",
     ),
+    "write_agent_overlay": (
+        WriteAgentOverlayInput,
+        "在冻结快照上写入受门控的智能体标注；虚线展示，最多 12 条，可被人工采纳。",
+    ),
+    "create_alert": (
+        CreateAlertDraftInput,
+        "创建智能体预警草案；只会落为 DRAFT，必须由人工确认后才会激活。",
+    ),
 }
 DSH_TOOL_PATHS: dict[str, Path] = {
     name: DSH_TOOL_DIR / f"{name}.tool.json" for name in DSH_TOOL_SPECS
@@ -365,7 +401,15 @@ def _schema_for(model: type[BaseModel]) -> dict[str, Any]:
 
 
 def _is_decimal_property(prop: dict[str, Any]) -> bool:
-    return _contains_pattern(prop, DECIMAL_PATTERN)
+    if _contains_pattern(prop, DECIMAL_PATTERN):
+        return True
+    # DSH 子集展开 Optional[DecimalStr] 后是 string/null 的 oneOf；pattern 已被
+    # 子集白名单剥离，因此只要分支全是字符串或 null 且含字符串即视为十进制。
+    branches = prop.get("oneOf")
+    if isinstance(branches, list) and branches:
+        types = {branch.get("type") for branch in branches if isinstance(branch, dict)}
+        return "string" in types and types <= {"string", "null"}
+    return False
 
 
 def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:

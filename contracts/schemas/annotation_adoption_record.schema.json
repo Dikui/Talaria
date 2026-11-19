@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "description": "采纳质量反馈：标注几何 → 人工画线的独立副本。",
+  "properties": {
+    "adopted_ts": {
+      "title": "Adopted Ts",
+      "type": "integer"
+    },
+    "annotation_id": {
+      "title": "Annotation Id",
+      "type": "string"
+    },
+    "drawing_id": {
+      "title": "Drawing Id",
+      "type": "string"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "round": {
+      "title": "Round",
+      "type": "integer"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "annotation_id",
+    "instrument_id",
+    "snapshot_id",
+    "timeframe",
+    "session_id",
+    "round",
+    "drawing_id",
+    "adopted_ts"
+  ],
+  "title": "AnnotationAdoptionRecord",
+  "type": "object"
+}

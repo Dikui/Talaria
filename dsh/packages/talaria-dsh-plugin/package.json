@@ -13,7 +13,7 @@
     "index.js",
     "bridge.js",
     "guard.js",
-    "get_snapshot.tool.json",
+    "*.tool.json",
     "client/index.js",
     "talaria-desk.patch.yml"
   ],

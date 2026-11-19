@@ -1,8 +1,9 @@
-export type RightDockTab = "collab" | "alerts";
+export type RightDockTab = "collab" | "alerts" | "annotations";
 
 interface RightDockTabsProps {
   active: RightDockTab;
   alertUnread: number;
+  annotationCount: number;
   onSelect: (tab: RightDockTab) => void;
   onClose: () => void;
 }
@@ -11,6 +12,7 @@ interface RightDockTabsProps {
 export function RightDockTabs({
   active,
   alertUnread,
+  annotationCount,
   onSelect,
   onClose,
 }: RightDockTabsProps) {
@@ -25,6 +27,15 @@ export function RightDockTabs({
           onClick={() => onSelect("collab")}
         >
           协同会诊
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={active === "annotations"}
+          className={`right-dock-tab${active === "annotations" ? " is-active" : ""}`}
+          onClick={() => onSelect("annotations")}
+        >
+          标注{annotationCount > 0 ? ` ${annotationCount}` : ""}
         </button>
         <button
           type="button"
