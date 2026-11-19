@@ -5,6 +5,7 @@ import type {
   KeyLevelSet,
   KlineEvent,
   OrderBookEvent,
+  ScannerTrigger,
 } from "@talaria/contracts";
 
 /**
@@ -21,6 +22,7 @@ export type DeskMessage =
   | { type: "derivatives"; data: DerivativeTickEvent }
   | { type: "levels"; data: KeyLevelSet }
   | { type: "alert"; data: AlertTriggerRecord }
+  | { type: "scanner"; data: ScannerTrigger }
   | { type: "error"; code: string; message: string };
 
 type RawRecord = Record<string, unknown>;
@@ -91,6 +93,17 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
         typeof data.instrument_id === "string" &&
         typeof data.triggered_ts === "number"
         ? { type: "alert", data: record.data as AlertTriggerRecord }
+        : null;
+    }
+    case "scanner": {
+      const data = asRecord(record.data);
+      return data !== null &&
+        typeof data.trigger_id === "string" &&
+        typeof data.instrument_id === "string" &&
+        typeof data.kind === "string" &&
+        typeof data.created_ts === "number" &&
+        typeof data.snapshot_id === "string"
+        ? { type: "scanner", data: record.data as ScannerTrigger }
         : null;
     }
     case "error":

@@ -44,6 +44,12 @@ export type AlertOverlayMode = "TOUCH" | "CLOSE_BREAK";
 
 export type AlertStatus = "DRAFT" | "ARMED" | "COOLDOWN" | "EXPIRED" | "DISABLED";
 
+export type ScannerConditionKind = "LIQUIDITY_ANOMALY" | "VOLATILITY_EXPANSION" | "FUNDING_EXTREME" | "OI_DIVERGENCE" | "KEY_LEVEL_EVENT";
+
+export type ScannerSeverity = "INFO" | "WARNING" | "CRITICAL";
+
+export type ScannerTriggerRoute = "LOCAL" | "CO_PILOT_CONSULT";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -455,4 +461,54 @@ export interface AlertTriggerRecord {
 }
 export interface AlertTriggerListResponse {
   triggers: AlertTriggerRecord[];
+}
+export interface ScannerEvidence {
+  metric: string;
+  value: DecimalString;
+  threshold?: DecimalString | null;
+  note?: string | null;
+}
+export interface ScannerTrigger {
+  trigger_id: string;
+  instrument_id: string;
+  timeframe: string;
+  kind: ScannerConditionKind;
+  severity: ScannerSeverity;
+  title: string;
+  summary: string;
+  evidence?: ScannerEvidence[];
+  tags?: string[];
+  created_ts: number;
+  snapshot_id: string;
+  route?: ScannerTriggerRoute;
+}
+export interface ScannerTriggerListResponse {
+  triggers: ScannerTrigger[];
+  total: number;
+  generated_ts: number;
+}
+export interface ScannerFocusItem {
+  instrument_id: string;
+  last_trigger_ts: number;
+  trigger_count: number;
+  severity: ScannerSeverity;
+  kinds?: ScannerConditionKind[];
+  last_title?: string | null;
+  last_timeframe?: string | null;
+  last_snapshot_id?: string | null;
+}
+export interface ScannerFocusResponse {
+  group_id: string;
+  name: string;
+  items: ScannerFocusItem[];
+  instrument_ids: string[];
+  generated_ts: number;
+}
+export interface ScannerScanRequest {
+  instrument_ids?: string[] | null;
+}
+export interface ScannerScanResponse {
+  triggers: ScannerTrigger[];
+  scanned_instruments: string[];
+  generated_ts: number;
 }

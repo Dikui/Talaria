@@ -23,6 +23,9 @@ import type {
   KeyLevelIgnoreList,
   KeyLevelSet,
   OperatorRequest,
+  ScannerFocusResponse,
+  ScannerScanResponse,
+  ScannerTriggerListResponse,
   SnapshotMeta,
   Watchlist,
 } from "@talaria/contracts";
@@ -355,6 +358,30 @@ export const api = {
       "POST",
       { snapshot_id: snapshotId, timeframe },
     );
+  },
+
+  scannerTriggers(
+    options: { limit?: number; instrumentId?: string } = {},
+  ): Promise<ScannerTriggerListResponse> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    if (options.instrumentId !== undefined) {
+      params.set("instrument_id", options.instrumentId);
+    }
+    const suffix = params.toString();
+    return getJson<ScannerTriggerListResponse>(
+      `/api/scanner/triggers${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+
+  scannerFocus(): Promise<ScannerFocusResponse> {
+    return getJson<ScannerFocusResponse>("/api/scanner/focus");
+  },
+
+  scanNow(): Promise<ScannerScanResponse> {
+    return postJson<ScannerScanResponse>("/api/scanner/scan", {});
   },
 
   alerts(status?: AlertStatus): Promise<AlertListResponse> {

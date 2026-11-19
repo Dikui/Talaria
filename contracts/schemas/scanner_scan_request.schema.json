@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "description": "手动扫描一次；省略标的时扫描当前 Watchlist。",
+  "properties": {
+    "instrument_ids": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Instrument Ids"
+    }
+  },
+  "title": "ScannerScanRequest",
+  "type": "object"
+}

@@ -48,6 +48,8 @@ import {
 } from "./features/key-levels/model";
 import { useKeyLevels } from "./features/key-levels/useKeyLevels";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
+import { ScannerPanel } from "./features/scanner/ScannerPanel";
+import { useScanner } from "./features/scanner/useScanner";
 import { WatchlistPanel } from "./features/watchlist/WatchlistPanel";
 import { ApiError, api } from "./lib/api";
 import { toKLineSeries } from "./lib/chartData";
@@ -127,11 +129,13 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   );
   const [keyLevelPanelOpen, setKeyLevelPanelOpen] = useState(true);
   const [alertsOpen, setAlertsOpen] = useState(true);
+  const [scannerOpen, setScannerOpen] = useState(true);
   const [alertSeed, setAlertSeed] = useState<AlertFormSeed | null>(null);
   const [snapshotCutoff, setSnapshotCutoff] = useState<number | null>(null);
   const readOnlyViewport = useReadOnlyViewport();
   const stream = useMarketStream(instrumentId, timeframe);
   const alerts = useAlerts();
+  const scanner = useScanner();
   const collaboration = useCollaborationStatus();
 
   const chooseInstrument = useCallback((next: string) => {
@@ -406,6 +410,12 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     }
   }, [stream.alert, alerts.ingestTrigger]);
 
+  useEffect(() => {
+    if (stream.scanner !== null) {
+      scanner.ingest(stream.scanner);
+    }
+  }, [stream.scanner, scanner.ingest]);
+
   const locateTrigger = useCallback(
     (trigger: { instrument_id: string; timeframe: string; triggered_ts: number }) => {
       setSnapshotCutoff(trigger.triggered_ts > 0 ? trigger.triggered_ts : null);
@@ -529,6 +539,19 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
               book={stream.book}
               pricePrecision={pricePrecision}
             />
+            <button
+              type="button"
+              className={`ghost-button scanner-toggle${scannerOpen ? " is-active" : ""}`}
+              aria-pressed={scannerOpen}
+              onClick={() => {
+                setScannerOpen((open) => !open);
+                if (!scannerOpen) {
+                  scanner.markSeen();
+                }
+              }}
+            >
+              异动 {scanner.triggers.length}
+            </button>
             <button
               type="button"
               className={`ghost-button alerts-toggle${alertsOpen ? " is-active" : ""}`}
@@ -688,6 +711,13 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                     </>
                   }
                   onChartReady={setChart}
+                />
+                <ScannerPanel
+                  controller={scanner}
+                  open={scannerOpen}
+                  onToggle={() => setScannerOpen(false)}
+                  onLocate={locateTrigger}
+                  readOnly={readOnlyViewport}
                 />
                 {keyLevelPanelOpen ? (
                   <KeyLevelPanel

@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "ScannerConditionKind": {
+      "description": "任务单要求的五类数值异动。",
+      "enum": [
+        "LIQUIDITY_ANOMALY",
+        "VOLATILITY_EXPANSION",
+        "FUNDING_EXTREME",
+        "OI_DIVERGENCE",
+        "KEY_LEVEL_EVENT"
+      ],
+      "title": "ScannerConditionKind",
+      "type": "string"
+    },
+    "ScannerSeverity": {
+      "description": "异动严重度；仅用于展示排序，不触发模型。",
+      "enum": [
+        "INFO",
+        "WARNING",
+        "CRITICAL"
+      ],
+      "title": "ScannerSeverity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "SCANNER_FOCUS 系统分组中的一行，由最近的 Trigger 聚合而来。",
+  "properties": {
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "kinds": {
+      "items": {
+        "$ref": "#/$defs/ScannerConditionKind"
+      },
+      "title": "Kinds",
+      "type": "array"
+    },
+    "last_snapshot_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Snapshot Id"
+    },
+    "last_timeframe": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Timeframe"
+    },
+    "last_title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Title"
+    },
+    "last_trigger_ts": {
+      "title": "Last Trigger Ts",
+      "type": "integer"
+    },
+    "severity": {
+      "$ref": "#/$defs/ScannerSeverity"
+    },
+    "trigger_count": {
+      "title": "Trigger Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "last_trigger_ts",
+    "trigger_count",
+    "severity"
+  ],
+  "title": "ScannerFocusItem",
+  "type": "object"
+}
