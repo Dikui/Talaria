@@ -1,0 +1,38 @@
+{
+  "description": "在已冻结快照上运行 Python 算子；只读，禁止在 JS/TS 侧重算。",
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "default": 300,
+        "title": "Limit",
+        "type": "integer"
+      },
+      "operator": {
+        "title": "Operator",
+        "type": "string"
+      },
+      "params": {
+        "additionalProperties": true,
+        "title": "Params",
+        "type": "object"
+      },
+      "snapshot_id": {
+        "title": "Snapshot Id",
+        "type": "string"
+      },
+      "timeframe": {
+        "title": "Timeframe",
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshot_id",
+      "timeframe",
+      "operator"
+    ],
+    "title": "ComputeOperatorInput",
+    "type": "object"
+  },
+  "name": "compute_operator"
+}

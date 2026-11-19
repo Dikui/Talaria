@@ -27,7 +27,12 @@ from talaria.cli.dsh_host import (
     resolve_dsh_bin,
     write_bridge_descriptor,
 )
-from talaria.foundation.contracts_io import check_contracts, repo_root, write_contracts
+from talaria.foundation.contracts_io import (
+    DSH_TOOL_SPECS,
+    check_contracts,
+    repo_root,
+    write_contracts,
+)
 from talaria.workbench_api.settings import AppSettings
 
 DEFAULT_DATA_DIR = Path(".talaria")
@@ -70,6 +75,32 @@ def _cmd_contract_check(args: argparse.Namespace) -> int:
             print(problem, file=sys.stderr)
         return 1
     print("契约生成物零漂移。")
+    return 0
+
+
+def _cmd_usage_scan(args: argparse.Namespace) -> int:
+    from talaria.foundation.collaboration.usage_scan import scan_session_traces
+    from talaria.workbench_api.state_store import StateStore
+
+    store = StateStore(Path(args.data_dir))
+    try:
+        result = scan_session_traces(
+            args.dsh_home,
+            lambda report: store.record_usage(report),
+        )
+    finally:
+        store.close()
+    print(
+        json.dumps(
+            {
+                "scanned_files": result.scanned_files,
+                "recorded_turns": result.recorded_turns,
+                "duplicate_turns": result.duplicate_turns,
+                "skipped_turns": result.skipped_turns,
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -153,9 +184,18 @@ def _cmd_up(args: argparse.Namespace) -> int:
 
     from talaria.workbench_api.app import create_app
 
+    def _collaboration_host() -> str | None:
+        if dsh_host is None:
+            return None
+        info = dsh_host.info()
+        if info.state != "online":
+            return None
+        return info.url
+
     app = create_app(
         settings,
         collaboration_status=dsh_host.status_payload if dsh_host else None,
+        collaboration_host=_collaboration_host,
     )
     server = uvicorn.Server(
         uvicorn.Config(app, host=host, port=args.port, log_level="info")
@@ -269,9 +309,12 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
     if not (plugin_dir / "package.json").is_file():
         print(f"插件包不存在：{plugin_dir}", file=sys.stderr)
         return 2
-    canonical_tool = repo / "contracts" / "schemas" / "dsh-tools" / "get_snapshot.tool.json"
-    if canonical_tool.is_file():
-        shutil.copyfile(canonical_tool, plugin_dir / "get_snapshot.tool.json")
+    for tool_name in DSH_TOOL_SPECS:
+        canonical_tool = (
+            repo / "contracts" / "schemas" / "dsh-tools" / f"{tool_name}.tool.json"
+        )
+        if canonical_tool.is_file():
+            shutil.copyfile(canonical_tool, plugin_dir / f"{tool_name}.tool.json")
     canonical_patch = repo / "dsh" / "profiles" / "talaria-desk.patch.yml"
     if canonical_patch.is_file():
         shutil.copyfile(canonical_patch, plugin_dir / "talaria-desk.patch.yml")
@@ -510,6 +553,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--write", action="store_true", help="原地重新生成契约文件"
     )
     check.set_defaults(func=_cmd_contract_check)
+
+    usage_scan = subparsers.add_parser(
+        "usage-scan", help="扫描 DSH 会话轨迹，补齐 Token 漏报"
+    )
+    usage_scan.add_argument(
+        "--dsh-home",
+        default=os.environ.get("DSH_HOME", str(Path.home() / ".dsh")),
+        help="DSH 数据目录（默认 $DSH_HOME 或 ~/.dsh）",
+    )
+    usage_scan.add_argument(
+        "--data-dir",
+        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
+        help="Talaria 数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
+    )
+    usage_scan.set_defaults(func=_cmd_usage_scan)
 
     evaluate = subparsers.add_parser(
         "evaluate-levels", help="离线评估关键位触及后的 ATR 反应率与随机基线"

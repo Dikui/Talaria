@@ -1,0 +1,40 @@
+{
+  "description": "在已冻结快照上由 Python 计算关键位；只读，返回十进制字符串。",
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "categories": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Categories",
+        "type": "array"
+      },
+      "limit": {
+        "default": 20,
+        "title": "Limit",
+        "type": "integer"
+      },
+      "min_strength": {
+        "default": 0.0,
+        "title": "Min Strength",
+        "type": "number"
+      },
+      "snapshot_id": {
+        "title": "Snapshot Id",
+        "type": "string"
+      },
+      "timeframe": {
+        "title": "Timeframe",
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshot_id",
+      "timeframe"
+    ],
+    "title": "GetKeyLevelsInput",
+    "type": "object"
+  },
+  "name": "get_key_levels"
+}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import type {
   AlertConditionKind,
   AlertDirection,
@@ -59,6 +59,7 @@ export interface AlertPanelProps {
   formSeed: AlertFormSeed | null;
   onLocate: (trigger: AlertTriggerRecord) => void;
   onClose?: () => void;
+  tabBar?: ReactNode;
 }
 
 export function AlertPanel({
@@ -70,6 +71,7 @@ export function AlertPanel({
   formSeed,
   onLocate,
   onClose,
+  tabBar,
 }: AlertPanelProps) {
   const [tab, setTab] = useState<AlertTabId>("active");
   const [formOpen, setFormOpen] = useState(false);
@@ -176,6 +178,7 @@ export function AlertPanel({
 
   return (
     <aside className="workspace-copilot alerts-panel" data-testid="alerts-panel">
+      {tabBar}
       <div className="alerts-head">
         <div>
           <h2 className="alerts-title">预警</h2>

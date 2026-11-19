@@ -37,6 +37,10 @@ class AlertNotFoundError(NotFoundError):
     code = "ALERT_NOT_FOUND"
 
 
+class ConsultationNotFoundError(NotFoundError):
+    code = "CONSULTATION_NOT_FOUND"
+
+
 class FeedUnavailableError(TalariaError):
     code = "FEED_UNAVAILABLE"
 

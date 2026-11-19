@@ -1,0 +1,318 @@
+{
+  "$defs": {
+    "CatalystEvent": {
+      "additionalProperties": false,
+      "description": "窗口内的日历事件；初版为空列表，字段先固定下来避免后续破坏契约。",
+      "properties": {
+        "event_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "kind": {
+          "default": "CATALYST",
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "default": "catalyst_calendar",
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "ts": {
+          "minimum": 0,
+          "title": "Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "title",
+        "ts"
+      ],
+      "title": "CatalystEvent",
+      "type": "object"
+    },
+    "CollabWindow": {
+      "additionalProperties": false,
+      "description": "框选或可视窗口：时间闭区间 + 价格闭区间。",
+      "properties": {
+        "from_ts": {
+          "minimum": 0,
+          "title": "From Ts",
+          "type": "integer"
+        },
+        "price_max": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price Max",
+          "type": "string"
+        },
+        "price_min": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price Min",
+          "type": "string"
+        },
+        "to_ts": {
+          "minimum": 0,
+          "title": "To Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from_ts",
+        "to_ts",
+        "price_min",
+        "price_max"
+      ],
+      "title": "CollabWindow",
+      "type": "object"
+    },
+    "DrawingKind": {
+      "description": "任务单 05 支持的七种人工画线图元。",
+      "enum": [
+        "HORIZONTAL_LINE",
+        "RAY",
+        "SEGMENT",
+        "PARALLEL_CHANNEL",
+        "FIB_RETRACEMENT",
+        "RECTANGLE",
+        "TEXT_LABEL"
+      ],
+      "title": "DrawingKind",
+      "type": "string"
+    },
+    "DrawingPoint": {
+      "additionalProperties": false,
+      "description": "一个锚点：UTC 毫秒时间戳 + 十进制字符串价格。",
+      "properties": {
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "ts": {
+          "minimum": 0,
+          "title": "Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ts",
+        "price"
+      ],
+      "title": "DrawingPoint",
+      "type": "object"
+    },
+    "DrawingRef": {
+      "additionalProperties": false,
+      "description": "会诊包里冻结的人工画线快照，不引用可变的当前版本。",
+      "properties": {
+        "drawing_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Drawing Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DrawingKind"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/DrawingPoint"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Points",
+          "type": "array"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "drawing_id",
+        "kind",
+        "points"
+      ],
+      "title": "DrawingRef",
+      "type": "object"
+    },
+    "EvidenceKind": {
+      "description": "证据来源类别；只允许来自冻结快照内的只读工具或人工画线。",
+      "enum": [
+        "SNAPSHOT",
+        "CHART_VIEW",
+        "KEY_LEVEL",
+        "INDICATOR",
+        "OPERATOR",
+        "HUMAN_DRAWING"
+      ],
+      "title": "EvidenceKind",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "description": "可核对的证据引用；``evidence_id`` 是工具/画线/关键位的稳定 ID。",
+      "properties": {
+        "detail": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Detail",
+          "type": "string"
+        },
+        "evidence_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "price_high": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price High"
+        },
+        "price_low": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price Low"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "kind",
+        "label"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "冻结后交给宿主的完整增量；提示词第三段与证据校验共用它。",
+  "properties": {
+    "catalysts": {
+      "items": {
+        "$ref": "#/$defs/CatalystEvent"
+      },
+      "title": "Catalysts",
+      "type": "array"
+    },
+    "consultation_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Consultation Id",
+      "type": "string"
+    },
+    "created_ts": {
+      "minimum": 0,
+      "title": "Created Ts",
+      "type": "integer"
+    },
+    "drawings": {
+      "items": {
+        "$ref": "#/$defs/DrawingRef"
+      },
+      "title": "Drawings",
+      "type": "array"
+    },
+    "evidence_catalog": {
+      "items": {
+        "$ref": "#/$defs/EvidenceRef"
+      },
+      "title": "Evidence Catalog",
+      "type": "array"
+    },
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "question": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "selection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CollabWindow"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "snapshot_cutoff_ts": {
+      "minimum": 0,
+      "title": "Snapshot Cutoff Ts",
+      "type": "integer"
+    },
+    "snapshot_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "maxLength": 8,
+      "minLength": 1,
+      "title": "Timeframe",
+      "type": "string"
+    },
+    "visible": {
+      "$ref": "#/$defs/CollabWindow"
+    }
+  },
+  "required": [
+    "consultation_id",
+    "snapshot_id",
+    "instrument_id",
+    "timeframe",
+    "visible",
+    "question",
+    "snapshot_cutoff_ts",
+    "created_ts"
+  ],
+  "title": "ConsultationPackage",
+  "type": "object"
+}

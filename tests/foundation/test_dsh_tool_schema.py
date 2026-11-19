@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from talaria.foundation.contracts_io import DSH_TOOL_PATH, check_contracts
+from talaria.foundation.contracts_io import DSH_TOOL_PATHS, check_contracts, repo_root
 
 pytestmark = pytest.mark.spec
 
@@ -42,26 +43,46 @@ def _walk(node: object, path: str = "$") -> None:
             _walk(value, f"{path}[{index}]")
 
 
-def _plugin_copy() -> dict:
-    from talaria.foundation.contracts_io import repo_root
-
-    path = repo_root() / "dsh" / "packages" / "talaria-dsh-plugin" / "get_snapshot.tool.json"
+def _plugin_copy(name: str) -> dict:
+    path: Path = repo_root() / "dsh" / "packages" / "talaria-dsh-plugin" / f"{name}.tool.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_plugin_tool_copy_matches_canonical() -> None:
-    canonical = json.loads(DSH_TOOL_PATH.read_text(encoding="utf-8"))
-    assert _plugin_copy() == canonical
+@pytest.mark.parametrize("name", sorted(DSH_TOOL_PATHS))
+def test_plugin_tool_copy_matches_canonical(name: str) -> None:
+    canonical = json.loads(DSH_TOOL_PATHS[name].read_text(encoding="utf-8"))
+    assert _plugin_copy(name) == canonical
 
 
 def test_generated_tool_has_no_schema_or_defs_and_zero_drift() -> None:
     assert check_contracts() == []
-    tool = json.loads(DSH_TOOL_PATH.read_text(encoding="utf-8"))
-    assert tool["name"] == "get_snapshot"
-    assert "$schema" not in tool
-    assert "$defs" not in tool["inputSchema"]
-    _walk(tool["inputSchema"])
-    assert tool["inputSchema"]["required"] == ["instrument_id", "timeframes"]
-    assert tool["inputSchema"]["additionalProperties"] is False
-    assert tool["inputSchema"]["properties"]["timeframes"]["type"] == "array"
-    assert "anyOf" not in json.dumps(tool["inputSchema"])
+    for name, path in DSH_TOOL_PATHS.items():
+        tool = json.loads(path.read_text(encoding="utf-8"))
+        assert tool["name"] == name
+        assert "$schema" not in tool
+        assert "$defs" not in tool["inputSchema"]
+        _walk(tool["inputSchema"])
+        assert "anyOf" not in json.dumps(tool["inputSchema"])
+
+    snapshot = json.loads(DSH_TOOL_PATHS["get_snapshot"].read_text(encoding="utf-8"))
+    assert snapshot["inputSchema"]["required"] == ["instrument_id", "timeframes"]
+    assert snapshot["inputSchema"]["additionalProperties"] is False
+    assert snapshot["inputSchema"]["properties"]["timeframes"]["type"] == "array"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["get_indicators", "get_key_levels", "compute_operator", "get_chart_view"],
+)
+def test_read_only_tools_bind_snapshot_and_decimal_strings(name: str) -> None:
+    tool = json.loads(DSH_TOOL_PATHS[name].read_text(encoding="utf-8"))
+    schema = tool["inputSchema"]
+    assert schema["required"][0] == "snapshot_id"
+    assert schema["properties"]["snapshot_id"]["type"] == "string"
+
+
+def test_chart_view_prices_are_strings_for_dsh_subset() -> None:
+    tool = json.loads(DSH_TOOL_PATHS["get_chart_view"].read_text(encoding="utf-8"))
+    properties = tool["inputSchema"]["properties"]
+    assert properties["price_min"]["type"] == "string"
+    assert properties["price_max"]["type"] == "string"

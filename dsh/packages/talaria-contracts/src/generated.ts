@@ -50,6 +50,14 @@ export type ScannerSeverity = "INFO" | "WARNING" | "CRITICAL";
 
 export type ScannerTriggerRoute = "LOCAL" | "CO_PILOT_CONSULT";
 
+export type AbstainReason = "STALE_SNAPSHOT" | "EVIDENCE_CONFLICT" | "GEOMETRY_INVERTED" | "MODEL_TIMEOUT" | "HOST_OFFLINE" | "MODEL_INVALID_OUTPUT";
+
+export type ConsultationStatus = "PENDING" | "READY" | "ABSTAIN" | "FAILED";
+
+export type SetupDirection = "LONG" | "SHORT" | "NEUTRAL";
+
+export type EvidenceKind = "SNAPSHOT" | "CHART_VIEW" | "KEY_LEVEL" | "INDICATOR" | "OPERATOR" | "HUMAN_DRAWING";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -511,4 +519,140 @@ export interface ScannerScanResponse {
   triggers: ScannerTrigger[];
   scanned_instruments: string[];
   generated_ts: number;
+}
+export interface CollabWindow {
+  from_ts: number;
+  to_ts: number;
+  price_min: DecimalString;
+  price_max: DecimalString;
+}
+export interface DrawingRef {
+  drawing_id: string;
+  kind: DrawingKind;
+  points: DrawingPoint[];
+  text?: string;
+}
+export interface CatalystEvent {
+  event_id: string;
+  title: string;
+  ts: number;
+  kind?: string;
+  source?: string;
+}
+export interface EvidenceRef {
+  evidence_id: string;
+  kind: EvidenceKind;
+  label: string;
+  detail?: string;
+  price_low?: DecimalString | null;
+  price_high?: DecimalString | null;
+}
+export interface ConsultRequest {
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  question: string;
+  visible: CollabWindow;
+  selection?: CollabWindow | null;
+  drawing_ids?: string[];
+}
+export interface ConsultationPackage {
+  consultation_id: string;
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  visible: CollabWindow;
+  selection?: CollabWindow | null;
+  drawings?: DrawingRef[];
+  catalysts?: CatalystEvent[];
+  question: string;
+  snapshot_cutoff_ts: number;
+  evidence_catalog?: EvidenceRef[];
+  created_ts: number;
+}
+export interface SetupInsight {
+  direction: SetupDirection;
+  summary: string;
+  entry_low: DecimalString;
+  entry_high: DecimalString;
+  invalidation_stop: DecimalString;
+  take_profit: DecimalString[];
+  max_position?: DecimalString | null;
+  valid_until?: number | null;
+  evidence_refs?: EvidenceRef[];
+}
+export interface Abstain {
+  reason_code: AbstainReason;
+  message: string;
+  evidence_refs?: EvidenceRef[];
+}
+export interface ConsultationRecord {
+  consultation_id: string;
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  status: ConsultationStatus;
+  package: ConsultationPackage;
+  insight?: SetupInsight | null;
+  abstain?: Abstain | null;
+  error?: string | null;
+  dsh_session_id?: string | null;
+  dsh_turn_id?: string | null;
+  created_ts: number;
+  updated_ts: number;
+  completed_ts?: number | null;
+}
+export interface ConsultResponse {
+  consultation_id: string;
+  snapshot_id: string;
+  status: ConsultationStatus;
+}
+export interface ConsultationListResponse {
+  consultations?: ConsultationRecord[];
+}
+export interface HostResultRequest {
+  text?: string | null;
+  insight?: SetupInsight | null;
+  abstain?: Abstain | null;
+  error?: string | null;
+  dsh_session_id?: string | null;
+  dsh_turn_id?: string | null;
+}
+export interface UsageReport {
+  dsh_session_id: string;
+  dsh_turn_id: string;
+  input_tokens?: number | null;
+  cached_input_tokens?: number | null;
+  output_tokens?: number | null;
+  source?: string;
+}
+export interface UsageRow {
+  dsh_session_id: string;
+  dsh_turn_id: string;
+  input_tokens?: number | null;
+  cached_input_tokens?: number | null;
+  output_tokens?: number | null;
+  source: string;
+  reported_ts: number;
+}
+export interface UsageReportResponse {
+  recorded: boolean;
+  dsh_session_id: string;
+  dsh_turn_id: string;
+  duplicate?: boolean;
+}
+export interface UsageSummary {
+  dsh_session_id?: string | null;
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  turns?: number;
+  sessions?: number;
+  missing_reports?: number;
+  updated_ts?: number;
+}
+export interface UsageSummaryResponse {
+  summary: UsageSummary;
+  sessions?: UsageSummary[];
+  recent?: UsageRow[];
 }

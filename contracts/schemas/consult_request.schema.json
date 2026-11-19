@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "CollabWindow": {
+      "additionalProperties": false,
+      "description": "框选或可视窗口：时间闭区间 + 价格闭区间。",
+      "properties": {
+        "from_ts": {
+          "minimum": 0,
+          "title": "From Ts",
+          "type": "integer"
+        },
+        "price_max": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price Max",
+          "type": "string"
+        },
+        "price_min": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price Min",
+          "type": "string"
+        },
+        "to_ts": {
+          "minimum": 0,
+          "title": "To Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from_ts",
+        "to_ts",
+        "price_min",
+        "price_max"
+      ],
+      "title": "CollabWindow",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "前端发起会诊的请求；``snapshot_id`` 必须由快通道先冻结。",
+  "properties": {
+    "drawing_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 200,
+      "title": "Drawing Ids",
+      "type": "array"
+    },
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "question": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "selection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CollabWindow"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "snapshot_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "maxLength": 8,
+      "minLength": 1,
+      "title": "Timeframe",
+      "type": "string"
+    },
+    "visible": {
+      "$ref": "#/$defs/CollabWindow"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "instrument_id",
+    "timeframe",
+    "question",
+    "visible"
+  ],
+  "title": "ConsultRequest",
+  "type": "object"
+}

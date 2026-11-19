@@ -72,7 +72,10 @@ function readCredential(config) {
   )
 }
 
-/** 创建只读桥：POST /api/snapshots，返回带 snapshot_id 的确定性快照元数据。 */
+/**
+ * 创建只读桥：所有工具都经回环 HTTP + Bearer 调用 Python 守护进程。
+ * JS 侧只做参数拼装与 snapshot 绑定校验，绝不在此重算任何指标。
+ */
 export function createBridge(config = {}) {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch
   const cache = { path: null, mtimeMs: 0, value: null }
@@ -96,19 +99,19 @@ export function createBridge(config = {}) {
     return readCredential(config)
   }
 
-  async function createSnapshot(args, signal) {
+  async function requestJson(method, path, { body, signal } = {}) {
     const credentials = credential()
     const baseUrl = assertLoopback(credentials.base_url)
     let response
     try {
-      response = await fetchImpl(`${baseUrl}/api/snapshots`, {
-        method: 'POST',
+      response = await fetchImpl(`${baseUrl}${path}`, {
+        method,
         headers: {
           Accept: 'application/json',
-          'Content-Type': 'application/json',
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
           Authorization: `Bearer ${credentials.token}`,
         },
-        body: JSON.stringify(args),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal,
       })
     } catch (error) {
@@ -118,18 +121,72 @@ export function createBridge(config = {}) {
         { code: 'TALARIA_BRIDGE_UNAVAILABLE', cause: error },
       )
     }
-    let body = null
+    let payload = null
     try {
-      body = await response.json()
+      payload = await response.json()
     } catch {
-      body = null
+      payload = null
     }
     if (!response.ok) {
-      const detail = typeof body?.message === 'string' ? body.message : `HTTP ${response.status}`
-      throw new BridgeError(`Talaria 守护进程拒绝创建快照：${detail}`, {
+      const detail = typeof payload?.message === 'string' ? payload.message : `HTTP ${response.status}`
+      throw new BridgeError(`Talaria 守护进程拒绝请求 ${path}：${detail}`, {
         code: 'TALARIA_BRIDGE_HTTP',
       })
     }
+    return payload
+  }
+
+  async function getSnapshot(snapshotId, signal) {
+    if (typeof snapshotId !== 'string' || snapshotId.length === 0) {
+      throw new BridgeError('缺少 snapshot_id，已拒绝读取。', { code: 'TALARIA_BRIDGE_PROTOCOL' })
+    }
+    const meta = await requestJson('GET', `/api/snapshots/${encodeURIComponent(snapshotId)}`, { signal })
+    if (meta?.snapshot_id !== snapshotId) {
+      throw new BridgeError('Talaria 返回的快照与请求的 snapshot_id 不一致，已拒绝该结果。', {
+        code: 'TALARIA_BRIDGE_PROTOCOL',
+      })
+    }
+    return meta
+  }
+
+  function assertBound(meta, { snapshot_id, instrument_id, timeframe }) {
+    if (meta.snapshot_id !== snapshot_id) {
+      throw new BridgeError('工具调用绑定的 snapshot_id 与快照不一致。', {
+        code: 'TALARIA_BRIDGE_SNAPSHOT',
+      })
+    }
+    if (instrument_id && meta.instrument_id !== instrument_id) {
+      throw new BridgeError(
+        `快照 ${snapshot_id} 属于 ${meta.instrument_id}，与请求的 ${instrument_id} 不一致。`,
+        { code: 'TALARIA_BRIDGE_SNAPSHOT' },
+      )
+    }
+    if (timeframe && !Array.isArray(meta.timeframes)) {
+      throw new BridgeError('快照缺少 timeframes，已拒绝读取。', { code: 'TALARIA_BRIDGE_PROTOCOL' })
+    }
+    if (timeframe && !meta.timeframes.includes(timeframe)) {
+      throw new BridgeError(`快照 ${snapshot_id} 未包含周期 ${timeframe}。`, {
+        code: 'TALARIA_BRIDGE_SNAPSHOT',
+      })
+    }
+  }
+
+  function query(params) {
+    const search = new URLSearchParams()
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === null || value === '') continue
+      if (Array.isArray(value)) {
+        if (value.length > 0) search.set(key, value.join(','))
+        continue
+      }
+      search.set(key, String(value))
+    }
+    const text = search.toString()
+    return text ? `?${text}` : ''
+  }
+
+  async function createSnapshot(args, signal) {
+    const body = await requestJson('POST', '/api/snapshots', { body: args, signal })
     if (typeof body?.snapshot_id !== 'string' || body.snapshot_id.length === 0) {
       throw new BridgeError('Talaria 守护进程返回的快照缺少 snapshot_id，已拒绝该结果。', {
         code: 'TALARIA_BRIDGE_PROTOCOL',
@@ -138,7 +195,100 @@ export function createBridge(config = {}) {
     return body
   }
 
-  return { createSnapshot, credential }
+  async function getIndicators(args, signal) {
+    const meta = await getSnapshot(args.snapshot_id, signal)
+    assertBound(meta, args)
+    const path = `/api/snapshots/${encodeURIComponent(args.snapshot_id)}/indicators${query({
+      timeframe: args.timeframe,
+      names: args.names,
+      limit: args.limit,
+    })}`
+    const body = await requestJson('GET', path, { signal })
+    if (body?.snapshot_id !== args.snapshot_id) {
+      throw new BridgeError('指标结果没有绑定请求的 snapshot_id，已拒绝。', {
+        code: 'TALARIA_BRIDGE_PROTOCOL',
+      })
+    }
+    return body
+  }
+
+  async function getKeyLevels(args, signal) {
+    const meta = await getSnapshot(args.snapshot_id, signal)
+    assertBound(meta, args)
+    const path = `/api/snapshots/${encodeURIComponent(args.snapshot_id)}/key-levels${query({
+      timeframe: args.timeframe,
+      categories: args.categories,
+      limit: args.limit,
+      min_strength: args.min_strength,
+    })}`
+    const body = await requestJson('GET', path, { signal })
+    if (body?.snapshot_id !== args.snapshot_id) {
+      throw new BridgeError('关键位结果没有绑定请求的 snapshot_id，已拒绝。', {
+        code: 'TALARIA_BRIDGE_PROTOCOL',
+      })
+    }
+    return body
+  }
+
+  async function computeOperator(args, signal) {
+    const meta = await getSnapshot(args.snapshot_id, signal)
+    assertBound(meta, args)
+    const series = await requestJson('POST', '/api/operators/compute', {
+      body: {
+        snapshot_id: args.snapshot_id,
+        timeframe: args.timeframe,
+        operator: args.operator,
+        params: args.params ?? {},
+        limit: args.limit,
+      },
+      signal,
+    })
+    return {
+      snapshot_id: args.snapshot_id,
+      instrument_id: meta.instrument_id,
+      timeframe: args.timeframe,
+      operator: args.operator,
+      series,
+    }
+  }
+
+  async function getChartView(args, signal) {
+    const meta = await getSnapshot(args.snapshot_id, signal)
+    assertBound(meta, args)
+    const view = await requestJson('GET', `/api/chart-view${query({
+      instrument_id: args.instrument_id,
+      timeframe: args.timeframe,
+      from_ts: args.from_ts,
+      to_ts: args.to_ts,
+      price_min: args.price_min,
+      price_max: args.price_max,
+    })}`, { signal })
+    return { snapshot_id: args.snapshot_id, ...view }
+  }
+
+  async function reportUsage(report, signal) {
+    return requestJson('POST', '/api/collaboration/usage', { body: report, signal })
+  }
+
+  async function submitResult(consultationId, payload, signal) {
+    return requestJson(
+      'POST',
+      `/api/collaboration/consultations/${encodeURIComponent(consultationId)}/result`,
+      { body: payload, signal },
+    )
+  }
+
+  return {
+    createSnapshot,
+    getSnapshot,
+    getIndicators,
+    getKeyLevels,
+    computeOperator,
+    getChartView,
+    submitResult,
+    reportUsage,
+    credential,
+  }
 }
 
 export const SNAPSHOT_OUTPUT_SCHEMA = {
@@ -163,5 +313,114 @@ export function renderSnapshot(args, value) {
   return [{
     type: 'text',
     text: `快照 ${value.snapshot_id}（${value.instrument_id}）已创建，截止 ${value.cutoff_ts}；K 线数量 ${counts}。后续读取请绑定该 snapshot_id。`,
+  }]
+}
+
+export const INDICATOR_BUNDLE_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['snapshot_id', 'instrument_id', 'timeframe', 'series'],
+  properties: {
+    snapshot_id: { type: 'string' },
+    instrument_id: { type: 'string' },
+    timeframe: { type: 'string' },
+    series: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+}
+
+export const KEY_LEVEL_SET_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['snapshot_id', 'instrument_id', 'timeframe', 'levels'],
+  properties: {
+    snapshot_id: { type: 'string' },
+    instrument_id: { type: 'string' },
+    timeframe: { type: 'string' },
+    levels: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+}
+
+export const OPERATOR_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['snapshot_id', 'instrument_id', 'timeframe', 'operator', 'series'],
+  properties: {
+    snapshot_id: { type: 'string' },
+    instrument_id: { type: 'string' },
+    timeframe: { type: 'string' },
+    operator: { type: 'string' },
+    series: { type: 'object', additionalProperties: true },
+  },
+}
+
+export const CHART_VIEW_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['snapshot_id', 'instrument', 'timeframe', 'window', 'drawings'],
+  properties: {
+    snapshot_id: { type: 'string' },
+    instrument: { type: 'object', additionalProperties: true },
+    timeframe: { type: 'string' },
+    window: { type: 'object', additionalProperties: true },
+    drawings: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+}
+
+function latestText(series) {
+  const latest = series?.summary?.latest ?? {}
+  const entries = Object.entries(latest)
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([key, value]) => `${key}=${value}`)
+  return entries.length > 0 ? entries.join('，') : '预热中（无有效值）'
+}
+
+export function renderIndicators(_args, value) {
+  const lines = (value.series ?? []).map(
+    (series) => `${series.name}：${latestText(series)}（有效点 ${series.summary?.valid_points ?? 0}）`,
+  )
+  return [{
+    type: 'text',
+    text: `快照 ${value.snapshot_id} · ${value.instrument_id} ${value.timeframe} 指标（Python 计算，十进制字符串）：\n${lines.join('\n')}`,
+  }]
+}
+
+function levelPrice(level) {
+  if (level.price !== null && level.price !== undefined) return level.price
+  return `${level.price_low ?? '?'}–${level.price_high ?? '?'}`
+}
+
+export function renderKeyLevels(_args, value) {
+  const lines = (value.levels ?? []).map(
+    (level) => `${level.level_id} · ${level.kind} · ${level.category} · ${levelPrice(level)} · 强度 ${Number(level.strength).toFixed(2)} · ${level.evidence_class}`,
+  )
+  return [{
+    type: 'text',
+    text: `快照 ${value.snapshot_id} · ${value.instrument_id} ${value.timeframe} 关键位（${lines.length} 条，只读）：\n${lines.join('\n') || '无'}`,
+  }]
+}
+
+export function renderOperator(_args, value) {
+  const points = value.series?.points ?? []
+  const last = points[points.length - 1]
+  const values = last
+    ? Object.entries(last.values ?? {})
+        .filter(([, value]) => value !== null && value !== undefined)
+        .map(([key, item]) => `${key}=${item}`)
+        .join('，')
+    : '无有效点'
+  return [{
+    type: 'text',
+    text: `快照 ${value.snapshot_id} · ${value.instrument_id} ${value.timeframe} 算子 ${value.operator}（Python 计算）：${values}`,
+  }]
+}
+
+export function renderChartView(_args, value) {
+  const window = value.window ?? {}
+  const drawings = (value.drawings ?? [])
+    .map((drawing) => `${drawing.drawing_id}:${drawing.kind}`)
+    .join('，')
+  return [{
+    type: 'text',
+    text: `快照 ${value.snapshot_id} · ${value.instrument?.instrument_id ?? ''} ${value.timeframe} 视窗 ${window.from_ts}–${window.to_ts}，价格 ${window.price_min}–${window.price_max}；人工画线 ${drawings || '无'}。`,
   }]
 }

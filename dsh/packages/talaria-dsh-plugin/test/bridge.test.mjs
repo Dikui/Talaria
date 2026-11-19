@@ -144,3 +144,152 @@ test('tool output schema and render bind the snapshot id', () => {
   assert.match(blocks[0].text, /snap-abc/)
   assert.match(blocks[0].text, /1m:300/)
 })
+
+test('read-only tools bind the frozen snapshot and keep decimal strings', async () => {
+  const requests = []
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk) => (body += chunk))
+    req.on('end', () => {
+      requests.push({ url: req.url, method: req.method, body })
+      res.setHeader('content-type', 'application/json')
+      if (req.url === '/api/snapshots/snap-abc') {
+        res.end(JSON.stringify(META))
+        return
+      }
+      if (req.url.startsWith('/api/snapshots/snap-abc/indicators')) {
+        res.end(JSON.stringify({
+          snapshot_id: 'snap-abc',
+          instrument_id: 'BTC-USDT-PERP',
+          timeframe: '1m',
+          series: [{ name: 'EMA_20', points: [{ timestamp: 1700000000000, values: { EMA_20: '60000.5' } }] }],
+        }))
+        return
+      }
+      if (req.url.startsWith('/api/snapshots/snap-abc/key-levels')) {
+        res.end(JSON.stringify({
+          snapshot_id: 'snap-abc',
+          instrument_id: 'BTC-USDT-PERP',
+          timeframe: '1m',
+          levels: [{ level_id: 'kl-1', kind: 'SWING_HIGH', price: '60100.25' }],
+        }))
+        return
+      }
+      if (req.url === '/api/operators/compute') {
+        res.end(JSON.stringify({ name: 'ATR', points: [{ timestamp: 1700000000000, values: { ATR: '12.5' } }] }))
+        return
+      }
+      if (req.url.startsWith('/api/chart-view')) {
+        res.end(JSON.stringify({
+          instrument: { instrument_id: 'BTC-USDT-PERP' },
+          timeframe: '1m',
+          window: { from_ts: 1, to_ts: 2, price_min: '59000', price_max: '61000' },
+          drawings: [],
+        }))
+        return
+      }
+      res.statusCode = 404
+      res.end(JSON.stringify({ code: 'NOT_FOUND', message: req.url }))
+    })
+  })
+  const port = await listen(server)
+  try {
+    const bridge = createBridge({ baseUrl: `http://127.0.0.1:${port}`, token: 'x' })
+    const indicators = await bridge.getIndicators({
+      snapshot_id: 'snap-abc',
+      instrument_id: 'BTC-USDT-PERP',
+      timeframe: '1m',
+      names: ['EMA_20', 'MACD'],
+      limit: 120,
+    })
+    assert.equal(indicators.snapshot_id, 'snap-abc')
+    assert.equal(indicators.series[0].points[0].values.EMA_20, '60000.5')
+
+    const levels = await bridge.getKeyLevels({
+      snapshot_id: 'snap-abc',
+      instrument_id: 'BTC-USDT-PERP',
+      timeframe: '1m',
+      categories: ['STRUCTURE', 'VOLUME'],
+      limit: 20,
+      min_strength: '0.5',
+    })
+    assert.equal(levels.levels[0].price, '60100.25')
+
+    const operator = await bridge.computeOperator({
+      snapshot_id: 'snap-abc',
+      instrument_id: 'BTC-USDT-PERP',
+      timeframe: '1m',
+      operator: 'ATR',
+      params: { window: '14' },
+      limit: 120,
+    })
+    assert.equal(operator.snapshot_id, 'snap-abc')
+    assert.equal(operator.instrument_id, 'BTC-USDT-PERP')
+    assert.equal(operator.series.points[0].values.ATR, '12.5')
+
+    const view = await bridge.getChartView({
+      snapshot_id: 'snap-abc',
+      instrument_id: 'BTC-USDT-PERP',
+      timeframe: '1m',
+      from_ts: 1,
+      to_ts: 2,
+      price_min: '59000',
+      price_max: '61000',
+    })
+    assert.equal(view.snapshot_id, 'snap-abc')
+    assert.equal(view.window.price_min, '59000')
+
+    const indicatorRequest = requests.find((item) => item.url.includes('/indicators'))
+    assert.match(indicatorRequest.url, /timeframe=1m/)
+    assert.match(indicatorRequest.url, /names=EMA_20%2CMACD/)
+    assert.match(indicatorRequest.url, /limit=120/)
+    const levelRequest = requests.find((item) => item.url.includes('/key-levels'))
+    assert.match(levelRequest.url, /categories=STRUCTURE%2CVOLUME/)
+    assert.match(levelRequest.url, /min_strength=0.5/)
+    const operatorRequest = requests.find((item) => item.url === '/api/operators/compute')
+    assert.equal(operatorRequest.method, 'POST')
+    assert.deepEqual(JSON.parse(operatorRequest.body), {
+      snapshot_id: 'snap-abc',
+      timeframe: '1m',
+      operator: 'ATR',
+      params: { window: '14' },
+      limit: 120,
+    })
+  } finally {
+    server.close()
+  }
+})
+
+test('read-only tools reject instrument or timeframe mismatch before reading', async () => {
+  let reads = 0
+  const server = createServer((req, res) => {
+    reads += 1
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify(META))
+  })
+  const port = await listen(server)
+  try {
+    const bridge = createBridge({ baseUrl: `http://127.0.0.1:${port}`, token: 'x' })
+    await assert.rejects(
+      () => bridge.getIndicators({
+        snapshot_id: 'snap-abc',
+        instrument_id: 'ETH-USDT-PERP',
+        timeframe: '1m',
+        names: ['EMA_20'],
+      }),
+      (error) => error.code === 'TALARIA_BRIDGE_SNAPSHOT',
+    )
+    await assert.rejects(
+      () => bridge.getKeyLevels({
+        snapshot_id: 'snap-abc',
+        instrument_id: 'BTC-USDT-PERP',
+        timeframe: '5m',
+        categories: [],
+      }),
+      (error) => error.code === 'TALARIA_BRIDGE_SNAPSHOT',
+    )
+    assert.equal(reads, 2)
+  } finally {
+    server.close()
+  }
+})

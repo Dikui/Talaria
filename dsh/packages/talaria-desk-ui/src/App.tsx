@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Chart } from "klinecharts";
 
 import type {
+  CollabWindow,
   CompactBar,
   DerivativeBundle,
   IndicatorBundle,
@@ -19,6 +20,9 @@ import {
   FeedHealthBadge,
   OrderBookSummary,
 } from "./features/feed/FeedIndicators";
+import { CollaborationPanel } from "./features/collaboration/CollaborationPanel";
+import { RightDockTabs, type RightDockTab } from "./features/collaboration/RightDockTabs";
+import { SelectionOverlay } from "./features/collaboration/SelectionOverlay";
 import { useCollaborationStatus } from "./features/collaboration/useCollaborationStatus";
 import { feedBadgeView } from "./features/feed/health";
 import { useMarketStream } from "./features/feed/useMarketStream";
@@ -128,9 +132,11 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     defaultKeyLevelFilter,
   );
   const [keyLevelPanelOpen, setKeyLevelPanelOpen] = useState(true);
-  const [alertsOpen, setAlertsOpen] = useState(true);
   const [scannerOpen, setScannerOpen] = useState(true);
+  const [rightTab, setRightTab] = useState<RightDockTab | null>("alerts");
   const [alertSeed, setAlertSeed] = useState<AlertFormSeed | null>(null);
+  const [selection, setSelection] = useState<CollabWindow | null>(null);
+  const [selecting, setSelecting] = useState(false);
   const [snapshotCutoff, setSnapshotCutoff] = useState<number | null>(null);
   const readOnlyViewport = useReadOnlyViewport();
   const stream = useMarketStream(instrumentId, timeframe);
@@ -147,6 +153,20 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     setSnapshotCutoff(null);
     setTimeframe(next);
   }, []);
+
+  useEffect(() => {
+    setSelection(null);
+    setSelecting(false);
+  }, [instrumentId, timeframe]);
+
+  useEffect(() => {
+    if (!selecting) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelecting(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selecting]);
 
   useEffect(() => {
     if (embedded) {
@@ -472,6 +492,39 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   const keyLevelInset =
     keyLevelPanelOpen && !readOnlyViewport ? 278 : 0;
 
+  /** 会诊专用：命中当前快照就直接复用，否则走快通道再冻结一次。 */
+  const freezeForConsultation = useCallback(async () => {
+    if (
+      snapshot !== null &&
+      snapshot.instrument_id === instrumentId &&
+      snapshot.timeframes.includes(timeframe)
+    ) {
+      return snapshot;
+    }
+    try {
+      return await api.createSnapshot(instrumentId, [timeframe]);
+    } catch {
+      return null;
+    }
+  }, [snapshot, instrumentId, timeframe]);
+
+  const dockTabs =
+    rightTab === null ? undefined : (
+      <RightDockTabs
+        active={rightTab}
+        alertUnread={alerts.unread}
+        onSelect={(tab) => {
+          setRightTab(tab);
+          if (tab === "alerts") alerts.markSeen();
+          if (tab !== "collab") setSelecting(false);
+        }}
+        onClose={() => {
+          setRightTab(null);
+          setSelecting(false);
+        }}
+      />
+    );
+
   return (
     <div
       ref={shellRef}
@@ -554,16 +607,27 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
             </button>
             <button
               type="button"
-              className={`ghost-button alerts-toggle${alertsOpen ? " is-active" : ""}`}
-              aria-pressed={alertsOpen}
+              className={`ghost-button alerts-toggle${rightTab === "alerts" ? " is-active" : ""}`}
+              aria-pressed={rightTab === "alerts"}
               onClick={() => {
-                setAlertsOpen((open) => !open);
-                if (!alertsOpen) {
+                setRightTab(rightTab === "alerts" ? null : "alerts");
+                if (rightTab !== "alerts") {
                   alerts.markSeen();
                 }
               }}
             >
               预警{alerts.unread > 0 ? ` ${alerts.unread}` : ""}
+            </button>
+            <button
+              type="button"
+              className={`ghost-button collaboration-toggle${rightTab === "collab" ? " is-active" : ""}`}
+              aria-pressed={rightTab === "collab"}
+              onClick={() => {
+                setRightTab(rightTab === "collab" ? null : "collab");
+                setSelecting(false);
+              }}
+            >
+              协同会诊
             </button>
             {snapshotCutoff !== null && (
               <button
@@ -616,7 +680,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
           onSelect={chooseInstrument}
         />
 
-        {alertsOpen && (
+        {rightTab === "alerts" && (
           <AlertPanel
             controller={alerts}
             instruments={instruments}
@@ -625,7 +689,29 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
             currentTimeframe={timeframe}
             formSeed={alertSeed}
             onLocate={locateTrigger}
-            onClose={() => setAlertsOpen(false)}
+            onClose={() => setRightTab(null)}
+            tabBar={dockTabs}
+          />
+        )}
+
+        {rightTab === "collab" && (
+          <CollaborationPanel
+            snapshot={snapshot}
+            freezeSnapshot={freezeForConsultation}
+            instrumentId={instrumentId}
+            timeframe={timeframe}
+            pricePrecision={pricePrecision}
+            chart={chart}
+            bars={bars}
+            drawings={drawings.drawings}
+            selection={selection}
+            selecting={selecting}
+            onToggleSelecting={() => setSelecting((value) => !value)}
+            onClearSelection={() => setSelection(null)}
+            hostView={collaboration}
+            readOnlyViewport={readOnlyViewport}
+            tabBar={dockTabs}
+            onClose={() => setRightTab(null)}
           />
         )}
 
@@ -708,6 +794,15 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                         rightInset={keyLevelInset}
                       />
                       <DrawingOverlay chart={chart} controller={drawings} />
+                      <SelectionOverlay
+                        chart={chart}
+                        active={selecting && rightTab === "collab"}
+                        pricePrecision={pricePrecision}
+                        onSelect={(window) => {
+                          setSelection(window);
+                          setSelecting(false);
+                        }}
+                      />
                     </>
                   }
                   onChartReady={setChart}
@@ -748,7 +843,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                         instrumentId,
                         timeframe,
                       });
-                      setAlertsOpen(true);
+                      setRightTab("alerts");
                     }}
                     loading={keyLevels.loading}
                     error={keyLevels.error}
@@ -785,7 +880,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                         instrumentId,
                         timeframe,
                       });
-                      setAlertsOpen(true);
+                      setRightTab("alerts");
                     }}
                   />
                 )}

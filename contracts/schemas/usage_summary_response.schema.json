@@ -1,0 +1,149 @@
+{
+  "$defs": {
+    "UsageRow": {
+      "additionalProperties": false,
+      "properties": {
+        "cached_input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Input Tokens"
+        },
+        "dsh_session_id": {
+          "title": "Dsh Session Id",
+          "type": "string"
+        },
+        "dsh_turn_id": {
+          "title": "Dsh Turn Id",
+          "type": "string"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "reported_ts": {
+          "title": "Reported Ts",
+          "type": "integer"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dsh_session_id",
+        "dsh_turn_id",
+        "source",
+        "reported_ts"
+      ],
+      "title": "UsageRow",
+      "type": "object"
+    },
+    "UsageSummary": {
+      "additionalProperties": false,
+      "description": "按会话与全局聚合；缺失字段以 ``missing_reports`` 单独计数。",
+      "properties": {
+        "cached_input_tokens": {
+          "default": 0,
+          "title": "Cached Input Tokens",
+          "type": "integer"
+        },
+        "dsh_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dsh Session Id"
+        },
+        "input_tokens": {
+          "default": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "missing_reports": {
+          "default": 0,
+          "title": "Missing Reports",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "sessions": {
+          "default": 0,
+          "title": "Sessions",
+          "type": "integer"
+        },
+        "turns": {
+          "default": 0,
+          "title": "Turns",
+          "type": "integer"
+        },
+        "updated_ts": {
+          "default": 0,
+          "title": "Updated Ts",
+          "type": "integer"
+        }
+      },
+      "title": "UsageSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "recent": {
+      "items": {
+        "$ref": "#/$defs/UsageRow"
+      },
+      "title": "Recent",
+      "type": "array"
+    },
+    "sessions": {
+      "items": {
+        "$ref": "#/$defs/UsageSummary"
+      },
+      "title": "Sessions",
+      "type": "array"
+    },
+    "summary": {
+      "$ref": "#/$defs/UsageSummary"
+    }
+  },
+  "required": [
+    "summary"
+  ],
+  "title": "UsageSummaryResponse",
+  "type": "object"
+}
