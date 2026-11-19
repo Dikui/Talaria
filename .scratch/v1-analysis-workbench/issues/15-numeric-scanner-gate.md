@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0004](../../../docs/adr/0004-dual-mode-intraday-cognition-and-scanner-gate.md)、[ADR-0008](../../../docs/adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 向量化扫描面向 `MarketEventFeed`，不调用任何模型；`STALE` 标的跳过。
 - [x] 命中时冻结快照生成 `Trigger`，经 `TriggerRoutingPolicy` 路由；本任务只实现本地工作台提醒通道，`CO_PILOT_CONSULT` 通道留接口。按 `Instrument` 冷却，避免同一异动重复刷屏。
@@ -51,3 +51,11 @@
 - 默认扫描周期为 1m；其他周期需在配置中切换。OI 使用 5m 序列与 1m tick 桶，衍生品历史不足时按规则跳过而非估算。
 - `CO_PILOT_CONSULT` 仅有路由接口与占位测试，模型唤醒留给任务 19；本任务不产生任何模型调用。
 - 实盘长连接冷启动时，关键位/波动率条件需要先积累足够确认柱；fixture 模式通过启动预热覆盖。
+
+
+### Lead 验收
+
+- 合并 `6de0069 Merge branch 'ticket-15-numeric-scanner'`；`dsh/packages/talaria-desk-ui/src/lib/api.ts` 与 `styles.css` 与 14 冲突，已保留扫描器与关键位采纳双方方法/样式；main 重跑 `uv run pytest -q` → 420 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 130 passed（18 files）；`pnpm -C dsh build` 通过（580.44 kB JS / 46.23 kB CSS，仅 chunk 提示）。
+- 目视截图：1440 浅色底部异动 dock（焦点 chips、严重度、证据、标签、展开摘要）、1440 深色列表、多标签折叠、SCANNER_FOCUS 分组、平静空态、390 只读均符合验收；点击卡片切 ETH/USDT 并定位触发快照。
+- 代码审查：`foundation/scanner/` 纯数值 `contracts/engine/routing`，五类条件均跳过 STALE/FEED_GAP，按 `(instrument, kind)` 冷却，同轮共享一次快照冻结；`TriggerRoutingPolicy` 本任务仅 LOCAL，`CO_PILOT_CONSULT` 留注入接口且无模型/网络调用；`ScannerService` 经 `upsert_system_group("扫描焦点", ids)` 写 SCANNER_FOCUS，TTL 消退清空成员保留分组，不破坏用户分组。
+- 接受已知限制：Trigger 历史为进程内 200 条；默认扫描 1m；资金费率/OI 历史不足跳过不估算；实盘冷启动需先积累确认柱。
