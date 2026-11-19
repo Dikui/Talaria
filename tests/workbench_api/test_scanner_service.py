@@ -149,6 +149,29 @@ def test_scan_publishes_focus_group_and_keeps_user_groups(tmp_path: object) -> N
     asyncio.run(scenario())
 
 
+def test_empty_focus_does_not_create_system_group(tmp_path: object) -> None:
+    async def scenario() -> None:
+        clock = Clock(BASE_TS + 40 * MINUTE)
+        writer = StateWriterQueue(tmp_path, now_ms=clock)  # type: ignore[arg-type]
+        await writer.start()
+        service = ScannerService(
+            state_writer=writer,
+            instruments=CRYPTO_PERP_PACK.instruments(),
+            now_ms=clock,
+            freeze_snapshot=_freezer([]),  # type: ignore[arg-type]
+            config=ScannerConfig(),
+        )
+        try:
+            assert await service.scan() == []
+            records = await writer.run(lambda state: state.list_watchlist())
+            assert records.groups == ()
+            assert service.focus().instrument_ids == []
+        finally:
+            await writer.close()
+
+    asyncio.run(scenario())
+
+
 def test_focus_ttl_removes_item_but_keeps_system_group(tmp_path: object) -> None:
     async def scenario() -> None:
         service, clock, writer = await _run_service(tmp_path)
