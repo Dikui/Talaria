@@ -303,7 +303,9 @@ class BriefingService:
     ) -> None:
         import httpx
 
-        async with httpx.AsyncClient(timeout=self._http_timeout_s) as client:
+        async with httpx.AsyncClient(
+            timeout=self._http_timeout_s, trust_env=False
+        ) as client:
             response = await client.post(
                 f"{url.rstrip('/')}{BRIEFING_PATH}", json=dict(payload)
             )

@@ -86,3 +86,37 @@ def test_chart_view_prices_are_strings_for_dsh_subset() -> None:
     properties = tool["inputSchema"]["properties"]
     assert properties["price_min"]["type"] == "string"
     assert properties["price_max"]["type"] == "string"
+
+
+def test_write_agent_overlay_schema_fits_gate() -> None:
+    tool = json.loads(DSH_TOOL_PATHS["write_agent_overlay"].read_text(encoding="utf-8"))
+    schema = tool["inputSchema"]
+    assert schema["required"][0] == "snapshot_id"
+    assert schema["additionalProperties"] is False
+    properties = schema["properties"]
+    for name in ("price_low", "price_high"):
+        assert properties[name]["type"] == "string"
+    assert properties["kind"]["enum"] == ["LEVEL", "ZONE"]
+    evidence = properties["evidence_refs"]["items"]
+    assert evidence["type"] == "object"
+    assert evidence["additionalProperties"] is False
+    assert "$defs" not in json.dumps(schema)
+
+
+def test_create_alert_schema_has_no_status_or_draft_escape_hatch() -> None:
+    tool = json.loads(DSH_TOOL_PATHS["create_alert"].read_text(encoding="utf-8"))
+    schema = tool["inputSchema"]
+    assert schema["required"][:4] == [
+        "snapshot_id",
+        "instrument_id",
+        "timeframe",
+        "condition",
+    ]
+    assert schema["additionalProperties"] is False
+    properties = schema["properties"]
+    assert "draft" not in properties
+    assert "status" not in properties
+    condition = properties["condition"]
+    assert condition["required"] == ["kind"]
+    assert condition["additionalProperties"] is False
+    assert "$defs" not in json.dumps(schema)

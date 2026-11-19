@@ -43,9 +43,14 @@ class DshHostInfo:
     log_path: str
     pid: int | None
 
+    @property
+    def base_url(self) -> str | None:
+        """仅供桥接派发的无查询串 URL；入口 token 不进入 API。"""
+        return self.url.split("?", 1)[0] if self.url else None
+
     def payload(self) -> dict[str, object]:
         # 宿主入口的 token 只用于人工打开 DSH；API 不把它暴露给浏览器。
-        base_url = self.url.split("?", 1)[0] if self.url else None
+        base_url = self.base_url
         return {
             "mode": "dual",
             "host": self.state,
