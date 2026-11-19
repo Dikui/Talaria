@@ -35,6 +35,8 @@ export const inject = ['tools', 'sessions', 'webServer']
 
 const CONSULT_PATH = '/talaria/consult'
 const CONSULT_SESSION_PREFIX = 'talaria-consult-'
+const BRIEFING_PATH = '/talaria/briefing'
+const BRIEFING_SESSION_PREFIX = 'talaria-briefing-'
 
 function outputOf(tool) {
   if (tool === 'get_snapshot') return [SNAPSHOT_OUTPUT_SCHEMA, renderSnapshot]
@@ -188,6 +190,7 @@ export function apply(ctx, config = {}) {
   ctx.tools.guard(createDeskGuard({ getSession }))
 
   const consultations = new Map()
+  const briefings = new Map()
 
   function modelSelection() {
     if (config.provider && config.model) {
@@ -200,10 +203,10 @@ export function apply(ctx, config = {}) {
     return undefined
   }
 
-  async function reportUsage(consultationId, sessionId, turn, events) {
+  function usageReportFor(sessionId, turn, events) {
+    if (!sessionId || typeof turn !== 'number') return undefined
     const usage = turnUsage(events, turn)
-    if (!sessionId || typeof turn !== 'number') return
-    const payload = {
+    return {
       dsh_session_id: sessionId,
       dsh_turn_id: String(turn),
       input_tokens: usage?.input_tokens ?? null,
@@ -211,6 +214,11 @@ export function apply(ctx, config = {}) {
       output_tokens: usage?.output_tokens ?? null,
       source: usage ? 'host' : 'missing',
     }
+  }
+
+  async function reportUsage(consultationId, sessionId, turn, events) {
+    const payload = usageReportFor(sessionId, turn, events)
+    if (!payload) return
     try {
       await bridge.reportUsage(payload)
     } catch (error) {
@@ -325,6 +333,107 @@ export function apply(ctx, config = {}) {
     }
   }
 
+
+  async function runBriefing({ briefingId, prompt, timeoutMs }) {
+    const selection = modelSelection()
+    const agents = ctx.get?.('agents')
+    if (!selection || !agents) {
+      await bridge
+        .submitBriefingResult(briefingId, {
+          abstain: {
+            reason_code: 'HOST_OFFLINE',
+            message: '协同宿主未配置模型或 agent 服务不可用；本轮未调用模型。',
+            evidence_refs: [],
+          },
+        })
+        .catch(() => {})
+      return
+    }
+
+    const sessionId = `${BRIEFING_SESSION_PREFIX}${briefingId}`
+    let handle
+    let text = ''
+    let timedOut = false
+    try {
+      handle = await agents.create({
+        sessionId,
+        agentOptions: selection,
+        setup: () => {},
+      })
+      const baselineTurn = latestTurn(sessionEvents(handle.agent.session))
+      await handle.agent.followup({
+        content: [{ type: 'text', text: prompt }],
+        source: { kind: 'user' },
+      })
+      const started = await waitForNewTurn(
+        handle.agent.session,
+        baselineTurn,
+        timeoutMs,
+      )
+      if (!started) {
+        timedOut = true
+        handle.agent.cancel({ kind: 'user' })
+      } else {
+        const idle = handle.agent.whenIdle().then(() => 'idle')
+        const timeout = new Promise((resolve) => {
+          const timer = setTimeout(() => resolve('timeout'), timeoutMs)
+          timer.unref?.()
+        })
+        if ((await Promise.race([idle, timeout])) === 'timeout') {
+          timedOut = true
+          handle.agent.cancel({ kind: 'user' })
+          await Promise.race([
+            handle.agent.whenIdle().catch(() => {}),
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+          ])
+        }
+      }
+      const events = sessionEvents(handle.agent.session)
+      text = lastAssistantText(events)
+      const turn = latestTurn(events)
+      const dshSessionId = sessionIdOf(handle.agent.session) ?? sessionId
+      const usage = usageReportFor(dshSessionId, turn, events)
+      const base = {
+        dsh_session_id: dshSessionId,
+        ...(typeof turn === 'number' ? { dsh_turn_id: String(turn) } : {}),
+        ...(usage ? { usage } : {}),
+      }
+      if (timedOut) {
+        await bridge.submitBriefingResult(briefingId, {
+          abstain: {
+            reason_code: 'MODEL_TIMEOUT',
+            message: `协同简报超过 ${Math.round(timeoutMs / 1000)} 秒未完成；已中止，不输出伪结论。`,
+            evidence_refs: [],
+          },
+          ...base,
+        })
+      } else if (text.length > 0) {
+        await bridge.submitBriefingResult(briefingId, { text, ...base })
+      } else {
+        await bridge.submitBriefingResult(briefingId, {
+          error: '宿主模型没有返回任何文本',
+          ...base,
+        })
+      }
+    } catch (error) {
+      console.warn(`[talaria] 简报 ${briefingId} 失败：${error.message}`)
+      await bridge
+        .submitBriefingResult(briefingId, {
+          abstain: {
+            reason_code: 'HOST_OFFLINE',
+            message: `协同宿主执行失败：${error.message}`,
+            evidence_refs: [],
+          },
+        })
+        .catch(() => {})
+    } finally {
+      briefings.delete(briefingId)
+      if (handle) {
+        await handle.dispose().catch(() => {})
+      }
+    }
+  }
+
   async function handleConsult(request, response) {
     if (request.method !== 'POST') {
       sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', message: '仅支持 POST。' })
@@ -360,6 +469,42 @@ export function apply(ctx, config = {}) {
     void runConsultation({ consultationId, prompt, timeoutMs })
   }
 
+
+  async function handleBriefing(request, response) {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', message: '仅支持 POST。' })
+      return
+    }
+    let body
+    try {
+      body = await readJsonBody(request)
+    } catch (error) {
+      sendJson(response, 400, { code: 'INVALID_JSON', message: error.message })
+      return
+    }
+    const briefingId = body?.briefing_id
+    const prompt = body?.prompt
+    if (typeof briefingId !== 'string' || briefingId.length === 0) {
+      sendJson(response, 400, { code: 'INVALID_REQUEST', message: '缺少 briefing_id。' })
+      return
+    }
+    if (typeof prompt !== 'string' || prompt.length === 0) {
+      sendJson(response, 400, { code: 'INVALID_REQUEST', message: '缺少 prompt。' })
+      return
+    }
+    if (briefings.has(briefingId)) {
+      sendJson(response, 409, { code: 'BRIEFING_BUSY', message: '同一简报已在运行。' })
+      return
+    }
+    const timeoutMs = Math.min(
+      Math.max(Number(body?.timeout_ms) || 90_000, 10_000),
+      300_000,
+    )
+    briefings.set(briefingId, true)
+    sendJson(response, 202, { accepted: true, briefing_id: briefingId })
+    void runBriefing({ briefingId, prompt, timeoutMs })
+  }
+
   // 浏览器嵌入所需的回环守护进程地址与 Bearer token 只经同源 bootstrap 下发。
   ctx.effect(() =>
     ctx.webServer.register({
@@ -388,6 +533,20 @@ export function apply(ctx, config = {}) {
             }),
           )
         }
+      },
+    }),
+  )
+
+  ctx.effect(() =>
+    ctx.webServer.register({
+      kind: 'exact',
+      path: BRIEFING_PATH,
+      handler(request, response) {
+        handleBriefing(request, response).catch((error) => {
+          if (!response.headersSent) {
+            sendJson(response, 500, { code: 'TALARIA_BRIEFING_ERROR', message: error.message })
+          }
+        })
       },
     }),
   )

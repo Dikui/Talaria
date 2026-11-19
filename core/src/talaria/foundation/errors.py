@@ -41,6 +41,10 @@ class ConsultationNotFoundError(NotFoundError):
     code = "CONSULTATION_NOT_FOUND"
 
 
+class BriefingNotFoundError(NotFoundError):
+    code = "BRIEFING_NOT_FOUND"
+
+
 class FeedUnavailableError(TalariaError):
     code = "FEED_UNAVAILABLE"
 

@@ -278,6 +278,14 @@ export function createBridge(config = {}) {
     )
   }
 
+  async function submitBriefingResult(briefingId, payload, signal) {
+    return requestJson(
+      'POST',
+      `/api/scanner/briefings/${encodeURIComponent(briefingId)}/result`,
+      { body: payload, signal },
+    )
+  }
+
   return {
     createSnapshot,
     getSnapshot,
@@ -286,6 +294,7 @@ export function createBridge(config = {}) {
     computeOperator,
     getChartView,
     submitResult,
+    submitBriefingResult,
     reportUsage,
     credential,
   }

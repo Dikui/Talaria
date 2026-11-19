@@ -19,8 +19,12 @@ from talaria.foundation.scanner.contracts import (
 class CoPilotConsultChannel(Protocol):
     """协同会诊通道的占位接口；实现方自行承担异步与限额。"""
 
-    def offer(self, trigger: ScannerTrigger) -> None:
-        """提交一次候选；本任务不提供实现。"""
+    def offer(self, trigger: ScannerTrigger) -> bool | None:
+        """尝试为一次命中申请协同简报。
+
+        返回 ``False`` 表示冷却/限流/宿主离线，路由降级为纯数值卡；返回
+        ``None`` 或 ``True`` 保持兼容，视为已接受。
+        """
 
 
 class TriggerRoutingPolicy:
@@ -45,6 +49,8 @@ class TriggerRoutingPolicy:
         """返回路由并（仅在显式启用时）把候选交给占位通道。"""
 
         if self._co_pilot_enabled and self._co_pilot is not None:
-            self._co_pilot.offer(trigger)
+            accepted = self._co_pilot.offer(trigger)
+            if accepted is False:
+                return ScannerTriggerRoute.LOCAL
             return ScannerTriggerRoute.CO_PILOT_CONSULT
         return ScannerTriggerRoute.LOCAL

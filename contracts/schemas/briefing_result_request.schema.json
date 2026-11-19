@@ -1,0 +1,349 @@
+{
+  "$defs": {
+    "Abstain": {
+      "additionalProperties": false,
+      "description": "明确的拒绝：原因码 + 人类可读说明 + 可核对的证据引用。",
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "maxItems": 40,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "message": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/AbstainReason"
+        }
+      },
+      "required": [
+        "reason_code",
+        "message"
+      ],
+      "title": "Abstain",
+      "type": "object"
+    },
+    "AbstainReason": {
+      "description": "拒绝给出伪结论的稳定原因码；前端按此渲染黄色降级卡。",
+      "enum": [
+        "STALE_SNAPSHOT",
+        "EVIDENCE_CONFLICT",
+        "GEOMETRY_INVERTED",
+        "MODEL_TIMEOUT",
+        "HOST_OFFLINE",
+        "MODEL_INVALID_OUTPUT"
+      ],
+      "title": "AbstainReason",
+      "type": "string"
+    },
+    "BriefingContent": {
+      "additionalProperties": false,
+      "description": "简报正文的四段结构；证据列表单独放在 ``ScannerBriefing`` 上。",
+      "properties": {
+        "key_levels": {
+          "items": {
+            "$ref": "#/$defs/BriefingLevelRef"
+          },
+          "maxItems": 12,
+          "title": "Key Levels",
+          "type": "array"
+        },
+        "risks": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 12,
+          "title": "Risks",
+          "type": "array"
+        },
+        "trigger_reason": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Trigger Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger_reason"
+      ],
+      "title": "BriefingContent",
+      "type": "object"
+    },
+    "BriefingLevelRef": {
+      "additionalProperties": false,
+      "description": "关键价位参考；价格未知时只保留观察说明。",
+      "properties": {
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "maxLength": 300,
+          "title": "Note",
+          "type": "string"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "BriefingLevelRef",
+      "type": "object"
+    },
+    "EvidenceKind": {
+      "description": "证据来源类别；只允许来自冻结快照内的只读工具或人工画线。",
+      "enum": [
+        "SNAPSHOT",
+        "CHART_VIEW",
+        "KEY_LEVEL",
+        "INDICATOR",
+        "OPERATOR",
+        "HUMAN_DRAWING"
+      ],
+      "title": "EvidenceKind",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "description": "可核对的证据引用；``evidence_id`` 是工具/画线/关键位的稳定 ID。",
+      "properties": {
+        "detail": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Detail",
+          "type": "string"
+        },
+        "evidence_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "price_high": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price High"
+        },
+        "price_low": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price Low"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "kind",
+        "label"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "UsageReport": {
+      "additionalProperties": false,
+      "description": "一轮 Token 用量；未知字段用 None 表示缺失，绝不按 0 入账。",
+      "properties": {
+        "cached_input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Input Tokens"
+        },
+        "dsh_session_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Dsh Session Id",
+          "type": "string"
+        },
+        "dsh_turn_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Dsh Turn Id",
+          "type": "string"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "source": {
+          "default": "host",
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dsh_session_id",
+        "dsh_turn_id"
+      ],
+      "title": "UsageReport",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "宿主回调；``text`` 由服务端解析成四段结构，也可直接给结构化内容。",
+  "properties": {
+    "abstain": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Abstain"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "content": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BriefingContent"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "dsh_session_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dsh Session Id"
+    },
+    "dsh_turn_id": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dsh Turn Id"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "maxLength": 1000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error"
+    },
+    "text": {
+      "anyOf": [
+        {
+          "maxLength": 20000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Text"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UsageReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "title": "BriefingResultRequest",
+  "type": "object"
+}

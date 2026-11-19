@@ -50,6 +50,8 @@ export type ScannerSeverity = "INFO" | "WARNING" | "CRITICAL";
 
 export type ScannerTriggerRoute = "LOCAL" | "CO_PILOT_CONSULT";
 
+export type BriefingStatus = "PENDING" | "READY" | "ABSTAIN" | "FAILED";
+
 export type AbstainReason = "STALE_SNAPSHOT" | "EVIDENCE_CONFLICT" | "GEOMETRY_INVERTED" | "MODEL_TIMEOUT" | "HOST_OFFLINE" | "MODEL_INVALID_OUTPUT";
 
 export type ConsultationStatus = "PENDING" | "READY" | "ABSTAIN" | "FAILED";
@@ -519,6 +521,53 @@ export interface ScannerScanResponse {
   triggers: ScannerTrigger[];
   scanned_instruments: string[];
   generated_ts: number;
+}
+export interface BriefingLevelRef {
+  label: string;
+  price?: DecimalString | null;
+  note?: string;
+}
+export interface BriefingContent {
+  trigger_reason: string;
+  key_levels?: BriefingLevelRef[];
+  risks?: string[];
+}
+export interface ScannerBriefing {
+  id: string;
+  trigger_id: string;
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  status: BriefingStatus;
+  summary?: BriefingContent | null;
+  evidence_refs?: EvidenceRef[];
+  abstain_reason?: string | null;
+  created_ts: number;
+  read_ts?: number | null;
+}
+export interface BriefingListResponse {
+  briefings?: ScannerBriefing[];
+  unread?: number;
+  generated_ts: number;
+}
+export interface BriefingConsultRequest {
+  question?: string | null;
+}
+export interface BriefingConsultResponse {
+  briefing_id: string;
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  question: string;
+}
+export interface BriefingResultRequest {
+  text?: string | null;
+  content?: BriefingContent | null;
+  abstain?: Abstain | null;
+  error?: string | null;
+  dsh_session_id?: string | null;
+  dsh_turn_id?: string | null;
+  usage?: UsageReport | null;
 }
 export interface CollabWindow {
   from_ts: number;

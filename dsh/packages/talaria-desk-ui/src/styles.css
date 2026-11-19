@@ -4042,3 +4042,328 @@ button:disabled {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---- 协同简报（任务单 19）：扫描命中后的收件箱，纯读、可折叠证据 ---- */
+.workspace > .briefings-panel {
+  grid-area: copilot;
+}
+
+.briefings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-height: 0;
+  height: 100%;
+  padding: 2px 0 8px;
+  overflow: hidden;
+}
+
+.briefings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 0;
+}
+
+.briefings-title {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.briefings-subtitle {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.briefings-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.briefings-unread {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.briefings-error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--danger-border);
+  border-radius: 9px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.briefings-error button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.briefings-loading,
+.briefings-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.briefings-empty strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.briefings-empty p {
+  margin: 0;
+}
+
+.briefings-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.briefing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.briefing-card.is-ready {
+  border-left-color: var(--accent);
+}
+
+.briefing-card.is-failed {
+  border-left-color: var(--danger);
+}
+
+.briefing-card[data-unread="true"] {
+  background: var(--surface-muted);
+}
+
+.briefing-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.briefing-status {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.briefing-card.is-ready .briefing-status {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.briefing-card.is-failed .briefing-status {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.briefing-unread-dot {
+  margin-left: auto;
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.briefing-title {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.briefing-symbol {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.briefing-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.briefing-reason {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.briefing-reason.is-clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.briefing-expand {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  padding: 0;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.briefing-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+}
+
+.briefing-levels ul,
+.briefing-risks ul,
+.briefing-evidence ul {
+  margin: 0;
+  padding-left: 15px;
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.briefing-levels li,
+.briefing-risks li,
+.briefing-evidence li {
+  margin: 1px 0;
+  overflow-wrap: anywhere;
+}
+
+.briefing-levels strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.briefing-levels em,
+.briefing-evidence em {
+  color: var(--text-muted);
+  font-style: normal;
+}
+
+.briefing-evidence summary {
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.briefing-evidence code {
+  font-size: 9.5px;
+  color: var(--accent-strong);
+}
+
+.briefing-abstain {
+  padding: 7px 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.briefing-abstain strong {
+  color: var(--text);
+}
+
+.briefing-abstain p {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+}
+
+.briefing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.briefing-actions .ghost-button,
+.briefing-actions .primary-button {
+  padding: 4px 8px;
+  font-size: 10.5px;
+}
+
+@media (max-width: 1100px) {
+  .briefings-panel {
+    height: auto;
+    max-height: 58vh;
+  }
+
+  .briefings-list {
+    max-height: 40vh;
+  }
+}
+
+@media (max-width: 700px) {
+  /* 窄屏把收件箱当作全屏抽屉，避免被主图与底部扫描器挤到首屏之外。 */
+  .briefings-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    height: 100dvh;
+    max-height: none;
+    padding: 12px 12px 8px;
+    background: var(--bg);
+  }
+
+  .briefings-list {
+    max-height: none;
+  }
+}
+
+@media (max-width: 400px) {
+  .briefings-panel {
+    max-height: none;
+    padding-bottom: 8px;
+  }
+
+  /* 390 只读：隐藏“带入协同”等发起入口，保留收件箱阅读与跳图。 */
+  .briefing-bring {
+    display: none;
+  }
+
+  .briefings-subtitle {
+    display: none;
+  }
+}

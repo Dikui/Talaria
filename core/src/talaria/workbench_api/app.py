@@ -52,6 +52,13 @@ from talaria.foundation.drawings import (
     DrawingRecord,
     DrawingVersionList,
 )
+from talaria.foundation.briefings import (
+    BriefingConsultRequest,
+    BriefingConsultResponse,
+    BriefingListResponse,
+    BriefingResultRequest,
+    ScannerBriefing,
+)
 from talaria.foundation.errors import (
     FeedUnavailableError,
     InvalidRequestError,
@@ -93,6 +100,7 @@ from talaria.foundation.scanner import (
     ScannerTrigger,
     ScannerTriggerListResponse,
 )
+from talaria.foundation.scanner.routing import TriggerRoutingPolicy
 from talaria.foundation.snapshot import (
     ChartPage,
     ErrorResponse,
@@ -123,6 +131,7 @@ from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.replay import ReplayFeed
 from talaria.workbench_api.alert_service import AlertService
+from talaria.workbench_api.briefing_service import BriefingService
 from talaria.workbench_api.collaboration_service import CollaborationService
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.key_level_feedback import KeyLevelFeedbackService
@@ -146,6 +155,7 @@ ERROR_STATUS: dict[str, int] = {
     "DRAWING_NOT_FOUND": 404,
     "ALERT_NOT_FOUND": 404,
     "CONSULTATION_NOT_FOUND": 404,
+    "BRIEFING_NOT_FOUND": 404,
     "FEED_UNAVAILABLE": 503,
     "NOT_IMPLEMENTED": 501,
     "INTERNAL": 500,
@@ -260,6 +270,12 @@ def _broadcast_scanner(app: FastAPI, trigger: ScannerTrigger) -> None:
         _enqueue(queue, payload)
 
 
+def _broadcast_briefing(app: FastAPI, briefing: ScannerBriefing) -> None:
+    payload = {"type": "briefing", "data": briefing.model_dump(mode="json")}
+    for queue in list(app.state.ws_queues.values()):
+        _enqueue(queue, payload)
+
+
 async def _scanner_tick_loop(scanner_service: ScannerService) -> None:
     while True:
         await asyncio.sleep(3)
@@ -368,6 +384,13 @@ def create_app(
             host_url=collaboration_host or (lambda: None),
             now_ms=settings.now_ms,
         )
+        app.state.briefing_service = BriefingService(
+            queue=state_writer,
+            workbench=app.state.service,
+            host_url=collaboration_host or (lambda: None),
+            now_ms=settings.now_ms,
+            publish=lambda briefing: _broadcast_briefing(app, briefing),
+        )
         app.state.key_level_feedback = KeyLevelFeedbackService(
             state_writer=state_writer,
             drawings=app.state.drawing_service,
@@ -447,6 +470,10 @@ def create_app(
             freeze_snapshot=_freeze_scanner_snapshot,
             publish=lambda trigger: _broadcast_scanner(app, trigger),
             on_change=_scanner_changed,
+            routing=TriggerRoutingPolicy(
+                co_pilot=app.state.briefing_service,
+                co_pilot_enabled=True,
+            ),
         )
         if settings.fixture_dir is not None and feed_mode is None:
             # 离线样本没有实时流；启动时用同一 connector 回填一轮，扫描与 UI
@@ -516,6 +543,7 @@ def create_app(
             if remove_alert_listener is not None:
                 remove_alert_listener()
             await alert_service.close()
+            await app.state.briefing_service.close()
             await app.state.collaboration_service.close()
             if remove_hot_listener is not None:
                 remove_hot_listener()
@@ -874,6 +902,60 @@ def create_app(
     def get_scanner_focus(request: Request) -> ScannerFocusResponse:
         scanner: ScannerService = request.app.state.scanner_service
         return scanner.focus(request.app.state.settings.now_ms())
+
+
+    @app.get(
+        "/api/scanner/briefings", response_model=BriefingListResponse
+    )
+    async def list_scanner_briefings(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=200),
+        unread_only: bool = Query(default=False),
+    ) -> BriefingListResponse:
+        service: BriefingService = request.app.state.briefing_service
+        briefings = await service.list(limit=limit, unread_only=unread_only)
+        unread = await service.unread_count()
+        return BriefingListResponse(
+            briefings=briefings,
+            unread=unread,
+            generated_ts=request.app.state.settings.now_ms(),
+        )
+
+    @app.post(
+        "/api/scanner/briefings/{briefing_id}/read",
+        response_model=ScannerBriefing,
+    )
+    async def mark_scanner_briefing_read(
+        briefing_id: str, request: Request
+    ) -> ScannerBriefing:
+        service: BriefingService = request.app.state.briefing_service
+        return await service.mark_read(briefing_id)
+
+    @app.post(
+        "/api/scanner/briefings/{briefing_id}/consult",
+        response_model=BriefingConsultResponse,
+    )
+    async def consult_scanner_briefing(
+        briefing_id: str,
+        request: Request,
+        payload: BriefingConsultRequest | None = None,
+    ) -> BriefingConsultResponse:
+        service: BriefingService = request.app.state.briefing_service
+        return await service.consult_seed(
+            briefing_id, payload.question if payload is not None else None
+        )
+
+    @app.post(
+        "/api/scanner/briefings/{briefing_id}/result",
+        response_model=ScannerBriefing,
+    )
+    async def submit_scanner_briefing_result(
+        briefing_id: str,
+        payload: BriefingResultRequest,
+        request: Request,
+    ) -> ScannerBriefing:
+        service: BriefingService = request.app.state.briefing_service
+        return await service.submit_result(briefing_id, payload)
 
     @app.post("/api/scanner/scan", response_model=ScannerScanResponse)
     async def scan_now(
