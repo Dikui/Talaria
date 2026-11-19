@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)（用户故事 1–7）、[系统分层架构规范](../../../docs/architecture.md)（§1.3 M1、§5.3 契约门禁）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 一条场景回归用例在注入的确定性行情上走通上述全流程，断言关键输出（快照、指标、关键位、预警触发、异动卡片）。
 - [x] 架构规范 §5.3 中与 M1 相关的契约门禁（契约零漂移、十进制字符串、算子与关键位黄金向量、回环绑定与 Token 鉴权）全部通过。
@@ -60,3 +60,11 @@
 - 扫描焦点分组仅在出现异动时创建；空焦点不再建空组（本次修复的有意行为）。
 - 在线冒烟未跑：本机 `curl https://api.bybit.com/v5/market/instruments-info` 返回 **403**（CloudFront 地理封锁），无法完成真实 Bybit 在线冒烟；既有 `tests/packs/test_online_bybit.py`（`@pytest.mark.online`）保留为沙箱外入口，未伪造通过。
 - 协同会诊（任务 17）未合入，不在本单范围，未改动相关文件。
+
+
+### Lead 验收
+
+- 合并 `72a399b Merge branch 'ticket-16-m1-acceptance'`（16 基线 `af1e8d6`，基于其上的 17 已先合入）；合并后 `uv run pytest -q` → 461 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 138 passed（19 files）；`pnpm -C dsh build` 通过。
+- 目视 12 张截图：1440 浅/深完整工作台、390 浅/深只读、空自选、无关键位、断流 STALE、重启后触发时刻快照、预警触发记录、异动卡、空自选+无关键位+断流三态同页均符合验收。
+- 复核 16 的两处缺陷修复：`--solo` fixture 模式 LEVEL_EVENT 通过快照关键位 provider 触发；空扫描焦点不再创建空系统分组、不再顶掉空自选引导。两项均有回归测试。
+- 接受已知限制：重启后 `app.state.level_sets` 为空，LEVEL_EVENT 需页面加载自动建一次快照后恢复触发；在线 Bybit 冒烟因本机 CloudFront 403 未跑（`tests/packs/test_online_bybit.py` 保留 `@pytest.mark.online`）。
