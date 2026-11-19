@@ -56,6 +56,7 @@ class AlertService:
         instruments: Sequence[InstrumentSpec],
         now_ms: Callable[[], int],
         bar_history: Callable[[str, str], Sequence[Any]] | None = None,
+        key_level_provider: Callable[[str, str, str, int], Any] | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
         on_change: Callable[[], Awaitable[None]] | None = None,
         on_trigger: Callable[[AlertTriggerRecord], None] | None = None,
@@ -69,6 +70,7 @@ class AlertService:
         self._engine = AlertEngine(
             now_ms=now_ms,
             history_provider=bar_history,
+            key_level_provider=key_level_provider,
             freeze_snapshot=freeze_snapshot,
             on_trigger=self._handle_trigger,
         )

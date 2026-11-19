@@ -64,6 +64,7 @@ from talaria.foundation.indicators import (
 )
 from talaria.foundation.key_levels import (
     EvidenceClass,
+    KeyLevel,
     KeyLevelAdoptionRequest,
     KeyLevelCategory,
     KeyLevelFeedbackSummary,
@@ -382,11 +383,28 @@ def create_app(
                 instrument_id=instrument_id, timeframe=timeframe
             )
 
+        def alert_key_level(
+            instrument_id: str, timeframe: str, level_id: str, cutoff_ts: int
+        ) -> KeyLevel | None:
+            """用最近一次快照已冻结的关键位求值，避免引擎按实时窗口重算出不同 id。"""
+
+            level_set = app.state.level_sets.get((instrument_id, timeframe))
+            if level_set is None:
+                return None
+            level = next(
+                (item for item in level_set.levels if item.level_id == level_id),
+                None,
+            )
+            if level is None or level.ts_available > cutoff_ts:
+                return None
+            return level
+
         alert_service = AlertService(
             state_writer=state_writer,
             instruments=instruments,
             now_ms=settings.now_ms,
             bar_history=bar_history if supervisor is not None else None,
+            key_level_provider=alert_key_level,
             freeze_snapshot=_freeze_alert_snapshot,
             on_change=_alert_changed,
             on_trigger=lambda trigger: _broadcast_alert(app, trigger),

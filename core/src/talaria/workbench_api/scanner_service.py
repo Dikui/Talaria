@@ -27,6 +27,7 @@ from talaria.foundation.scanner.engine import KIND_ORDER, ScannerConfig, Scanner
 from talaria.foundation.scanner.routing import TriggerRoutingPolicy
 from talaria.workbench_api.state_store import (
     SCANNER_FOCUS_GROUP_ID,
+    StateStore,
     StateWriterQueue,
 )
 
@@ -158,9 +159,15 @@ class ScannerService:
         ids = tuple(self._engine.active_focus(now))
         if ids == self._last_focus_ids:
             return
-        await self._state_writer.run(
-            lambda store: store.upsert_system_group(self._focus_name, list(ids))
-        )
+
+        def _apply(store: StateStore) -> None:
+            # 空焦点且尚未建组时不要凭空创建“扫描焦点”分组，否则首次启动的
+            # 空自选引导会被一个空系统分组顶掉。已经存在的分组继续保留。
+            if not ids and store.get_watchlist_group(SCANNER_FOCUS_GROUP_ID) is None:
+                return
+            store.upsert_system_group(self._focus_name, list(ids))
+
+        await self._state_writer.run(_apply)
         self._last_focus_ids = ids
         if self._on_change is not None:
             try:
