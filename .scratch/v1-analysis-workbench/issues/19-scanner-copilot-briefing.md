@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)、[领域词汇表](../../../GLOSSARY.md)、[系统分层架构规范](../../../docs/architecture.md)、[ADR-0004](../../../docs/adr/0004-dual-mode-intraday-cognition-and-scanner-gate.md)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 实现 15 预留的 `CO_PILOT_CONSULT` 路由：先过单标的冷却锁与全局最大并发令牌桶，超限请求降级为纯数值异动卡，绝不定时轮询模型。
 - [x] 简报会话绑定触发快照的 `snapshot_id`，Token 用量照常经宿主侧幂等留痕。
@@ -56,3 +56,11 @@
 - 简报收件箱只保留最近 200 条查询窗口，暂无归档/清理策略；进程在 PENDING 中途退出会留下未完成行，下一次同标的冷却到期前不会自动重试。
 - 令牌桶与冷却状态在进程内存，重启清零；当前是单进程单写者语义，不做跨进程分布式限流。
 - 390 为只读阅读模式，隐藏「带入协同」；合成窄屏浏览器验收，未覆盖真实移动设备手势。
+
+
+### Lead 验收
+
+- 合并 `4215eb9 Merge branch 'ticket-19-scanner-briefing'`；与 18 的 `app.py`、`state_store.py`、`App.tsx`、`RightDockTabs.tsx`、`api.ts`、`styles.css` 冲突已手工保留双方：右栏四 tab（简报/协同会诊/标注/预警）、简报样式段整段追加、App 同时渲染标注浮层与简报收件箱。合并后 `uv run pytest -q` → 511 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 155 passed（22 files）；plugin 通过；`pnpm -C dsh build` 通过。
+- 目视合并后 1440 页面：右栏“简报”收件箱空态、四 tab 切换、390 抽屉（19 截图）正常；本地 fixture 无宿主时简报自动降级为纯数值卡，符合预期。
+- 复核：`BriefingService.offer()` 同步非阻塞门禁（snapshot→host→单标的冷却→全局并发→令牌桶），失败即降级 LOCAL 且不落库/不排队/不调用模型；简报绑定 trigger snapshot_id；Token 经 17 幂等；`--solo` 无宿主不产生简报行。
+- 接受已知限制：真实宿主模型简报未跑（离线/假宿主覆盖）；插件需重启 DSH 加载新 `index.js`；收件箱窗口 200 条、无归档；冷却/令牌桶为进程内状态；390 为合成窄屏验收。
