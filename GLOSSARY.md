@@ -76,6 +76,18 @@ _Avoid_: Chatbot Q&A, manual override
 由确定性数值扫描器或盘面预警在标的上捕获到的结构性异动事件，是触发智能体或提醒人工介入分析的前置信号。
 _Avoid_: Cron poll, chat prompt
 
+**Trigger Routing Policy（触发路由策略）**:
+决定一条 `Trigger` 只做本地提醒、还是进入协同简报等慢通道的规则；v1 默认本地，协同路由受单标的冷却、全局并发与令牌桶约束，超限即降级为纯数值卡，不排队、不轮询模型。
+_Avoid_: Notification rule, auto-prompt
+
+**Briefing（扫描简报）**:
+由扫描器 `Trigger` 触发、绑定触发时冻结的 `Evidence Snapshot`、经协同宿主生成的只读解读卡与收件箱项；不是定时报告，也不是交易指令。
+_Avoid_: Scan report, alert summary, cron digest
+
+**AGENT_ANNOTATION（智能体标注层）**:
+图表上经硬门控校验的只读标注图层，必须引用同一冻结快照的 `level_id` 或具体 K 线时刻，并与人工画线 `HUMAN_DRAWING` 分离；禁止拖拽，采纳后才进入人工图层。
+_Avoid_: AI drawing, overlay guess
+
 **Setup Insight（战术交易洞察）**:
 认知层或策略基于单一证据快照产出的结构化方向观点，包含入场价格带、逻辑证伪止损价、止盈目标、持仓时间上限、洞察有效期与证据引用，本身不是订单。
 _Avoid_: Trade order, buy/sell call, raw signal

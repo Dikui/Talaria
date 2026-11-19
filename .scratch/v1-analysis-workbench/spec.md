@@ -1,6 +1,7 @@
 # 初版人机共用分析工作台（M1–M2）
 
-Status: ready-for-agent
+Status: resolved
+ADR review: done 2026-11-19
 
 ## Problem Statement
 
