@@ -6,7 +6,7 @@
 
 **Source of truth:** [需求文档](../spec.md)（用户故事 8–10）、[系统分层架构规范](../../../docs/architecture.md)（§1.3 M2、§5.3 契约门禁）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] 一条场景回归用例用录制的桥接消息走通上述全流程。
 - [x] 架构规范 §5.3 中的 DSH 工具 Schema 子集门禁与 `talaria-desk` Profile `dsh --dump-config` 快照门禁通过。
@@ -71,3 +71,14 @@
 - 真实模型会话冒烟未执行：本沙箱无网络模型凭据，按任务单“沙箱外可选”保留未勾选；DSH Profile、插件与桥接的真实安装/`dump-config` 已在本机验证。
 - 浏览器验收使用 ego-browser 注入的截图；断流场景为回放模拟（`outage_hold_60s.jsonl`），未覆盖真实交易所网络黑洞。
 - 扫描简报仍沿用既有单进程内存冷却/并发与 200 条窗口限制。
+
+
+### Lead 验收
+
+- 合并 `5e421e4 Merge branch 'ticket-20-m2-acceptance'`（自动合并）；合并后 `uv run pytest -q` → 517 passed, 1 deselected；`uv run talaria contract-check` 零漂移；`pnpm -C dsh typecheck` 通过；desk-ui 155 passed（22 files）；plugin 22 passed；`pnpm -C dsh build` 通过。
+- 场景回归：`tests/acceptance/test_m2_copilot.py` 用真实 `talaria up` 双子进程 + `tests/fixtures/m2/recorded_bridge.jsonl`/`fake_dsh_host.py` 走通会诊→门控标注（含一次拒绝码）→采纳→草案确认→扫描简报→带入对话→停宿主快通道；断言 snapshot_id 绑定、Token 幂等、拒绝项不落库、草案保持 DRAFT。
+- §5.3 门禁：`write_agent_overlay`/`create_alert` Schema 子集断言；`talaria-desk` dump-config 快照（CI 快照文件，不依赖本机 dsh）；真实 `dsh --profile talaria-desk --dump-config` exit 0，preset/plugin 各 1、无 `danger-full-access`。
+- 修复 3 个真实缺陷并加回归：环境代理导致 httpx.InvalidURL/会诊永久 PENDING；DSH 入口 URL `?token=` 导致派发路径错误；断流期间刷新页面新 WS 订阅拿不到当前健康快照而一直“等待行情”。修复后浏览器看到“断流 48 秒”、断流条与 295 根 K 线。
+- 目视 12 张截图：1440 浅/深完整协同工作台、简报/协同/标注右栏、宿主离线+断流、390 浅/深、刷新后 STALE 均可用；无横向溢出。已知布局取舍：1440 顶栏在四类右栏快捷入口齐全时折成两行；关键位过滤面板打开时会覆盖图表右侧、部分价位标签与 K 线重叠（10 已记录，20 未改全局布局）；390 图表 OHLC 文本与蜡烛有重叠。
+- 真实模型会话冒烟：沙箱无模型凭据，按任务单“沙箱外可选”未执行；DSH Profile/插件与真实 dump-config 已在宿主机验证。
+- 接受其余已知限制：断流为回放模拟（`outage_hold_60s.jsonl`）；简报沿用进程内冷却/并发与 200 条窗口。
