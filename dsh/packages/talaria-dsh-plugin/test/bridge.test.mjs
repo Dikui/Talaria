@@ -293,3 +293,116 @@ test('read-only tools reject instrument or timeframe mismatch before reading', a
     server.close()
   }
 })
+
+test('write_agent_overlay binds the snapshot and posts the annotation', async () => {
+  const requests = []
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk) => (body += chunk))
+    req.on('end', () => {
+      requests.push({ url: req.url, method: req.method, body })
+      res.setHeader('content-type', 'application/json')
+      if (req.method === 'GET') {
+        res.end(JSON.stringify(META))
+        return
+      }
+      res.end(JSON.stringify({
+        annotation_id: 'ann_1',
+        snapshot_id: 'snap-abc',
+        instrument_id: 'BTC-USDT-PERP',
+        timeframe: '1m',
+        status: 'ACTIVE',
+        round: 1,
+      }))
+    })
+  })
+  const port = await listen(server)
+  try {
+    const bridge = createBridge({ baseUrl: `http://127.0.0.1:${port}`, token: 'token' })
+    const value = await bridge.writeAgentOverlay({
+      snapshot_id: 'snap-abc',
+      instrument_id: 'BTC-USDT-PERP',
+      timeframe: '1m',
+      session_id: 'session-1',
+      round: 1,
+      kind: 'LEVEL',
+      label: '前低',
+      price_low: '100',
+      price_high: '100',
+      ts_anchor: 1700000000000,
+      evidence_refs: [{ level_id: 'kl_1' }],
+    })
+    assert.equal(value.annotation_id, 'ann_1')
+    const posted = requests.find((request) => request.method === 'POST')
+    assert.equal(posted.url, '/api/annotations')
+    const body = JSON.parse(posted.body)
+    assert.equal(body.snapshot_id, 'snap-abc')
+    assert.equal(body.kind, 'LEVEL')
+  } finally {
+    server.close()
+  }
+})
+
+test('create_alert always posts draft=true and refuses a non-draft response', async () => {
+  const requests = []
+  let status = 'DRAFT'
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk) => (body += chunk))
+    req.on('end', () => {
+      requests.push({ url: req.url, method: req.method, body })
+      res.setHeader('content-type', 'application/json')
+      if (req.method === 'GET') {
+        res.end(JSON.stringify(META))
+        return
+      }
+      res.end(JSON.stringify({
+        alert_id: 'alr_1',
+        instrument_id: 'BTC-USDT-PERP',
+        timeframe: '1m',
+        status,
+        note: '草案',
+      }))
+    })
+  })
+  const port = await listen(server)
+  try {
+    const bridge = createBridge({ baseUrl: `http://127.0.0.1:${port}`, token: 'token' })
+    const value = await bridge.createAlertDraft({
+      snapshot_id: 'snap-abc',
+      instrument_id: 'BTC-USDT-PERP',
+      timeframe: '1m',
+      condition: {
+        kind: 'METRIC_THRESHOLD',
+        metric: 'last_price',
+        direction: 'ABOVE',
+        threshold: '100000',
+      },
+    })
+    assert.equal(value.status, 'DRAFT')
+    const posted = JSON.parse(requests.find((request) => request.method === 'POST').body)
+    assert.equal(posted.draft, true)
+    assert.equal('snapshot_id' in posted, false)
+
+    status = 'ARMED'
+    await assert.rejects(
+      () => bridge.createAlertDraft({
+        snapshot_id: 'snap-abc',
+        instrument_id: 'BTC-USDT-PERP',
+        timeframe: '1m',
+        condition: {
+          kind: 'METRIC_THRESHOLD',
+          metric: 'last_price',
+          direction: 'ABOVE',
+          threshold: '100000',
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 'TALARIA_BRIDGE_PROTOCOL')
+        return true
+      },
+    )
+  } finally {
+    server.close()
+  }
+})

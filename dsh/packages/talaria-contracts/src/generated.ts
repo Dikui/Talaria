@@ -58,6 +58,10 @@ export type SetupDirection = "LONG" | "SHORT" | "NEUTRAL";
 
 export type EvidenceKind = "SNAPSHOT" | "CHART_VIEW" | "KEY_LEVEL" | "INDICATOR" | "OPERATOR" | "HUMAN_DRAWING";
 
+export type AnnotationKind = "LEVEL" | "ZONE";
+
+export type AnnotationStatus = "ACTIVE" | "ADOPTED" | "DISMISSED" | "ARCHIVED";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -655,4 +659,78 @@ export interface UsageSummaryResponse {
   summary: UsageSummary;
   sessions?: UsageSummary[];
   recent?: UsageRow[];
+}
+export interface AnnotationEvidence {
+  level_id?: string | null;
+  kline_ts?: number | null;
+  note?: string;
+}
+export interface AgentAnnotationCreate {
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  session_id: string;
+  round: number;
+  kind: AnnotationKind;
+  label: string;
+  rationale?: string;
+  price_low: DecimalString;
+  price_high: DecimalString;
+  ts_anchor: number;
+  evidence_refs?: AnnotationEvidence[];
+}
+export interface AgentAnnotationRecord {
+  annotation_id: string;
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  session_id: string;
+  round: number;
+  kind: AnnotationKind;
+  status: AnnotationStatus;
+  label: string;
+  rationale: string;
+  price_low: DecimalString;
+  price_high: DecimalString;
+  ts_anchor: number;
+  evidence_refs: AnnotationEvidence[];
+  created_ts: number;
+  updated_ts: number;
+  adopted_drawing_id?: string | null;
+  archived_reason?: string | null;
+}
+export interface AnnotationListResponse {
+  annotations: AgentAnnotationRecord[];
+}
+export interface AnnotationSessionSummary {
+  session_id: string;
+  instrument_ids: string[];
+  annotation_count: number;
+  latest_ts: number;
+}
+export interface AnnotationSessionsResponse {
+  sessions: AnnotationSessionSummary[];
+}
+export interface AnnotationAdoptionRecord {
+  annotation_id: string;
+  instrument_id: string;
+  snapshot_id: string;
+  timeframe: string;
+  session_id: string;
+  round: number;
+  drawing_id: string;
+  adopted_ts: number;
+}
+export interface AnnotationAdoptResponse {
+  annotation: AgentAnnotationRecord;
+  adoption: AnnotationAdoptionRecord;
+}
+export interface AnnotationClearRequest {
+  instrument_id: string;
+  session_id?: string | null;
+}
+export interface AnnotationClearResponse {
+  instrument_id: string;
+  session_id: string | null;
+  cleared: number;
 }

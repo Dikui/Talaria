@@ -1,0 +1,115 @@
+{
+  "description": "在冻结快照上写入受门控的智能体标注；虚线展示，最多 12 条，可被人工采纳。",
+  "inputSchema": {
+    "additionalProperties": false,
+    "description": "在冻结快照上写入一条受门控的智能体标注。",
+    "properties": {
+      "evidence_refs": {
+        "items": {
+          "additionalProperties": false,
+          "description": "一条可核验证据：引用快照内关键位，或引用窗口内的具体 K 线。\n\n``level_id`` 与 ``kline_ts`` 必须恰好提供一个。K 线时间戳允许与真实\nbar 相差一根周期以内（由服务端按 ``timeframe`` 显式判定）。",
+          "properties": {
+            "kline_ts": {
+              "default": null,
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kline Ts"
+            },
+            "level_id": {
+              "default": null,
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Level Id"
+            },
+            "note": {
+              "default": "",
+              "title": "Note",
+              "type": "string"
+            }
+          },
+          "title": "AnnotationEvidence",
+          "type": "object"
+        },
+        "title": "Evidence Refs",
+        "type": "array"
+      },
+      "instrument_id": {
+        "title": "Instrument Id",
+        "type": "string"
+      },
+      "kind": {
+        "description": "标注几何：水平线或价格带；与人工画线保持独立图层。",
+        "enum": [
+          "LEVEL",
+          "ZONE"
+        ],
+        "title": "AnnotationKind",
+        "type": "string"
+      },
+      "label": {
+        "title": "Label",
+        "type": "string"
+      },
+      "price_high": {
+        "title": "Price High",
+        "type": "string"
+      },
+      "price_low": {
+        "title": "Price Low",
+        "type": "string"
+      },
+      "rationale": {
+        "default": "",
+        "title": "Rationale",
+        "type": "string"
+      },
+      "round": {
+        "title": "Round",
+        "type": "integer"
+      },
+      "session_id": {
+        "title": "Session Id",
+        "type": "string"
+      },
+      "snapshot_id": {
+        "title": "Snapshot Id",
+        "type": "string"
+      },
+      "timeframe": {
+        "title": "Timeframe",
+        "type": "string"
+      },
+      "ts_anchor": {
+        "title": "Ts Anchor",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "snapshot_id",
+      "instrument_id",
+      "timeframe",
+      "session_id",
+      "round",
+      "kind",
+      "label",
+      "price_low",
+      "price_high",
+      "ts_anchor"
+    ],
+    "title": "WriteAgentOverlayInput",
+    "type": "object"
+  },
+  "name": "write_agent_overlay"
+}

@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    }
+  },
+  "required": [
+    "instrument_id"
+  ],
+  "title": "AnnotationClearRequest",
+  "type": "object"
+}

@@ -1,0 +1,316 @@
+{
+  "description": "创建智能体预警草案；只会落为 DRAFT，必须由人工确认后才会激活。",
+  "inputSchema": {
+    "additionalProperties": false,
+    "description": "创建一条智能体预警草案；服务端与桥接层都强制 ``draft=True``。",
+    "properties": {
+      "condition": {
+        "additionalProperties": false,
+        "description": "一条可评估条件；字段组合由 ``kind`` 决定。",
+        "properties": {
+          "compare_indicator": {
+            "default": null,
+            "oneOf": [
+              {
+                "description": "技术指标与衍生品指标；全部共用同一算子核。",
+                "enum": [
+                  "EMA",
+                  "SMA",
+                  "RSI",
+                  "ATR",
+                  "BOLL",
+                  "VWAP",
+                  "FUNDING_QUANTILE",
+                  "OI_DIVERGENCE",
+                  "NET_ODDS"
+                ],
+                "title": "IndicatorName",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compare_period": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compare Period"
+          },
+          "direction": {
+            "default": null,
+            "oneOf": [
+              {
+                "description": "比较方向：向上穿越/高于，或向下穿越/低于。",
+                "enum": [
+                  "ABOVE",
+                  "BELOW"
+                ],
+                "title": "AlertDirection",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "drawing_id": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drawing Id"
+          },
+          "indicator": {
+            "default": null,
+            "oneOf": [
+              {
+                "description": "技术指标与衍生品指标；全部共用同一算子核。",
+                "enum": [
+                  "EMA",
+                  "SMA",
+                  "RSI",
+                  "ATR",
+                  "BOLL",
+                  "VWAP",
+                  "FUNDING_QUANTILE",
+                  "OI_DIVERGENCE",
+                  "NET_ODDS"
+                ],
+                "title": "IndicatorName",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "indicator_channel": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indicator Channel"
+          },
+          "indicator_period": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indicator Period"
+          },
+          "kind": {
+            "description": "规则条件的来源；前端不复制任何指标、几何或关键位数学。",
+            "enum": [
+              "METRIC_THRESHOLD",
+              "INDICATOR_SIGNAL",
+              "OVERLAY_CROSS",
+              "LEVEL_EVENT"
+            ],
+            "title": "AlertConditionKind",
+            "type": "string"
+          },
+          "level_event": {
+            "default": null,
+            "oneOf": [
+              {
+                "description": "关键位事件：盘中触及、收盘突破、突破后的回踩确认。",
+                "enum": [
+                  "TOUCH",
+                  "BREAK",
+                  "RETEST"
+                ],
+                "title": "AlertLevelEvent",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "level_id": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level Id"
+          },
+          "level_kind": {
+            "default": null,
+            "oneOf": [
+              {
+                "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                "enum": [
+                  "SWING_HIGH",
+                  "SWING_LOW",
+                  "PREV_DAY_HIGH",
+                  "PREV_DAY_LOW",
+                  "PREV_DAY_CLOSE",
+                  "WEEK_OPEN",
+                  "MONTH_OPEN",
+                  "OPENING_RANGE",
+                  "SESSION_HIGH",
+                  "SESSION_LOW",
+                  "GAP",
+                  "ROUND_NUMBER",
+                  "POC",
+                  "VAH",
+                  "VAL",
+                  "ANCHORED_VWAP",
+                  "LIQUIDATION_ZONE"
+                ],
+                "title": "KeyLevelKind",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metric": {
+            "default": null,
+            "oneOf": [
+              {
+                "description": "可直接比较的盘口或衍生品标量。",
+                "enum": [
+                  "last_price",
+                  "bid_price",
+                  "ask_price",
+                  "mark_price",
+                  "funding_rate",
+                  "open_interest"
+                ],
+                "title": "AlertMetric",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "overlay_mode": {
+            "default": null,
+            "oneOf": [
+              {
+                "description": "画线触发的两种判定：盘中触碰或收盘确认突破。",
+                "enum": [
+                  "TOUCH",
+                  "CLOSE_BREAK"
+                ],
+                "title": "AlertOverlayMode",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "overlay_ratio": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overlay Ratio"
+          },
+          "threshold": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "AlertCondition",
+        "type": "object"
+      },
+      "cooldown_ms": {
+        "default": 60000,
+        "title": "Cooldown Ms",
+        "type": "integer"
+      },
+      "expires_at": {
+        "default": null,
+        "oneOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Expires At"
+      },
+      "instrument_id": {
+        "title": "Instrument Id",
+        "type": "string"
+      },
+      "note": {
+        "default": "",
+        "title": "Note",
+        "type": "string"
+      },
+      "repeat": {
+        "default": true,
+        "title": "Repeat",
+        "type": "boolean"
+      },
+      "snapshot_id": {
+        "title": "Snapshot Id",
+        "type": "string"
+      },
+      "timeframe": {
+        "title": "Timeframe",
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshot_id",
+      "instrument_id",
+      "timeframe",
+      "condition"
+    ],
+    "title": "CreateAlertDraftInput",
+    "type": "object"
+  },
+  "name": "create_alert"
+}

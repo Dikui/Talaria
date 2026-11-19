@@ -1,10 +1,15 @@
 import type {
+  AgentAnnotationRecord,
   AlertCreate,
   AlertListResponse,
   AlertPatch,
   AlertRecord,
   AlertStatus,
   AlertTriggerListResponse,
+  AnnotationAdoptResponse,
+  AnnotationClearResponse,
+  AnnotationListResponse,
+  AnnotationSessionsResponse,
   ChartPage,
   ChartView,
   ConsultationListResponse,
@@ -443,6 +448,61 @@ export const api = {
       `/api/alerts/${encodeURIComponent(alertId)}/dismiss`,
       undefined,
     );
+  },
+
+  annotations(
+    options: {
+      instrumentId?: string;
+      snapshotId?: string;
+      sessionId?: string;
+      includeArchived?: boolean;
+    } = {},
+  ): Promise<AnnotationListResponse> {
+    const params = new URLSearchParams();
+    if (options.instrumentId !== undefined) {
+      params.set("instrument_id", options.instrumentId);
+    }
+    if (options.snapshotId !== undefined) {
+      params.set("snapshot_id", options.snapshotId);
+    }
+    if (options.sessionId !== undefined) {
+      params.set("session_id", options.sessionId);
+    }
+    if (options.includeArchived === true) {
+      params.set("include_archived", "true");
+    }
+    const suffix = params.toString();
+    return getJson<AnnotationListResponse>(
+      `/api/annotations${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+
+  annotationSessions(): Promise<AnnotationSessionsResponse> {
+    return getJson<AnnotationSessionsResponse>("/api/annotations/sessions");
+  },
+
+  adoptAnnotation(annotationId: string): Promise<AnnotationAdoptResponse> {
+    return postJson<AnnotationAdoptResponse>(
+      `/api/annotations/${encodeURIComponent(annotationId)}/adopt`,
+      undefined,
+    );
+  },
+
+  dismissAnnotation(annotationId: string): Promise<AgentAnnotationRecord> {
+    return postJson<AgentAnnotationRecord>(
+      `/api/annotations/${encodeURIComponent(annotationId)}/dismiss`,
+      undefined,
+    );
+  },
+
+  clearAnnotations(
+    instrumentId: string,
+    sessionId?: string,
+  ): Promise<AnnotationClearResponse> {
+    return postJson<AnnotationClearResponse>("/api/annotations/clear", {
+      instrument_id: instrumentId,
+      session_id: sessionId ?? null,
+    });
   },
 
   consult(payload: ConsultRequest): Promise<ConsultResponse> {

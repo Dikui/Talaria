@@ -1,11 +1,15 @@
 import { readFileSync } from 'node:fs'
 
 import {
+  AGENT_ANNOTATION_OUTPUT_SCHEMA,
+  ALERT_DRAFT_OUTPUT_SCHEMA,
   CHART_VIEW_OUTPUT_SCHEMA,
   createBridge,
   INDICATOR_BUNDLE_OUTPUT_SCHEMA,
   KEY_LEVEL_SET_OUTPUT_SCHEMA,
   OPERATOR_OUTPUT_SCHEMA,
+  renderAgentAnnotation,
+  renderAlertDraft,
   renderChartView,
   renderIndicators,
   renderKeyLevels,
@@ -21,6 +25,8 @@ const TOOL_NAMES = [
   'get_key_levels',
   'compute_operator',
   'get_chart_view',
+  'write_agent_overlay',
+  'create_alert',
 ]
 
 const toolSchemas = Object.fromEntries(
@@ -41,6 +47,8 @@ function outputOf(tool) {
   if (tool === 'get_indicators') return [INDICATOR_BUNDLE_OUTPUT_SCHEMA, renderIndicators]
   if (tool === 'get_key_levels') return [KEY_LEVEL_SET_OUTPUT_SCHEMA, renderKeyLevels]
   if (tool === 'compute_operator') return [OPERATOR_OUTPUT_SCHEMA, renderOperator]
+  if (tool === 'write_agent_overlay') return [AGENT_ANNOTATION_OUTPUT_SCHEMA, renderAgentAnnotation]
+  if (tool === 'create_alert') return [ALERT_DRAFT_OUTPUT_SCHEMA, renderAlertDraft]
   return [CHART_VIEW_OUTPUT_SCHEMA, renderChartView]
 }
 
@@ -49,6 +57,8 @@ function executeOf(bridge, tool) {
   if (tool === 'get_indicators') return (args, signal) => bridge.getIndicators(args, signal)
   if (tool === 'get_key_levels') return (args, signal) => bridge.getKeyLevels(args, signal)
   if (tool === 'compute_operator') return (args, signal) => bridge.computeOperator(args, signal)
+  if (tool === 'write_agent_overlay') return (args, signal) => bridge.writeAgentOverlay(args, signal)
+  if (tool === 'create_alert') return (args, signal) => bridge.createAlertDraft(args, signal)
   return (args, signal) => bridge.getChartView(args, signal)
 }
 

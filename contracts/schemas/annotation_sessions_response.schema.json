@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "AnnotationSessionSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "annotation_count": {
+          "title": "Annotation Count",
+          "type": "integer"
+        },
+        "instrument_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Instrument Ids",
+          "type": "array"
+        },
+        "latest_ts": {
+          "title": "Latest Ts",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "instrument_ids",
+        "annotation_count",
+        "latest_ts"
+      ],
+      "title": "AnnotationSessionSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "sessions": {
+      "items": {
+        "$ref": "#/$defs/AnnotationSessionSummary"
+      },
+      "title": "Sessions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "sessions"
+  ],
+  "title": "AnnotationSessionsResponse",
+  "type": "object"
+}

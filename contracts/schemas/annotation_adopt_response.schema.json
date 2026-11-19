@@ -1,0 +1,247 @@
+{
+  "$defs": {
+    "AgentAnnotationRecord": {
+      "additionalProperties": false,
+      "description": "持久化后的标注；``adopted_drawing_id`` 指向独立的人工画线副本。",
+      "properties": {
+        "adopted_drawing_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Adopted Drawing Id"
+        },
+        "annotation_id": {
+          "title": "Annotation Id",
+          "type": "string"
+        },
+        "archived_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Archived Reason"
+        },
+        "created_ts": {
+          "title": "Created Ts",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/AnnotationEvidence"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AnnotationKind"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "price_high": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price High",
+          "type": "string"
+        },
+        "price_low": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price Low",
+          "type": "string"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "round": {
+          "title": "Round",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/AnnotationStatus"
+        },
+        "timeframe": {
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "ts_anchor": {
+          "title": "Ts Anchor",
+          "type": "integer"
+        },
+        "updated_ts": {
+          "title": "Updated Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "annotation_id",
+        "snapshot_id",
+        "instrument_id",
+        "timeframe",
+        "session_id",
+        "round",
+        "kind",
+        "status",
+        "label",
+        "rationale",
+        "price_low",
+        "price_high",
+        "ts_anchor",
+        "evidence_refs",
+        "created_ts",
+        "updated_ts"
+      ],
+      "title": "AgentAnnotationRecord",
+      "type": "object"
+    },
+    "AnnotationAdoptionRecord": {
+      "additionalProperties": false,
+      "description": "采纳质量反馈：标注几何 → 人工画线的独立副本。",
+      "properties": {
+        "adopted_ts": {
+          "title": "Adopted Ts",
+          "type": "integer"
+        },
+        "annotation_id": {
+          "title": "Annotation Id",
+          "type": "string"
+        },
+        "drawing_id": {
+          "title": "Drawing Id",
+          "type": "string"
+        },
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "round": {
+          "title": "Round",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "timeframe": {
+          "title": "Timeframe",
+          "type": "string"
+        }
+      },
+      "required": [
+        "annotation_id",
+        "instrument_id",
+        "snapshot_id",
+        "timeframe",
+        "session_id",
+        "round",
+        "drawing_id",
+        "adopted_ts"
+      ],
+      "title": "AnnotationAdoptionRecord",
+      "type": "object"
+    },
+    "AnnotationEvidence": {
+      "additionalProperties": false,
+      "description": "一条可核验证据：引用快照内关键位，或引用窗口内的具体 K 线。\n\n``level_id`` 与 ``kline_ts`` 必须恰好提供一个。K 线时间戳允许与真实\nbar 相差一根周期以内（由服务端按 ``timeframe`` 显式判定）。",
+      "properties": {
+        "kline_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kline Ts"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Level Id"
+        },
+        "note": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "title": "AnnotationEvidence",
+      "type": "object"
+    },
+    "AnnotationKind": {
+      "description": "标注几何：水平线或价格带；与人工画线保持独立图层。",
+      "enum": [
+        "LEVEL",
+        "ZONE"
+      ],
+      "title": "AnnotationKind",
+      "type": "string"
+    },
+    "AnnotationStatus": {
+      "description": "标注生命周期；``ARCHIVED`` 仅因 12 条上限被动产生，仍保留审计。",
+      "enum": [
+        "ACTIVE",
+        "ADOPTED",
+        "DISMISSED",
+        "ARCHIVED"
+      ],
+      "title": "AnnotationStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "adoption": {
+      "$ref": "#/$defs/AnnotationAdoptionRecord"
+    },
+    "annotation": {
+      "$ref": "#/$defs/AgentAnnotationRecord"
+    }
+  },
+  "required": [
+    "annotation",
+    "adoption"
+  ],
+  "title": "AnnotationAdoptResponse",
+  "type": "object"
+}
