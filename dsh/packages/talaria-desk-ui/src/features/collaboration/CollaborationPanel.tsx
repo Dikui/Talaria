@@ -184,6 +184,11 @@ function TurnCard({ record }: { record: ConsultationRecord }) {
   );
 }
 
+export interface CollaborationDraft {
+  nonce: number;
+  question: string;
+}
+
 export interface CollaborationPanelProps {
   snapshot: SnapshotMeta | null;
   freezeSnapshot: () => Promise<SnapshotMeta | null>;
@@ -199,6 +204,7 @@ export interface CollaborationPanelProps {
   onClearSelection: () => void;
   hostView: CollaborationView;
   readOnlyViewport: boolean;
+  draft?: CollaborationDraft | null;
   tabBar?: ReactNode;
   onClose: () => void;
 }
@@ -218,6 +224,7 @@ export function CollaborationPanel({
   onClearSelection,
   hostView,
   readOnlyViewport,
+  draft = null,
   tabBar,
   onClose,
 }: CollaborationPanelProps) {
@@ -226,6 +233,12 @@ export function CollaborationPanel({
   const [freezing, setFreezing] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (draft !== null) {
+      setQuestion(draft.question);
+    }
+  }, [draft?.nonce, draft?.question]);
 
   const ordered = useMemo(
     () => [...consultation.records].reverse(),

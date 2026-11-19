@@ -260,3 +260,86 @@ test('consult endpoint rejects duplicate and malformed requests', async () => {
   await waitFor(() => noPrompt.headersSent)
   assert.equal(noPrompt.status, 400)
 })
+
+test('briefing endpoint runs one agent turn and submits text with turn usage', async () => {
+  const results = []
+  const server = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    if (request.url === '/api/scanner/briefings/brf_1/result') {
+      results.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ ok: true }))
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  const baseUrl = await listen(server)
+  const dir = mkdtempSync(join(tmpdir(), 'talaria-plugin-'))
+  const descriptor = join(dir, 'dsh-bridge.json')
+  writeFileSync(
+    descriptor,
+    JSON.stringify({ base_url: baseUrl, token: 'test-token' }),
+  )
+  process.env.TALARIA_DSH_BRIDGE = descriptor
+
+  const endpoints = new Map()
+  const ctx = {
+    tools: { register() {}, guard() {} },
+    sessions: { get: () => undefined },
+    webServer: {
+      register({ path, handler }) {
+        endpoints.set(path, handler)
+        return () => {}
+      },
+    },
+    effect(fn) {
+      fn()
+    },
+    get(name) {
+      if (name === 'agents') {
+        return {
+          create: async () => ({ agent: fakeAgent(), dispose: async () => {} }),
+        }
+      }
+      if (name === 'agentDefaultModel') {
+        return {
+          currentSelection: () => ({ provider: 'test', model: 'test-model' }),
+        }
+      }
+      return undefined
+    },
+  }
+
+  try {
+    apply(ctx, {})
+    const briefing = endpoints.get('/talaria/briefing')
+    assert.equal(typeof briefing, 'function')
+    const response = fakeResponse()
+    await briefing(
+      fakeRequest({ briefing_id: 'brf_1', prompt: '解读这次放量。' }),
+      response,
+    )
+    await waitFor(() => response.headersSent)
+    assert.equal(response.status, 202)
+    assert.deepEqual(response.json(), { accepted: true, briefing_id: 'brf_1' })
+
+    await waitFor(() => results.length === 1)
+    assert.equal(results[0].text, '观察建议：等待回踩承接。')
+    assert.equal(results[0].dsh_session_id, 'dsh-session-consult')
+    assert.equal(results[0].dsh_turn_id, '1')
+    assert.deepEqual(results[0].usage, {
+      dsh_session_id: 'dsh-session-consult',
+      dsh_turn_id: '1',
+      input_tokens: 100,
+      cached_input_tokens: 40,
+      output_tokens: 25,
+      source: 'host',
+    })
+  } finally {
+    delete process.env.TALARIA_DSH_BRIDGE
+    rmSync(dir, { recursive: true, force: true })
+    await new Promise((resolve) => server.close(resolve))
+  }
+})

@@ -1,0 +1,36 @@
+{
+  "additionalProperties": false,
+  "description": "关键价位参考；价格未知时只保留观察说明。",
+  "properties": {
+    "label": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    },
+    "note": {
+      "default": "",
+      "maxLength": 300,
+      "title": "Note",
+      "type": "string"
+    },
+    "price": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Price"
+    }
+  },
+  "required": [
+    "label"
+  ],
+  "title": "BriefingLevelRef",
+  "type": "object"
+}

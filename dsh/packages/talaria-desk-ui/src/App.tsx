@@ -24,6 +24,9 @@ import {
   FeedHealthBadge,
   OrderBookSummary,
 } from "./features/feed/FeedIndicators";
+import { BriefingInbox } from "./features/briefings/BriefingInbox";
+import { briefingLocate, briefingQuestion } from "./features/briefings/model";
+import { useBriefings } from "./features/briefings/useBriefings";
 import { CollaborationPanel } from "./features/collaboration/CollaborationPanel";
 import { RightDockTabs, type RightDockTab } from "./features/collaboration/RightDockTabs";
 import { SelectionOverlay } from "./features/collaboration/SelectionOverlay";
@@ -139,6 +142,10 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   const [scannerOpen, setScannerOpen] = useState(true);
   const [rightTab, setRightTab] = useState<RightDockTab | null>("alerts");
   const [alertSeed, setAlertSeed] = useState<AlertFormSeed | null>(null);
+  const [collabDraft, setCollabDraft] = useState<{
+    nonce: number;
+    question: string;
+  } | null>(null);
   const [selection, setSelection] = useState<CollabWindow | null>(null);
   const [selecting, setSelecting] = useState(false);
   const [snapshotCutoff, setSnapshotCutoff] = useState<number | null>(null);
@@ -146,6 +153,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   const stream = useMarketStream(instrumentId, timeframe);
   const alerts = useAlerts();
   const scanner = useScanner();
+  const briefings = useBriefings();
   const collaboration = useCollaborationStatus();
 
   const chooseInstrument = useCallback((next: string) => {
@@ -520,9 +528,11 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
         active={rightTab}
         alertUnread={alerts.unread}
         annotationCount={activeAnnotationCount}
+        briefingUnread={briefings.unread}
         onSelect={(tab) => {
           setRightTab(tab);
           if (tab === "alerts") alerts.markSeen();
+          if (tab === "briefings") void briefings.refresh();
           if (tab !== "collab") setSelecting(false);
         }}
         onClose={() => {
@@ -611,6 +621,18 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
               }}
             >
               异动 {scanner.triggers.length}
+            </button>
+            <button
+              type="button"
+              className={`ghost-button briefing-toggle${rightTab === "briefings" ? " is-active" : ""}`}
+              aria-pressed={rightTab === "briefings"}
+              onClick={() => {
+                setRightTab(rightTab === "briefings" ? null : "briefings");
+                if (rightTab !== "briefings") void briefings.refresh();
+                setSelecting(false);
+              }}
+            >
+              简报{briefings.unread > 0 ? ` ${briefings.unread}` : ""}
             </button>
             <button
               type="button"
@@ -726,6 +748,33 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
           />
         )}
 
+        {rightTab === "briefings" && (
+          <BriefingInbox
+            controller={briefings}
+            open
+            onClose={() => setRightTab(null)}
+            onLocate={(briefing) => {
+              locateTrigger(briefingLocate(briefing));
+              setRightTab(null);
+            }}
+            onBringToCollab={(briefing) => {
+              void (async () => {
+                const seed = await briefings.consult(briefing.id);
+                locateTrigger(briefingLocate(briefing));
+                setCollabDraft({
+                  nonce: Date.now(),
+                  question: seed?.question ?? briefingQuestion(briefing),
+                });
+                setRightTab("collab");
+                setSelecting(false);
+              })();
+            }}
+            readOnly={readOnlyViewport}
+            now={stream.now || Date.now()}
+            tabBar={dockTabs}
+          />
+        )}
+
         {rightTab === "collab" && (
           <CollaborationPanel
             snapshot={snapshot}
@@ -742,6 +791,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
             onClearSelection={() => setSelection(null)}
             hostView={collaboration}
             readOnlyViewport={readOnlyViewport}
+            draft={collabDraft}
             tabBar={dockTabs}
             onClose={() => setRightTab(null)}
           />

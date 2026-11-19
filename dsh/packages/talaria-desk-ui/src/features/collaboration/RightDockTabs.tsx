@@ -1,24 +1,35 @@
-export type RightDockTab = "collab" | "alerts" | "annotations";
+export type RightDockTab = "collab" | "alerts" | "annotations" | "briefings";
 
 interface RightDockTabsProps {
   active: RightDockTab;
   alertUnread: number;
   annotationCount: number;
+  briefingUnread?: number;
   onSelect: (tab: RightDockTab) => void;
   onClose: () => void;
 }
 
-/** 右栏共用的 tab 条：会诊与预警只切换不并排，避免互相覆盖。 */
+/** 右栏共用的 tab 条：简报、会诊与预警只切换不并排，避免互相覆盖。 */
 export function RightDockTabs({
   active,
   alertUnread,
   annotationCount,
+  briefingUnread = 0,
   onSelect,
   onClose,
 }: RightDockTabsProps) {
   return (
     <div className="right-dock-tabs" data-testid="right-dock-tabs">
       <div className="right-dock-tablist" role="tablist" aria-label="右栏面板">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={active === "briefings"}
+          className={`right-dock-tab${active === "briefings" ? " is-active" : ""}`}
+          onClick={() => onSelect("briefings")}
+        >
+          简报{briefingUnread > 0 ? ` ${briefingUnread}` : ""}
+        </button>
         <button
           type="button"
           role="tab"

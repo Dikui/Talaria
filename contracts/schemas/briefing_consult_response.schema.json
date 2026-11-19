@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "description": "右侧协同对话的预填种子；不会在这里立即调用模型。",
+  "properties": {
+    "briefing_id": {
+      "title": "Briefing Id",
+      "type": "string"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "question": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "briefing_id",
+    "snapshot_id",
+    "instrument_id",
+    "timeframe",
+    "question"
+  ],
+  "title": "BriefingConsultResponse",
+  "type": "object"
+}

@@ -10,6 +10,8 @@ import type {
   AnnotationClearResponse,
   AnnotationListResponse,
   AnnotationSessionsResponse,
+  BriefingConsultResponse,
+  BriefingListResponse,
   ChartPage,
   ChartView,
   ConsultationListResponse,
@@ -32,6 +34,7 @@ import type {
   KeyLevelIgnoreList,
   KeyLevelSet,
   OperatorRequest,
+  ScannerBriefing,
   ScannerFocusResponse,
   ScannerScanResponse,
   ScannerTriggerListResponse,
@@ -392,6 +395,39 @@ export const api = {
 
   scanNow(): Promise<ScannerScanResponse> {
     return postJson<ScannerScanResponse>("/api/scanner/scan", {});
+  },
+
+  briefings(
+    options: { limit?: number; unreadOnly?: boolean } = {},
+  ): Promise<BriefingListResponse> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    if (options.unreadOnly) {
+      params.set("unread_only", "true");
+    }
+    const suffix = params.toString();
+    return getJson<BriefingListResponse>(
+      `/api/scanner/briefings${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+
+  markBriefingRead(briefingId: string): Promise<ScannerBriefing> {
+    return postJson<ScannerBriefing>(
+      `/api/scanner/briefings/${encodeURIComponent(briefingId)}/read`,
+      {},
+    );
+  },
+
+  briefingConsult(
+    briefingId: string,
+    question?: string,
+  ): Promise<BriefingConsultResponse> {
+    return postJson<BriefingConsultResponse>(
+      `/api/scanner/briefings/${encodeURIComponent(briefingId)}/consult`,
+      question ? { question } : {},
+    );
   },
 
   alerts(status?: AlertStatus): Promise<AlertListResponse> {

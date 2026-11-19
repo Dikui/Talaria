@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "BriefingLevelRef": {
+      "additionalProperties": false,
+      "description": "关键价位参考；价格未知时只保留观察说明。",
+      "properties": {
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "maxLength": 300,
+          "title": "Note",
+          "type": "string"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "BriefingLevelRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "简报正文的四段结构；证据列表单独放在 ``ScannerBriefing`` 上。",
+  "properties": {
+    "key_levels": {
+      "items": {
+        "$ref": "#/$defs/BriefingLevelRef"
+      },
+      "maxItems": 12,
+      "title": "Key Levels",
+      "type": "array"
+    },
+    "risks": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 12,
+      "title": "Risks",
+      "type": "array"
+    },
+    "trigger_reason": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Trigger Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "trigger_reason"
+  ],
+  "title": "BriefingContent",
+  "type": "object"
+}

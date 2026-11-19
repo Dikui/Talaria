@@ -1,0 +1,282 @@
+{
+  "$defs": {
+    "BriefingContent": {
+      "additionalProperties": false,
+      "description": "简报正文的四段结构；证据列表单独放在 ``ScannerBriefing`` 上。",
+      "properties": {
+        "key_levels": {
+          "items": {
+            "$ref": "#/$defs/BriefingLevelRef"
+          },
+          "maxItems": 12,
+          "title": "Key Levels",
+          "type": "array"
+        },
+        "risks": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 12,
+          "title": "Risks",
+          "type": "array"
+        },
+        "trigger_reason": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Trigger Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger_reason"
+      ],
+      "title": "BriefingContent",
+      "type": "object"
+    },
+    "BriefingLevelRef": {
+      "additionalProperties": false,
+      "description": "关键价位参考；价格未知时只保留观察说明。",
+      "properties": {
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "maxLength": 300,
+          "title": "Note",
+          "type": "string"
+        },
+        "price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "BriefingLevelRef",
+      "type": "object"
+    },
+    "BriefingStatus": {
+      "description": "一次简报的生命周期。",
+      "enum": [
+        "PENDING",
+        "READY",
+        "ABSTAIN",
+        "FAILED"
+      ],
+      "title": "BriefingStatus",
+      "type": "string"
+    },
+    "EvidenceKind": {
+      "description": "证据来源类别；只允许来自冻结快照内的只读工具或人工画线。",
+      "enum": [
+        "SNAPSHOT",
+        "CHART_VIEW",
+        "KEY_LEVEL",
+        "INDICATOR",
+        "OPERATOR",
+        "HUMAN_DRAWING"
+      ],
+      "title": "EvidenceKind",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "description": "可核对的证据引用；``evidence_id`` 是工具/画线/关键位的稳定 ID。",
+      "properties": {
+        "detail": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Detail",
+          "type": "string"
+        },
+        "evidence_id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "price_high": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price High"
+        },
+        "price_low": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Price Low"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "kind",
+        "label"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "ScannerBriefing": {
+      "additionalProperties": false,
+      "description": "持久化的一条简报；``snapshot_id`` 必须与触发它的扫描冻结快照一致。",
+      "properties": {
+        "abstain_reason": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Abstain Reason"
+        },
+        "created_ts": {
+          "minimum": 0,
+          "title": "Created Ts",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "maxItems": 40,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "instrument_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "read_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Read Ts"
+        },
+        "snapshot_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/BriefingStatus"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BriefingContent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeframe": {
+          "maxLength": 8,
+          "minLength": 1,
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "trigger_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Trigger Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "trigger_id",
+        "snapshot_id",
+        "instrument_id",
+        "timeframe",
+        "status",
+        "created_ts"
+      ],
+      "title": "ScannerBriefing",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "briefings": {
+      "items": {
+        "$ref": "#/$defs/ScannerBriefing"
+      },
+      "title": "Briefings",
+      "type": "array"
+    },
+    "generated_ts": {
+      "minimum": 0,
+      "title": "Generated Ts",
+      "type": "integer"
+    },
+    "unread": {
+      "default": 0,
+      "title": "Unread",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "generated_ts"
+  ],
+  "title": "BriefingListResponse",
+  "type": "object"
+}

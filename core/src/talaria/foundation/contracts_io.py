@@ -102,6 +102,16 @@ from talaria.foundation.key_levels import (
     KeyLevelSet,
     KeyLevelStatus,
 )
+from talaria.foundation.briefings import (
+    BriefingConsultRequest,
+    BriefingConsultResponse,
+    BriefingContent,
+    BriefingLevelRef,
+    BriefingListResponse,
+    BriefingResultRequest,
+    BriefingStatus,
+    ScannerBriefing,
+)
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.scanner import (
     ScannerConditionKind,
@@ -231,6 +241,13 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "scanner_focus_response": ScannerFocusResponse,
     "scanner_scan_request": ScannerScanRequest,
     "scanner_scan_response": ScannerScanResponse,
+    "briefing_level_ref": BriefingLevelRef,
+    "briefing_content": BriefingContent,
+    "scanner_briefing": ScannerBriefing,
+    "briefing_list_response": BriefingListResponse,
+    "briefing_consult_request": BriefingConsultRequest,
+    "briefing_consult_response": BriefingConsultResponse,
+    "briefing_result_request": BriefingResultRequest,
     "collab_window": CollabWindow,
     "drawing_ref": DrawingRef,
     "catalyst_event": CatalystEvent,
@@ -286,6 +303,7 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     ScannerConditionKind,
     ScannerSeverity,
     ScannerTriggerRoute,
+    BriefingStatus,
     AbstainReason,
     ConsultationStatus,
     SetupDirection,

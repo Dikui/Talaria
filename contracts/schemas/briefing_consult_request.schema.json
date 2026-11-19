@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "description": "把简报带入右栏对话时可选的自定义问题。",
+  "properties": {
+    "question": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Question"
+    }
+  },
+  "title": "BriefingConsultRequest",
+  "type": "object"
+}
