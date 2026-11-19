@@ -125,3 +125,17 @@ def test_real_dump_config_matches_permission_snapshot() -> None:
     assert set(actual) == set(BLOCK_IDS)
     for ident in BLOCK_IDS:
         assert actual[ident] == expected[ident], ident
+
+
+def test_dump_snapshot_is_ci_runnable_gate() -> None:
+    """没有 dsh 的 CI 也能校验：单 preset、单 plugin、无全权限沙箱。"""
+    text = SNAPSHOT.read_text(encoding="utf-8")
+    assert text.count("- id: preset-talaria-desk") == 1
+    assert text.count("- id: talaria-desk-plugin") == 1
+    assert "danger-full-access" not in text
+    assert "mode: read-only" in text
+    assert "policy: ask" in text
+    blocks = _blocks(text)
+    assert set(blocks) == set(BLOCK_IDS)
+    assert "mode: read-only" in blocks["sandbox-policy"]
+    assert "default: talaria-desk" in blocks["agent-preset-registry"]

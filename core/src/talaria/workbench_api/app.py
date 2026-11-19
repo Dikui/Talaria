@@ -1360,6 +1360,9 @@ def create_app(
                 if op == "subscribe":
                     if key in subscriptions:
                         continue
+                    had_channel = supervisor is not None and supervisor.has_channel(
+                        instrument_id, timeframe
+                    )
                     subscriptions.add(key)
                     if scheduler is not None:
                         try:
@@ -1401,6 +1404,12 @@ def create_app(
                     if supervisor is not None:
                         retain(key)
                         await rebalance_watchlist()
+                        if had_channel:
+                            current = supervisor.channel_health(
+                                instrument_id, timeframe
+                            )
+                            if current is not None:
+                                _enqueue(queue, _ws_payload(current))
                     cached = app.state.level_sets.get(key)
                     if cached is not None:
                         _enqueue(queue, _ws_levels_payload(cached))

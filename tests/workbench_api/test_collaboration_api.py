@@ -344,3 +344,44 @@ def test_usage_requires_auth_and_rejects_all_zero_silence(client: TestClient) ->
         headers=AUTH,
     )
     assert response.status_code == 422
+
+
+def test_host_dispatch_ignores_ambient_http_proxy(client, monkeypatch) -> None:
+    """宿主派发是回环调用，不能被环境里的 HTTP 代理劫持。"""
+    import asyncio
+    import http.server
+    import threading
+
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 约定
+            length = int(self.headers.get("content-length", "0"))
+            self.rfile.read(length)
+            seen.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("NO_PROXY", "")
+    try:
+        service = client.app.state.collaboration_service
+        asyncio.run(
+            service._post_to_host(
+                f"http://127.0.0.1:{server.server_port}",
+                {"consultation_id": "cons_proxy_check"},
+            )
+        )
+        assert seen == ["/talaria/consult"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)

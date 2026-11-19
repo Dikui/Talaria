@@ -190,7 +190,9 @@ def _cmd_up(args: argparse.Namespace) -> int:
         info = dsh_host.info()
         if info.state != "online":
             return None
-        return info.url
+        # DSH 打印的入口 URL 通常带 ?token=…；桥接派发必须用无查询串基址，
+        # 否则拼接 /talaria/consult 会把路径塞进查询串。
+        return info.base_url
 
     app = create_app(
         settings,

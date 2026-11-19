@@ -324,7 +324,9 @@ class CollaborationService:
             self._events.pop(consultation_id, None)
 
     async def _post_to_host(self, url: str, payload: Mapping[str, Any]) -> None:
-        async with httpx.AsyncClient(timeout=self._http_timeout_s) as client:
+        async with httpx.AsyncClient(
+            timeout=self._http_timeout_s, trust_env=False
+        ) as client:
             response = await client.post(
                 f"{url.rstrip('/')}/talaria/consult", json=dict(payload)
             )

@@ -81,6 +81,8 @@ server.serve_forever()
         api_url = host.status_payload()["url"]
         assert api_url.startswith("http://127.0.0.1:")
         assert "token=" not in api_url
+        assert host.info().base_url == api_url
+        assert host.info().base_url == info.url.split("?", 1)[0]
         log = Path(info.log_path).read_text(encoding="utf-8")
         assert "dsh web:" in log
         assert "super-secret" not in log

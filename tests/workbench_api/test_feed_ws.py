@@ -174,6 +174,39 @@ def test_outage_marks_stale_then_recovers_with_feed_gap(tmp_path: Path) -> None:
         assert bars(messages)[2]["bar"]["timestamp"] == BASE + 2 * MINUTE
 
 
+def test_existing_channel_sends_current_health_to_new_subscriber(
+    tmp_path: Path,
+) -> None:
+    """刷新页面时新的 WS 订阅必须拿到当前健康状态，而不是一直“等待行情”。"""
+    app = create_app(make_settings(tmp_path, replay="in_progress.jsonl"))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/desk") as first:
+            first_pump = MessagePump(first)
+            first_pump.next()
+            first.send_json(
+                {"op": "subscribe", "instrument_id": INSTRUMENT, "timeframe": "1m"}
+            )
+            first_pump.until(lambda seen: len(bars(seen)) >= 1)
+
+            with client.websocket_connect("/ws/desk") as second:
+                second_pump = MessagePump(second)
+                hello = second_pump.next()
+                assert hello["type"] == "hello"
+                second.send_json(
+                    {"op": "subscribe", "instrument_id": INSTRUMENT, "timeframe": "1m"}
+                )
+                messages = second_pump.until(
+                    lambda seen: any(item["type"] == "health" for item in seen)
+                )
+
+                health = next(
+                    item["data"] for item in messages if item["type"] == "health"
+                )
+                assert health["instrument_id"] == INSTRUMENT
+                assert health["timeframe"] == "1m"
+                assert health["status"] in {"LIVE", "STALE", "RECOVERING"}
+
+
 def test_unsubscribe_releases_channel(tmp_path: Path) -> None:
     app = create_app(make_settings(tmp_path, replay="in_progress.jsonl"))
     with TestClient(app) as client:

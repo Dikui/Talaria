@@ -273,6 +273,18 @@ class FeedSupervisor(MarketEventFeed):
             channels=channels,
         )
 
+    def has_channel(self, instrument_id: str, timeframe: str) -> bool:
+        return (instrument_id, timeframe) in self._channels
+
+    def channel_health(
+        self, instrument_id: str, timeframe: str
+    ) -> FeedHealthEvent | None:
+        """当前订阅通道的健康快照；新连接复用一个已存在通道时用于回放状态。"""
+        channel = self._channels.get((instrument_id, timeframe))
+        if channel is None:
+            return None
+        return self._health_event(channel, self._now_ms())
+
     def recent_bars(
         self,
         *,
