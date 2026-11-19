@@ -1,0 +1,75 @@
+{
+  "$defs": {
+    "EvidenceKind": {
+      "description": "证据来源类别；只允许来自冻结快照内的只读工具或人工画线。",
+      "enum": [
+        "SNAPSHOT",
+        "CHART_VIEW",
+        "KEY_LEVEL",
+        "INDICATOR",
+        "OPERATOR",
+        "HUMAN_DRAWING"
+      ],
+      "title": "EvidenceKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "可核对的证据引用；``evidence_id`` 是工具/画线/关键位的稳定 ID。",
+  "properties": {
+    "detail": {
+      "default": "",
+      "maxLength": 500,
+      "title": "Detail",
+      "type": "string"
+    },
+    "evidence_id": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Evidence Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/EvidenceKind"
+    },
+    "label": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    },
+    "price_high": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Price High"
+    },
+    "price_low": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Price Low"
+    }
+  },
+  "required": [
+    "evidence_id",
+    "kind",
+    "label"
+  ],
+  "title": "EvidenceRef",
+  "type": "object"
+}

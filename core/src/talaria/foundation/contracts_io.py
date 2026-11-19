@@ -90,6 +90,35 @@ from talaria.foundation.snapshot import (
     SnapshotMode,
     SnapshotRequest,
 )
+from talaria.foundation.collaboration.contracts import (
+    Abstain,
+    AbstainReason,
+    CatalystEvent,
+    CollabWindow,
+    ConsultationListResponse,
+    ConsultationPackage,
+    ConsultationRecord,
+    ConsultationStatus,
+    ConsultRequest,
+    ConsultResponse,
+    DrawingRef,
+    EvidenceKind,
+    EvidenceRef,
+    HostResultRequest,
+    SetupDirection,
+    SetupInsight,
+    UsageReport,
+    UsageReportResponse,
+    UsageRow,
+    UsageSummary,
+    UsageSummaryResponse,
+)
+from talaria.foundation.collaboration.tools import (
+    ComputeOperatorInput,
+    GetChartViewInput,
+    GetIndicatorsInput,
+    GetKeyLevelsInput,
+)
 from talaria.foundation.types import DECIMAL_PATTERN, PrecisionTier, TemporalStamp
 from talaria.foundation.watchlist import (
     DegradationReason,
@@ -160,6 +189,23 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "alert_list_response": AlertListResponse,
     "alert_trigger_record": AlertTriggerRecord,
     "alert_trigger_list_response": AlertTriggerListResponse,
+    "collab_window": CollabWindow,
+    "drawing_ref": DrawingRef,
+    "catalyst_event": CatalystEvent,
+    "evidence_ref": EvidenceRef,
+    "consult_request": ConsultRequest,
+    "consultation_package": ConsultationPackage,
+    "setup_insight": SetupInsight,
+    "abstain": Abstain,
+    "consultation_record": ConsultationRecord,
+    "consult_response": ConsultResponse,
+    "consultation_list_response": ConsultationListResponse,
+    "host_result_request": HostResultRequest,
+    "usage_report": UsageReport,
+    "usage_row": UsageRow,
+    "usage_report_response": UsageReportResponse,
+    "usage_summary": UsageSummary,
+    "usage_summary_response": UsageSummaryResponse,
 }
 
 #: 枚举的固定输出顺序。
@@ -184,6 +230,10 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     AlertDirection,
     AlertOverlayMode,
     AlertStatus,
+    AbstainReason,
+    ConsultationStatus,
+    SetupDirection,
+    EvidenceKind,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
@@ -224,7 +274,32 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
 SCHEMA_DIR = Path("contracts/schemas")
 DSH_TOOL_DIR = SCHEMA_DIR / "dsh-tools"
 TS_PATH = Path("dsh/packages/talaria-contracts/src/generated.ts")
-DSH_TOOL_PATH = DSH_TOOL_DIR / "get_snapshot.tool.json"
+DSH_TOOL_SPECS: dict[str, tuple[type[BaseModel], str]] = {
+    "get_snapshot": (
+        SnapshotRequest,
+        "获取指定标的在给定截止时点的确定性历史 K 线快照。",
+    ),
+    "get_indicators": (
+        GetIndicatorsInput,
+        "在已冻结快照上由 Python 计算指标；只读，返回十进制字符串。",
+    ),
+    "get_key_levels": (
+        GetKeyLevelsInput,
+        "在已冻结快照上由 Python 计算关键位；只读，返回十进制字符串。",
+    ),
+    "compute_operator": (
+        ComputeOperatorInput,
+        "在已冻结快照上运行 Python 算子；只读，禁止在 JS/TS 侧重算。",
+    ),
+    "get_chart_view": (
+        GetChartViewInput,
+        "读取已冻结快照内的可视窗口与有效人工画线；只读。",
+    ),
+}
+DSH_TOOL_PATHS: dict[str, Path] = {
+    name: DSH_TOOL_DIR / f"{name}.tool.json" for name in DSH_TOOL_SPECS
+}
+DSH_TOOL_PATH = DSH_TOOL_PATHS["get_snapshot"]
 
 _HEADER = "// 本文件由 `uv run talaria contract-check --write` 生成，请勿手改。\n\n"
 
@@ -405,13 +480,14 @@ def render_contracts(root: Path | None = None) -> dict[Path, str]:
     for filename, model in SCHEMA_MODELS.items():
         artifacts[SCHEMA_DIR / f"{filename}.schema.json"] = _dump_json(_schema_for(model))
 
-    tool_schema = _to_dsh_subset(_inline_refs(_schema_for(SnapshotRequest)))
-    tool_payload = {
-        "name": "get_snapshot",
-        "description": "获取指定标的在给定截止时点的确定性历史 K 线快照。",
-        "inputSchema": tool_schema,
-    }
-    artifacts[DSH_TOOL_PATH] = _dump_json(tool_payload)
+    for name, (model, description) in DSH_TOOL_SPECS.items():
+        tool_schema = _to_dsh_subset(_inline_refs(_schema_for(model)))
+        tool_payload = {
+            "name": name,
+            "description": description,
+            "inputSchema": tool_schema,
+        }
+        artifacts[DSH_TOOL_PATHS[name]] = _dump_json(tool_payload)
     artifacts[TS_PATH] = _render_ts()
     return artifacts
 
@@ -512,11 +588,14 @@ def check_contracts(root: Path | None = None) -> list[str]:
             if any(item.get("type") in {"number", "integer"} for item in _iter_dicts(prop)):
                 problems.append(f"{schema_path.name} 的 {location} 含 number/integer 分支")
 
-    tool_path = root / DSH_TOOL_PATH
-    if tool_path.is_file():
+    for name, path in DSH_TOOL_PATHS.items():
+        tool_path = root / path
+        if not tool_path.is_file():
+            problems.append(f"缺少 DSH 工具：{path}")
+            continue
         tool = json.loads(tool_path.read_text(encoding="utf-8"))
-        if tool.get("name") != "get_snapshot":
-            problems.append("DSH 工具子集 name 必须是 get_snapshot")
+        if tool.get("name") != name:
+            problems.append(f"DSH 工具子集 name 必须是 {name}")
         for node in _iter_dicts(tool):
             if "$schema" in node or "$defs" in node or "$ref" in node:
                 problems.append("DSH 工具子集不允许 $schema/$defs/$ref")
@@ -524,7 +603,13 @@ def check_contracts(root: Path | None = None) -> list[str]:
         input_schema = tool.get("inputSchema", {})
         if input_schema.get("type") != "object":
             problems.append("DSH 工具子集的 inputSchema 必须是内联 object")
+        if name != "get_snapshot" and "snapshot_id" not in input_schema.get(
+            "properties", {}
+        ):
+            problems.append(f"DSH 工具 {name} 必须绑定 snapshot_id")
         for location, prop in _find_decimal_properties(input_schema):
-            if not _contains_pattern(prop, DECIMAL_PATTERN):
-                problems.append(f"DSH 工具子集的 {location} 不是十进制字符串")
+            if not _is_decimal_property(prop) and prop.get("type") != "string":
+                problems.append(f"DSH 工具子集的 {location} 必须是字符串")
+            if any(item.get("type") in {"number", "integer"} for item in _iter_dicts(prop)):
+                problems.append(f"DSH 工具子集的 {location} 含 number/integer 分支")
     return problems

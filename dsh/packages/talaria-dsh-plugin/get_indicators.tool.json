@@ -1,0 +1,36 @@
+{
+  "description": "在已冻结快照上由 Python 计算指标；只读，返回十进制字符串。",
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "default": 300,
+        "title": "Limit",
+        "type": "integer"
+      },
+      "names": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Names",
+        "type": "array"
+      },
+      "snapshot_id": {
+        "title": "Snapshot Id",
+        "type": "string"
+      },
+      "timeframe": {
+        "title": "Timeframe",
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshot_id",
+      "timeframe",
+      "names"
+    ],
+    "title": "GetIndicatorsInput",
+    "type": "object"
+  },
+  "name": "get_indicators"
+}

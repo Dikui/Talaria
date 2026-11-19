@@ -33,6 +33,16 @@ from talaria.foundation.alerts import (
     AlertTriggerListResponse,
     AlertTriggerRecord,
 )
+from talaria.foundation.collaboration import (
+    ConsultationListResponse,
+    ConsultationRecord,
+    ConsultRequest,
+    ConsultResponse,
+    HostResultRequest,
+    UsageReport,
+    UsageReportResponse,
+    UsageSummaryResponse,
+)
 from talaria.foundation.drawings import (
     ChartView,
     DrawingClearResponse,
@@ -101,6 +111,7 @@ from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.replay import ReplayFeed
 from talaria.workbench_api.alert_service import AlertService
+from talaria.workbench_api.collaboration_service import CollaborationService
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.key_level_feedback import KeyLevelFeedbackService
 from talaria.workbench_api.service import WorkbenchService
@@ -121,6 +132,7 @@ ERROR_STATUS: dict[str, int] = {
     "SNAPSHOT_NOT_FOUND": 404,
     "DRAWING_NOT_FOUND": 404,
     "ALERT_NOT_FOUND": 404,
+    "CONSULTATION_NOT_FOUND": 404,
     "FEED_UNAVAILABLE": 503,
     "NOT_IMPLEMENTED": 501,
     "INTERNAL": 500,
@@ -232,6 +244,7 @@ async def _alert_tick_loop(alert_service: AlertService) -> None:
 def create_app(
     settings: AppSettings,
     collaboration_status: Callable[[], Mapping[str, object]] | None = None,
+    collaboration_host: Callable[[], str | None] | None = None,
 ) -> FastAPI:
     token = settings.token or secrets.token_urlsafe(32)
 
@@ -318,6 +331,13 @@ def create_app(
         app.state.drawing_service = DrawingService(
             queue=state_writer, pack=CRYPTO_PERP_PACK, now_ms=settings.now_ms
         )
+        app.state.collaboration_service = CollaborationService(
+            queue=state_writer,
+            workbench=app.state.service,
+            drawings=app.state.drawing_service,
+            host_url=collaboration_host or (lambda: None),
+            now_ms=settings.now_ms,
+        )
         app.state.key_level_feedback = KeyLevelFeedbackService(
             state_writer=state_writer
         )
@@ -388,6 +408,7 @@ def create_app(
             if remove_alert_listener is not None:
                 remove_alert_listener()
             await alert_service.close()
+            await app.state.collaboration_service.close()
             if remove_hot_listener is not None:
                 remove_hot_listener()
             if supervisor is not None:
@@ -445,6 +466,9 @@ def create_app(
     def drawings(request: Request) -> DrawingService:
         return request.app.state.drawing_service
 
+    def collaborations(request: Request) -> CollaborationService:
+        return request.app.state.collaboration_service
+
     @app.get("/api/health")
     def health(request: Request) -> dict[str, object]:
         active = service(request)
@@ -462,6 +486,67 @@ def create_app(
                 "message": "单机模式：图表由 Python 守护进程直接提供，不依赖 DSH 宿主。",
             }
         return provider()
+
+    @app.post(
+        "/api/collaboration/consult",
+        response_model=ConsultResponse,
+        status_code=202,
+    )
+    async def consult(
+        payload: ConsultRequest, request: Request
+    ) -> ConsultResponse:
+        return await collaborations(request).consult(payload)
+
+    @app.get(
+        "/api/collaboration/consultations",
+        response_model=ConsultationListResponse,
+    )
+    async def list_consultations(
+        request: Request,
+        limit: int = Query(50, ge=1, le=200),
+    ) -> ConsultationListResponse:
+        return ConsultationListResponse(
+            consultations=await collaborations(request).list(limit=limit)
+        )
+
+    @app.get(
+        "/api/collaboration/consultations/{consultation_id}",
+        response_model=ConsultationRecord,
+    )
+    async def get_consultation(
+        consultation_id: str, request: Request
+    ) -> ConsultationRecord:
+        return await collaborations(request).get(consultation_id)
+
+    @app.post(
+        "/api/collaboration/consultations/{consultation_id}/result",
+        response_model=ConsultationRecord,
+    )
+    async def submit_consultation_result(
+        consultation_id: str,
+        payload: HostResultRequest,
+        request: Request,
+    ) -> ConsultationRecord:
+        return await collaborations(request).submit_result(consultation_id, payload)
+
+    @app.get(
+        "/api/collaboration/usage",
+        response_model=UsageSummaryResponse,
+    )
+    async def collaboration_usage(
+        request: Request,
+        limit: int = Query(100, ge=1, le=1000),
+    ) -> UsageSummaryResponse:
+        return await collaborations(request).usage(limit=limit)
+
+    @app.post(
+        "/api/collaboration/usage",
+        response_model=UsageReportResponse,
+    )
+    async def report_collaboration_usage(
+        payload: UsageReport, request: Request
+    ) -> UsageReportResponse:
+        return await collaborations(request).report_usage(payload)
 
     @app.get("/api/feed/health", response_model=FeedHealthReport)
     def feed_health(request: Request) -> FeedHealthReport:

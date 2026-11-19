@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "DrawingKind": {
+      "description": "任务单 05 支持的七种人工画线图元。",
+      "enum": [
+        "HORIZONTAL_LINE",
+        "RAY",
+        "SEGMENT",
+        "PARALLEL_CHANNEL",
+        "FIB_RETRACEMENT",
+        "RECTANGLE",
+        "TEXT_LABEL"
+      ],
+      "title": "DrawingKind",
+      "type": "string"
+    },
+    "DrawingPoint": {
+      "additionalProperties": false,
+      "description": "一个锚点：UTC 毫秒时间戳 + 十进制字符串价格。",
+      "properties": {
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "ts": {
+          "minimum": 0,
+          "title": "Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ts",
+        "price"
+      ],
+      "title": "DrawingPoint",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "会诊包里冻结的人工画线快照，不引用可变的当前版本。",
+  "properties": {
+    "drawing_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Drawing Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/DrawingKind"
+    },
+    "points": {
+      "items": {
+        "$ref": "#/$defs/DrawingPoint"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Points",
+      "type": "array"
+    },
+    "text": {
+      "default": "",
+      "title": "Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "drawing_id",
+    "kind",
+    "points"
+  ],
+  "title": "DrawingRef",
+  "type": "object"
+}

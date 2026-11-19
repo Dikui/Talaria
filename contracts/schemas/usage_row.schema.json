@@ -1,0 +1,65 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cached_input_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cached Input Tokens"
+    },
+    "dsh_session_id": {
+      "title": "Dsh Session Id",
+      "type": "string"
+    },
+    "dsh_turn_id": {
+      "title": "Dsh Turn Id",
+      "type": "string"
+    },
+    "input_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Tokens"
+    },
+    "output_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output Tokens"
+    },
+    "reported_ts": {
+      "title": "Reported Ts",
+      "type": "integer"
+    },
+    "source": {
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "dsh_session_id",
+    "dsh_turn_id",
+    "source",
+    "reported_ts"
+  ],
+  "title": "UsageRow",
+  "type": "object"
+}

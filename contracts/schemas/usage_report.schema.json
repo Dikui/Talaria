@@ -1,0 +1,70 @@
+{
+  "additionalProperties": false,
+  "description": "一轮 Token 用量；未知字段用 None 表示缺失，绝不按 0 入账。",
+  "properties": {
+    "cached_input_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cached Input Tokens"
+    },
+    "dsh_session_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Dsh Session Id",
+      "type": "string"
+    },
+    "dsh_turn_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Dsh Turn Id",
+      "type": "string"
+    },
+    "input_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Tokens"
+    },
+    "output_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output Tokens"
+    },
+    "source": {
+      "default": "host",
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "dsh_session_id",
+    "dsh_turn_id"
+  ],
+  "title": "UsageReport",
+  "type": "object"
+}

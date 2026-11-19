@@ -1,0 +1,48 @@
+{
+  "description": "读取已冻结快照内的可视窗口与有效人工画线；只读。",
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "from_ts": {
+        "title": "From Ts",
+        "type": "integer"
+      },
+      "instrument_id": {
+        "title": "Instrument Id",
+        "type": "string"
+      },
+      "price_max": {
+        "title": "Price Max",
+        "type": "string"
+      },
+      "price_min": {
+        "title": "Price Min",
+        "type": "string"
+      },
+      "snapshot_id": {
+        "title": "Snapshot Id",
+        "type": "string"
+      },
+      "timeframe": {
+        "title": "Timeframe",
+        "type": "string"
+      },
+      "to_ts": {
+        "title": "To Ts",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "snapshot_id",
+      "instrument_id",
+      "timeframe",
+      "from_ts",
+      "to_ts",
+      "price_min",
+      "price_max"
+    ],
+    "title": "GetChartViewInput",
+    "type": "object"
+  },
+  "name": "get_chart_view"
+}

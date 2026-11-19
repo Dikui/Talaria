@@ -12,6 +12,10 @@
 
 export const READ_ONLY_TOOLS = Object.freeze(new Set([
   'get_snapshot',
+  'get_indicators',
+  'get_key_levels',
+  'compute_operator',
+  'get_chart_view',
   'read',
   'glob',
   'grep',

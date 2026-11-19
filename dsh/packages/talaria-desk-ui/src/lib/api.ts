@@ -7,6 +7,10 @@ import type {
   AlertTriggerListResponse,
   ChartPage,
   ChartView,
+  ConsultationListResponse,
+  ConsultationRecord,
+  ConsultRequest,
+  ConsultResponse,
   DerivativeBundle,
   DrawingClearResponse,
   DrawingCreate,
@@ -23,6 +27,7 @@ import type {
   KeyLevelSet,
   OperatorRequest,
   SnapshotMeta,
+  UsageSummaryResponse,
   Watchlist,
 } from "@talaria/contracts";
 
@@ -391,6 +396,28 @@ export const api = {
     return postJson<AlertRecord>(
       `/api/alerts/${encodeURIComponent(alertId)}/dismiss`,
       undefined,
+    );
+  },
+
+  consult(payload: ConsultRequest): Promise<ConsultResponse> {
+    return postJson<ConsultResponse>("/api/collaboration/consult", payload);
+  },
+
+  consultation(consultationId: string): Promise<ConsultationRecord> {
+    return getJson<ConsultationRecord>(
+      `/api/collaboration/consultations/${encodeURIComponent(consultationId)}`,
+    );
+  },
+
+  consultations(limit = 30): Promise<ConsultationListResponse> {
+    return getJson<ConsultationListResponse>(
+      `/api/collaboration/consultations?limit=${limit}`,
+    );
+  },
+
+  collaborationUsage(limit = 200): Promise<UsageSummaryResponse> {
+    return getJson<UsageSummaryResponse>(
+      `/api/collaboration/usage?limit=${limit}`,
     );
   },
 

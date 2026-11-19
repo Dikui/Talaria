@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "description": "窗口内的日历事件；初版为空列表，字段先固定下来避免后续破坏契约。",
+  "properties": {
+    "event_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "kind": {
+      "default": "CATALYST",
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Kind",
+      "type": "string"
+    },
+    "source": {
+      "default": "catalyst_calendar",
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "ts": {
+      "minimum": 0,
+      "title": "Ts",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "event_id",
+    "title",
+    "ts"
+  ],
+  "title": "CatalystEvent",
+  "type": "object"
+}

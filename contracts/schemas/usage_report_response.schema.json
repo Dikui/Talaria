@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "dsh_session_id": {
+      "title": "Dsh Session Id",
+      "type": "string"
+    },
+    "dsh_turn_id": {
+      "title": "Dsh Turn Id",
+      "type": "string"
+    },
+    "duplicate": {
+      "default": false,
+      "title": "Duplicate",
+      "type": "boolean"
+    },
+    "recorded": {
+      "title": "Recorded",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "recorded",
+    "dsh_session_id",
+    "dsh_turn_id"
+  ],
+  "title": "UsageReportResponse",
+  "type": "object"
+}
