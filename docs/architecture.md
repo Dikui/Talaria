@@ -13,6 +13,8 @@
 - [ADR-0009：以模型知识截止日划分智能体评估证据等级，历史回放默认仅作诊断](./adr/0009-agent-evaluation-evidence-tiers-by-model-knowledge-cutoff.md)
 - [ADR-0010：v1 指标核以纯 Python Decimal 为唯一权威，第三方指标库只作锁定依赖](./adr/0010-pure-python-indicator-core.md)
 - [ADR-0011：冷库发布由快照冻结触发，使用只追加的游标](./adr/0011-cold-store-publish-on-snapshot-freeze.md)
+- [ADR-0012：状态库写入走专用写线程，读取用只读连接绕过写队列](./adr/0012-state-store-dedicated-writer-thread-and-read-only-connections.md)
+- [ADR-0013：L0 底座只放纯契约与纯计算，有状态引擎和 I/O 放到上层](./adr/0013-foundation-holds-only-pure-contracts-and-computation.md)
 
 *(前置外部接口与开源底座许可核查证据存档于 [`docs/research/`](./research/)。)*
 
@@ -191,7 +193,7 @@ Talaria/
 ├── tests/                              # Python 模块测试、契约黄金向量测试与 M1/M2 验收
 └── docs/
     ├── architecture.md                 # 本架构规范
-    └── adr/                            # 架构决策记录 (ADR-0001 .. ADR-0011)
+    └── adr/                            # 架构决策记录 (ADR-0001 .. ADR-0013)
 ```
 
 `feed/` 与 `replay/` 是与 `perception/` 同级的包。工作台组装 `feed/supervisor.py` 的实时状态机与 `replay/replay.py` 的行情回放传输层。交易编排器 `ReplayRunner` 规划于 M3。`evaluation/key_levels.py` 离线评估确定性关键位，智能体评估规划于 M4。
