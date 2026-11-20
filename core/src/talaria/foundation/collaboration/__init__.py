@@ -25,7 +25,6 @@ from talaria.foundation.collaboration.contracts import (
 )
 from talaria.foundation.collaboration.prompt import (
     DISCIPLINE_PREFIX,
-    MARKET_PACK_SKILL,
     build_consultation_prompt,
 )
 from talaria.foundation.collaboration.validation import (
@@ -37,7 +36,6 @@ from talaria.foundation.collaboration.validation import (
 
 __all__ = [
     "DISCIPLINE_PREFIX",
-    "MARKET_PACK_SKILL",
     "Abstain",
     "AbstainReason",
     "CatalystEvent",

@@ -487,6 +487,7 @@ def load_compact_bars(
     timeframe: str,
     from_ts: int,
     to_ts: int,
+    raw_archive_id: str,
     fixture_dir: Path | None = None,
     data_dir: Path | None = None,
     horizon_bars: int = DEFAULT_HORIZON_BARS,
@@ -524,9 +525,10 @@ def load_compact_bars(
             source = f"fixture:{fixture_file}"
 
     if not raw and data_dir is not None:
+        raw_store = RawStore(data_dir, raw_archive_id=raw_archive_id)
         raw = [
             bar
-            for bar in RawStore(Path(data_dir)).read(instrument_symbol, timeframe)
+            for bar in raw_store.read(instrument_symbol, timeframe)
             if bar.ts_event <= fetch_end
         ]
         source = f"raw-store:{Path(data_dir)}"

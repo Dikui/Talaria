@@ -275,7 +275,7 @@ def test_trigger_freezes_registered_evidence_snapshot(tmp_path: Path, fixture_di
         builder = SnapshotBuilder(
             data_dir=tmp_path,
             connector=FixtureConnector(fixture_dir),
-            raw_store=RawStore(tmp_path),
+            raw_store=RawStore(tmp_path, raw_archive_id="test"),
             snapshot_store=snapshot_store,
             policy=BackfillPolicy(target_bars=3000, max_pages=5),
             now_ms=clock,

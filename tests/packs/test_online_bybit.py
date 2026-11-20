@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from talaria.packs.crypto_perp.connector import BybitLinearConnector
+from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 
 pytestmark = pytest.mark.online
 
 
 def test_bybit_public_kline_is_reachable() -> None:
-    connector = BybitLinearConnector(timeout=5.0, retries=0)
+    connector = CRYPTO_PERP_PACK.create_history_connector()
     try:
         bars = connector.fetch_bars(symbol="BTCUSDT", timeframe="1m", limit=2)
     finally:

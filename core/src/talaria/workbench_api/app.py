@@ -80,6 +80,7 @@ from talaria.foundation.feed import (
     FeedEvent,
     FeedHealthEvent,
     FeedHealthReport,
+    FeedTransport,
     KlineEvent,
     OrderBookEvent,
 )
@@ -125,11 +126,7 @@ from talaria.foundation.watchlist import (
     WatchlistItemOrder,
     WatchlistOrder,
 )
-from talaria.packs.crypto_perp import (
-    CRYPTO_PERP_PACK,
-    BybitLinearConnector,
-    BybitPublicStream,
-)
+from talaria.packs import get_market_pack
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.backfill import BackfillPolicy
 from talaria.perception.cold_publisher import ColdPublisher
@@ -316,22 +313,19 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        pack = get_market_pack(settings.pack)
         connector = (
             FixtureConnector(settings.fixture_dir)
             if settings.fixture_dir is not None
-            else BybitLinearConnector(settings.bybit_base_url)
+            else pack.create_history_connector(base_url=settings.history_base_url)
         )
-        instruments = CRYPTO_PERP_PACK.instruments()
-        stream = None
-        feed_mode: str | None = None
+        instruments = pack.instruments()
+        stream: FeedTransport | None = None
         if settings.replay_events is not None:
             stream = ReplayFeed(settings.replay_events, speed=settings.replay_speed)
-            feed_mode = "replay"
         elif settings.fixture_dir is None:
-            stream = BybitPublicStream(
-                instruments=instruments, now_ms=settings.now_ms
-            )
-            feed_mode = "bybit"
+            stream = pack.create_realtime_stream(now_ms=settings.now_ms)
+        feed_mode = stream.feed_mode if stream is not None else None
 
         cold_store = ColdStore(settings.data_dir)
         cold_publishers = {
@@ -350,7 +344,7 @@ def create_app(
         builder = SnapshotBuilder(
             data_dir=settings.data_dir,
             connector=connector,
-            raw_store=RawStore(settings.data_dir),
+            raw_store=RawStore(settings.data_dir, raw_archive_id=pack.raw_archive_id),
             snapshot_store=store,
             policy=BackfillPolicy(
                 target_bars=settings.backfill_bars,
@@ -361,7 +355,7 @@ def create_app(
             cold_publishers=cold_publishers,
         )
         app.state.service = WorkbenchService(
-            pack=CRYPTO_PERP_PACK,
+            pack=pack,
             connector=connector,
             data_dir=settings.data_dir,
             snapshot_store=store,
@@ -379,9 +373,8 @@ def create_app(
             supervisor = FeedSupervisor(
                 stream=stream,
                 # 回放文件自带恢复段，不依赖 REST 回填；实盘断流才走 REST。
-                connector=None if feed_mode == "replay" else connector,
+                connector=None if settings.replay_events is not None else connector,
                 instruments=instruments,
-                feed_mode=feed_mode,
                 now_ms=settings.now_ms,
                 stale_after_ms=settings.stale_after_ms,
             )
@@ -395,19 +388,20 @@ def create_app(
         await state_writer.start()
         app.state.state_writer = state_writer
         app.state.drawing_service = DrawingService(
-            queue=state_writer, pack=CRYPTO_PERP_PACK, now_ms=settings.now_ms
+            queue=state_writer, pack=pack, now_ms=settings.now_ms
         )
         app.state.annotation_service = AnnotationService(
             queue=state_writer,
             workbench=app.state.service,
             drawings=app.state.drawing_service,
-            pack=CRYPTO_PERP_PACK,
+            pack=pack,
             now_ms=settings.now_ms,
         )
         app.state.collaboration_service = CollaborationService(
             queue=state_writer,
             workbench=app.state.service,
             drawings=app.state.drawing_service,
+            market_skill=pack.market_skill,
             host_url=collaboration_host or (lambda: None),
             now_ms=settings.now_ms,
         )
@@ -519,7 +513,7 @@ def create_app(
                 co_pilot_enabled=True,
             ),
         )
-        if settings.fixture_dir is not None and feed_mode is None:
+        if isinstance(connector, FixtureConnector) and stream is None:
             # 离线样本没有实时流；启动时用同一 connector 回填一轮，扫描与 UI
             # 才能在没有网络的演示/验收环境里产出可回看的异动。
             for spec in instruments:

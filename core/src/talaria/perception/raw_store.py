@@ -1,6 +1,6 @@
 """原始标准化 K 线落盘：JSONL 追加、fsync、按 timestamp 去重。
 
-路径固定为 ``<data_dir>/data/raw/bybit_linear/<SYMBOL>/<timeframe>.jsonl``。
+路径为 ``<data_dir>/data/raw/<archive_id>/<SYMBOL>/<timeframe>.jsonl``。
 去重语义是「last-ingested wins」：后追加的同 timestamp 记录覆盖先前的。
 """
 
@@ -14,8 +14,6 @@ from typing import Iterable
 
 from talaria.foundation.connector import RawBar
 from talaria.foundation.types import PrecisionTier
-
-RAW_SUBDIR = Path("data") / "raw" / "bybit_linear"
 
 
 def bar_record(bar: RawBar) -> dict[str, object]:
@@ -58,11 +56,11 @@ def bar_from_record(record: dict[str, object]) -> RawBar:
 class RawStore:
     """按标的与周期追加原始柱，读取时去重并升序返回。"""
 
-    def __init__(self, data_dir: Path | str) -> None:
-        self._data_dir = Path(data_dir)
+    def __init__(self, data_dir: Path | str, *, raw_archive_id: str) -> None:
+        self._raw_dir = Path(data_dir) / "data" / "raw" / raw_archive_id
 
     def path_for(self, symbol: str, timeframe: str) -> Path:
-        return self._data_dir / RAW_SUBDIR / symbol / f"{timeframe}.jsonl"
+        return self._raw_dir / symbol / f"{timeframe}.jsonl"
 
     def append(self, symbol: str, timeframe: str, bars: Iterable[RawBar]) -> int:
         materialized = list(bars)

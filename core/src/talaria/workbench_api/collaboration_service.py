@@ -139,6 +139,7 @@ class CollaborationService:
         queue: StateWriterQueue,
         workbench: WorkbenchService,
         drawings: DrawingService,
+        market_skill: str,
         host_url: Callable[[], str | None],
         now_ms: Callable[[], int],
         stale_after_ms: int = DEFAULT_STALE_AFTER_MS,
@@ -149,6 +150,7 @@ class CollaborationService:
         self._queue = queue
         self._workbench = workbench
         self._drawings = drawings
+        self._market_skill = market_skill
         self._host_url = host_url
         self._now_ms = now_ms
         self._stale_after_ms = stale_after_ms
@@ -241,7 +243,7 @@ class CollaborationService:
             now_ms=self._now_ms(),
             stale_after_ms=self._stale_after_ms,
         )
-        prompt = build_consultation_prompt(package)
+        prompt = build_consultation_prompt(package, market_skill=self._market_skill)
         record = ConsultationRecord(
             consultation_id=package.consultation_id,
             snapshot_id=package.snapshot_id,

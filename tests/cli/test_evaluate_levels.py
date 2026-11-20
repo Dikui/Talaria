@@ -8,6 +8,7 @@ import pytest
 
 from talaria.cli.main import main
 from talaria.evaluation.key_levels import registered_level_kinds
+from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.raw_store import RawStore
 
@@ -113,14 +114,19 @@ def test_evaluate_levels_reports_structured_error_for_unsupported_timeframe(
     assert error["code"] == "unsupported_timeframe"
 
 
-def test_evaluate_levels_reads_raw_store_when_no_fixture_is_given(
+# 任务单 04：默认市场包沿用现有原始柱路径。
+@pytest.mark.spec
+def test_evaluate_levels_reads_existing_crypto_perp_archive(
     tmp_path, fixture_dir, capsys
 ) -> None:
     raw = FixtureConnector(fixture_dir).fetch_bars(
         symbol="BTCUSDT", timeframe="1m", end_ts=TO_MS, limit=180
     )
     data_dir = tmp_path / "data"
-    RawStore(data_dir).append("BTCUSDT", "1m", raw)
+    RawStore(data_dir, raw_archive_id=CRYPTO_PERP_PACK.raw_archive_id).append(
+        "BTCUSDT", "1m", raw
+    )
+    assert (data_dir / "data" / "raw" / "bybit_linear" / "BTCUSDT" / "1m.jsonl").is_file()
 
     assert (
         main(

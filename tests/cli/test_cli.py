@@ -35,6 +35,27 @@ def test_up_rejects_invalid_port(capsys) -> None:
     assert "端口必须在 1..65535" in capsys.readouterr().err
 
 
+# 任务单 04：两个命令都列出已注册的市场包。
+@pytest.mark.spec
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["up"],
+        [
+            "evaluate-levels", "--instrument", "TEST", "--timeframe", "1m",
+            "--from", "0", "--to", "60000",
+        ],
+    ],
+)
+def test_unknown_market_pack_lists_choices(arguments, capsys) -> None:
+    with pytest.raises(SystemExit) as error:
+        main([*arguments, "--pack", "unknown-market"])
+    assert error.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "unknown-market" in stderr
+    assert "crypto_perp" in stderr
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "::1"])
 def test_loopback_hosts_are_accepted(host: str) -> None:
     assert validate_loopback_host(host) == host

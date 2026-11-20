@@ -132,10 +132,11 @@ def _insight(**overrides) -> SetupInsight:
 
 
 def test_prompt_has_three_sections_and_forbids_outside_quotes() -> None:
-    prompt = build_consultation_prompt(_package())
+    market_skill = "# 第二段 · 样本市场领域技能\n\n观察相对成交量。"
+    prompt = build_consultation_prompt(_package(), market_skill=market_skill)
 
-    assert prompt.index("静态分析纪律") < prompt.index("加密永续 Market Pack")
-    assert prompt.index("加密永续 Market Pack") < prompt.index("当前快照增量")
+    assert prompt.index("静态分析纪律") < prompt.index(market_skill)
+    assert prompt.index(market_skill) < prompt.index("当前快照增量")
     assert "snap_1" in prompt
     assert "禁止引用快照之外的行情" in prompt
     assert "禁止写入" in prompt

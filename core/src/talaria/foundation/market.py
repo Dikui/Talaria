@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol, Sequence
+from pathlib import Path
+from typing import Callable, Protocol, Sequence
 
+from talaria.foundation.connector import MarketDataConnector
 from talaria.foundation.derivatives import DerivativeKind
+from talaria.foundation.feed import FeedTransport
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
@@ -105,6 +108,9 @@ class MarketPack(Protocol):
     """市场规则包：把某一市场的差异限制在包内。"""
 
     name: str
+    raw_archive_id: str
+    market_skill: str
+    default_fixture_dir: Path | None  # 仓库内置离线样本的相对路径。
 
     def instruments(self) -> Sequence[InstrumentSpec]:
         """返回该包提供的全部标的。"""
@@ -114,3 +120,11 @@ class MarketPack(Protocol):
 
     def traits(self, instrument_id: str) -> TraitBundle:
         """返回标的的五项能力；未知标的应抛 ``KeyError``。"""
+
+    def create_history_connector(
+        self, *, base_url: str | None = None
+    ) -> MarketDataConnector:
+        """创建历史行情连接器；未覆盖基地址时使用市场包默认值。"""
+
+    def create_realtime_stream(self, *, now_ms: Callable[[], int]) -> FeedTransport:
+        """创建该市场的实时行情传输。"""

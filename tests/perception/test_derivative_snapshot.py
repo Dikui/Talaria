@@ -28,7 +28,7 @@ def _builder(tmp_path, fixture_dir) -> SnapshotBuilder:
     return SnapshotBuilder(
         data_dir=tmp_path,
         connector=connector,
-        raw_store=RawStore(tmp_path),
+        raw_store=RawStore(tmp_path, raw_archive_id="test"),
         snapshot_store=SnapshotStore(tmp_path),
         policy=BackfillPolicy(target_bars=1000, max_pages=3),
         now_ms=lambda: CUTOFF_MS,

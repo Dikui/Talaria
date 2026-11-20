@@ -1,6 +1,6 @@
 """会诊提示词的三段组装。
 
-顺序固定为：静态分析纪律前缀 → 加密永续 Market Pack 领域技能 → 当前快照
+顺序固定为：静态分析纪律前缀 → Market Pack 领域技能 → 当前快照
 增量。第三段只放冻结后的会诊包与只读工具结果摘要，不从任何外部行情源补数。
 """
 
@@ -31,23 +31,6 @@ DISCIPLINE_PREFIX = """# 第一段 · 静态分析纪律
    不要为了给出结论而猜测。
 6. 输出是观察（Setup Insight），不是订单；必须包含入场带、证伪止损、止盈、
    持仓上限、有效期与证据引用。
-"""
-
-MARKET_PACK_SKILL = """# 第二段 · 加密永续 Market Pack 领域技能
-
-标的为 USDT 本位永续合约，24/7 连续交易，使用标记价格与资金费率，存在
-强平与插针风险。
-
-分析约定：
-- 先判断更高周期结构，再用当前周期找入场；入场带应贴着有证据的支撑/阻力，
-  止损放在使交易逻辑失效的位置之外，而不是固定百分比。
-- 关键位证据类别：STRUCTURE / SESSION / GAP / ROUND_NUMBER / VOLUME /
-  LIQUIDATION。低强度或 ESTIMATED 的关键位只能作辅助证据。
-- HUMAN_DRAWING 是交易员的主观结构：水平线、射线、线段、通道、斐波那契、
-  矩形与文字标注。尊重画线，但不要把它当成自动成交信号。
-- 加密永续的周末、资金费率结算前后与低流动性时段会放大假突破；有效期应
-  与当前周期匹配，通常不超过若干根 K 线。
-- 仓位上限用账户风险比例或合约数量表示，不得给出超出证据支持的建议。
 """
 
 OUTPUT_CONTRACT = """# 输出格式（只输出一个 JSON 对象，不要 Markdown 代码围栏之外的解释）
@@ -135,8 +118,8 @@ def _tool_summary(package: ConsultationPackage) -> str:
     return json.dumps(summary, ensure_ascii=False, indent=2)
 
 
-def build_consultation_prompt(package: ConsultationPackage) -> str:
-    """三段式提示词；只使用冻结包，函数本身不访问任何外部状态。"""
+def build_consultation_prompt(package: ConsultationPackage, *, market_skill: str) -> str:
+    """用传入的市场技能和冻结会诊包组装三段式提示词。"""
 
     package_json = json.dumps(
         package.model_dump(mode="json"),
@@ -175,5 +158,5 @@ def build_consultation_prompt(package: ConsultationPackage) -> str:
 {OUTPUT_CONTRACT}"""
 
     return "\n\n".join(
-        [DISCIPLINE_PREFIX.strip(), MARKET_PACK_SKILL.strip(), snapshot_section.strip()]
+        [DISCIPLINE_PREFIX.strip(), market_skill.strip(), snapshot_section.strip()]
     )

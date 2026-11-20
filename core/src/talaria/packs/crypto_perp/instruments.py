@@ -1,9 +1,10 @@
-"""加密永续市场的四个验收标的与能力组合。"""
+"""加密永续市场包的标的、能力组合与数据源。"""
 
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Sequence
+from pathlib import Path
+from typing import Callable, Sequence
 
 from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.market import (
@@ -17,6 +18,9 @@ from talaria.foundation.market import (
     TraitBundle,
     TradingSession,
 )
+from talaria.packs.crypto_perp.connector import DEFAULT_BASE_URL, BybitLinearConnector
+from talaria.packs.crypto_perp.prompt import MARKET_PACK_SKILL
+from talaria.packs.crypto_perp.stream import BybitPublicStream
 
 _INSTRUMENTS: tuple[InstrumentSpec, ...] = (
     InstrumentSpec(
@@ -96,6 +100,9 @@ class CryptoPerpPack:
     """24x7 USDT 永续市场包。"""
 
     name = "crypto_perp"
+    raw_archive_id = "bybit_linear"
+    market_skill = MARKET_PACK_SKILL
+    default_fixture_dir = Path("tests/fixtures/bybit")
 
     def __init__(self, instruments: Sequence[InstrumentSpec] = _INSTRUMENTS) -> None:
         self._instruments = tuple(instruments)
@@ -111,6 +118,14 @@ class CryptoPerpPack:
         if instrument_id not in self._by_id:
             raise KeyError(instrument_id)
         return _TRAITS
+
+    def create_history_connector(
+        self, *, base_url: str | None = None
+    ) -> BybitLinearConnector:
+        return BybitLinearConnector(DEFAULT_BASE_URL if base_url is None else base_url)
+
+    def create_realtime_stream(self, *, now_ms: Callable[[], int]) -> BybitPublicStream:
+        return BybitPublicStream(instruments=self.instruments(), now_ms=now_ms)
 
 
 CRYPTO_PERP_PACK = CryptoPerpPack()
