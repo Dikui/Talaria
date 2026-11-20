@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §5.2；`GLOSSARY.md` 中各领域术语（画线、AGENT_ANNOTATION、Watchlist、预警、会诊、简报）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 按领域拆分为 meta/events、drawings、annotations、watchlist、key_level_feedback、alerts、consultations、briefings、usage 九个仓储；每个仓储独立成模块，单个模块不超过约 400 行。
 - [ ] 表名、列名、索引和外键都不变：拿旧版本创建的 `collaboration_state.sqlite` 启动新代码，所有数据都能读出（加一条用旧建表语句生成库再读回的测试）。
