@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §4.1 人机共用分析接口表、§5.1；`contracts/schemas/` 中现有的请求和响应 Schema。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 按领域拆分 router：health/feed、instruments/snapshot/indicators/key-levels、drawings/chart-view、watchlist、annotations、alerts、scanner/briefings、collaboration/consultations/usage、WS desk、静态 `/desk` 托管。
 - [ ] 组装模块产出一个包含所有服务和后台任务的运行时对象；关闭时按与启动相反的顺序释放资源。加测试：启动后立刻关闭，没有遗留的 task、线程和单写者登记。
