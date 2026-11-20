@@ -118,7 +118,7 @@ def _wait(client: TestClient, consultation_id: str, status: str, timeout: float 
 
 
 def _install_host(client: TestClient, captured: list[dict]) -> None:
-    service = client.app.state.collaboration_service
+    service = client.app.state.runtime.collaborations
     service._host_url = lambda: "http://127.0.0.1:65530"
 
     async def dispatcher(url: str, payload) -> None:
@@ -184,7 +184,7 @@ def test_host_offline_abstains_quickly(client: TestClient) -> None:
 
 def test_host_timeout_abstains(client: TestClient) -> None:
     snapshot_id = _create(client)
-    service = client.app.state.collaboration_service
+    service = client.app.state.runtime.collaborations
     _install_host(client, [])
     service._overall_timeout_s = 0.05
 
@@ -513,7 +513,7 @@ def test_host_dispatch_ignores_ambient_http_proxy(client, monkeypatch) -> None:
     monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
     monkeypatch.setenv("NO_PROXY", "")
     try:
-        service = client.app.state.collaboration_service
+        service = client.app.state.runtime.collaborations
         asyncio.run(
             service._post_to_host(
                 f"http://127.0.0.1:{server.server_port}",

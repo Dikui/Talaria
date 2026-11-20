@@ -280,7 +280,7 @@ def test_live_query_appends_ws_bars(client, snapshot_id) -> None:
         "ts_available": last["ts_available"] + 60_000,
     }
     tail = _LiveTail([CompactBar.model_validate(live)])
-    client.app.state.supervisor = tail
+    client.app.state.runtime.supervisor = tail
 
     bundle = _indicators(client, snapshot_id, live=1).json()
     assert tail.calls == [("BTC-USDT-PERP", "1m", last["timestamp"])]
