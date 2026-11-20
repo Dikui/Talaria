@@ -1,6 +1,6 @@
 # Talaria
 
-Talaria 是交易员的本地分析工作台：Python 底座负责历史行情回填、快照冻结、实时行情编排与契约，React 前端负责 K 线、盘口与断流健康展示。当前版本对应任务单 03：在 02 的只能看历史快照的只读看盘之上，接入 Bybit 公共实时流、断流健康判定与本地回放。
+Talaria 是交易员的本地分析工作台。Python 底座负责历史回填、快照冻结、实时行情、指标、关键位、预警与扫描。React 工作台提供看盘和标注，DSH 插件提供人机协同会诊与扫描简报。
 
 ## 环境
 
@@ -15,20 +15,26 @@ uv sync
 pnpm -C dsh install
 pnpm -C dsh build
 
-# 终端 1：只绑定 127.0.0.1:8765，使用仓库内的确定性 Bybit fixture
-uv run talaria up --solo --fixture-dir tests/fixtures/bybit
+# 只启动 Python 看盘守护进程，使用仓库内的 Bybit fixture
+uv run talaria up --solo --pack crypto_perp --fixture-dir tests/fixtures/bybit
 ```
 
 浏览器打开 <http://127.0.0.1:8765/desk>。`/desk` 会把随机会话 token 写入同源的 `talaria_token` cookie；前端读取后放入 `Authorization: Bearer`，所有写操作都必须带这个头。
 
-`--fixture-dir` 只提供历史快照：没有实时行情时 `/api/feed/health` 返回 503，顶栏显示“离线样本”。要看到实时跳动与断流健康状态，使用本地回放（可同时给 `--fixture-dir` 供历史快照）：
+`--fixture-dir` 只提供历史行情。单独使用时，`/api/feed/health` 返回 503，顶栏显示“离线样本”。要查看实时更新和断流健康状态，可同时使用下文的本地回放。
 
-默认数据目录是 `./.talaria`，可用 `--data-dir` 或 `TALARIA_DATA_DIR` 覆盖。目录结构：
+`talaria up` 与 `talaria evaluate-levels` 都通过 `--pack` 选择已注册的市场包，默认 `crypto_perp`。原始行情目录由市场包的 `raw_archive_id` 决定，`crypto_perp` 继续使用 `bybit_linear`，已有归档可直接复用。
+
+`talaria up` 优先使用 `--data-dir`，其次是 `TALARIA_DATA_DIR`，默认 `./.talaria`。主要数据路径如下。
 
 ```text
-<data-dir>/data/raw/bybit_linear/<SYMBOL>/<timeframe>.jsonl   # 追加、去重、fsync
-<data-dir>/state/runtime_snapshots.sqlite                     # WAL 快照清单
-<data-dir>/state/hot_snapshots/<snapshot_id>.parquet          # 一次性原子写出
+<data-dir>/data/raw/<archive_id>/<SYMBOL>/<timeframe>.jsonl            # 历史回填原始柱
+<data-dir>/data/raw_archive/<sha256>.jsonl                            # 冷库批次的哈希归档
+<data-dir>/data/cold/<venue>/<symbol>/<timeframe>/<sha256>.parquet     # 冷库 generation
+<data-dir>/data/data_manifest.sqlite                                 # 冷库清单与游标
+<data-dir>/state/runtime_snapshots.sqlite                            # 快照索引
+<data-dir>/state/hot_snapshots/<snapshot_id>.parquet                  # 冻结快照
+<data-dir>/state/collaboration_state.sqlite                          # 自选、预警、标注与协同状态
 ```
 
 ## 常用命令
@@ -59,6 +65,7 @@ uv run python tests/fixtures/bybit/generate.py
 
 ```bash
 uv run talaria evaluate-levels \
+  --pack crypto_perp \
   --instrument BTC-USDT-PERP \
   --timeframe 1m \
   --from 2026-11-01T08:00:00+08:00 \
@@ -71,23 +78,25 @@ uv run talaria evaluate-levels \
 
 - `--from` / `--to` 接受毫秒时间戳或 ISO-8601；不带时区的 ISO 按 `Asia/Shanghai` 解释，带 `Z` 或偏移量的按其自身时区。
 - 默认向 stdout 输出 JSON，同时向 stderr 输出可读表格与数据源；`--no-json` 只输出表格。错误以退出码 2 和 stderr JSON `{"error": {"code", "message"}}` 返回。
-- `--fixture-dir` 默认 `tests/fixtures/bybit`；只给 `--data-dir` 时回退读取 `<data-dir>/data/raw/bybit_linear/<SYMBOL>/<timeframe>.jsonl`。两者都没给时使用仓库 fixture。
+- 显式传入 `--fixture-dir` 时从该目录读取。只给 `--data-dir` 时读取市场包的原始存档，`crypto_perp` 对应 `<data-dir>/data/raw/bybit_linear/<SYMBOL>/<timeframe>.jsonl`。两个参数都省略时使用市场包提供的默认 fixture，`crypto_perp` 对应 `tests/fixtures/bybit`。
 - 输出字段：输入参数 `instrument_id`、`timeframe`、`from_ts` / `to_ts`、`atr_period`、`atr_multiple`、`horizon_bars`、`baseline_samples`、`seed`，以及 `method_version`、`reaction_definition`、`skipped`、`baseline_skipped`、`total_sample_count`、`baseline_sample_count` 和 `results[]`。每个 `kind` 含 `sample_count`、`reaction_count`、`reaction_rate`、`mean_reaction_atr`、`skipped_count`、`baseline_sample_count`、`baseline_reaction_count`、`baseline_reaction_rate`、`baseline_mean_reaction_atr`、`baseline_skipped_count`。
 - 样本：同一 `level_id` 跨 cutoff 只计一次，取它在评估窗口内的首次触及；触及指柱的 high/low 包含线价（区间位为区间重叠）。触及之后严格后续 `horizon_bars` 根内，任一 close 相对价位/区间达到阈值即算反应（向上突破与向下反弹都算）；`mean_reaction_atr` 是最大偏离的 ATR 倍数均值。
 - 随机基线：从同窗口收盘价分布抽 `baseline_samples` 个价位，每个 `kind` 用 `sha256(seed:kind)` 派生独立随机流；触及与反应判定和真实关键位完全相同，但不读取引擎的 `level_id`、状态或强度。
 - 首次触及后数据不足（包括 ATR 预热不足）的样本计入 `skipped`（真实关键位）或 `baseline_skipped`（随机基线），不会以 0 代替。
-- 类别由 `KeyLevelKind` 自动枚举；11 合入后新增的成交量位、锚定 VWAP、清算估算等类别无需修改评估代码。
+- 类别由 `KeyLevelKind` 自动枚举，包括成交量位、锚定 VWAP、清算估算等。
 
 ## 真实 Bybit（可选）
 
-本机所在网络可能被 CloudFront 按国家/地区拒绝（HTTP 403），因此**真实在线回填不是本任务单的验收前提**。在可访问 Bybit 的沙箱外可显式运行：
+在可访问 Bybit 的环境中，可运行在线冒烟测试或启动实时看盘。
 
 ```bash
 uv run pytest -m online tests/packs/test_online_bybit.py
-uv run talaria up --solo --bybit-base-url https://api.bybit.com
+uv run talaria up --solo --pack crypto_perp --history-base-url https://api.bybit.com
 ```
 
-`talaria up` 不带 `--solo` 会提示“DSH 协同模式将在 M2 提供，请使用 --solo”并退出。`--solo` 只接受回环 IP；端口默认 8765。
+`--history-base-url` 可覆盖市场包默认的历史接口地址，`--bybit-base-url` 仍可作为兼容别名使用。`talaria up` 只接受回环 IP，工作台端口默认 8765。
+
+省略 `--solo` 时，`talaria up --pack crypto_perp` 同时尝试启动 `talaria-desk` DSH 宿主（默认端口 8766）。可用 `talaria dsh-install` 安装工作台插件。DSH 缺失或启动失败时，`/api/collaboration` 显示离线，`/desk` 继续提供本地看盘。
 
 ## 实时流与本地回放
 
@@ -110,12 +119,12 @@ uv run talaria up --solo --bybit-base-url https://api.bybit.com
 
 ```bash
 # 回放 2026-11-01 的 36 条样本：8.5 秒断流 + 5 根 FEED_GAP 缺口 + 恢复
-uv run talaria up --solo \
+uv run talaria up --solo --pack crypto_perp \
   --fixture-dir tests/fixtures/bybit \
   --replay-events tests/fixtures/realtime/demo_outage.jsonl
 
 # 0.5 倍速便于观察断流计时
-uv run talaria up --solo \
+uv run talaria up --solo --pack crypto_perp \
   --fixture-dir tests/fixtures/bybit \
   --replay-events tests/fixtures/realtime/demo_outage.jsonl \
   --replay-speed 0.5
@@ -151,7 +160,7 @@ uv run talaria up --solo \
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | `{ok, version, feed_mode}` |
-| GET | `/api/instruments` | 四个加密永续标的 |
+| GET | `/api/instruments` | 所选市场包的标的，`crypto_perp` 提供四个加密永续标的 |
 | POST | `/api/snapshots` | 创建 `HISTORICAL_PIT` 快照；`OBSERVED_REPLAY` 返回 501 |
 | GET | `/api/snapshots/{id}` | 快照元数据 |
 | GET | `/api/snapshots/{id}/bars?timeframe=&limit=&before_ts=` | 升序 `ChartPage`，`limit` 1..1000，含两个方向的 `has_more_*` |
@@ -173,16 +182,18 @@ uv run talaria up --solo \
 
 ## 架构边界
 
-- `core/src/talaria/foundation`：L0 契约与协议，不知道任何具体市场或数据源；
-- `core/src/talaria/perception`：原始柱落盘、缺口紧凑化、快照编排与读取；
-- `core/src/talaria/feed`：`MarketEventFeed` 状态机（LIVE / STALE / RECOVERING、NO_TRADES 与 FEED_GAP 合成、重连回填）；
-- `core/src/talaria/replay`：JSONL 确定性回放传输层，支持断流/恢复与可注入时钟；
-- `core/src/talaria/packs/crypto_perp`：Bybit V5 Linear REST 连接器与公共 WebSocket 流、四个标的、24x7 `SessionTrait`；
-- `core/src/talaria/workbench_api`：FastAPI 网关、Bearer 与静态托管；
-- `dsh/packages/talaria-contracts`：由 Python 生成的 TypeScript 契约；
+- `core/src/talaria/foundation`：L0 契约与协议、纯 Python `Decimal` 指标算子和关键位纯函数。
+- `core/src/talaria/perception`：原始柱落盘、缺口紧凑化、快照冻结、冷库发布、预警与扫描引擎。
+- `core/src/talaria/feed`：`MarketEventFeed` 状态机（LIVE / STALE / RECOVERING、NO_TRADES 与 FEED_GAP 合成、重连回填）。
+- `core/src/talaria/replay`：JSONL 确定性回放传输层，支持断流/恢复与可注入时钟。
+- `core/src/talaria/evaluation`：离线关键位质量评估，供 `evaluate-levels` 调用。
+- `core/src/talaria/packs`：市场包注册表。当前 `crypto_perp` 提供 Bybit V5 Linear 行情连接器、标的与领域技能。
+- `core/src/talaria/workbench_api`：FastAPI 网关、运行时组装、领域路由、WS 广播与协同状态库。
+- `dsh/packages/talaria-contracts`：由 Python 生成的 TypeScript 契约。
 - `dsh/packages/talaria-desk-ui`：React 19 + KLineChart v10 看盘页。
+- `dsh/packages/talaria-dsh-plugin`：DSH 工作台插槽、分析工具与会诊桥接。
 
-指标（04）、人工画线（05）、冷库发布（06）、衍生品（07）、自选池（08）、DSH 接入（09）、关键位与预警（10+）不在本单范围。
+交易闭环与交易回放规划于 M3，智能体自治与评估、参数寻优、美股市场包规划于 M4。分层与实现位置见[架构规范](docs/architecture.md)。
 
 ## 第三方
 
