@@ -59,7 +59,7 @@ from talaria.foundation.errors import (
     ConsultationNotFoundError,
     DrawingNotFoundError,
 )
-from talaria.foundation.sqlite import (
+from talaria.perception.sqlite import (
     checkpoint_and_close,
     claim_writer,
     release_writer,

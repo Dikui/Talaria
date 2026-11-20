@@ -1,4 +1,4 @@
-"""盘面预警：契约、画线几何与纯逻辑引擎。"""
+"""盘面预警的契约与画线几何纯函数。"""
 
 from talaria.foundation.alerts.contracts import (
     AlertCondition,
@@ -15,7 +15,6 @@ from talaria.foundation.alerts.contracts import (
     AlertTriggerListResponse,
     AlertTriggerRecord,
 )
-from talaria.foundation.alerts.engine import AlertEngine
 from talaria.foundation.alerts.overlay import OverlayBounds, overlay_bounds
 
 __all__ = [
@@ -23,7 +22,6 @@ __all__ = [
     "AlertConditionKind",
     "AlertCreate",
     "AlertDirection",
-    "AlertEngine",
     "AlertLevelEvent",
     "AlertListResponse",
     "AlertMetric",

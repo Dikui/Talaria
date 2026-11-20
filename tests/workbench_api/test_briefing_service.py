@@ -24,8 +24,8 @@ from talaria.foundation.scanner import (
     ScannerSeverity,
     ScannerTrigger,
     ScannerTriggerRoute,
-    TriggerRoutingPolicy,
 )
+from talaria.perception.scanner import TriggerRoutingPolicy
 from talaria.workbench_api.briefing_service import BriefingService
 from talaria.workbench_api.state_store import StateWriterQueue
 

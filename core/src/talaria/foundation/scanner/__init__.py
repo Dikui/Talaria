@@ -1,7 +1,4 @@
-"""确定性的纯数值扫描器（任务单 15）。
-
-对外只暴露契约、引擎、路由与服务所需的符号；扫描路径不导入模型客户端。
-"""
+"""数值扫描器的跨层契约（任务单 15）。"""
 
 from talaria.foundation.scanner.contracts import (
     ScannerConditionKind,
@@ -15,24 +12,9 @@ from talaria.foundation.scanner.contracts import (
     ScannerTriggerListResponse,
     ScannerTriggerRoute,
 )
-from talaria.foundation.scanner.engine import (
-    KIND_LABELS,
-    KIND_ORDER,
-    ScannerConfig,
-    ScannerEngine,
-)
-from talaria.foundation.scanner.routing import (
-    CoPilotConsultChannel,
-    TriggerRoutingPolicy,
-)
 
 __all__ = [
-    "CoPilotConsultChannel",
-    "KIND_LABELS",
-    "KIND_ORDER",
     "ScannerConditionKind",
-    "ScannerConfig",
-    "ScannerEngine",
     "ScannerEvidence",
     "ScannerFocusItem",
     "ScannerFocusResponse",
@@ -42,5 +24,4 @@ __all__ = [
     "ScannerTrigger",
     "ScannerTriggerListResponse",
     "ScannerTriggerRoute",
-    "TriggerRoutingPolicy",
 ]

@@ -18,6 +18,12 @@ from typing import Sequence
 
 import uvicorn
 
+from talaria.cli.contracts_io import (
+    DSH_TOOL_SPECS,
+    check_contracts,
+    repo_root,
+    write_contracts,
+)
 from talaria.cli.dsh_host import (
     DshHost,
     DshHostError,
@@ -26,12 +32,6 @@ from talaria.cli.dsh_host import (
     remove_bridge_descriptor,
     resolve_dsh_bin,
     write_bridge_descriptor,
-)
-from talaria.foundation.contracts_io import (
-    DSH_TOOL_SPECS,
-    check_contracts,
-    repo_root,
-    write_contracts,
 )
 from talaria.workbench_api.settings import AppSettings
 
@@ -79,8 +79,8 @@ def _cmd_contract_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_usage_scan(args: argparse.Namespace) -> int:
-    from talaria.foundation.collaboration.usage_scan import scan_session_traces
     from talaria.workbench_api.state_store import StateStore
+    from talaria.workbench_api.usage_scan import scan_session_traces
 
     store = StateStore(Path(args.data_dir))
     try:

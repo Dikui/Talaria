@@ -6,7 +6,7 @@ from pathlib import Path
 import compression.zstd as zstd
 import pytest
 
-from talaria.foundation.collaboration.usage_scan import (
+from talaria.workbench_api.usage_scan import (
     scan_session_file,
     scan_session_traces,
 )

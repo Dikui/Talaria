@@ -110,7 +110,6 @@ from talaria.foundation.scanner import (
     ScannerTrigger,
     ScannerTriggerListResponse,
 )
-from talaria.foundation.scanner.routing import TriggerRoutingPolicy
 from talaria.foundation.snapshot import (
     ChartPage,
     ErrorResponse,
@@ -137,6 +136,7 @@ from talaria.perception.cold_publisher import ColdPublisher
 from talaria.perception.cold_store import ColdStore
 from talaria.perception.hot_buffer import HotStreamBuffer
 from talaria.perception.raw_store import RawStore
+from talaria.perception.scanner.routing import TriggerRoutingPolicy
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.replay import ReplayFeed
