@@ -113,7 +113,7 @@ class AnnotationService:
             updated_ts=created_ts,
         )
         inserted, _archived = await self._queue.run(
-            lambda store: store.insert_annotation(record, limit=ANNOTATION_LIMIT)
+            lambda store: store.annotations.insert(record, limit=ANNOTATION_LIMIT)
         )
         return inserted
 
@@ -128,7 +128,7 @@ class AnnotationService:
         include_archived: bool = False,
     ) -> AnnotationListResponse:
         records = await self._queue.read(
-            lambda store: store.list_annotations(
+            lambda store: store.annotations.list(
                 instrument_id=instrument_id,
                 snapshot_id=snapshot_id,
                 session_id=session_id,
@@ -138,14 +138,14 @@ class AnnotationService:
         return AnnotationListResponse(annotations=records)
 
     async def list_sessions(self) -> AnnotationSessionsResponse:
-        sessions = await self._queue.read(lambda store: store.list_annotation_sessions())
+        sessions = await self._queue.read(lambda store: store.annotations.list_sessions())
         return AnnotationSessionsResponse(sessions=sessions)
 
     # ------------------------------------------------------------ 采纳 / 忽略 / 清理
 
     async def adopt(self, annotation_id: str) -> AnnotationAdoptResponse:
         record = await self._queue.run(
-            lambda store: store.get_annotation(annotation_id)
+            lambda store: store.annotations.get(annotation_id)
         )
         if record.status is AnnotationStatus.ADOPTED:
             adoption = await self._existing_adoption(annotation_id)
@@ -169,7 +169,7 @@ class AnnotationService:
         )
 
         def operation(store):
-            current = store.get_annotation(annotation_id)
+            current = store.annotations.get(annotation_id)
             if current.status is AnnotationStatus.ADOPTED:
                 return current
             updated = current.model_copy(
@@ -179,8 +179,8 @@ class AnnotationService:
                     "updated_ts": adopted_ts,
                 }
             )
-            store.update_annotation(updated)
-            store.record_annotation_adoption(adoption)
+            store.annotations.update(updated)
+            store.annotations.record_adoption(adoption)
             return updated
 
         updated = await self._queue.run(operation)
@@ -190,7 +190,7 @@ class AnnotationService:
         self, annotation_id: str
     ) -> AnnotationAdoptionRecord | None:
         adoptions = await self._queue.read(
-            lambda store: store.list_annotation_adoptions()
+            lambda store: store.annotations.list_adoptions()
         )
         return next(
             (item for item in adoptions if item.annotation_id == annotation_id),
@@ -199,12 +199,12 @@ class AnnotationService:
 
     async def dismiss(self, annotation_id: str) -> AgentAnnotationRecord:
         def operation(store):
-            current = store.get_annotation(annotation_id)
+            current = store.annotations.get(annotation_id)
             if current.status is AnnotationStatus.DISMISSED:
                 return current
             if current.status is not AnnotationStatus.ACTIVE:
                 raise InvalidRequestError("只有活跃标注可以忽略")
-            return store.update_annotation(
+            return store.annotations.update(
                 current.model_copy(
                     update={
                         "status": AnnotationStatus.DISMISSED,
@@ -219,7 +219,7 @@ class AnnotationService:
         if self._pack.instrument(payload.instrument_id) is None:
             raise InvalidRequestError(f"未知标的 {payload.instrument_id}")
         cleared = await self._queue.run(
-            lambda store: store.clear_annotations(
+            lambda store: store.annotations.clear(
                 payload.instrument_id,
                 session_id=payload.session_id,
                 ts=self._now_ms(),

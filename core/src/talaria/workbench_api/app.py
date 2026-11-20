@@ -148,6 +148,7 @@ from talaria.workbench_api.scanner_service import HISTORY_LIMIT, ScannerService
 from talaria.workbench_api.settings import AppSettings
 from talaria.workbench_api.state_store import StateWriterQueue
 from talaria.workbench_api.subscriptions import RealtimeSubscriptionScheduler
+from talaria.workbench_api.usage_service import UsageService
 from talaria.workbench_api.watchlist import WatchlistService
 
 logger = logging.getLogger(__name__)
@@ -405,8 +406,10 @@ def create_app(
             host_url=collaboration_host or (lambda: None),
             now_ms=settings.now_ms,
         )
+        app.state.usage_service = UsageService(state_writer)
         app.state.briefing_service = BriefingService(
             queue=state_writer,
+            usage=app.state.usage_service,
             workbench=app.state.service,
             host_url=collaboration_host or (lambda: None),
             now_ms=settings.now_ms,
@@ -464,6 +467,7 @@ def create_app(
 
         alert_service = AlertService(
             state_writer=state_writer,
+            drawings=app.state.drawing_service,
             instruments=instruments,
             now_ms=settings.now_ms,
             bar_history=bar_history if supervisor is not None else None,
@@ -643,6 +647,9 @@ def create_app(
     def collaborations(request: Request) -> CollaborationService:
         return request.app.state.collaboration_service
 
+    def usage(request: Request) -> UsageService:
+        return request.app.state.usage_service
+
     def annotations(request: Request) -> AnnotationService:
         return request.app.state.annotation_service
 
@@ -714,7 +721,7 @@ def create_app(
         request: Request,
         limit: int = Query(100, ge=1, le=1000),
     ) -> UsageSummaryResponse:
-        return await collaborations(request).usage(limit=limit)
+        return await usage(request).summary(limit=limit)
 
     @app.post(
         "/api/collaboration/usage",
@@ -723,7 +730,7 @@ def create_app(
     async def report_collaboration_usage(
         payload: UsageReport, request: Request
     ) -> UsageReportResponse:
-        return await collaborations(request).report_usage(payload)
+        return await usage(request).report(payload)
 
     @app.get("/api/feed/health", response_model=FeedHealthReport)
     def feed_health(request: Request) -> FeedHealthReport:

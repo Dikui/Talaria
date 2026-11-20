@@ -19,10 +19,8 @@ from talaria.foundation.types import PrecisionTier
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.perception.scanner import ScannerConfig, TriggerRoutingPolicy
 from talaria.workbench_api.scanner_service import ScannerService
-from talaria.workbench_api.state_store import (
-    SCANNER_FOCUS_GROUP_ID,
-    StateWriterQueue,
-)
+from talaria.workbench_api.state_repositories.watchlist import SCANNER_FOCUS_GROUP_ID
+from talaria.workbench_api.state_store import StateWriterQueue
 
 pytestmark = pytest.mark.medium
 
@@ -113,9 +111,11 @@ def test_scan_publishes_focus_group_and_keeps_user_groups(tmp_path: object) -> N
             tmp_path, published=published, changes=changes
         )
         try:
-            await writer.run(lambda state: state.upsert_system_group("扫描焦点", []))
             await writer.run(
-                lambda state: state.create_watchlist_group(
+                lambda store: store.watchlist.upsert_system_group("扫描焦点", [])
+            )
+            await writer.run(
+                lambda store: store.watchlist.create_group(
                     "我的自选", group_id="manual-1"
                 )
             )
@@ -125,7 +125,7 @@ def test_scan_publishes_focus_group_and_keeps_user_groups(tmp_path: object) -> N
             assert len(published) == len(triggers)
             assert changes == [True]
 
-            records = await writer.run(lambda state: state.list_watchlist())
+            records = await writer.run(lambda store: store.watchlist.list())
             focus = [group for group in records.groups if group.group_id == SCANNER_FOCUS_GROUP_ID]
             assert len(focus) == 1
             assert focus[0].kind == "SCANNER_FOCUS"
@@ -162,7 +162,7 @@ def test_empty_focus_does_not_create_system_group(tmp_path: object) -> None:
         )
         try:
             assert await service.scan() == []
-            records = await writer.run(lambda state: state.list_watchlist())
+            records = await writer.run(lambda store: store.watchlist.list())
             assert records.groups == ()
             assert service.focus().instrument_ids == []
         finally:
@@ -180,7 +180,7 @@ def test_focus_ttl_removes_item_but_keeps_system_group(tmp_path: object) -> None
             focus_id = triggers[0].instrument_id
             clock.now += ScannerConfig().focus_ttl_ms + 1
             assert await service.scan() == []
-            records = await writer.run(lambda state: state.list_watchlist())
+            records = await writer.run(lambda store: store.watchlist.list())
             group = next(
                 group
                 for group in records.groups

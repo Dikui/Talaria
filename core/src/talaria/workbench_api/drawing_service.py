@@ -91,7 +91,7 @@ class DrawingService:
         _check_timeframe(timeframe)
         _check_window(from_ts or 0, to_ts)
         drawings = await self._queue.read(
-            lambda store: store.list_drawings(
+            lambda store: store.drawings.list(
                 instrument_id, timeframe, from_ts=from_ts, to_ts=to_ts
             )
         )
@@ -117,7 +117,7 @@ class DrawingService:
         if price_min > price_max:
             raise InvalidRequestError("price_min 不能大于 price_max")
         drawings = await self._queue.read(
-            lambda store: store.list_drawings(
+            lambda store: store.drawings.list(
                 instrument_id,
                 timeframe,
                 from_ts=from_ts,
@@ -144,7 +144,7 @@ class DrawingService:
         _check_points(request.kind, request.points, request.text)
         drawing_id = f"drw_{uuid.uuid4().hex}"
         return await self._queue.run(
-            lambda store: store.create_drawing(request, drawing_id=drawing_id)
+            lambda store: store.drawings.create(request, drawing_id=drawing_id)
         )
 
     async def patch_drawing(
@@ -154,41 +154,48 @@ class DrawingService:
             _check_visible_timeframes(patch.visible_timeframes)
 
         def operation(store):
-            current = store.get_drawing(drawing_id)
+            current = store.drawings.get(drawing_id)
             _check_points(
                 current.kind,
                 current.points if patch.points is None else patch.points,
                 current.text if patch.text is None else patch.text,
             )
-            return store.update_drawing(drawing_id, patch)
+            return store.drawings.update(drawing_id, patch)
 
         return await self._queue.run(operation)
 
     async def delete_drawing(self, drawing_id: str) -> DrawingRecord:
         return await self._queue.run(
-            lambda store: store.soft_delete_drawing(drawing_id)
+            lambda store: store.drawings.soft_delete(drawing_id)
         )
 
     async def restore_drawing(self, drawing_id: str) -> DrawingRecord:
         return await self._queue.run(
-            lambda store: store.restore_drawing(drawing_id)
+            lambda store: store.drawings.restore(drawing_id)
         )
 
     async def get_drawing(
-        self, drawing_id: str, *, version: int | None = None
+        self,
+        drawing_id: str,
+        *,
+        version: int | None = None,
+        after_pending_writes: bool = False,
     ) -> DrawingRecord:
-        return await self._queue.read(
-            lambda store: store.get_drawing(drawing_id, version=version)
+        """预警挂载校验可在已排队的画线写入之后读取。"""
+
+        read = self._queue.run if after_pending_writes else self._queue.read
+        return await read(
+            lambda store: store.drawings.get(drawing_id, version=version)
         )
 
     async def list_versions(self, drawing_id: str) -> DrawingVersionList:
         versions = await self._queue.read(
-            lambda store: store.list_drawing_versions(drawing_id)
+            lambda store: store.drawings.list_versions(drawing_id)
         )
         return DrawingVersionList(drawing_id=drawing_id, versions=versions)
 
     async def clear_drawings(self, instrument_id: str) -> int:
         self._instrument(instrument_id)
         return await self._queue.run(
-            lambda store: store.clear_drawings(instrument_id)
+            lambda store: store.drawings.clear(instrument_id)
         )

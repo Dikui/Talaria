@@ -268,7 +268,7 @@ def test_system_group_is_seeded_read_only_and_ordered_last(
     data_dir.mkdir(parents=True)
     store = StateStore(data_dir, now_ms=lambda: NOW_MS)
     try:
-        store.upsert_system_group(
+        store.watchlist.upsert_system_group(
             "扫描器聚焦", [BTC, BONK], group_id="scanner-focus"
         )
     finally:
@@ -463,10 +463,10 @@ def test_supervisor_quote_priority_and_feed_health_stale(tmp_path: Path) -> None
         await queue.start()
         try:
             group_id = await queue.run(
-                lambda store: store.create_watchlist_group("核心")
+                lambda store: store.watchlist.create_group("核心")
             )
             await queue.run(
-                lambda store: store.add_watchlist_item(group_id, BTC)
+                lambda store: store.watchlist.add_item(group_id, BTC)
             )
             supervisor = _FakeSupervisor()
             scheduler = RealtimeSubscriptionScheduler(
