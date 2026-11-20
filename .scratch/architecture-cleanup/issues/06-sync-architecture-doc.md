@@ -6,7 +6,7 @@
 
 **Source of truth:** 当前代码（01–05 合入后）；ADR-0010（纯 Python 指标核）、ADR-0011（快照冻结时发布冷库）。文档与代码冲突时以代码和 ADR 为准。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] ADR 列表补全到 0011；目录树注释里的 “ADR-0001 .. ADR-0007” 修正为实际范围。
 - [ ] 目录树按实际包结构重写：`evaluation/`、`replay/`、`feed/` 的实际归属写清楚；`strategy/`、`portfolio_risk/`、`execution/`、`ledger_journal/`、`orchestration/`、`packs/us_equity/`、`dsh-bridge` 等尚不存在的目录标注“规划中”和对应里程碑；删除“严格同构”这种与现状不符的说法，或改成有条件的表述。
