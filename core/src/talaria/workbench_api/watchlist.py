@@ -1,6 +1,6 @@
 """Watchlist 业务层：分组/条目持久化、订阅配额与行情展示。
 
-写操作全部经 ``StateWriterQueue.run`` 在单一串行协程中执行；行情读取优先使用
+写操作全部经 ``StateWriterQueue.run`` 在专用线程上串行执行；行情读取优先使用
 ``FeedSupervisor`` 已接收的最近 1 分钟柱，没有实时订阅时回退到最近快照/fixture
 最新价，并明确标注来源。STALE 只由 ``FeedHealth`` 判定，不用报价时间猜测。
 """
@@ -91,32 +91,32 @@ class WatchlistService:
         self._now_ms = now_ms
         self._alerted_instruments = alerted_instruments
         self._quote_cache: dict[str, tuple[int, _Quote]] = {}
+        self._subscription_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ 读取
 
     async def get_watchlist(self) -> Watchlist:
-        records = await self._load_records()
-        ordered = [
-            item.instrument_id
-            for group in records.groups
-            for item in records.items_for(group.group_id)
-        ]
-        view, statuses = self._reconcile(ordered)
+        records, ordered, view, statuses = await self._load_and_reconcile()
         quotes = await self._resolve_quotes(ordered, view)
         return self._render(records, view, statuses, quotes)
 
     async def rebalance(self) -> None:
         """图表订阅变化后重新分配配额；WS 退订/关闭时调用。"""
-        records = await self._load_records()
-        ordered = [
-            item.instrument_id
-            for group in records.groups
-            for item in records.items_for(group.group_id)
-        ]
-        self._reconcile(ordered)
+        await self._load_and_reconcile()
 
-    async def _load_records(self) -> WatchlistRecords:
-        return await self._state_writer.run(lambda store: store.list_watchlist())
+    async def _load_and_reconcile(
+        self,
+    ) -> tuple[WatchlistRecords, list[str], SubscriptionView, dict[str, FeedHealthStatus]]:
+        # 保证查询和应用订阅的顺序一致，防止旧快照覆盖更新后的分配。
+        async with self._subscription_lock:
+            records = await self._state_writer.read(StateStore.list_watchlist)
+            ordered = [
+                item.instrument_id
+                for group in records.groups
+                for item in records.items_for(group.group_id)
+            ]
+            view, statuses = self._reconcile(ordered)
+        return records, ordered, view, statuses
 
     def _reconcile(
         self, ordered: Sequence[str]

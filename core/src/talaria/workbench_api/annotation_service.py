@@ -127,7 +127,7 @@ class AnnotationService:
         session_id: str | None = None,
         include_archived: bool = False,
     ) -> AnnotationListResponse:
-        records = await self._queue.run(
+        records = await self._queue.read(
             lambda store: store.list_annotations(
                 instrument_id=instrument_id,
                 snapshot_id=snapshot_id,
@@ -138,7 +138,7 @@ class AnnotationService:
         return AnnotationListResponse(annotations=records)
 
     async def list_sessions(self) -> AnnotationSessionsResponse:
-        sessions = await self._queue.run(lambda store: store.list_annotation_sessions())
+        sessions = await self._queue.read(lambda store: store.list_annotation_sessions())
         return AnnotationSessionsResponse(sessions=sessions)
 
     # ------------------------------------------------------------ 采纳 / 忽略 / 清理
@@ -189,7 +189,7 @@ class AnnotationService:
     async def _existing_adoption(
         self, annotation_id: str
     ) -> AnnotationAdoptionRecord | None:
-        adoptions = await self._queue.run(
+        adoptions = await self._queue.read(
             lambda store: store.list_annotation_adoptions()
         )
         return next(

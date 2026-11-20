@@ -47,6 +47,7 @@ class RealtimeSubscriptionScheduler:
         self._chart_refs: Counter[tuple[str, str]] = Counter()
         self._managed: set[tuple[str, str]] = set()
         self._watchlist_order: tuple[str, ...] = ()
+        self._alerted: tuple[str, ...] = ()
 
     @property
     def quota(self) -> int:
@@ -64,11 +65,12 @@ class RealtimeSubscriptionScheduler:
         self._chart_refs[key] += 1
 
     def release_chart(self, key: tuple[str, str]) -> None:
-        """释放图表引用；实际退订留给下一次 ``reconcile``，避免与自选争抢。"""
+        """最后一个图表引用释放时，按最近的自选和预警分配立即重算。"""
         remaining = self._chart_refs[key]
-        if remaining <= 1:
-            self._chart_refs.pop(key, None)
-        else:
+        if remaining == 1:
+            del self._chart_refs[key]
+            self.reconcile(self._watchlist_order, alerted=self._alerted)
+        elif remaining > 1:
             self._chart_refs[key] = remaining - 1
 
     def reconcile(
@@ -79,10 +81,11 @@ class RealtimeSubscriptionScheduler:
     ) -> SubscriptionView:
         """按“图表 > 活跃预警 > 自选顺序”分配配额并同步订阅。"""
         self._watchlist_order = tuple(dict.fromkeys(instrument_ids))
+        self._alerted = tuple(alerted)
         chart_pairs = set(self._chart_refs)
         selected: set[str] = {instrument for instrument, _ in chart_pairs}
         wanted = set(chart_pairs)
-        priority_order = tuple(dict.fromkeys((*alerted, *self._watchlist_order)))
+        priority_order = tuple(dict.fromkeys((*self._alerted, *self._watchlist_order)))
 
         for instrument_id in priority_order:
             if instrument_id in selected:

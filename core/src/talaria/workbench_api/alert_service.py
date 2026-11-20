@@ -74,11 +74,12 @@ class AlertService:
             freeze_snapshot=freeze_snapshot,
             on_trigger=self._handle_trigger,
         )
+        self._overlay_refresh_lock = asyncio.Lock()
 
     # ------------------------------------------------------------- 生命周期
 
     async def start(self) -> None:
-        records = await self._state_writer.run(lambda store: store.list_alerts())
+        records = await self._state_writer.read(lambda store: store.list_alerts())
         self._engine.load(records)
         expired = self._engine.tick()
         if expired:
@@ -116,7 +117,7 @@ class AlertService:
     # ------------------------------------------------------------------ 规则
 
     async def list_alerts(self, status: AlertStatus | None = None) -> list[AlertRecord]:
-        return await self._state_writer.run(
+        return await self._state_writer.read(
             lambda store: store.list_alerts(status=status)
         )
 
@@ -124,7 +125,7 @@ class AlertService:
         record = self._engine.get(alert_id)
         if record is not None:
             return record
-        return await self._state_writer.run(lambda store: store.get_alert(alert_id))
+        return await self._state_writer.read(lambda store: store.get_alert(alert_id))
 
     async def create_alert(self, payload: AlertCreate) -> AlertRecord:
         self._check_instrument(payload.instrument_id)
@@ -222,7 +223,7 @@ class AlertService:
         limit: int = 100,
     ) -> list[AlertTriggerRecord]:
         await self.flush()
-        return await self._state_writer.run(
+        return await self._state_writer.read(
             lambda store: store.list_alert_triggers(
                 alert_id=alert_id,
                 instrument_id=instrument_id,
@@ -231,22 +232,21 @@ class AlertService:
         )
 
     async def refresh_overlays(self) -> None:
-        drawing_ids = self._engine.overlay_alerts()
-        if not drawing_ids:
-            return
-        records: list[DrawingRecord] = []
-        missing: list[str] = []
-        for drawing_id in drawing_ids:
-            try:
-                records.append(
-                    await self._state_writer.run(
-                        lambda store, drawing_id=drawing_id: store.get_drawing(drawing_id)
+        # 先后启动的刷新按顺序应用，避免旧画线晚到后覆盖新版本。
+        async with self._overlay_refresh_lock:
+            records: list[DrawingRecord] = []
+            missing: list[str] = []
+            for drawing_id in self._engine.overlay_alerts():
+                try:
+                    records.append(
+                        await self._state_writer.read(
+                            lambda store: store.get_drawing(drawing_id)
+                        )
                     )
-                )
-            except TalariaError:
-                missing.append(drawing_id)
-        self._engine.refresh_drawings(records)
-        self._engine.drop_drawings(missing)
+                except TalariaError:
+                    missing.append(drawing_id)
+            self._engine.refresh_drawings(records)
+            self._engine.drop_drawings(missing)
 
     # ----------------------------------------------------------------- 内部
 
