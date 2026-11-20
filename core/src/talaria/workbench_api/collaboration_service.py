@@ -376,7 +376,7 @@ class CollaborationService:
         consultation_id: str,
         payload: HostResultRequest,
     ) -> ConsultationRecord:
-        record = await self._queue.run(
+        record = await self._queue.read(
             lambda store: store.get_consultation(consultation_id)
         )
         if record.status is not ConsultationStatus.PENDING:
@@ -499,12 +499,12 @@ class CollaborationService:
     # -------------------------------------------------------------- 查询与用量
 
     async def get(self, consultation_id: str) -> ConsultationRecord:
-        return await self._queue.run(
+        return await self._queue.read(
             lambda store: store.get_consultation(consultation_id)
         )
 
     async def list(self, *, limit: int = 50) -> list[ConsultationRecord]:
-        return await self._queue.run(lambda store: store.list_consultations(limit=limit))
+        return await self._queue.read(lambda store: store.list_consultations(limit=limit))
 
     async def report_usage(self, report: UsageReport) -> UsageReportResponse:
         recorded = await self._queue.run(lambda store: store.record_usage(report))
@@ -520,7 +520,7 @@ class CollaborationService:
             total, sessions = store.summarize_usage()
             return total, sessions, store.list_usage(limit=limit)
 
-        total, sessions, recent = await self._queue.run(operation)
+        total, sessions, recent = await self._queue.read(operation)
         return UsageSummaryResponse(
             summary=total, sessions=sessions, recent=recent
         )

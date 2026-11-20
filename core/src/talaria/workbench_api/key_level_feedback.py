@@ -1,7 +1,7 @@
 """关键位反馈：忽略/恢复与“一键采纳”为独立人工画线。
 
 采纳写入两处：``drawings`` 表（通过 DrawingService，与系统关键位解耦）和
-``key_level_adoptions`` 来源记录；两者都在 ``StateWriterQueue`` 的单写协程上执行。
+``key_level_adoptions`` 来源记录；两者的写入都在 ``StateWriterQueue`` 的专用线程上执行。
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class KeyLevelFeedbackService:
         self._now_ms = now_ms
 
     async def list(self, instrument_id: str) -> KeyLevelIgnoreList:
-        rows = await self._state_writer.run(
+        rows = await self._state_writer.read(
             lambda store: store.list_key_level_ignores(instrument_id)
         )
         return KeyLevelIgnoreList(
@@ -109,13 +109,13 @@ class KeyLevelFeedbackService:
     async def adoption(
         self, instrument_id: str, level_id: str
     ) -> KeyLevelAdoptionRecord | None:
-        row = await self._state_writer.run(
+        row = await self._state_writer.read(
             lambda store: store.get_key_level_adoption(instrument_id, level_id)
         )
         return None if row is None else KeyLevelAdoptionRecord(**row)
 
     async def feedback(self, instrument_id: str) -> KeyLevelFeedbackSummary:
-        ignores, adoptions = await self._state_writer.run(
+        ignores, adoptions = await self._state_writer.read(
             lambda store: (
                 store.list_key_level_ignores(instrument_id),
                 store.list_key_level_adoptions(instrument_id),

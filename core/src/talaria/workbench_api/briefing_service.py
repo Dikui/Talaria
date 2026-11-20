@@ -260,7 +260,7 @@ class BriefingService:
                 )
                 return
 
-            current = await self._queue.run(
+            current = await self._queue.read(
                 lambda store: store.get_briefing(record.id)
             )
             if current.status is not BriefingStatus.PENDING:
@@ -414,19 +414,19 @@ class BriefingService:
     async def list(
         self, *, limit: int = 50, unread_only: bool = False
     ) -> list[ScannerBriefing]:
-        return await self._queue.run(
+        return await self._queue.read(
             lambda store: store.list_briefings(
                 limit=limit, unread_only=unread_only
             )
         )
 
     async def get(self, briefing_id: str) -> ScannerBriefing:
-        return await self._queue.run(
+        return await self._queue.read(
             lambda store: store.get_briefing(briefing_id)
         )
 
     async def unread_count(self) -> int:
-        return await self._queue.run(
+        return await self._queue.read(
             lambda store: store.count_unread_briefings()
         )
 

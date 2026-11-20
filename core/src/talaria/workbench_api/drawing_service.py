@@ -1,6 +1,6 @@
 """人工画线服务：把 HTTP 参数校验与单写队列串起来。
 
-所有落库操作都通过 ``StateWriterQueue.run`` 在 daemon 的唯一写协程上执行：
+所有落库操作都通过 ``StateWriterQueue.run`` 在 daemon 的专用写线程上执行：
 HTTP 处理协程只负责校验参数、等待 future，不在事件循环里直接碰 SQLite。
 """
 
@@ -90,7 +90,7 @@ class DrawingService:
         self._instrument(instrument_id)
         _check_timeframe(timeframe)
         _check_window(from_ts or 0, to_ts)
-        drawings = await self._queue.run(
+        drawings = await self._queue.read(
             lambda store: store.list_drawings(
                 instrument_id, timeframe, from_ts=from_ts, to_ts=to_ts
             )
@@ -116,7 +116,7 @@ class DrawingService:
             raise InvalidRequestError("price_min/price_max 必须是有限十进制数")
         if price_min > price_max:
             raise InvalidRequestError("price_min 不能大于 price_max")
-        drawings = await self._queue.run(
+        drawings = await self._queue.read(
             lambda store: store.list_drawings(
                 instrument_id,
                 timeframe,
@@ -177,12 +177,12 @@ class DrawingService:
     async def get_drawing(
         self, drawing_id: str, *, version: int | None = None
     ) -> DrawingRecord:
-        return await self._queue.run(
+        return await self._queue.read(
             lambda store: store.get_drawing(drawing_id, version=version)
         )
 
     async def list_versions(self, drawing_id: str) -> DrawingVersionList:
-        versions = await self._queue.run(
+        versions = await self._queue.read(
             lambda store: store.list_drawing_versions(drawing_id)
         )
         return DrawingVersionList(drawing_id=drawing_id, versions=versions)

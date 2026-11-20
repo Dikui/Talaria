@@ -1,7 +1,7 @@
-"""协同与感知状态的唯一写者：单线程 SQLite + 单 asyncio 协程串行队列。
+"""协同与感知状态的唯一写者：单协程排队，专用线程操作 SQLite。
 
 架构约定（docs/architecture.md §5.2、ADR-0006）：``state/collaboration_state.sqlite``
-只允许 daemon 内一个写者；写操作排队到一个协程，逐条提交，退出时刷盘并
+只允许 daemon 内一个写者；写操作由一个协程依次交给写线程，退出时刷盘并
 ``PRAGMA wal_checkpoint(TRUNCATE)``。05 的 watchlist / insight / staged plan
 可直接复用 ``events`` 与 ``meta`` 表；任务单 05 的人工画线使用
 ``drawings``（当前版本）与 ``drawing_versions``（完整版本链）两张表。
@@ -15,7 +15,8 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -211,23 +212,34 @@ def _record_from_create(
 
 
 class StateStore:
-    """唯一写者持有的 SQLite 连接；所有方法必须在同一线程/协程内串行调用。"""
+    """协同状态的 SQLite 连接；所有方法必须在打开连接的线程内调用。"""
 
     def __init__(self, data_dir: Path | str, *, now_ms: Callable[[], int] = _now_ms) -> None:
-        self._db_path = Path(data_dir) / STATE_DB
+        db_path = (Path(data_dir) / STATE_DB).resolve()
+        claim_writer(db_path)
+        self._init_claimed_writer(db_path, now_ms)
+
+    @classmethod
+    def _open_claimed_writer(
+        cls, db_path: Path, now_ms: Callable[[], int]
+    ) -> StateStore:
+        store = cls.__new__(cls)
+        store._init_claimed_writer(db_path, now_ms)
+        return store
+
+    def _init_claimed_writer(self, db_path: Path, now_ms: Callable[[], int]) -> None:
+        self._writer_path: Path | None = db_path
         self._now_ms = now_ms
         self._closed = False
-        claim_writer(self._db_path)
+        connection = None
         try:
-            self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._connection = sqlite3.connect(
-                self._db_path, isolation_level=None, check_same_thread=False
-            )
-            self._connection.execute("PRAGMA journal_mode=WAL")
-            self._connection.execute("PRAGMA synchronous=FULL")
-            self._connection.execute("PRAGMA busy_timeout=5000")
-            self._connection.execute("PRAGMA foreign_keys=ON")
-            self._connection.executescript(
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(db_path, isolation_level=None)
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
@@ -422,8 +434,32 @@ class StateStore:
                 """
             )
         except BaseException:
-            release_writer(self._db_path)
+            try:
+                if connection is not None:
+                    connection.close()
+            finally:
+                release_writer(db_path)
             raise
+        self._connection = connection
+
+    @classmethod
+    def _read(
+        cls,
+        db_path: Path,
+        now_ms: Callable[[], int],
+        operation: Callable[[StateStore], T],
+    ) -> T:
+        db_uri = f"{db_path.as_uri()}?mode=ro"
+        with closing(sqlite3.connect(db_uri, uri=True, isolation_level=None)) as connection:
+            connection.execute("PRAGMA query_only=ON")
+            # 一次读取中的多条查询共享同一个 WAL 快照。
+            connection.execute("BEGIN")
+            store = cls.__new__(cls)
+            store._writer_path = None
+            store._now_ms = now_ms
+            store._closed = False
+            store._connection = connection
+            return operation(store)
 
     def append_event(
         self,
@@ -1677,10 +1713,13 @@ class StateStore:
         if self._closed:
             return
         self._closed = True
+        if self._writer_path is None:
+            self._connection.close()
+            return
         try:
             checkpoint_and_close(self._connection)
         finally:
-            release_writer(self._db_path)
+            release_writer(self._writer_path)
 
 
 class _Request:
@@ -1694,10 +1733,16 @@ class _Request:
         self.operation = operation
         self.future = future
 
+    def execute(self, store: StateStore) -> tuple[Any, BaseException | None]:
+        try:
+            return self.operation(store), None
+        except (Exception, asyncio.CancelledError) as error:
+            # 操作抛出的取消也只交给该请求，不能取消派发协程。
+            return None, error
 
 
 class StateWriterQueue:
-    """把状态写操作汇聚到单协程；调用者等待对应 future，保证提交顺序与失败可见。"""
+    """由单协程按提交顺序派发到写线程，调用者等待各自的结果。"""
 
     def __init__(
         self,
@@ -1705,23 +1750,48 @@ class StateWriterQueue:
         *,
         now_ms: Callable[[], int] = _now_ms,
     ) -> None:
-        self._store = StateStore(data_dir, now_ms=now_ms)
-        self._queue: asyncio.Queue[_Request | object] = asyncio.Queue()
-        self._sentinel = object()
+        self._db_path = (Path(data_dir) / STATE_DB).resolve()
+        # 构造时拒绝第二个写者，SQLite 的打开与初始化留给启动时的写线程。
+        claim_writer(self._db_path)
+        self._now_ms = now_ms
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="state-writer"
+        )
+        self._queue: asyncio.Queue[_Request | None] = asyncio.Queue()
+        self._reads: set[asyncio.Future[Any]] = set()
+        self._starting: asyncio.Task[None] | None = None
         self._task: asyncio.Task[None] | None = None
-        self._closed = False
+        self._closing: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        if self._closed:
+        if self._closing is not None:
             raise RuntimeError("StateWriterQueue 已关闭")
-        if self._task is None:
-            self._task = asyncio.create_task(self._run())
+        if self._starting is None:
+            self._starting = asyncio.create_task(self._start())
+        await asyncio.shield(self._starting)
 
-    async def _submit(self, operation: Callable[[StateStore], Any]) -> Any:
-        if self._closed:
+    async def _start(self) -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            store = await loop.run_in_executor(
+                self._executor,
+                StateStore._open_claimed_writer,
+                self._db_path,
+                self._now_ms,
+            )
+        except Exception:
+            await asyncio.to_thread(self._executor.shutdown)
+            raise
+        self._task = asyncio.create_task(self._run(store))
+
+    def _require_running(self) -> None:
+        if self._closing is not None:
             raise RuntimeError("StateWriterQueue 已关闭")
         if self._task is None:
             raise RuntimeError("StateWriterQueue 尚未启动")
+
+    async def _submit(self, operation: Callable[[StateStore], Any]) -> Any:
+        self._require_running()
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._queue.put_nowait(_Request(operation, future))
         return await future
@@ -1741,43 +1811,68 @@ class StateWriterQueue:
         await self._submit(lambda store: store.set_meta(key, value, ts=ts))
 
     async def get_meta(self, key: str) -> Any | None:
-        return await self._submit(lambda store: store.get_meta(key))
+        return await self.read(lambda store: store.get_meta(key))
 
     async def run(self, operation: Callable[[StateStore], T]) -> T:
-        """在单写协程上执行任意 Store 操作；读写都排队，避免跨连接并发。"""
+        """在专用线程的写连接上串行执行状态操作。"""
 
         return await self._submit(operation)
 
-    async def _run(self) -> None:
+    async def read(self, operation: Callable[[StateStore], T]) -> T:
+        """在线程池的只读连接上查询已提交的数据。"""
+
+        self._require_running()
+        future = asyncio.get_running_loop().run_in_executor(
+            None, StateStore._read, self._db_path, self._now_ms, operation
+        )
+        self._reads.add(future)
+        future.add_done_callback(self._read_finished)
+        return await asyncio.shield(future)
+
+    def _read_finished(self, future: asyncio.Future[Any]) -> None:
+        self._reads.discard(future)
+        if not future.cancelled():
+            # 调用者取消后，线程中的查询仍会结束并关闭连接。
+            future.exception()
+
+    async def _run(self, store: StateStore) -> None:
+        loop = asyncio.get_running_loop()
         try:
-            while True:
-                request = await self._queue.get()
-                try:
-                    if request is self._sentinel:
-                        return
-                    assert isinstance(request, _Request)
-                    try:
-                        result = request.operation(self._store)
-                    except Exception as error:  # 交给调用者
-                        if not request.future.cancelled():
-                            request.future.set_exception(error)
-                    else:
-                        if not request.future.cancelled():
-                            request.future.set_result(result)
-                finally:
-                    self._queue.task_done()
+            while (request := await self._queue.get()) is not None:
+                result, error = await loop.run_in_executor(
+                    self._executor, request.execute, store
+                )
+                if request.future.cancelled():
+                    continue
+                if error is None:
+                    request.future.set_result(result)
+                else:
+                    request.future.set_exception(error)
         finally:
-            self._store.close()
+            try:
+                await loop.run_in_executor(self._executor, store.close)
+            finally:
+                await asyncio.to_thread(self._executor.shutdown)
 
     async def close(self) -> None:
-        if self._closed:
+        if self._closing is None:
+            self._closing = asyncio.create_task(self._finish_close())
+        await asyncio.shield(self._closing)
+
+    async def _finish_close(self) -> None:
+        if self._starting is None:
+            self._executor.shutdown()
+            release_writer(self._db_path)
             return
-        self._closed = True
-        if self._task is None:
-            self._store.close()
+        try:
+            await self._starting
+        except Exception:
+            # 启动失败时已关闭执行器，打开连接失败时已释放写者登记。
             return
-        await self._queue.join()
-        self._queue.put_nowait(self._sentinel)
+        assert self._task is not None
+        # 先释放只读快照，再让写线程截断 WAL。
+        await asyncio.gather(*self._reads, return_exceptions=True)
+        self._queue.put_nowait(None)
         await self._task
 
     async def __aenter__(self) -> StateWriterQueue:
