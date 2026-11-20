@@ -329,7 +329,7 @@ def test_daemon_snapshot_publishes_cold_bars_and_restart_reads(
     with TestClient(app) as client:
         first = _create(client)
         assert first.status_code == 200
-        cold = app.state.cold_store
+        cold = app.state.runtime.cold_store
         generations = cold.generations(instrument, "1m")
         assert len(generations) == 1
         assert generations[0].bars > 0

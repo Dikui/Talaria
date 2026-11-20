@@ -28,7 +28,8 @@ from talaria.perception.snapshot_store import (
     write_derivative_parquet,
     write_snapshot_parquet,
 )
-from talaria.workbench_api.app import _wanted, _ws_payload, create_app
+from talaria.workbench_api.app import create_app
+from talaria.workbench_api.routes.desk_ws import _wanted, _ws_payload
 from talaria.workbench_api.settings import AppSettings
 
 pytestmark = pytest.mark.medium
@@ -138,7 +139,7 @@ def test_unavailable_snapshot_and_timeframe_are_404(client) -> None:
 def test_reader_rechecks_available_time_against_cutoff(client, tmp_path) -> None:
     snapshot = _snapshot(client, "BTC-USDT-PERP", ["1m"])
     settings = client.app.state.settings
-    store = client.app.state.service._snapshot_store
+    store = client.app.state.runtime.snapshot_store
     if True:
         future_ts = NOW_MS + 3_600_000
         future = DerivativePoint(

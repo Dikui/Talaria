@@ -75,7 +75,7 @@ def _spike_bar() -> CompactBar:
 
 
 def _seed_spike(client: TestClient) -> None:
-    scanner = client.app.state.scanner_service
+    scanner = client.app.state.runtime.scanner
     scanner.seed_bars(INSTRUMENT, "1m", [_spike_bar()])
 
 

@@ -83,7 +83,7 @@ def _install_fake_host(client: TestClient) -> list[dict[str, Any]]:
     async def dispatch(url: str, payload: Mapping[str, Any]) -> None:
         calls.append({"url": url, **dict(payload)})
 
-    service = client.app.state.briefing_service
+    service = client.app.state.runtime.briefings
     service._host_url = lambda: "http://127.0.0.1:65530"  # type: ignore[assignment]
     service._dispatcher = dispatch  # type: ignore[assignment]
     # 后台扫描 tick 可能已占用默认并发/令牌；测试聚焦 BTC 时放宽并清空冷却。
@@ -111,7 +111,7 @@ def _wait_briefing(client: TestClient) -> dict[str, Any]:
 
 
 def _trigger_briefing(client: TestClient) -> dict[str, Any]:
-    scanner = client.app.state.scanner_service
+    scanner = client.app.state.runtime.scanner
     scanner.seed_bars(INSTRUMENT, "1m", [_spike_bar()])
     response = client.post("/api/scanner/scan", json={}, headers=AUTH)
     assert response.status_code == 200, response.text

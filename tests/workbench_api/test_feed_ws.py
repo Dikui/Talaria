@@ -15,7 +15,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from talaria.foundation import FeedHealthEvent, FeedHealthStatus
-from talaria.workbench_api.app import _wanted, create_app
+from talaria.workbench_api.app import create_app
+from talaria.workbench_api.routes.desk_ws import _wanted
 from talaria.workbench_api.settings import AppSettings
 
 BASE = 1_763_596_800_000
