@@ -28,7 +28,7 @@ NOW_MS = 1_795_022_974_103
 @pytest.fixture
 def builder(tmp_path, fixture_dir):
     connector = FixtureConnector(fixture_dir)
-    raw_store = RawStore(tmp_path)
+    raw_store = RawStore(tmp_path, raw_archive_id="test")
     snapshot_store = SnapshotStore(tmp_path)
     instance = SnapshotBuilder(
         data_dir=tmp_path,

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from talaria.packs import DEFAULT_PACK
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -17,7 +19,7 @@ class AppSettings:
     data_dir: Path
     dist_dir: Path
     fixture_dir: Path | None = None
-    bybit_base_url: str = "https://api.bybit.com"
+    history_base_url: str | None = None
     replay_events: Path | None = None
     replay_speed: float = 1.0
     stale_after_ms: int = 12_000
@@ -26,6 +28,7 @@ class AppSettings:
     realtime_quota: int = 8
     token: str | None = None
     now_ms: Callable[[], int] = field(default=_now_ms)
+    pack: str = DEFAULT_PACK
 
     def __post_init__(self) -> None:
         if self.backfill_bars <= 0:

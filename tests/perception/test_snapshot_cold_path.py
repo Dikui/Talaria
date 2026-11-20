@@ -48,7 +48,7 @@ def builder(tmp_path, fixture_dir, cold_publisher):
     instance = SnapshotBuilder(
         data_dir=tmp_path,
         connector=FixtureConnector(fixture_dir),
-        raw_store=RawStore(tmp_path),
+        raw_store=RawStore(tmp_path, raw_archive_id="test"),
         snapshot_store=snapshot_store,
         policy=BackfillPolicy(target_bars=3000, max_pages=5),
         now_ms=lambda: NOW_MS,
@@ -119,7 +119,7 @@ def test_builder_does_not_publish_hot_bars_beyond_cutoff(
     builder_instance = SnapshotBuilder(
         data_dir=tmp_path,
         connector=FixtureConnector(fixture_dir),
-        raw_store=RawStore(tmp_path),
+        raw_store=RawStore(tmp_path, raw_archive_id="test"),
         snapshot_store=snapshot_store,
         policy=BackfillPolicy(target_bars=3000, max_pages=5),
         now_ms=lambda: NOW_MS,

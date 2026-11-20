@@ -1,1 +1,12 @@
-"""横向市场规则包；核心层不得依赖这里的任何模块。"""
+"""横向市场规则包注册表，供启动时按名称选择。"""
+
+from talaria.foundation.market import MarketPack
+from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+
+DEFAULT_PACK = CRYPTO_PERP_PACK.name
+MARKET_PACKS: dict[str, MarketPack] = {CRYPTO_PERP_PACK.name: CRYPTO_PERP_PACK}
+
+
+def get_market_pack(name: str) -> MarketPack:
+    """返回已注册的市场包；未知名称抛出 ``KeyError``。"""
+    return MARKET_PACKS[name]

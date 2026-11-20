@@ -45,7 +45,7 @@ class StubConnector:
 def test_stops_when_connector_has_no_more_history(tmp_path) -> None:
     connector = StubConnector([[_bar(0), _bar(MINUTE)]])
     ensure_history(
-        raw_store=RawStore(tmp_path),
+        raw_store=RawStore(tmp_path, raw_archive_id="test"),
         connector=connector,
         symbol="BTCUSDT",
         timeframe="1m",
@@ -59,7 +59,7 @@ def test_stops_when_connector_has_no_more_history(tmp_path) -> None:
 def test_respects_max_pages(tmp_path) -> None:
     connector = StubConnector([[_bar(0)], [_bar(-MINUTE)], [_bar(-2 * MINUTE)]])
     ensure_history(
-        raw_store=RawStore(tmp_path),
+        raw_store=RawStore(tmp_path, raw_archive_id="test"),
         connector=connector,
         symbol="BTCUSDT",
         timeframe="1m",

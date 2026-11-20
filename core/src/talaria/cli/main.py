@@ -33,6 +33,7 @@ from talaria.cli.dsh_host import (
     resolve_dsh_bin,
     write_bridge_descriptor,
 )
+from talaria.packs import DEFAULT_PACK, MARKET_PACKS, get_market_pack
 from talaria.workbench_api.settings import AppSettings
 
 DEFAULT_DATA_DIR = Path(".talaria")
@@ -157,10 +158,11 @@ def _cmd_up(args: argparse.Namespace) -> int:
     settings = AppSettings(
         data_dir=data_dir,
         dist_dir=dist_dir,
+        pack=args.pack,
         fixture_dir=fixture_dir,
         replay_events=replay_events,
         replay_speed=args.replay_speed,
-        bybit_base_url=args.bybit_base_url,
+        history_base_url=args.history_base_url,
         backfill_bars=args.backfill_bars,
         realtime_quota=args.realtime_quota,
         token=token,
@@ -397,8 +399,8 @@ def _cmd_evaluate_levels(args: argparse.Namespace) -> int:
     )
     from talaria.foundation.errors import FeedUnavailableError
     from talaria.foundation.key_levels import session_profile_from_trait
-    from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 
+    pack = get_market_pack(args.pack)
     try:
         config = KeyLevelEvaluationConfig(
             instrument_id=args.instrument,
@@ -411,22 +413,21 @@ def _cmd_evaluate_levels(args: argparse.Namespace) -> int:
             seed=args.seed,
             atr_period=args.atr_period,
         )
-        instrument = CRYPTO_PERP_PACK.instrument(config.instrument_id)
+        instrument = pack.instrument(config.instrument_id)
         if instrument is None:
             available = "、".join(
-                item.instrument_id for item in CRYPTO_PERP_PACK.instruments()
+                item.instrument_id for item in pack.instruments()
             )
             raise EvaluationError(
                 "unknown_instrument",
                 f"未知标的: {config.instrument_id}；可用: {available}",
             )
-        profile = session_profile_from_trait(
-            CRYPTO_PERP_PACK.traits(config.instrument_id).session
-        )
+        profile = session_profile_from_trait(pack.traits(config.instrument_id).session)
         fixture_dir = Path(args.fixture_dir) if args.fixture_dir else None
         data_dir = Path(args.data_dir) if args.data_dir else None
-        if fixture_dir is None and data_dir is None:
-            fixture_dir = repo_root() / "tests" / "fixtures" / "bybit"
+        default_fixture_dir = pack.default_fixture_dir
+        if fixture_dir is None and data_dir is None and default_fixture_dir is not None:
+            fixture_dir = repo_root() / default_fixture_dir
         bars, source = load_compact_bars(
             instrument_symbol=instrument.symbol,
             timeframe=config.timeframe,
@@ -434,6 +435,7 @@ def _cmd_evaluate_levels(args: argparse.Namespace) -> int:
             to_ts=config.to_ts,
             fixture_dir=fixture_dir,
             data_dir=data_dir,
+            raw_archive_id=pack.raw_archive_id,
             horizon_bars=config.horizon_bars,
             atr_period=config.atr_period,
         )
@@ -480,11 +482,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
     )
     up.add_argument("--dist-dir", default=None, help="前端构建产物目录")
-    up.add_argument("--fixture-dir", default=None, help="离线 Bybit fixture 目录")
+    up.add_argument("--fixture-dir", default=None, help="离线 fixture 目录")
     up.add_argument(
+        "--history-base-url",
         "--bybit-base-url",
-        default="https://api.bybit.com",
-        help="Bybit API 基地址",
+        help="覆盖市场包的历史行情 API 基地址",
     )
     up.add_argument(
         "--backfill-bars",
@@ -575,7 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
         "evaluate-levels", help="离线评估关键位触及后的 ATR 反应率与随机基线"
     )
     evaluate.add_argument(
-        "--instrument", required=True, help="标的，例如 BTC-USDT-PERP"
+        "--instrument", required=True, help="市场包中的标的标识"
     )
     evaluate.add_argument(
         "--timeframe", required=True, help="周期，例如 1m/5m/1h"
@@ -617,7 +619,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--atr-period", type=int, default=14, help="ATR 周期（默认 14）"
     )
     evaluate.add_argument(
-        "--fixture-dir", default=None, help="离线 Bybit fixture 目录"
+        "--fixture-dir", default=None, help="离线 fixture 目录"
     )
     evaluate.add_argument(
         "--data-dir",
@@ -636,6 +638,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-json", dest="json", action="store_false", help="只输出可读表格到 stderr"
     )
     evaluate.set_defaults(func=_cmd_evaluate_levels)
+    for command in (up, evaluate):
+        command.add_argument(
+            "--pack",
+            choices=sorted(MARKET_PACKS),
+            default=DEFAULT_PACK,
+            help=f"市场包（默认 {DEFAULT_PACK}）",
+        )
     return parser
 
 

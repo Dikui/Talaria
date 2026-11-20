@@ -91,7 +91,7 @@ def _builder(
     history: list[RawBar],
     hot: StubHotBars | None = None,
 ) -> tuple[SnapshotBuilder, RawStore, SnapshotStore]:
-    raw_store = RawStore(tmp_path)
+    raw_store = RawStore(tmp_path, raw_archive_id="test")
     raw_store.append(INSTRUMENT.symbol, TIMEFRAME, history)
     snapshot_store = SnapshotStore(tmp_path)
     builder = SnapshotBuilder(

@@ -4,11 +4,25 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from talaria.cli import main as cli_main
+from talaria.foundation.connector import RawBar
+from talaria.foundation.market import (
+    CarryTrait,
+    FeedCapabilityTrait,
+    InstrumentSpec,
+    MarginTrait,
+    OrderConstraintTrait,
+    SessionTrait,
+    TraitBundle,
+)
+from talaria.packs import MARKET_PACKS
+from talaria.replay.replay import ReplayFeed
 from talaria.workbench_api.app import create_app
 from talaria.workbench_api.settings import AppSettings
 
@@ -214,6 +228,131 @@ def test_host_result_becomes_ready_and_prompt_has_three_sections(
     assert record["insight"]["direction"] == "LONG"
     assert record["dsh_session_id"] == "session-1"
     assert record["dsh_turn_id"] == "7"
+
+
+# 任务单 04：用假市场的数据源和领域技能贯通 CLI、工作台与宿主派发。
+@pytest.mark.spec
+def test_up_uses_selected_market_pack(tmp_path, dist_dir, monkeypatch) -> None:
+    spec = InstrumentSpec(
+        instrument_id="SAMPLE.TEST",
+        venue="test",
+        symbol="SAMPLE",
+        asset_class="stock",
+        tick_size="0.01",
+        qty_step="1",
+        min_qty="1",
+        price_precision=2,
+        qty_precision=0,
+    )
+    cutoff = int(time.time() // 60) * 60_000
+    price = Decimal("101.25")
+    bar = RawBar(
+        symbol=spec.symbol,
+        timeframe="1m",
+        ts_event=cutoff - 60_000,
+        open=price,
+        high=price,
+        low=price,
+        close=price,
+        volume=Decimal("1"),
+        turnover=price,
+        ts_available=cutoff,
+        ts_ingested=cutoff,
+        ts_committed=cutoff,
+    )
+    events = tmp_path / "heartbeat.jsonl"
+    events.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+
+    class SampleHistory:
+        def fetch_bars(self, *, symbol, timeframe, end_ts=None, limit=1000):
+            if (symbol, timeframe) == (bar.symbol, bar.timeframe) and limit > 0:
+                if end_ts is None or bar.ts_event <= end_ts:
+                    return [bar]
+            return []
+
+    class SampleStream(ReplayFeed):
+        feed_mode = "sample-live"
+
+    skill = "# 第二段 · 样本市场领域技能\n\n观察盘中成交量。"
+
+    class SamplePack:
+        name = "sample"
+        raw_archive_id = "sample_raw"
+        market_skill = skill
+        default_fixture_dir = None
+
+        def instruments(self):
+            return (spec,)
+
+        def instrument(self, instrument_id):
+            return spec if instrument_id == spec.instrument_id else None
+
+        def traits(self, instrument_id):
+            if self.instrument(instrument_id) is None:
+                raise KeyError(instrument_id)
+            return TraitBundle(
+                feed=FeedCapabilityTrait(realtime=True, polling=True, history=True),
+                margin=MarginTrait(margin_asset="USD", max_leverage=Decimal("1")),
+                carry=CarryTrait(funding_interval_hours=None),
+                session=SessionTrait(session_kind="regular"),
+                order_constraint=OrderConstraintTrait(post_only=False),
+            )
+
+        def create_history_connector(self, *, base_url=None):
+            return SampleHistory()
+
+        def create_realtime_stream(self, *, now_ms):
+            return SampleStream(events)
+
+    monkeypatch.setitem(MARKET_PACKS, SamplePack.name, SamplePack())
+    apps = []
+
+    def capture_app(server) -> None:
+        # 用 TestClient 运行真实 lifespan，无需绑定回环端口。
+        apps.append(server.config.app)
+        server.started = True
+
+    monkeypatch.setattr(cli_main.uvicorn.Server, "run", capture_app)
+    data_dir = tmp_path / "data"
+    assert cli_main.main([
+        "up", "--solo", "--pack", "sample", "--data-dir", str(data_dir),
+        "--dist-dir", str(dist_dir), "--backfill-bars", "1",
+    ]) == 0
+    with TestClient(apps[0]) as client:
+        assert client.get("/api/instruments").json() == [spec.model_dump(mode="json")]
+        assert client.get("/api/health").json()["feed_mode"] == "sample-live"
+        headers = {"Authorization": f"Bearer {client.app.state.token}"}
+        snapshot = client.post(
+            "/api/snapshots", headers=headers,
+            json={"instrument_id": spec.instrument_id, "timeframes": ["1m"]},
+        )
+        assert snapshot.status_code == 200, snapshot.text
+        assert snapshot.json()["bar_counts"] == {"1m": 1}
+        assert (data_dir / "data/raw/sample_raw/SAMPLE/1m.jsonl").is_file()
+
+        captured: list[dict] = []
+        _install_host(client, captured)
+        response = client.post(
+            "/api/collaboration/consult", headers=headers,
+            json={
+                "snapshot_id": snapshot.json()["snapshot_id"],
+                "instrument_id": spec.instrument_id,
+                "timeframe": "1m",
+                "question": "盘中成交量如何？",
+                "visible": {
+                    "from_ts": cutoff - 60_000, "to_ts": cutoff,
+                    "price_min": "90", "price_max": "110",
+                },
+            },
+        )
+        assert response.status_code == 202, response.text
+        deadline = time.monotonic() + 2
+        while not captured and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert captured, "会诊没有派发到宿主"
+        prompt = captured[0]["payload"]["prompt"]
+        second_section = prompt.split("\n\n# 第二段", 1)[1].split("\n\n# 第三段", 1)[0]
+        assert f"# 第二段{second_section}" == skill
 
 
 def test_inverted_geometry_abstains(client: TestClient) -> None:
