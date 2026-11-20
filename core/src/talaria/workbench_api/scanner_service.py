@@ -23,8 +23,8 @@ from talaria.foundation.scanner.contracts import (
     ScannerTrigger,
     ScannerTriggerRoute,
 )
-from talaria.foundation.scanner.engine import KIND_ORDER, ScannerConfig, ScannerEngine
-from talaria.foundation.scanner.routing import TriggerRoutingPolicy
+from talaria.perception.scanner.engine import KIND_ORDER, ScannerConfig, ScannerEngine
+from talaria.perception.scanner.routing import TriggerRoutingPolicy
 from talaria.workbench_api.state_store import (
     SCANNER_FOCUS_GROUP_ID,
     StateStore,

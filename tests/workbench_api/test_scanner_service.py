@@ -12,13 +12,12 @@ from talaria.foundation.bars import CompactBar
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.scanner import (
     ScannerConditionKind,
-    ScannerConfig,
     ScannerTrigger,
     ScannerTriggerRoute,
-    TriggerRoutingPolicy,
 )
 from talaria.foundation.types import PrecisionTier
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+from talaria.perception.scanner import ScannerConfig, TriggerRoutingPolicy
 from talaria.workbench_api.scanner_service import ScannerService
 from talaria.workbench_api.state_store import (
     SCANNER_FOCUS_GROUP_ID,
@@ -235,7 +234,7 @@ def test_explicit_placeholder_route_offers_without_network(tmp_path: object) -> 
 def test_scanner_has_no_model_client_dependency() -> None:
     for module in ("openai", "anthropic", "litellm", "talaria.cognition"):
         assert module not in sys.modules
-    import talaria.foundation.scanner.engine as engine
+    import talaria.perception.scanner.engine as engine
     import talaria.workbench_api.scanner_service as service
 
     for candidate in (engine, service):

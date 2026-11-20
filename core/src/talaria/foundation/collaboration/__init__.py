@@ -34,11 +34,6 @@ from talaria.foundation.collaboration.validation import (
     parse_host_analysis,
     stale_abstain,
 )
-from talaria.foundation.collaboration.usage_scan import (
-    UsageScanResult,
-    scan_session_file,
-    scan_session_traces,
-)
 
 __all__ = [
     "DISCIPLINE_PREFIX",
@@ -62,14 +57,11 @@ __all__ = [
     "UsageReport",
     "UsageReportResponse",
     "UsageRow",
-    "UsageScanResult",
     "UsageSummary",
     "UsageSummaryResponse",
     "build_consultation_prompt",
     "canonicalize_insight",
     "evaluate_insight",
     "parse_host_analysis",
-    "scan_session_file",
-    "scan_session_traces",
     "stale_abstain",
 ]

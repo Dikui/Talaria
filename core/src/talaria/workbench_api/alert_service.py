@@ -15,7 +15,6 @@ from uuid import uuid4
 
 from talaria.foundation.alerts import (
     AlertCreate,
-    AlertEngine,
     AlertPatch,
     AlertRecord,
     AlertStatus,
@@ -39,6 +38,7 @@ from talaria.foundation.operators import (
     spec_from_params,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
+from talaria.perception.alerts import AlertEngine
 from talaria.workbench_api.state_store import StateWriterQueue
 
 logger = logging.getLogger(__name__)

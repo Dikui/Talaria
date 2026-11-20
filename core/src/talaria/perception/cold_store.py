@@ -35,14 +35,14 @@ import pyarrow.parquet as pq
 from talaria.foundation.connector import RawBar
 from talaria.foundation.errors import ColdStoreError, ColdStoreIntegrityError, ColdStoreQualityError
 from talaria.foundation.market import InstrumentSpec
-from talaria.foundation.sqlite import (
+from talaria.foundation.types import PrecisionTier
+from talaria.perception.raw_store import bar_record
+from talaria.perception.sqlite import (
     checkpoint_and_close,
     claim_writer,
     open_writer_connection,
     release_writer,
 )
-from talaria.foundation.types import PrecisionTier
-from talaria.perception.raw_store import bar_record
 
 ARCHIVE_SUBDIR = Path("data") / "raw_archive"
 STAGING_SUBDIR = Path("data") / "staging"

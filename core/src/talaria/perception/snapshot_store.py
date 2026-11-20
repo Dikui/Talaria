@@ -23,12 +23,12 @@ from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.errors import SnapshotNotFoundError
 from talaria.foundation.snapshot import SnapshotMeta
-from talaria.foundation.sqlite import (
+from talaria.foundation.types import PrecisionTier
+from talaria.perception.sqlite import (
     checkpoint_and_close,
     claim_writer,
     release_writer,
 )
-from talaria.foundation.types import PrecisionTier
 
 STATE_SUBDIR = Path("state")
 SNAPSHOT_SUBDIR = STATE_SUBDIR / "hot_snapshots"

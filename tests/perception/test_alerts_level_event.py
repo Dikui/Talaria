@@ -13,7 +13,6 @@ import pytest
 from talaria.foundation.alerts import (
     AlertCondition,
     AlertConditionKind,
-    AlertEngine,
     AlertLevelEvent,
     AlertRecord,
     AlertStatus,
@@ -32,6 +31,7 @@ from talaria.foundation.key_levels import (
     KeyLevelStatus,
 )
 from talaria.foundation.types import PrecisionTier
+from talaria.perception.alerts import AlertEngine
 
 pytestmark = pytest.mark.small
 

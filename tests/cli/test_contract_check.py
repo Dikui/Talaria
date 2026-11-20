@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from talaria.cli.main import main
-from talaria.foundation.contracts_io import check_contracts
+from talaria.cli.contracts_io import check_contracts
 
 
 def test_committed_contracts_are_zero_drift(repo_root: Path) -> None:

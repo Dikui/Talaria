@@ -16,7 +16,6 @@ from talaria.foundation.alerts import (
     AlertCondition,
     AlertConditionKind,
     AlertDirection,
-    AlertEngine,
     AlertMetric,
     AlertOverlayMode,
     AlertRecord,
@@ -36,6 +35,7 @@ from talaria.foundation.feed import (
     OrderBookEvent,
 )
 from talaria.foundation.types import PrecisionTier
+from talaria.perception.alerts import AlertEngine
 from talaria.replay import ReplayFeed
 
 pytestmark = pytest.mark.small

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from talaria.foundation.contracts_io import DSH_TOOL_PATHS, check_contracts, repo_root
+from talaria.cli.contracts_io import DSH_TOOL_PATHS, check_contracts, repo_root
 
 pytestmark = pytest.mark.spec
 

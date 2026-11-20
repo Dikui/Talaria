@@ -23,11 +23,10 @@ from talaria.foundation.key_levels import (
 )
 from talaria.foundation.scanner import (
     ScannerConditionKind,
-    ScannerConfig,
-    ScannerEngine,
     ScannerTriggerRoute,
 )
 from talaria.foundation.types import PrecisionTier
+from talaria.perception.scanner import ScannerConfig, ScannerEngine
 
 pytestmark = pytest.mark.medium
 
