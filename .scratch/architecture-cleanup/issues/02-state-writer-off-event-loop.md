@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §5.2（`collaboration_state.sqlite` 由 `StateWriterQueue` 单写者串行写入）；ADR-0005（快通道零阻塞）；ADR-0006（按写者分库）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 所有写操作仍由同一个写连接按入队顺序串行执行；写连接只在专用线程上使用。
 - [ ] 读取接口使用 `query_only` 的只读连接，不经过写队列；能读到调用前已经提交的写入（read-your-writes）。

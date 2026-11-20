@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0002（Capability Traits 与市场包）；`docs/architecture.md` §1.1 第 3 条“跨品种零条件分支”、§3.3 提示词三段式组装。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `packs` 提供按名称查找市场包的注册表；名称未知时 CLI 以退出码 2 报出可选值列表。
 - [ ] `MarketPack` 协议补充：创建历史连接器、创建实时流、原始存档目录标识、领域技能提示词文本。fixture 连接器和 JSONL 回放仍是与市场无关的通用实现。
