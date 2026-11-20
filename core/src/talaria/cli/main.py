@@ -85,10 +85,7 @@ def _cmd_usage_scan(args: argparse.Namespace) -> int:
 
     store = StateStore(Path(args.data_dir))
     try:
-        result = scan_session_traces(
-            args.dsh_home,
-            lambda report: store.record_usage(report),
-        )
+        result = scan_session_traces(args.dsh_home, store.usage.record)
     finally:
         store.close()
     print(

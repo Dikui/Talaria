@@ -99,7 +99,7 @@ def test_adopt_creates_independent_horizontal_drawing(tmp_path: Path) -> None:
             ]
 
             row = await writer.run(
-                lambda store: store.get_key_level_adoption(INSTRUMENT, LEVEL_ID)
+                lambda store: store.key_level_feedback.get_adoption(INSTRUMENT, LEVEL_ID)
             )
             assert row is not None
             assert row["drawing_id"] == drawing.drawing_id
@@ -138,7 +138,7 @@ def test_adopt_is_idempotent_until_drawing_is_deleted(tmp_path: Path) -> None:
             )
             assert replacement.drawing_id != first.drawing_id
             row = await writer.run(
-                lambda store: store.get_key_level_adoption(INSTRUMENT, LEVEL_ID)
+                lambda store: store.key_level_feedback.get_adoption(INSTRUMENT, LEVEL_ID)
             )
             assert row is not None
             assert row["drawing_id"] == replacement.drawing_id
@@ -220,7 +220,7 @@ def test_adoption_persists_across_state_writer_restart(tmp_path: Path) -> None:
         await restarted.start()
         try:
             row = await restarted.run(
-                lambda store: store.get_key_level_adoption(INSTRUMENT, LEVEL_ID)
+                lambda store: store.key_level_feedback.get_adoption(INSTRUMENT, LEVEL_ID)
             )
             assert row is not None
             assert row["drawing_id"] == drawing_id

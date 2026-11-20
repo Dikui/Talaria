@@ -28,6 +28,7 @@ from talaria.foundation.scanner import (
 from talaria.perception.scanner import TriggerRoutingPolicy
 from talaria.workbench_api.briefing_service import BriefingService
 from talaria.workbench_api.state_store import StateWriterQueue
+from talaria.workbench_api.usage_service import UsageService
 
 pytestmark = pytest.mark.medium
 
@@ -153,6 +154,7 @@ def _service(
     published: list[ScannerBriefing] = []
     service = BriefingService(
         queue=queue,
+        usage=UsageService(queue),
         workbench=FakeWorkbench(),
         host_url=host,
         now_ms=clock,
@@ -499,8 +501,8 @@ def test_usage_in_result_is_idempotent(tmp_path) -> None:
             )
             await service.submit_result(briefing.id, payload)
             await service.submit_result(briefing.id, payload)
-            total, _sessions = await queue.run(lambda store: store.summarize_usage())
-            rows = await queue.run(lambda store: store.list_usage(limit=10))
+            total, _sessions = await queue.run(lambda store: store.usage.summarize())
+            rows = await queue.run(lambda store: store.usage.list(limit=10))
             assert total.turns == 1
             assert rows[0].input_tokens == 120
         finally:

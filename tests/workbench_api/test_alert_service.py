@@ -28,6 +28,7 @@ from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.workbench_api.alert_service import AlertService
+from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.state_store import StateWriterQueue
 
 pytestmark = pytest.mark.medium
@@ -103,6 +104,7 @@ async def _make_service(
     await writer.start()
     service = AlertService(
         state_writer=writer,
+        drawings=DrawingService(queue=writer, pack=CRYPTO_PERP_PACK, now_ms=clock),
         instruments=INSTRUMENTS,
         now_ms=clock,
         freeze_snapshot=freeze_snapshot,

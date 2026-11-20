@@ -39,6 +39,7 @@ from talaria.foundation.operators import (
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.alerts import AlertEngine
+from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.state_store import StateWriterQueue
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ class AlertService:
         self,
         *,
         state_writer: StateWriterQueue,
+        drawings: DrawingService,
         instruments: Sequence[InstrumentSpec],
         now_ms: Callable[[], int],
         bar_history: Callable[[str, str], Sequence[Any]] | None = None,
@@ -62,6 +64,7 @@ class AlertService:
         on_trigger: Callable[[AlertTriggerRecord], None] | None = None,
     ) -> None:
         self._state_writer = state_writer
+        self._drawings = drawings
         self._instruments = {spec.instrument_id: spec for spec in instruments}
         self._now_ms = now_ms
         self._on_change = on_change
@@ -79,7 +82,7 @@ class AlertService:
     # ------------------------------------------------------------- 生命周期
 
     async def start(self) -> None:
-        records = await self._state_writer.read(lambda store: store.list_alerts())
+        records = await self._state_writer.read(lambda store: store.alerts.list())
         self._engine.load(records)
         expired = self._engine.tick()
         if expired:
@@ -118,14 +121,14 @@ class AlertService:
 
     async def list_alerts(self, status: AlertStatus | None = None) -> list[AlertRecord]:
         return await self._state_writer.read(
-            lambda store: store.list_alerts(status=status)
+            lambda store: store.alerts.list(status=status)
         )
 
     async def get_alert(self, alert_id: str) -> AlertRecord:
         record = self._engine.get(alert_id)
         if record is not None:
             return record
-        return await self._state_writer.read(lambda store: store.get_alert(alert_id))
+        return await self._state_writer.read(lambda store: store.alerts.get(alert_id))
 
     async def create_alert(self, payload: AlertCreate) -> AlertRecord:
         self._check_instrument(payload.instrument_id)
@@ -147,7 +150,7 @@ class AlertService:
             created_ts=now,
             updated_ts=now,
         )
-        await self._state_writer.run(lambda store: store.write_alert(record))
+        await self._state_writer.run(lambda store: store.alerts.write(record))
         self._engine.put(record, reset=True)
         await self.refresh_overlays()
         await self._notify_change()
@@ -164,7 +167,7 @@ class AlertService:
         updated = record.model_copy(
             update={"status": AlertStatus.ARMED, "updated_ts": self._now_ms()}
         )
-        await self._state_writer.run(lambda store: store.write_alert(updated))
+        await self._state_writer.run(lambda store: store.alerts.write(updated))
         self._engine.put(updated, reset=True)
         await self.refresh_overlays()
         await self._notify_change()
@@ -201,7 +204,7 @@ class AlertService:
                 updates["next_arm_ts"] = None
                 reset = True
         updated = record.model_copy(update=updates)
-        await self._state_writer.run(lambda store: store.write_alert(updated))
+        await self._state_writer.run(lambda store: store.alerts.write(updated))
         self._engine.put(updated, reset=reset)
         await self.refresh_overlays()
         await self._notify_change()
@@ -209,7 +212,7 @@ class AlertService:
 
     async def delete_alert(self, alert_id: str) -> AlertRecord:
         record = await self._state_writer.run(
-            lambda store: store.soft_delete_alert(alert_id)
+            lambda store: store.alerts.soft_delete(alert_id)
         )
         self._engine.remove(alert_id)
         await self._notify_change()
@@ -224,7 +227,7 @@ class AlertService:
     ) -> list[AlertTriggerRecord]:
         await self.flush()
         return await self._state_writer.read(
-            lambda store: store.list_alert_triggers(
+            lambda store: store.alerts.list_triggers(
                 alert_id=alert_id,
                 instrument_id=instrument_id,
                 limit=limit,
@@ -238,11 +241,7 @@ class AlertService:
             missing: list[str] = []
             for drawing_id in self._engine.overlay_alerts():
                 try:
-                    records.append(
-                        await self._state_writer.read(
-                            lambda store: store.get_drawing(drawing_id)
-                        )
-                    )
+                    records.append(await self._drawings.get_drawing(drawing_id))
                 except TalariaError:
                     missing.append(drawing_id)
             self._engine.refresh_drawings(records)
@@ -272,8 +271,8 @@ class AlertService:
     ) -> None:
         await self._state_writer.run(
             lambda store: (
-                store.write_alert(alert),
-                store.append_alert_trigger(trigger),
+                store.alerts.write(alert),
+                store.alerts.append_trigger(trigger),
             )
         )
         if self._on_trigger is not None:
@@ -285,7 +284,7 @@ class AlertService:
 
     async def _persist_alerts(self, alerts: Sequence[AlertRecord]) -> None:
         await self._state_writer.run(
-            lambda store: [store.write_alert(alert) for alert in alerts]
+            lambda store: [store.alerts.write(alert) for alert in alerts]
         )
 
     async def _notify_change(self) -> None:
@@ -316,8 +315,8 @@ class AlertService:
         if condition.kind is not AlertConditionKind.OVERLAY_CROSS:
             return
         assert condition.drawing_id is not None
-        drawing = await self._state_writer.run(
-            lambda store: store.get_drawing(condition.drawing_id)
+        drawing = await self._drawings.get_drawing(
+            condition.drawing_id, after_pending_writes=True
         )
         if drawing.deleted_at is not None:
             raise InvalidRequestError("画线已删除，无法挂载预警")

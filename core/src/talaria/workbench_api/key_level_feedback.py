@@ -48,7 +48,7 @@ class KeyLevelFeedbackService:
 
     async def list(self, instrument_id: str) -> KeyLevelIgnoreList:
         rows = await self._state_writer.read(
-            lambda store: store.list_key_level_ignores(instrument_id)
+            lambda store: store.key_level_feedback.list_ignores(instrument_id)
         )
         return KeyLevelIgnoreList(
             instrument_id=instrument_id,
@@ -61,7 +61,7 @@ class KeyLevelFeedbackService:
         if not request.instrument_id or not request.level_id:
             raise InvalidRequestError("instrument_id 与 level_id 不能为空")
         await self._state_writer.run(
-            lambda store: store.set_key_level_ignore(
+            lambda store: store.key_level_feedback.set_ignore(
                 request.instrument_id, request.level_id, request.ignored
             )
         )
@@ -79,7 +79,7 @@ class KeyLevelFeedbackService:
         if not snapshot_id:
             raise InvalidRequestError("snapshot_id 不能为空")
         existing = await self._state_writer.run(
-            lambda store: store.get_key_level_adoption(
+            lambda store: store.key_level_feedback.get_adoption(
                 level.instrument_id, level.level_id
             )
         )
@@ -96,7 +96,7 @@ class KeyLevelFeedbackService:
         request = self._drawing_from_level(level, timeframe=timeframe)
         drawing = await self._drawings.create_drawing(request)
         await self._state_writer.run(
-            lambda store: store.record_key_level_adoption(
+            lambda store: store.key_level_feedback.record_adoption(
                 instrument_id=level.instrument_id,
                 level_id=level.level_id,
                 snapshot_id=snapshot_id,
@@ -110,15 +110,15 @@ class KeyLevelFeedbackService:
         self, instrument_id: str, level_id: str
     ) -> KeyLevelAdoptionRecord | None:
         row = await self._state_writer.read(
-            lambda store: store.get_key_level_adoption(instrument_id, level_id)
+            lambda store: store.key_level_feedback.get_adoption(instrument_id, level_id)
         )
         return None if row is None else KeyLevelAdoptionRecord(**row)
 
     async def feedback(self, instrument_id: str) -> KeyLevelFeedbackSummary:
         ignores, adoptions = await self._state_writer.read(
             lambda store: (
-                store.list_key_level_ignores(instrument_id),
-                store.list_key_level_adoptions(instrument_id),
+                store.key_level_feedback.list_ignores(instrument_id),
+                store.key_level_feedback.list_adoptions(instrument_id),
             )
         )
         return KeyLevelFeedbackSummary(

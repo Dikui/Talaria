@@ -30,10 +30,6 @@ from talaria.foundation.collaboration import (
     EvidenceRef,
     HostResultRequest,
     SetupInsight,
-    UsageReport,
-    UsageReportResponse,
-    UsageSummary,
-    UsageSummaryResponse,
     build_consultation_prompt,
     canonicalize_insight,
     evaluate_insight,
@@ -263,7 +259,7 @@ class CollaborationService:
                 }
             )
             await self._queue.run(
-                lambda store: store.create_consultation(record, prompt=prompt)
+                lambda store: store.consultations.create(record, prompt=prompt)
             )
             return ConsultResponse(
                 consultation_id=record.consultation_id,
@@ -272,7 +268,7 @@ class CollaborationService:
             )
 
         await self._queue.run(
-            lambda store: store.create_consultation(record, prompt=prompt)
+            lambda store: store.consultations.create(record, prompt=prompt)
         )
         self._track(self._run(record.consultation_id, prompt))
         return ConsultResponse(
@@ -348,7 +344,7 @@ class CollaborationService:
         evidence_refs: list[EvidenceRef] | None = None,
     ) -> ConsultationRecord:
         def operation(store: Any) -> ConsultationRecord:
-            record = store.get_consultation(consultation_id)
+            record = store.consultations.get(consultation_id)
             if record.status is not ConsultationStatus.PENDING:
                 return record
             now = self._now_ms()
@@ -364,7 +360,7 @@ class CollaborationService:
                     "completed_ts": now,
                 }
             )
-            store.update_consultation(updated)
+            store.consultations.update(updated)
             return updated
 
         result = await self._queue.run(operation)
@@ -379,7 +375,7 @@ class CollaborationService:
         payload: HostResultRequest,
     ) -> ConsultationRecord:
         record = await self._queue.read(
-            lambda store: store.get_consultation(consultation_id)
+            lambda store: store.consultations.get(consultation_id)
         )
         if record.status is not ConsultationStatus.PENDING:
             return record
@@ -482,10 +478,10 @@ class CollaborationService:
         payload: HostResultRequest,
     ) -> ConsultationRecord:
         def operation(store: Any) -> ConsultationRecord:
-            current = store.get_consultation(record.consultation_id)
+            current = store.consultations.get(record.consultation_id)
             if current.status is not ConsultationStatus.PENDING:
                 return current
-            saved = store.update_consultation(
+            saved = store.consultations.update(
                 record,
                 host_session_id=payload.dsh_session_id,
                 host_turn_id=payload.dsh_turn_id,
@@ -502,30 +498,11 @@ class CollaborationService:
 
     async def get(self, consultation_id: str) -> ConsultationRecord:
         return await self._queue.read(
-            lambda store: store.get_consultation(consultation_id)
+            lambda store: store.consultations.get(consultation_id)
         )
 
     async def list(self, *, limit: int = 50) -> list[ConsultationRecord]:
-        return await self._queue.read(lambda store: store.list_consultations(limit=limit))
-
-    async def report_usage(self, report: UsageReport) -> UsageReportResponse:
-        recorded = await self._queue.run(lambda store: store.record_usage(report))
-        return UsageReportResponse(
-            recorded=recorded,
-            dsh_session_id=report.dsh_session_id,
-            dsh_turn_id=report.dsh_turn_id,
-            duplicate=not recorded,
-        )
-
-    async def usage(self, *, limit: int = 100) -> UsageSummaryResponse:
-        def operation(store: Any) -> tuple[UsageSummary, list[UsageSummary], Any]:
-            total, sessions = store.summarize_usage()
-            return total, sessions, store.list_usage(limit=limit)
-
-        total, sessions, recent = await self._queue.read(operation)
-        return UsageSummaryResponse(
-            summary=total, sessions=sessions, recent=recent
-        )
+        return await self._queue.read(lambda store: store.consultations.list(limit=limit))
 
     async def close(self) -> None:
         for task in list(self._tasks):

@@ -30,6 +30,7 @@ from talaria.foundation.collaboration import EvidenceKind, EvidenceRef
 from talaria.foundation.errors import InvalidRequestError
 from talaria.foundation.scanner import ScannerTrigger
 from talaria.workbench_api.state_store import StateWriterQueue
+from talaria.workbench_api.usage_service import UsageService
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class BriefingService:
         self,
         *,
         queue: StateWriterQueue,
+        usage: UsageService,
         workbench: Any,
         host_url: Callable[[], str | None],
         now_ms: Callable[[], int],
@@ -83,6 +85,7 @@ class BriefingService:
         http_timeout_s: float = DEFAULT_HTTP_TIMEOUT_S,
     ) -> None:
         self._queue = queue
+        self._usage = usage
         self._workbench = workbench
         self._host_url = host_url
         self._now_ms = now_ms
@@ -230,7 +233,7 @@ class BriefingService:
                 evidence_refs=self._evidence(trigger),
                 created_ts=trigger.created_ts or self._now_ms(),
             )
-            await self._queue.run(lambda store: store.create_briefing(record))
+            await self._queue.run(lambda store: store.briefings.create(record))
             self._publish(record)
 
             event = asyncio.Event()
@@ -261,7 +264,7 @@ class BriefingService:
                 return
 
             current = await self._queue.read(
-                lambda store: store.get_briefing(record.id)
+                lambda store: store.briefings.get(record.id)
             )
             if current.status is not BriefingStatus.PENDING:
                 return
@@ -281,7 +284,7 @@ class BriefingService:
     async def _finish_abstain(
         self, record: ScannerBriefing, reason: str, message: str
     ) -> None:
-        current = await self._queue.run(lambda store: store.get_briefing(record.id))
+        current = await self._queue.run(lambda store: store.briefings.get(record.id))
         if current.status is not BriefingStatus.PENDING:
             return
         updated = current.model_copy(
@@ -291,7 +294,7 @@ class BriefingService:
                 "summary": None,
             }
         )
-        await self._queue.run(lambda store: store.update_briefing(updated))
+        await self._queue.run(lambda store: store.briefings.update(updated))
         self._publish(updated)
         event = self._events.get(record.id)
         if event is not None:
@@ -316,11 +319,9 @@ class BriefingService:
     async def submit_result(
         self, briefing_id: str, payload: BriefingResultRequest
     ) -> ScannerBriefing:
-        record = await self._queue.run(lambda store: store.get_briefing(briefing_id))
+        record = await self._queue.run(lambda store: store.briefings.get(briefing_id))
         if payload.usage is not None:
-            await self._queue.run(
-                lambda store: store.record_usage(payload.usage, ts=self._now_ms())
-            )
+            await self._usage.record(payload.usage, now_ms=self._now_ms)
         if record.status is not BriefingStatus.PENDING:
             return record
 
@@ -402,7 +403,7 @@ class BriefingService:
         return await self._commit(updated)
 
     async def _commit(self, record: ScannerBriefing) -> ScannerBriefing:
-        await self._queue.run(lambda store: store.update_briefing(record))
+        await self._queue.run(lambda store: store.briefings.update(record))
         self._publish(record)
         event = self._events.get(record.id)
         if event is not None:
@@ -415,24 +416,24 @@ class BriefingService:
         self, *, limit: int = 50, unread_only: bool = False
     ) -> list[ScannerBriefing]:
         return await self._queue.read(
-            lambda store: store.list_briefings(
+            lambda store: store.briefings.list(
                 limit=limit, unread_only=unread_only
             )
         )
 
     async def get(self, briefing_id: str) -> ScannerBriefing:
         return await self._queue.read(
-            lambda store: store.get_briefing(briefing_id)
+            lambda store: store.briefings.get(briefing_id)
         )
 
     async def unread_count(self) -> int:
         return await self._queue.read(
-            lambda store: store.count_unread_briefings()
+            lambda store: store.briefings.count_unread()
         )
 
     async def mark_read(self, briefing_id: str) -> ScannerBriefing:
         return await self._queue.run(
-            lambda store: store.mark_briefing_read(briefing_id, self._now_ms())
+            lambda store: store.briefings.mark_read(briefing_id, self._now_ms())
         )
 
     async def consult_seed(

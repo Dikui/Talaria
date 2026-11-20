@@ -30,13 +30,13 @@ from talaria.foundation.watchlist import (
     WatchlistGroupKind,
     WatchlistItem,
 )
-from talaria.workbench_api.state_store import (
-    StateStore,
-    StateWriterQueue,
+from talaria.workbench_api.state_repositories.watchlist import (
     WatchlistGroupRecord,
     WatchlistItemRecord,
     WatchlistRecords,
+    WatchlistRepository,
 )
+from talaria.workbench_api.state_store import StateStore, StateWriterQueue
 from talaria.workbench_api.subscriptions import (
     WATCHLIST_TIMEFRAME,
     RealtimeSubscriptionScheduler,
@@ -109,7 +109,7 @@ class WatchlistService:
     ) -> tuple[WatchlistRecords, list[str], SubscriptionView, dict[str, FeedHealthStatus]]:
         # 保证查询和应用订阅的顺序一致，防止旧快照覆盖更新后的分配。
         async with self._subscription_lock:
-            records = await self._state_writer.read(StateStore.list_watchlist)
+            records = await self._state_writer.read(lambda store: store.watchlist.list())
             ordered = [
                 item.instrument_id
                 for group in records.groups
@@ -283,29 +283,29 @@ class WatchlistService:
 
     async def create_group(self, name: str) -> Watchlist:
         await self._state_writer.run(
-            lambda store: store.create_watchlist_group(name)
+            lambda store: store.watchlist.create_group(name)
         )
         return await self.get_watchlist()
 
     async def rename_group(self, group_id: str, name: str) -> Watchlist:
         def operation(store: StateStore) -> None:
-            self._require_manual_group(store, group_id)
-            store.rename_watchlist_group(group_id, name)
+            self._require_manual_group(store.watchlist, group_id)
+            store.watchlist.rename_group(group_id, name)
 
         await self._state_writer.run(operation)
         return await self.get_watchlist()
 
     async def delete_group(self, group_id: str) -> Watchlist:
         def operation(store: StateStore) -> None:
-            self._require_manual_group(store, group_id)
-            store.delete_watchlist_group(group_id)
+            self._require_manual_group(store.watchlist, group_id)
+            store.watchlist.delete_group(group_id)
 
         await self._state_writer.run(operation)
         return await self.get_watchlist()
 
     async def order_groups(self, ids: list[str]) -> Watchlist:
         def operation(store: StateStore) -> None:
-            records = store.list_watchlist()
+            records = store.watchlist.list()
             all_ids = [group.group_id for group in records.groups]
             if len(ids) != len(set(ids)) or set(ids) != set(all_ids):
                 raise InvalidRequestError("排序必须覆盖全部分组且不能重复")
@@ -318,7 +318,7 @@ class WatchlistService:
                 if group_id in system_ids and all_ids[index] != group_id:
                     raise InvalidRequestError("系统分组不可调整顺序")
             manual_ids = [group_id for group_id in ids if group_id not in system_ids]
-            store.reorder_watchlist_groups(manual_ids)
+            store.watchlist.reorder_groups(manual_ids)
 
         await self._state_writer.run(operation)
         return await self.get_watchlist()
@@ -330,9 +330,9 @@ class WatchlistService:
             raise InstrumentNotFoundError(f"未知标的：{instrument_id}")
 
         def operation(store: StateStore) -> None:
-            self._require_manual_group(store, group_id)
+            self._require_manual_group(store.watchlist, group_id)
             try:
-                store.add_watchlist_item(group_id, instrument_id)
+                store.watchlist.add_item(group_id, instrument_id)
             except ValueError as exc:
                 raise InvalidRequestError(str(exc)) from exc
 
@@ -343,7 +343,7 @@ class WatchlistService:
         """按契约从所有手工分组移除该标的；系统分组只读，不能被删除。"""
 
         def operation(store: StateStore) -> None:
-            records = store.list_watchlist()
+            records = store.watchlist.list()
             manual_groups = {
                 group.group_id
                 for group in records.groups
@@ -364,30 +364,30 @@ class WatchlistService:
                     raise InvalidRequestError("系统分组只读")
                 raise NotFoundError(f"标的未加入自选：{instrument_id}")
             for item in removable:
-                store.remove_watchlist_item(item.group_id, instrument_id)
+                store.watchlist.remove_item(item.group_id, instrument_id)
 
         await self._state_writer.run(operation)
         return await self.get_watchlist()
 
     async def order_items(self, group_id: str, ids: list[str]) -> Watchlist:
         def operation(store: StateStore) -> None:
-            group = self._require_manual_group(store, group_id)
+            group = self._require_manual_group(store.watchlist, group_id)
             current = [
                 item.instrument_id
-                for item in store.list_watchlist().items_for(group.group_id)
+                for item in store.watchlist.list().items_for(group.group_id)
             ]
             if len(ids) != len(set(ids)) or set(ids) != set(current):
                 raise InvalidRequestError("排序必须覆盖分组内全部标的且不能重复")
-            store.reorder_watchlist_items(group_id, ids)
+            store.watchlist.reorder_items(group_id, ids)
 
         await self._state_writer.run(operation)
         return await self.get_watchlist()
 
     @staticmethod
     def _require_manual_group(
-        store: StateStore, group_id: str
+        repository: WatchlistRepository, group_id: str
     ) -> WatchlistGroupRecord:
-        group = store.get_watchlist_group(group_id)
+        group = repository.get_group(group_id)
         if group is None:
             raise NotFoundError(f"分组不存在：{group_id}")
         if group.is_system or group.kind == WatchlistGroupKind.SCANNER_FOCUS.value:
