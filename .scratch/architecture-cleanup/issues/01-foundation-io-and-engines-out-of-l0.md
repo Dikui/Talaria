@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §1.1、§3.1、§3.2；ADR-0001、ADR-0008。冲突时以 architecture.md 为准。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `AlertEngine`、`ScannerEngine` 及其路由 / 运行时辅助代码移到 L1；预警、扫描的契约模型（`*contracts`）继续留在 L0，因为前后端和 Schema 导出共用它们。
 - [ ] SQLite 单写者守卫、契约导出写盘、轨迹用量扫描三个 I/O 模块移出 `foundation`，新位置的导入方向符合 §1.1（L1 不导入 O2；O2 可以导入 L1）。
