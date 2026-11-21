@@ -125,6 +125,43 @@ describe("alert form validation", () => {
 });
 
 describe("alert payload building", () => {
+  it("omits untouched periods so server defaults apply", () => {
+    const form = {
+      ...defaultAlertForm("BTC-USDT-PERP", "1m"),
+      kind: "INDICATOR_SIGNAL" as const,
+      indicator: "EMA" as const,
+      threshold: "1",
+    };
+    expect(buildAlertCreate(form).condition).toEqual({
+      kind: "INDICATOR_SIGNAL",
+      direction: "ABOVE",
+      indicator: "EMA",
+      indicator_channel: "value",
+      threshold: "1",
+    });
+  });
+
+  it("sends VWAP anchors only for VWAP indicators", () => {
+    const form = {
+      ...defaultAlertForm("BTC-USDT-PERP", "1m"),
+      kind: "INDICATOR_SIGNAL" as const,
+      indicator: "VWAP" as const,
+      indicatorAnchor: "snapshot" as const,
+      compareIndicator: "VWAP" as const,
+      compareAnchor: "session" as const,
+      threshold: "",
+    };
+    expect(buildAlertCreate(form).condition).toEqual({
+      kind: "INDICATOR_SIGNAL",
+      direction: "ABOVE",
+      indicator: "VWAP",
+      indicator_channel: "value",
+      indicator_anchor: "snapshot",
+      compare_indicator: "VWAP",
+      compare_anchor: "session",
+    });
+  });
+
   it("sends the threshold as a decimal string and converts cooldown to ms", () => {
     const form = {
       ...defaultAlertForm("BTC-USDT-PERP", "1m"),

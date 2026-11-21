@@ -27,6 +27,9 @@ import type {
   DrawingVersionList,
   ErrorResponse,
   IndicatorBundle,
+  IndicatorDefaultsResponse,
+  IndicatorName,
+  IndicatorParams,
   IndicatorSeries,
   InstrumentSpec,
   KeyLevelCategory,
@@ -213,6 +216,27 @@ export const api = {
     return postJson<IndicatorSeries>(
       `/api/operators/compute${suffix}`,
       request,
+    );
+  },
+
+  indicatorDefaults(): Promise<IndicatorDefaultsResponse> {
+    return getJson<IndicatorDefaultsResponse>("/api/indicator-defaults");
+  },
+
+  setIndicatorDefault(
+    name: IndicatorName,
+    params: IndicatorParams,
+  ): Promise<IndicatorDefaultsResponse> {
+    return writeJson<IndicatorDefaultsResponse>(
+      `/api/indicator-defaults/${encodeURIComponent(name)}`,
+      "PUT",
+      params,
+    );
+  },
+
+  resetIndicatorDefault(name: IndicatorName): Promise<IndicatorDefaultsResponse> {
+    return deleteJson<IndicatorDefaultsResponse>(
+      `/api/indicator-defaults/${encodeURIComponent(name)}`,
     );
   },
 

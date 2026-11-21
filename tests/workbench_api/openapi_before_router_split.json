@@ -248,6 +248,21 @@
         "additionalProperties": false,
         "description": "一条可评估条件；字段组合由 ``kind`` 决定。",
         "properties": {
+          "compare_anchor": {
+            "anyOf": [
+              {
+                "enum": [
+                  "snapshot",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compare Anchor"
+          },
           "compare_indicator": {
             "anyOf": [
               {
@@ -302,6 +317,21 @@
                 "type": "null"
               }
             ]
+          },
+          "indicator_anchor": {
+            "anyOf": [
+              {
+                "enum": [
+                  "snapshot",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indicator Anchor"
           },
           "indicator_channel": {
             "anyOf": [
@@ -2866,6 +2896,27 @@
           "series"
         ],
         "title": "IndicatorBundle",
+        "type": "object"
+      },
+      "IndicatorDefaultsResponse": {
+        "additionalProperties": false,
+        "description": "全部指标当前生效的默认参数。",
+        "properties": {
+          "defaults": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/IndicatorParams"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/IndicatorName"
+            },
+            "title": "Defaults",
+            "type": "object"
+          }
+        },
+        "required": [
+          "defaults"
+        ],
+        "title": "IndicatorDefaultsResponse",
         "type": "object"
       },
       "IndicatorName": {
@@ -6148,6 +6199,108 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/api/indicator-defaults": {
+      "get": {
+        "operationId": "get_indicator_defaults_api_indicator_defaults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndicatorDefaultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Indicator Defaults"
+      }
+    },
+    "/api/indicator-defaults/{name}": {
+      "delete": {
+        "operationId": "delete_indicator_default_api_indicator_defaults__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/IndicatorName"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndicatorDefaultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Indicator Default"
+      },
+      "put": {
+        "operationId": "put_indicator_default_api_indicator_defaults__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/IndicatorName"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IndicatorParams"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndicatorDefaultsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Indicator Default"
       }
     },
     "/api/instruments": {

@@ -1,9 +1,11 @@
 {
   "operator": "VWAP",
   "params": {
-    "period": 1
+    "period": 1,
+    "anchor": "session"
   },
-  "warmup_bars": 0,
+  "warmup_bars": 12,
+  "post_gap_warmup": 10,
   "bars": [
     {
       "offset": 0,
@@ -17,13 +19,13 @@
     },
     {
       "offset": 1,
-      "open": "11",
-      "high": "12",
-      "low": "10",
-      "close": "11",
-      "volume": "1",
-      "turnover": "11",
-      "status": "NORMAL"
+      "open": null,
+      "high": null,
+      "low": null,
+      "close": null,
+      "volume": null,
+      "turnover": null,
+      "status": "FEED_GAP"
     },
     {
       "offset": 2,
@@ -37,66 +39,26 @@
     },
     {
       "offset": 3,
-      "open": "12",
-      "high": "12",
-      "low": "12",
-      "close": "12",
+      "open": "14",
+      "high": "15",
+      "low": "13",
+      "close": "14",
+      "volume": "2",
+      "turnover": "28",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 4,
+      "open": "14",
+      "high": "14",
+      "low": "14",
+      "close": "14",
       "volume": "0",
       "turnover": "0",
       "status": "NO_TRADES"
     },
     {
-      "offset": 4,
-      "open": "14",
-      "high": "15",
-      "low": "13",
-      "close": "14",
-      "volume": "1",
-      "turnover": "14",
-      "status": "NORMAL"
-    },
-    {
       "offset": 5,
-      "open": null,
-      "high": null,
-      "low": null,
-      "close": null,
-      "volume": null,
-      "turnover": null,
-      "status": "FEED_GAP"
-    },
-    {
-      "offset": 6,
-      "open": "20",
-      "high": "21",
-      "low": "19",
-      "close": "20",
-      "volume": "1",
-      "turnover": "20",
-      "status": "NORMAL"
-    },
-    {
-      "offset": 7,
-      "open": "22",
-      "high": "23",
-      "low": "21",
-      "close": "22",
-      "volume": "1",
-      "turnover": "22",
-      "status": "NORMAL"
-    },
-    {
-      "offset": 8,
-      "open": "18",
-      "high": "19",
-      "low": "17",
-      "close": "18",
-      "volume": "1",
-      "turnover": "18",
-      "status": "NORMAL"
-    },
-    {
-      "offset": 9,
       "open": "16",
       "high": "17",
       "low": "15",
@@ -106,7 +68,57 @@
       "status": "NORMAL"
     },
     {
+      "offset": 6,
+      "open": "15",
+      "high": "16",
+      "low": "14",
+      "close": "15",
+      "volume": "1",
+      "turnover": "15",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 7,
+      "open": "14",
+      "high": "15",
+      "low": "13",
+      "close": "14",
+      "volume": "1",
+      "turnover": "14",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 8,
+      "open": "17",
+      "high": "18",
+      "low": "16",
+      "close": "17",
+      "volume": "1",
+      "turnover": "17",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 9,
+      "open": "18",
+      "high": "19",
+      "low": "17",
+      "close": "18",
+      "volume": "1",
+      "turnover": "18",
+      "status": "NORMAL"
+    },
+    {
       "offset": 10,
+      "open": "16",
+      "high": "17",
+      "low": "15",
+      "close": "16",
+      "volume": "1",
+      "turnover": "16",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 11,
       "open": "20",
       "high": "21",
       "low": "19",
@@ -116,52 +128,55 @@
       "status": "NORMAL"
     },
     {
-      "offset": 11,
+      "offset": 107,
       "open": "24",
       "high": "25",
       "low": "23",
       "close": "24",
-      "volume": "1",
-      "turnover": "24",
+      "volume": "2",
+      "turnover": "48",
       "status": "NORMAL"
     }
   ],
   "expected": [
     {
-      "value": "10"
-    },
-    {
-      "value": "10.5"
-    },
-    {
-      "value": "11"
-    },
-    {
-      "value": "11"
-    },
-    {
-      "value": "11.75"
+      "value": null
     },
     {
       "value": null
     },
     {
-      "value": "20"
+      "value": null
     },
     {
-      "value": "21"
+      "value": null
     },
     {
-      "value": "20"
+      "value": null
     },
     {
-      "value": "19"
+      "value": null
     },
     {
-      "value": "19.2"
+      "value": null
     },
     {
-      "value": "20"
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": null
+    },
+    {
+      "value": "24"
     }
   ]
 }

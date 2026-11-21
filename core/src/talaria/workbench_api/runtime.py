@@ -33,6 +33,7 @@ from talaria.workbench_api.briefing_service import BriefingService
 from talaria.workbench_api.collaboration_service import CollaborationService
 from talaria.workbench_api.desk_broadcast import DeskBroadcast
 from talaria.workbench_api.drawing_service import DrawingService
+from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
 from talaria.workbench_api.key_level_feedback import KeyLevelFeedbackService
 from talaria.workbench_api.scanner_service import ScannerService
 from talaria.workbench_api.service import WorkbenchService
@@ -54,6 +55,7 @@ class Runtime:
     usage: UsageService
     briefings: BriefingService
     key_level_feedback: KeyLevelFeedbackService
+    indicator_defaults: IndicatorDefaultsService
     alerts: AlertService | None
     scanner: ScannerService | None
     watchlist: WatchlistService
@@ -198,6 +200,7 @@ async def build_runtime(
         key_level_feedback = KeyLevelFeedbackService(
             state_writer=state_writer, drawings=drawings, now_ms=settings.now_ms
         )
+        indicator_defaults = IndicatorDefaultsService(state_writer)
         scheduler = (
             RealtimeSubscriptionScheduler(supervisor, quota=settings.realtime_quota)
             if supervisor is not None
@@ -248,6 +251,7 @@ async def build_runtime(
                 freeze_snapshot=freeze_alert_snapshot,
                 on_change=rebalance_watchlist,
                 on_trigger=desk.publish_alert,
+                indicator_defaults=indicator_defaults,
             )
         watchlist = WatchlistService(
             state_writer=state_writer,
@@ -300,6 +304,7 @@ async def build_runtime(
             usage=usage,
             briefings=briefings,
             key_level_feedback=key_level_feedback,
+            indicator_defaults=indicator_defaults,
             alerts=alerts,
             scanner=scanner,
             watchlist=watchlist,

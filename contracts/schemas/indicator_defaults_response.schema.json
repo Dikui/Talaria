@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "IndicatorName": {
+      "description": "技术指标与衍生品指标；全部共用同一算子核。",
+      "enum": [
+        "EMA",
+        "SMA",
+        "RSI",
+        "ATR",
+        "BOLL",
+        "VWAP",
+        "FUNDING_QUANTILE",
+        "OI_DIVERGENCE",
+        "NET_ODDS"
+      ],
+      "title": "IndicatorName",
+      "type": "string"
+    },
+    "IndicatorParams": {
+      "additionalProperties": false,
+      "description": "一个指标实例的参数；BOLL 额外使用 ``std_dev``。",
+      "properties": {
+        "anchor": {
+          "anyOf": [
+            {
+              "enum": [
+                "snapshot",
+                "session"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        },
+        "period": {
+          "maximum": 5000,
+          "minimum": 1,
+          "title": "Period",
+          "type": "integer"
+        },
+        "std_dev": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Std Dev"
+        }
+      },
+      "required": [
+        "period"
+      ],
+      "title": "IndicatorParams",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "全部指标当前生效的默认参数。",
+  "properties": {
+    "defaults": {
+      "additionalProperties": {
+        "$ref": "#/$defs/IndicatorParams"
+      },
+      "propertyNames": {
+        "$ref": "#/$defs/IndicatorName"
+      },
+      "title": "Defaults",
+      "type": "object"
+    }
+  },
+  "required": [
+    "defaults"
+  ],
+  "title": "IndicatorDefaultsResponse",
+  "type": "object"
+}

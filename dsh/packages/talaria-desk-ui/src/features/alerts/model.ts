@@ -230,9 +230,11 @@ export interface AlertFormState {
   direction: AlertDirection;
   indicator: IndicatorName;
   indicatorPeriod: number;
+  indicatorAnchor: "snapshot" | "session";
   indicatorChannel: string;
   compareIndicator: IndicatorName | "";
   comparePeriod: number;
+  compareAnchor: "snapshot" | "session";
   drawingId: string;
   overlayMode: AlertOverlayMode;
   levelId: string;
@@ -265,10 +267,12 @@ export function defaultAlertForm(
     threshold: "",
     direction: "ABOVE",
     indicator: "RSI",
-    indicatorPeriod: 14,
+    indicatorPeriod: 0,
+    indicatorAnchor: "session",
     indicatorChannel: "value",
     compareIndicator: "",
     comparePeriod: 0,
+    compareAnchor: "session",
     drawingId: options.drawingId ?? "",
     overlayMode: "CLOSE_BREAK",
     levelId: options.levelId ?? "",
@@ -300,8 +304,18 @@ export function validateAlertForm(form: AlertFormState): string | null {
     if (form.compareIndicator && form.indicator === form.compareIndicator) {
       return "对比指标不能与主指标相同";
     }
-    if (form.indicatorPeriod < 1 || form.indicatorPeriod > 5_000) {
-      return "指标周期需在 1 到 5000 之间";
+    if (
+      form.indicatorPeriod !== 0 &&
+      (form.indicatorPeriod < 1 || form.indicatorPeriod > 5_000)
+    ) {
+      return "指标周期需在 1 到 5000 之间（0 表示服务端默认）";
+    }
+    if (
+      form.compareIndicator &&
+      form.comparePeriod !== 0 &&
+      (form.comparePeriod < 1 || form.comparePeriod > 5_000)
+    ) {
+      return "对比周期需在 1 到 5000 之间（0 表示服务端默认）";
     }
   }
   if (form.kind === "OVERLAY_CROSS" && !form.drawingId) {
@@ -338,12 +352,22 @@ export function buildAlertCondition(form: AlertFormState): AlertCondition {
       kind: "INDICATOR_SIGNAL",
       direction: form.direction,
       indicator: form.indicator,
-      indicator_period: form.indicatorPeriod,
+      ...(form.indicatorPeriod > 0
+        ? { indicator_period: form.indicatorPeriod }
+        : {}),
+      ...(form.indicator === "VWAP"
+        ? { indicator_anchor: form.indicatorAnchor }
+        : {}),
       indicator_channel: form.indicatorChannel,
       ...(useCompare
         ? {
             compare_indicator: form.compareIndicator as IndicatorName,
-            compare_period: form.comparePeriod,
+            ...(form.comparePeriod > 0
+              ? { compare_period: form.comparePeriod }
+              : {}),
+            ...(form.compareIndicator === "VWAP"
+              ? { compare_anchor: form.compareAnchor }
+              : {}),
           }
         : { threshold: form.threshold.trim() as DecimalString }),
     };
@@ -389,10 +413,12 @@ export function formFromRecord(record: AlertRecord): AlertFormState {
     direction: condition.direction ?? base.direction,
     indicator: (condition.indicator ?? base.indicator) as IndicatorName,
     indicatorPeriod: condition.indicator_period ?? base.indicatorPeriod,
+    indicatorAnchor: condition.indicator_anchor ?? base.indicatorAnchor,
     indicatorChannel: condition.indicator_channel ?? base.indicatorChannel,
     compareIndicator:
       (condition.compare_indicator as IndicatorName | null | undefined) ?? "",
     comparePeriod: condition.compare_period ?? 0,
+    compareAnchor: condition.compare_anchor ?? base.compareAnchor,
     drawingId: condition.drawing_id ?? "",
     overlayMode: condition.overlay_mode ?? base.overlayMode,
     levelId: condition.level_id ?? "",

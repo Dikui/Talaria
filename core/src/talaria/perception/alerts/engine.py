@@ -42,7 +42,7 @@ from talaria.foundation.key_levels import (
 )
 from talaria.foundation.operators import (
     CHANNELS,
-    DEFAULT_PERIODS,
+    IndicatorName,
     IndicatorSpec,
     Point,
     compute_series,
@@ -604,7 +604,11 @@ class AlertEngine:
         if not window:
             return None
         bars = list(window)
-        spec = self._indicator_spec(condition.indicator, condition.indicator_period)
+        spec = self._indicator_spec(
+            condition.indicator,
+            condition.indicator_period,
+            condition.indicator_anchor,
+        )
         channel = condition.indicator_channel or CHANNELS[condition.indicator][0]
         points = list(compute_series(bars, spec).points)
         if not points:
@@ -614,7 +618,9 @@ class AlertEngine:
             return None
         if condition.compare_indicator is not None:
             compare_spec = self._indicator_spec(
-                condition.compare_indicator, condition.compare_period
+                condition.compare_indicator,
+                condition.compare_period,
+                condition.compare_anchor,
             )
             compare_channel = CHANNELS[condition.compare_indicator][0]
             compare_points = list(compute_series(bars, compare_spec).points)
@@ -641,8 +647,15 @@ class AlertEngine:
         )
 
     @staticmethod
-    def _indicator_spec(name, period: int | None) -> IndicatorSpec:
-        return spec_from_params(name, {"period": period or DEFAULT_PERIODS[name]})
+    def _indicator_spec(
+        name: IndicatorName, period: int | None, anchor: str | None = None
+    ) -> IndicatorSpec:
+        if period is None:
+            raise ValueError(f"{name} 预警缺少显式周期")
+        params: dict[str, object] = {"period": period}
+        if name is IndicatorName.VWAP:
+            params["anchor"] = anchor or "session"
+        return spec_from_params(name, params)
 
     def _trigger(self, alert: AlertRecord, observation: _Observation, now: int) -> None:
         condition = alert.condition
@@ -694,11 +707,11 @@ class AlertEngine:
             return f"{label}{direction} {_decimal_text(observation.threshold)}"
         if condition.kind is AlertConditionKind.INDICATOR_SIGNAL:
             assert condition.indicator is not None
-            period = condition.indicator_period or DEFAULT_PERIODS[condition.indicator]
+            period = condition.indicator_period
+            assert period is not None
             if condition.compare_indicator is not None:
-                compare_period = (
-                    condition.compare_period or DEFAULT_PERIODS[condition.compare_indicator]
-                )
+                compare_period = condition.compare_period
+                assert compare_period is not None
                 return (
                     f"{condition.indicator.value}({period}) {direction} "
                     f"{condition.compare_indicator.value}({compare_period})"

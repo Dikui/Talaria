@@ -330,8 +330,9 @@ export function AlertPanel({
                 周期
                 <input
                   type="number"
-                  min={1}
+                  min={0}
                   max={5000}
+                  placeholder="0 = 服务端默认"
                   value={form.indicatorPeriod}
                   onChange={(event) =>
                     setForm((current) => ({
@@ -341,6 +342,25 @@ export function AlertPanel({
                   }
                 />
               </label>
+              {form.indicator === "VWAP" && (
+                <label>
+                  VWAP 锚点
+                  <select
+                    value={form.indicatorAnchor}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        indicatorAnchor: event.target.value as
+                          | "snapshot"
+                          | "session",
+                      }))
+                    }
+                  >
+                    <option value="session">UTC 日界</option>
+                    <option value="snapshot">快照起点</option>
+                  </select>
+                </label>
+              )}
               <label>
                 对比指标
                 <select
@@ -377,8 +397,9 @@ export function AlertPanel({
                   对比周期
                   <input
                     type="number"
-                    min={1}
+                    min={0}
                     max={5000}
+                    placeholder="0 = 服务端默认"
                     value={form.comparePeriod}
                     onChange={(event) =>
                       setForm((current) => ({
@@ -387,6 +408,25 @@ export function AlertPanel({
                       }))
                     }
                   />
+                </label>
+              )}
+              {form.compareIndicator === "VWAP" && (
+                <label>
+                  对比 VWAP 锚点
+                  <select
+                    value={form.compareAnchor}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        compareAnchor: event.target.value as
+                          | "snapshot"
+                          | "session",
+                      }))
+                    }
+                  >
+                    <option value="session">UTC 日界</option>
+                    <option value="snapshot">快照起点</option>
+                  </select>
                 </label>
               )}
             </>

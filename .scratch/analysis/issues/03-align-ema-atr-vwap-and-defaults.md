@@ -54,3 +54,38 @@ RSI、BOLL（总体标准差）、SMA 算法已一致，不改。
 - 关键位引擎 ATR 口径统一。
 
 ## Comments
+
+### 实现记录（analysis-03，2026-11-22）
+
+**后端语义**
+- EMA 改为首值种子：第一根输出 close，之后 `alpha = 2/(N+1)` 递推；`FEED_GAP` 后下一根重新作种子。
+- ATR 第一根 TR 取 `high - low` 并计入前 N 个 TR 的简单均值种子，之后 RMA；`FEED_GAP` 后同样重新收集种子。
+- VWAP 默认锚点改为 `session`；首个 UTC 日界前输出空，日界处清零并从当前 bar 累计；`snapshot` 行为保持原样。
+- `DEFAULT_PERIODS` 的 EMA、SMA 改为 9，RSI/ATR/BOLL/VWAP 等其余默认值不变。
+- 黄金向量用 `tests/foundation/operators/pine_reference.py`（独立于 `core.py` 的 Decimal 参考实现）重新生成 `contracts/operator_vectors/{ema,atr,vwap}.json`；向量包含前导空值、跨 UTC 日界和 `FEED_GAP` 后重预热，`post_gap_warmup` 支持 VWAP 依赖日界的数据相关重预热。
+
+**预警参数显式化**
+- `AlertCondition` 新增 `indicator_anchor` / `compare_anchor`，仅 VWAP 允许设置。
+- 新建/修改预警时服务端按生效默认值补齐周期与 VWAP 锚点，把显式值写进条件；评估层只读条件中的参数，不再回退 `DEFAULT_PERIODS`。
+- `AlertService.start()` 执行一次性迁移（meta 标记 `alerts.explicit_params.v1`）：旧默认 EMA/SMA 20、RSI/ATR/BOLL 14/14/20、VWAP 1 且锚点 `snapshot`；显式值不覆盖。迁移幂等。
+- 契约重新生成：`contracts/schemas/*`、`dsh/packages/talaria-contracts/src/generated.ts`；OpenAPI 快照 `tests/workbench_api/openapi_before_router_split.json` 已更新。
+
+**用户默认值**
+- 新增 `workbench_api/indicator_defaults.py`，把用户覆盖存入状态库 meta 键 `indicator_defaults.v1`；出厂值仍来自 `DEFAULT_PERIODS` / `IndicatorParams.defaults_for`，BOLL 出厂倍数显式为 2。
+- 新增 `GET /api/indicator-defaults`、`PUT/DELETE /api/indicator-defaults/{name}`；参数校验复用 `spec_from_params`，非法参数返回 422。指标 GET 接口按生效默认值计算，非默认参数仍走 `POST /api/operators/compute`。
+- 前端启动时读取生效默认值初始化指标设置（读取失败回退出厂值）；参数面板为每个指标提供“设为默认”“恢复出厂”。保存默认值只写服务端，不改变当前图表实例参数；“恢复出厂”会用出厂参数重置当前面板。
+- 预警表单不再强制发送旧周期：周期留空/0 表示由服务端按生效默认值补齐；VWAP 主/对比指标增加锚点选择。
+
+**验证**
+- `.venv/bin/pytest tests/foundation/operators tests/perception/test_alerts_engine.py tests/workbench_api/test_alert_service.py tests/workbench_api/test_alerts_api.py tests/workbench_api/test_indicators_api.py tests/workbench_api/test_indicator_defaults_api.py tests/workbench_api/test_openapi.py -q` → 94 passed。其中迁移测试同时放入“周期为空”和“显式旧周期 20”的两条预警，验证迁移后在相同 K 线上同一根触发。
+- `cd dsh && pnpm --filter @talaria/desk-ui typecheck` → 通过；`pnpm --filter @talaria/desk-ui test` → 22 个测试文件、159 个测试通过。
+- `.venv/bin/talaria contract-check --write` → exit 0，重复执行无额外改动。
+
+**关键位 ATR 口径**
+- `key_levels/engine.py:118` 的 `_atr_series` 未改：它是“TR 的滚动简单均值”，第一根 TR 也含 `high - low`，但与算子核的 RMA/种子语义不同。是否统一留待关键位专项任务，本单不做。
+
+**风险与遗留**
+- VWAP `session` 在 `FEED_GAP` 后会等到下一个 UTC 日界才恢复输出；这是“重置后从新锚点起算”的直接结果，重预热长度依赖数据，已用 `post_gap_warmup` 覆盖。
+- 迁移只处理周期为空的历史预警；若历史条件中存有其他非法值，仍按原有校验处理。
+- 前端默认值读取为一次性启动流程，服务端不可用时静默使用出厂值；未做浏览器手工验收，界面交互仅由 typecheck/单测覆盖。
+- 手工检查建议：打开指标设置确认 EMA/SMA 显示 9、VWAP 默认“UTC 日界”；保存 EMA 周期后新建 EMA 指标沿用新值；“恢复出厂”回到 9；新建 VWAP 预警在预警列表中回读锚点；跨日 K 线前段 VWAP 为空、日界后重新累计。

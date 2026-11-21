@@ -11,6 +11,8 @@ from talaria.foundation.errors import (
 from talaria.foundation.derivatives import DerivativeBundle
 from talaria.foundation.indicators import (
     IndicatorBundle,
+    IndicatorDefaultsResponse,
+    IndicatorParams,
     IndicatorSeries,
     OperatorRequest,
 )
@@ -26,6 +28,7 @@ from talaria.foundation.key_levels import (
     VwapAnchor,
 )
 from talaria.foundation.market import InstrumentSpec
+from talaria.foundation.operators import IndicatorName
 from talaria.foundation.snapshot import (
     ChartPage,
     SnapshotMeta,
@@ -90,10 +93,43 @@ def get_derivatives(
     return get_runtime(request).workbench.get_derivatives(snapshot_id, timeframe=timeframe)
 
 
+@router.get("/api/indicator-defaults", response_model=IndicatorDefaultsResponse)
+async def get_indicator_defaults(request: Request) -> IndicatorDefaultsResponse:
+    defaults = await get_runtime(request).indicator_defaults.effective()
+    return IndicatorDefaultsResponse(defaults=defaults)
+
+
+@router.put("/api/indicator-defaults/{name}", response_model=IndicatorDefaultsResponse)
+async def put_indicator_default(
+    name: IndicatorName,
+    payload: IndicatorParams,
+    request: Request,
+) -> IndicatorDefaultsResponse:
+    service = get_runtime(request).indicator_defaults
+    try:
+        await service.set(name, payload)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+    defaults = await service.effective()
+    return IndicatorDefaultsResponse(defaults=defaults)
+
+
+@router.delete(
+    "/api/indicator-defaults/{name}", response_model=IndicatorDefaultsResponse
+)
+async def delete_indicator_default(
+    name: IndicatorName, request: Request
+) -> IndicatorDefaultsResponse:
+    service = get_runtime(request).indicator_defaults
+    await service.clear(name)
+    defaults = await service.effective()
+    return IndicatorDefaultsResponse(defaults=defaults)
+
+
 @router.get(
     "/api/snapshots/{snapshot_id}/indicators", response_model=IndicatorBundle
 )
-def get_indicators(
+async def get_indicators(
     snapshot_id: str,
     request: Request,
     timeframe: str = Query(..., description="K 线周期"),
@@ -124,11 +160,17 @@ def get_indicators(
             timeframe=timeframe,
             after_ts=after_ts,
         )
+    runtime = get_runtime(request)
+    effective = await runtime.indicator_defaults.effective()
+    params = {
+        name.value: value for name, value in effective.items() if name.value in indicators
+    }
     return workbench.get_indicators(
         snapshot_id,
         timeframe=timeframe,
         names=indicators,
         limit=limit,
+        params=params,
         extra_bars=extra_bars,
     )
 

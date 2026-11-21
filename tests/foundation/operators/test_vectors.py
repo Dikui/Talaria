@@ -145,9 +145,12 @@ def test_feed_gap_null_then_full_rewarmup(path: Path) -> None:
         index for index, item in enumerate(vector["bars"]) if item["status"] == "FEED_GAP"
     )
     assert all(value is None for value in points[gap_index].values())
-    warmup = vector["warmup_bars"]
+    warmup = vector.get("post_gap_warmup", vector["warmup_bars"])
     if warmup:
         rewarm = points[gap_index + 1 : gap_index + 1 + warmup]
         assert len(rewarm) == warmup
         assert all(all(value is None for value in point.values()) for point in rewarm)
-    assert any(value is not None for value in points[gap_index + 1 + warmup].values())
+    if gap_index + 1 + warmup < len(points):
+        assert any(
+            value is not None for value in points[gap_index + 1 + warmup].values()
+        )

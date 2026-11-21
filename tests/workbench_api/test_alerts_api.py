@@ -240,6 +240,59 @@ def test_indicator_signal_is_validated_server_side(client) -> None:
     assert bad_channel.status_code == 422
 
 
+def test_indicator_signal_persists_explicit_period_and_vwap_anchor(client) -> None:
+    ema = _create(
+        client,
+        condition={
+            "kind": "INDICATOR_SIGNAL",
+            "direction": "BELOW",
+            "indicator": "EMA",
+            "threshold": "1",
+        },
+    )
+    assert ema["condition"]["indicator_period"] == 9
+    assert ema["condition"]["indicator_anchor"] is None
+
+    vwap = _create(
+        client,
+        condition={
+            "kind": "INDICATOR_SIGNAL",
+            "direction": "BELOW",
+            "indicator": "VWAP",
+            "threshold": "1",
+        },
+    )
+    assert vwap["condition"]["indicator_period"] == 1
+    assert vwap["condition"]["indicator_anchor"] == "session"
+
+    snapshot = _create(
+        client,
+        condition={
+            "kind": "INDICATOR_SIGNAL",
+            "direction": "BELOW",
+            "indicator": "VWAP",
+            "indicator_anchor": "snapshot",
+            "threshold": "1",
+        },
+    )
+    assert snapshot["condition"]["indicator_anchor"] == "snapshot"
+
+    bad_anchor = client.post(
+        "/api/alerts",
+        json=_metric_body(
+            condition={
+                "kind": "INDICATOR_SIGNAL",
+                "direction": "BELOW",
+                "indicator": "EMA",
+                "indicator_anchor": "session",
+                "threshold": "1",
+            }
+        ),
+        headers=AUTH,
+    )
+    assert bad_anchor.status_code == 422
+
+
 def test_write_endpoints_require_bearer_and_reads_do_not(client) -> None:
     created = _create(client)
     alert_id = created["alert_id"]

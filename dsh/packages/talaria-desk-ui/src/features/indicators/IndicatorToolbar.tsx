@@ -7,6 +7,8 @@ import {
   INDICATOR_LABELS,
   INDICATOR_ORDER,
   anchorLabel,
+  isDefaultParams,
+  type IndicatorDefaults,
   type IndicatorSetting,
   type IndicatorSettings,
 } from "./config";
@@ -15,6 +17,10 @@ import { describeLatest, describeParams } from "../../lib/indicatorData";
 interface IndicatorToolbarProps {
   settings: IndicatorSettings;
   onChange: (name: IndicatorName, patch: Partial<IndicatorSetting>) => void;
+  defaults: IndicatorDefaults;
+  savingDefault: IndicatorName | null;
+  onSaveDefault: (name: IndicatorName) => void;
+  onResetDefault: (name: IndicatorName) => void;
   bundle: IndicatorBundle | null;
   loading: boolean;
   error: string | null;
@@ -48,6 +54,10 @@ function LegendChip({ series }: { series: IndicatorSeries }) {
 export function IndicatorToolbar({
   settings,
   onChange,
+  defaults,
+  savingDefault,
+  onSaveDefault,
+  onResetDefault,
   bundle,
   loading,
   error,
@@ -158,6 +168,30 @@ export function IndicatorToolbar({
                     />
                   </label>
                 )}
+                <div className="indicator-default-actions">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={
+                      !setting.enabled ||
+                      savingDefault !== null ||
+                      isDefaultParams(name, setting, defaults)
+                    }
+                    title={`把 ${name} 当前参数保存为新指标的默认值`}
+                    onClick={() => onSaveDefault(name)}
+                  >
+                    设为默认
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    disabled={!setting.enabled || savingDefault !== null}
+                    title={`清除 ${name} 的用户默认值并恢复出厂参数`}
+                    onClick={() => onResetDefault(name)}
+                  >
+                    恢复出厂
+                  </button>
+                </div>
               </div>
             );
           })}

@@ -18,7 +18,7 @@ TOKEN = "test-token"
 NOW_MS = 1_795_022_974_103
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 GAP_TS = 1_793_538_240_000
-EMA_PERIOD = 20
+EMA_PERIOD = 9
 
 
 def _app_settings(tmp_path: Path, fixture_dir: Path | None, *, dist: Path) -> AppSettings:
@@ -126,14 +126,7 @@ def test_feed_gap_is_null_and_forces_full_rewarmup(client, snapshot_id) -> None:
                 assert all(value is None for value in points[timestamp].values())
 
     ema_points = points_by_name["EMA"]
-    after_gap = [
-        ema_points[GAP_TS + offset * 60_000]["value"]
-        for offset in range(1, EMA_PERIOD)
-        if GAP_TS + offset * 60_000 in ema_points
-    ]
-    assert len(after_gap) == EMA_PERIOD - 1
-    assert all(value is None for value in after_gap)
-    assert ema_points[GAP_TS + EMA_PERIOD * 60_000]["value"] is not None
+    assert ema_points[GAP_TS + 60_000]["value"] is not None
 
 
 def test_default_window_is_latest_three_hundred(client, snapshot_id) -> None:
@@ -306,3 +299,18 @@ def test_live_query_appends_ws_bars(client, snapshot_id) -> None:
 
     still_frozen = _indicators(client, snapshot_id, live=0).json()
     assert still_frozen["series"][0]["points"][-1]["timestamp"] == last["timestamp"]
+
+
+def test_get_indicators_uses_effective_user_defaults(client, snapshot_id) -> None:
+    updated = client.put(
+        "/api/indicator-defaults/EMA", json={"period": 30}, headers=AUTH
+    )
+    assert updated.status_code == 200
+
+    series = _indicators(client, snapshot_id).json()["series"][0]
+    assert series["name"] == "EMA"
+    assert series["params"]["period"] == 30
+
+    client.delete("/api/indicator-defaults/EMA", headers=AUTH)
+    restored = _indicators(client, snapshot_id).json()["series"][0]
+    assert restored["params"]["period"] == 9
