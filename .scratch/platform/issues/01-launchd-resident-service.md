@@ -6,13 +6,13 @@
 
 **Source of truth:** ADR-0014；`docs/architecture.md` §1.1、§8.1。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `install | uninstall | status` 三个子命令；plist 显式设置 `ProcessType` 与 `KeepAlive`，日志写入数据目录。
-- [ ] 功能开关配置放在数据目录；关闭的功能不启动对应引擎，也不写对应存储。
-- [ ] `talaria up` 前台模式保留。
-- [ ] 服务启动时取得数据目录的排他锁（`runtime/service.lock`），同一数据目录第二个实例启动失败并说明原因。
-- [ ] `talaria usage-scan` 不再另开写连接：服务运行时经服务接口提交，服务未运行时先取得同一把锁再写。
+- [x] `install | uninstall | status` 三个子命令；plist 显式设置 `ProcessType` 与 `KeepAlive`，日志写入数据目录。
+- [x] 功能开关配置放在数据目录；关闭的功能不启动对应引擎，也不写对应存储。
+- [x] `talaria up` 前台模式保留。
+- [x] 服务启动时取得数据目录的排他锁（`runtime/service.lock`），同一数据目录第二个实例启动失败并说明原因。
+- [x] `talaria usage-scan` 不再另开写连接：服务运行时经服务接口提交，服务未运行时先取得同一把锁再写。
 - [ ] 测试：配置解析与各开关组合下组合根装配的引擎；plist 生成内容快照；两个进程争用同一数据目录时第二个失败；服务运行时 `usage-scan` 的写入经服务落库。launchd 实际安装需在本机手动验证，在验收说明中记录步骤与结果。
 
 ## Comments
@@ -52,3 +52,9 @@
 5. 可选：服务运行时执行 `.venv/bin/talaria usage-scan --data-dir "$HOME/.talaria"`，预期输出 `recorded_turns/duplicate_turns/...`，且 `GET /api/collaboration/usage` 汇总 turns 增加；该路径应经 service descriptor 的 HTTP 接口写入，而非直连状态库。
 
 > 说明：第 1 步会真实写入 `~/Library/LaunchAgents` 并注册 launchd 作业；本次按任务边界未执行，以上为需要人工在本机完成的验收步骤。
+
+**合并记录（2026-11-22）**
+
+- 并入 `integration/platform-redesign-batch-1`（merge commit `623b04b`）。
+- 合并后复跑 `pytest tests/workbench_api -q` → 210 passed；新增/受影响测试 44 passed；综合受影响范围 585 passed（`--deselect` 既有环境相关失败）。
+- 第 16 项保留未勾选：真实 launchd 安装、崩溃重启与卸载需在本机人工执行（步骤见上），其自动化部分已通过。
