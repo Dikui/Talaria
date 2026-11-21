@@ -28,6 +28,26 @@
 - `analysis/01`：关键位注册表
 - `analysis/03`：EMA、ATR、VWAP 对齐 TradingView 与默认参数
 
+## 开工顺序（2026-11-21 定）
+
+按“依赖 + 是否改同一批文件”分批，同批并行，各开一个 worktree：
+
+| 批 | 任务单 | 说明 |
+|---|---|---|
+| 1 | `data-access/01`、`platform/01`、`analysis/03` | 主干起点；先把服务装配与功能开关改完，后面的单往里接；指标口径尽早定下 |
+| 2 | `data-access/02`、`data-access/03`、`platform/02` | 02 与 03 都改实时解析与热缓冲，先合 02，03 在其上合；`platform/02` 开工前先把原型结论写进任务单 |
+| 3 | `data-access/04`、`analysis/01` | 04 完成即“一两行代码取数”可用；`analysis/01` 等 `data-access/02` 合并后再做 |
+| 4+ | `analysis/02` → `alerts-and-scanning/01`、`trading/01` → 交易链 | `data-access/05`–`08` 在 04 之后插空，`data-access/08` 须早于 `trading/03` |
+
+不能同批的原因（共同改动的位置）：
+
+- 快照构建与冻结（`perception/snapshot_builder.py`）：`data-access/01`、`data-access/02`、`analysis/01`。
+- 服务装配与启动（`workbench_api/runtime.py`、`service.py`）：`platform/01`、`data-access/02`、`analysis/01`。所以 `data-access/02` 排在 `platform/01` 之后，冷库写入器直接接上开关。
+- 预警引擎（`perception/alerts/engine.py`）：`analysis/01`、`analysis/03`。
+- 实时解析与热缓冲（`feed/`、`packs/crypto_perp/stream.py`）：`data-access/02`、`data-access/03`。
+
+图表类第一张单在 `platform/02` 之后由同一条前端线接着做。
+
 ## 跨类依赖
 
 - `analysis/02` 组件模型 ← `data-access/04` 取数 SDK
