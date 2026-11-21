@@ -65,6 +65,18 @@ class InvalidRequestError(TalariaError):
     code = "VALIDATION_ERROR"
 
 
+class ServiceLockError(TalariaError):
+    """数据目录已被另一个 Talaria 进程独占。"""
+
+    code = "SERVICE_LOCKED"
+
+
+class FeatureDisabledError(TalariaError):
+    """数据目录的 service.json 关闭了当前功能。"""
+
+    code = "FEATURE_DISABLED"
+
+
 class SingleWriterViolationError(TalariaError):
     """同一进程内对同一个 SQLite 库打开了第二个写者。"""
 

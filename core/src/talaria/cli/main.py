@@ -13,8 +13,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import uvicorn
 
@@ -33,9 +34,42 @@ from talaria.cli.dsh_host import (
     resolve_dsh_bin,
     write_bridge_descriptor,
 )
+from talaria.cli.service import (
+    DEFAULT_SERVICE_LABEL,
+    ServiceInstallError,
+    ServiceStatus,
+    install_service,
+    service_status,
+    uninstall_service,
+)
+from talaria.foundation.errors import ServiceLockError
 from talaria.packs import DEFAULT_PACK, MARKET_PACKS, get_market_pack
 from talaria.perception.cold_migrate import migrate_cold_store
+from talaria.workbench_api.service_config import (
+    FeatureToggles,
+    ServiceConfigError,
+    describe_features,
+    load_service_config,
+)
+from talaria.workbench_api.service_descriptor import (
+    ServiceDescriptorError,
+    read_service_descriptor,
+    remove_service_descriptor,
+    service_descriptor_path,
+    write_service_descriptor,
+)
+from talaria.workbench_api.service_lock import (
+    ROLE_SERVICE,
+    ROLE_USAGE_SCAN,
+    ServiceLock,
+    probe_lock,
+)
 from talaria.workbench_api.settings import AppSettings
+
+if TYPE_CHECKING:
+    from talaria.foundation.collaboration.contracts import UsageReport
+    from talaria.workbench_api.service_descriptor import ServiceDescriptor
+    from talaria.workbench_api.usage_scan import UsageScanResult
 
 DEFAULT_DATA_DIR = Path(".talaria")
 DEFAULT_PORT = 8765
@@ -81,14 +115,120 @@ def _cmd_contract_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_usage_scan(args: argparse.Namespace) -> int:
+    """扫描 DSH 会话：服务运行时经其 HTTP 接口写入，否则持同一把锁直写。"""
+
     from talaria.workbench_api.state_store import StateStore
     from talaria.workbench_api.usage_scan import scan_session_traces
 
-    store = StateStore(Path(args.data_dir))
+    data_dir = Path(args.data_dir).expanduser().resolve()
+    lock = ServiceLock(data_dir, role=ROLE_USAGE_SCAN)
     try:
-        result = scan_session_traces(args.dsh_home, store.usage.record)
+        lock.acquire()
+    except ServiceLockError as exc:
+        return _usage_scan_through_service(args, data_dir, str(exc))
+
+    try:
+        store = StateStore(data_dir)
+        try:
+            result = scan_session_traces(args.dsh_home, store.usage.record)
+        finally:
+            store.close()
     finally:
-        store.close()
+        lock.release()
+    _print_scan_result(result)
+    return 0
+
+
+class _UsageScanServiceError(RuntimeError):
+    """经服务接口写入失败；调用方不得回退为直写。"""
+
+
+def _usage_scan_through_service(
+    args: argparse.Namespace, data_dir: Path, lock_error: str
+) -> int:
+    holder = probe_lock(data_dir)
+    if holder is None:
+        print(f"无法取得数据目录锁：{lock_error}", file=sys.stderr)
+        return 2
+    if holder.role != ROLE_SERVICE:
+        print(
+            f"数据目录正在被另一个进程写入：{data_dir}"
+            f"（pid={holder.pid if holder.pid is not None else '未知'}，"
+            f"角色={holder.role or '未知'}）。为避免并发写坏协同状态，本次未写入。",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        descriptor = read_service_descriptor(data_dir)
+    except ServiceDescriptorError as exc:
+        print(
+            f"Talaria 服务正在运行（pid={holder.pid}），但接口描述不可用：{exc}\n"
+            "为避免并发写入，本次未直写数据目录。",
+            file=sys.stderr,
+        )
+        return 2
+    if descriptor is None:
+        print(
+            f"Talaria 服务正在运行（pid={holder.pid}），但尚未发布写入接口"
+            f"（{service_descriptor_path(data_dir)} 不存在）；"
+            "请等待服务启动完成后重试。",
+            file=sys.stderr,
+        )
+        return 2
+    if holder.pid != descriptor.pid:
+        print(
+            f"数据目录锁由 pid={holder.pid} 持有，但写入接口描述来自 pid={descriptor.pid}；"
+            "接口描述可能已过期，本次未直写数据目录。",
+            file=sys.stderr,
+        )
+        return 2
+    return _usage_scan_via_http(args, descriptor)
+
+
+def _usage_scan_via_http(
+    args: argparse.Namespace, descriptor: ServiceDescriptor
+) -> int:
+    from talaria.workbench_api.usage_scan import scan_session_traces
+
+    url = f"{descriptor.base_url}/api/collaboration/usage"
+
+    def record(report: UsageReport) -> bool:
+        request = urllib.request.Request(
+            url,
+            data=report.model_dump_json().encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {descriptor.token}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            raise _UsageScanServiceError(
+                f"经服务写入失败：{exc}\n本次未直写数据目录。"
+            ) from exc
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("recorded"), bool
+        ):
+            raise _UsageScanServiceError(
+                f"经服务写入失败：响应缺少布尔 recorded 字段（{payload!r}）\n"
+                "本次未直写数据目录。"
+            )
+        return payload["recorded"]
+
+    try:
+        result = scan_session_traces(args.dsh_home, record)
+    except _UsageScanServiceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_scan_result(result)
+    return 0
+
+
+def _print_scan_result(result: UsageScanResult) -> None:
     print(
         json.dumps(
             {
@@ -100,7 +240,6 @@ def _cmd_usage_scan(args: argparse.Namespace) -> int:
             ensure_ascii=False,
         )
     )
-    return 0
 
 
 def _cmd_up(args: argparse.Namespace) -> int:
@@ -152,7 +291,15 @@ def _cmd_up(args: argparse.Namespace) -> int:
         print(f"实时订阅配额必须为正数：{args.realtime_quota}", file=sys.stderr)
         return 2
 
-    token = secrets.token_urlsafe(32) if dual else None
+    try:
+        service_config = load_service_config(data_dir)
+    except ServiceConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    # 服务接口描述与 DSH 桥接凭据都需要 token；solo 模式也生成，
+    # 以便同机命令在服务运行时经 HTTP 提交写入。
+    token = secrets.token_urlsafe(32)
     settings = AppSettings(
         data_dir=data_dir,
         dist_dir=dist_dir,
@@ -164,11 +311,46 @@ def _cmd_up(args: argparse.Namespace) -> int:
         backfill_bars=args.backfill_bars,
         realtime_quota=args.realtime_quota,
         token=token,
+        features=service_config.features,
     )
+    service_lock = ServiceLock(data_dir, role=ROLE_SERVICE)
+    try:
+        service_lock.acquire()
+    except ServiceLockError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        return _run_up(
+            args,
+            host=host,
+            token=token,
+            settings=settings,
+            features=service_config.features,
+            dsh_bin=dsh_bin,
+            dsh_start_error=dsh_start_error,
+            dual=dual,
+        )
+    finally:
+        service_lock.release()
+
+
+def _run_up(
+    args: argparse.Namespace,
+    *,
+    host: str,
+    token: str,
+    settings: AppSettings,
+    features: FeatureToggles,
+    dsh_bin: str | None,
+    dsh_start_error: str | None,
+    dual: bool,
+) -> int:
+    data_dir = settings.data_dir
     bridge_path = bridge_descriptor_path(data_dir)
+    descriptor_path = service_descriptor_path(data_dir)
     dsh_host: DshHost | None = None
     if dual:
-        assert dsh_bin is not None and token is not None
+        assert dsh_bin is not None
         dsh_host = DshHost(
             dsh_bin=dsh_bin,
             profile=args.dsh_profile,
@@ -240,10 +422,27 @@ def _cmd_up(args: argparse.Namespace) -> int:
             )
             return 2 if exit_code == 0 else exit_code
 
-        if dsh_host is not None and token is not None:
+        base_url = f"http://{f'[{host}]' if ':' in host else host}:{args.port}"
+        try:
+            write_service_descriptor(
+                descriptor_path,
+                base_url=base_url,
+                token=token,
+                pid=os.getpid(),
+                features=features,
+            )
+        except (OSError, ValueError) as exc:
+            # 描述缺失时 usage-scan 会拒绝直写（锁在服务手里），但看盘不受影响。
+            print(
+                f"警告：无法发布服务写入接口：{exc}\n"
+                f"同机命令在服务运行期间将无法经服务写入；描述路径：{descriptor_path}",
+                file=sys.stderr,
+            )
+
+        if dsh_host is not None:
             write_bridge_descriptor(
                 bridge_path,
-                base_url=f"http://{host}:{args.port}",
+                base_url=base_url,
                 token=token,
                 daemon_pid=os.getpid(),
             )
@@ -269,7 +468,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 info = dsh_host.info()
-            _print_ready(host, args.port, info, bridge_path)
+            _print_ready(host, args.port, info, bridge_path, features)
 
         while worker.is_alive():
             worker.join(timeout=0.2)
@@ -280,6 +479,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
         if host_started and dsh_host is not None:
             dsh_host.stop()
         remove_bridge_descriptor(bridge_path)
+        remove_service_descriptor(descriptor_path)
         worker.join(timeout=10)
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
@@ -294,7 +494,13 @@ def _report_host_offline(info: DshHostInfo) -> None:
     )
 
 
-def _print_ready(host: str, port: int, info: DshHostInfo, bridge_path: Path) -> None:
+def _print_ready(
+    host: str,
+    port: int,
+    info: DshHostInfo,
+    bridge_path: Path,
+    features: FeatureToggles,
+) -> None:
     print(f"Talaria 看盘：http://{host}:{port}/desk", file=sys.stderr)
     if info.state == "online" and info.url:
         print(f"DSH 协同宿主：{info.url}", file=sys.stderr)
@@ -302,6 +508,7 @@ def _print_ready(host: str, port: int, info: DshHostInfo, bridge_path: Path) -> 
         print(f"DSH 协同宿主：离线（{info.detail}）", file=sys.stderr)
     print(f"DSH 日志：{info.log_path}", file=sys.stderr)
     print(f"桥接凭据：{bridge_path}（0600）", file=sys.stderr)
+    print(f"功能开关：{describe_features(features)}", file=sys.stderr)
 
 
 def _cmd_dsh_install(args: argparse.Namespace) -> int:
@@ -488,6 +695,104 @@ def _cmd_evaluate_levels(args: argparse.Namespace) -> int:
     return 0
 
 
+def _default_service_program() -> str | None:
+    candidate = Path(sys.executable).with_name("talaria")
+    if candidate.is_file():
+        return str(candidate.resolve())
+    found = shutil.which("talaria")
+    return str(Path(found).resolve()) if found is not None else None
+
+
+def _cmd_service(args: argparse.Namespace) -> int:
+    """install/uninstall/status 三个动作；launchctl 只在本机真实执行。"""
+
+    data_dir = Path(args.data_dir).expanduser().resolve()
+    launch_agents_dir = Path(args.launch_agents_dir).expanduser()
+    label = args.label
+    command = args.service_command
+
+    if command == "install":
+        program = args.program or _default_service_program()
+        if program is None:
+            print(
+                "未找到 talaria 可执行文件；请用 --program 指定绝对路径。",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            result = install_service(
+                data_dir=data_dir,
+                port=args.port,
+                pack=args.pack,
+                program=program,
+                launch_agents_dir=launch_agents_dir,
+                log_dir=args.log_dir,
+                label=label,
+            )
+        except (ServiceConfigError, ServiceInstallError, ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"已安装 launchd Agent：{result.plist_path}")
+        print(f"数据目录：{data_dir}")
+        print(
+            f"功能开关：{describe_features(result.features)}"
+            f"（{result.config_path}）"
+        )
+        print(f"日志：{result.stdout_path} / {result.stderr_path}")
+        print("查看状态：talaria service status")
+        return 0
+
+    if command == "uninstall":
+        try:
+            result = uninstall_service(
+                launch_agents_dir=launch_agents_dir,
+                label=label,
+            )
+        except (ValueError, OSError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if result.removed:
+            print(f"已卸载 launchd Agent：{result.plist_path}")
+            print("数据目录与功能开关配置保留。")
+        else:
+            print(f"未安装：{result.plist_path}")
+        return 0
+
+    try:
+        status = service_status(
+            data_dir=data_dir,
+            launch_agents_dir=launch_agents_dir,
+            label=label,
+        )
+    except (ServiceConfigError, ServiceDescriptorError, ValueError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_service_status(status)
+    return 0
+
+
+def _print_service_status(status: ServiceStatus) -> None:
+    print(f"plist：{status.plist_path}")
+    hint = "" if status.config_exists else "（service.json 不存在，使用默认全开）"
+    print(f"功能开关：{describe_features(status.features)}{hint}")
+    print(f"配置文件：{status.config_path}")
+    if not status.installed:
+        print("状态：未安装（执行 talaria service install 后随登录启动）")
+    else:
+        state = status.state or ("已加载" if status.loaded else "未知")
+        pid_hint = f"，pid={status.pid}" if status.pid is not None else ""
+        print(f"状态：已安装，launchd={state}{pid_hint}")
+        if status.detail:
+            print(f"launchctl：{status.detail}")
+    holder = status.lock_holder
+    if holder is None:
+        print("数据目录锁：空闲")
+    else:
+        pid = holder.pid if holder.pid is not None else "未知"
+        print(f"数据目录锁：由 {holder.role or '未知角色'} 持有（pid={pid}）")
+    print(f"写入接口：{status.endpoint or '不可用'}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="talaria", description="Talaria 分析工作台")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -671,6 +976,84 @@ def build_parser() -> argparse.ArgumentParser:
         help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
     )
     migrate.set_defaults(func=_cmd_cold_migrate)
+
+    service = subparsers.add_parser(
+        "service", help="安装、卸载或查看 launchd 常驻服务"
+    )
+    service_commands = service.add_subparsers(dest="service_command", required=True)
+    launch_agents_default = str(Path.home() / "Library" / "LaunchAgents")
+
+    service_install = service_commands.add_parser(
+        "install", help="写入 plist 并注册为登录自启的 launchd Agent"
+    )
+    service_install.add_argument(
+        "--data-dir",
+        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
+        help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
+    )
+    service_install.add_argument(
+        "--port", type=int, default=DEFAULT_PORT, help="服务监听端口"
+    )
+    service_install.add_argument(
+        "--pack",
+        choices=sorted(MARKET_PACKS),
+        default=DEFAULT_PACK,
+        help=f"市场包（默认 {DEFAULT_PACK}）",
+    )
+    service_install.add_argument(
+        "--program",
+        default=None,
+        help="talaria 可执行文件绝对路径（默认取当前 Python 同目录的 talaria）",
+    )
+    service_install.add_argument(
+        "--launch-agents-dir",
+        default=launch_agents_default,
+        help="LaunchAgents 目录（测试可指向临时目录）",
+    )
+    service_install.add_argument(
+        "--log-dir", default=None, help="日志目录（默认 <data-dir>/logs）"
+    )
+    service_install.add_argument(
+        "--label", default=DEFAULT_SERVICE_LABEL, help="launchd Label"
+    )
+    service_install.set_defaults(func=_cmd_service)
+
+    service_uninstall = service_commands.add_parser(
+        "uninstall", help="停止并移除 launchd Agent（保留数据与配置）"
+    )
+    service_uninstall.add_argument(
+        "--data-dir",
+        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
+        help="数据目录（仅用于提示，不删除）",
+    )
+    service_uninstall.add_argument(
+        "--launch-agents-dir",
+        default=launch_agents_default,
+        help="LaunchAgents 目录",
+    )
+    service_uninstall.add_argument(
+        "--label", default=DEFAULT_SERVICE_LABEL, help="launchd Label"
+    )
+    service_uninstall.set_defaults(func=_cmd_service)
+
+    service_status_parser = service_commands.add_parser(
+        "status", help="查看 launchd 运行状态与已开启功能（不会启动服务）"
+    )
+    service_status_parser.add_argument(
+        "--data-dir",
+        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
+        help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
+    )
+    service_status_parser.add_argument(
+        "--launch-agents-dir",
+        default=launch_agents_default,
+        help="LaunchAgents 目录",
+    )
+    service_status_parser.add_argument(
+        "--label", default=DEFAULT_SERVICE_LABEL, help="launchd Label"
+    )
+    service_status_parser.set_defaults(func=_cmd_service)
+
     for command in (up, evaluate, migrate):
         command.add_argument(
             "--pack",

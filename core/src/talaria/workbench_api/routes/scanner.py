@@ -34,7 +34,7 @@ def list_scanner_triggers(
     severity: ScannerSeverity | None = Query(default=None),
     snapshot_id: str | None = Query(default=None),
 ) -> ScannerTriggerListResponse:
-    scanner = get_runtime(request).scanner
+    scanner = get_runtime(request).require_scanner()
     matches = scanner.list_triggers(
         limit=HISTORY_LIMIT,
         instrument_id=instrument_id,
@@ -51,7 +51,7 @@ def list_scanner_triggers(
 
 @router.get("/api/scanner/focus", response_model=ScannerFocusResponse)
 def get_scanner_focus(request: Request) -> ScannerFocusResponse:
-    scanner = get_runtime(request).scanner
+    scanner = get_runtime(request).require_scanner()
     return scanner.focus(request.app.state.settings.now_ms())
 
 
@@ -116,7 +116,7 @@ async def submit_scanner_briefing_result(
 async def scan_now(
     request: Request, payload: ScannerScanRequest | None = None
 ) -> ScannerScanResponse:
-    scanner = get_runtime(request).scanner
+    scanner = get_runtime(request).require_scanner()
     requested = (
         list(dict.fromkeys(payload.instrument_ids))
         if payload is not None and payload.instrument_ids is not None

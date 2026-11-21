@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from talaria.packs import DEFAULT_PACK
+from talaria.workbench_api.service_config import FeatureToggles
 
 
 def _now_ms() -> int:
@@ -29,6 +30,7 @@ class AppSettings:
     token: str | None = None
     now_ms: Callable[[], int] = field(default=_now_ms)
     pack: str = DEFAULT_PACK
+    features: FeatureToggles = FeatureToggles()
 
     def __post_init__(self) -> None:
         if self.backfill_bars <= 0:
