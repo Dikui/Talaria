@@ -76,6 +76,7 @@ class HotStreamBuffer:
             ts_ingested=now,
             ts_committed=now,
             precision=bar.precision,
+            revision=event.revision,
         )
         key = (event.instrument_id, event.timeframe)
         with self._lock:

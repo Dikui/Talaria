@@ -20,6 +20,7 @@ from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
 from talaria.perception.backfill import BackfillPolicy, ensure_history
 from talaria.perception.cold_publisher import ColdBarPublisher
+from talaria.perception.cold_store import latest_visible_bars
 from talaria.perception.compaction import compact_series
 from talaria.perception.hot_buffer import HotBarProvider
 from talaria.perception.raw_store import RawStore
@@ -33,15 +34,12 @@ from talaria.perception.snapshot_store import (
 logger = logging.getLogger(__name__)
 
 
-def _merge_bars(archived: Sequence[RawBar], hot: Sequence[RawBar]) -> list[RawBar]:
-    """按事件时间合并；同一根柱取后摄入的版本，避免旧热端覆盖已归档修订。"""
+def _merge_bars(
+    archived: Sequence[RawBar], hot: Sequence[RawBar], *, cutoff_ts: int
+) -> list[RawBar]:
+    """按冷库统一读取语义合并：先按可见时点截断，再取每个事件的最高修订。"""
 
-    merged = {bar.ts_event: bar for bar in archived}
-    for bar in hot:
-        existing = merged.get(bar.ts_event)
-        if existing is None or bar.ts_ingested >= existing.ts_ingested:
-            merged[bar.ts_event] = bar
-    return [merged[key] for key in sorted(merged)]
+    return latest_visible_bars([*archived, *hot], as_of=cutoff_ts)
 
 
 def _snapshot_entries(
@@ -116,7 +114,7 @@ class SnapshotBuilder:
                 if self._hot_bars is not None
                 else ()
             )
-            raw_bars = _merge_bars(archived, hot)
+            raw_bars = _merge_bars(archived, hot, cutoff_ts=cutoff)
             self._publish_cold(
                 instrument=instrument,
                 timeframe=timeframe,

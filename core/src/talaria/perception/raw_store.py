@@ -32,6 +32,7 @@ def bar_record(bar: RawBar) -> dict[str, object]:
         "ts_ingested": bar.ts_ingested,
         "ts_committed": bar.ts_committed,
         "precision": bar.precision.value,
+        "revision": bar.revision,
     }
 
 
@@ -50,6 +51,7 @@ def bar_from_record(record: dict[str, object]) -> RawBar:
         ts_ingested=int(record["ts_ingested"]),  # type: ignore[arg-type]
         ts_committed=int(record["ts_committed"]),  # type: ignore[arg-type]
         precision=PrecisionTier(str(record["precision"])),
+        revision=int(record.get("revision", 0)),  # type: ignore[arg-type]
     )
 
 

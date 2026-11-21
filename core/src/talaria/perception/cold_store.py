@@ -24,7 +24,7 @@ import threading
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from enum import StrEnum
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -49,6 +49,23 @@ STAGING_SUBDIR = Path("data") / "staging"
 COLD_SUBDIR = Path("data") / "cold"
 MANIFEST_DB = Path("data") / "data_manifest.sqlite"
 
+#: Parquet 元数据键：格式标记、逐列 scale、标的规格版本。读取侧按文件还原，
+#: 不假设整个冷库只有一种 scale（ADR-0017）。
+COLD_FORMAT_METADATA = b"talaria.cold.format"
+COLD_FORMAT_DECIMAL128 = b"decimal128.v1"
+COLD_COLUMN_SCALES_METADATA = b"talaria.cold.column_scales"
+COLD_INSTRUMENT_VERSION_METADATA = b"talaria.cold.instrument_spec_sha256"
+
+#: 冷库 Parquet 数值列统一使用 precision=18；物理类型由 pyarrow 写成 INT64。
+COLD_DECIMAL_PRECISION = 18
+#: 费率类列固定 scale=8（ADR-0017）；当前 K 线冷库没有费率列，保留常量供衍生品切片。
+RATE_COLUMN_SCALE = 8
+
+_PRICE_COLUMNS = ("open", "high", "low", "close")
+_QUANTITY_COLUMNS = ("volume",)
+_TURNOVER_COLUMNS = ("turnover",)
+_DECIMAL_COLUMNS = _PRICE_COLUMNS + _QUANTITY_COLUMNS + _TURNOVER_COLUMNS
+
 
 class ColdPhase(StrEnum):
     """可在其前后注入故障的发布阶段。"""
@@ -70,7 +87,7 @@ FaultHook = Callable[[ColdPhase], None]
 
 @dataclass(frozen=True, slots=True)
 class ColdBatch:
-    """一次待发布的标准化柱批次；时间戳必须在批次内严格递增。"""
+    """一次待发布的标准化柱批次；时间戳非递减，同一时间戳按 revision 严格递增。"""
 
     instrument: InstrumentSpec
     timeframe: str
@@ -116,23 +133,73 @@ class ColdCursor:
     updated_ts: int
 
 
-_COLD_SCHEMA = pa.schema(
-    [
+def cold_column_scales(instrument: InstrumentSpec) -> dict[str, int]:
+    """返回该标的的逐列 decimal128 scale（ADR-0017）。
+
+    价格列用价格精度，数量列用数量精度，``turnover`` 用两者之和；费率列固定 8。
+    """
+
+    price_scale = instrument.price_precision
+    quantity_scale = instrument.qty_precision
+    if price_scale < 0 or quantity_scale < 0:
+        raise ColdStoreQualityError("标的精度不能为负")
+    if price_scale + quantity_scale > COLD_DECIMAL_PRECISION:
+        raise ColdStoreQualityError(
+            f"价格精度与数量精度之和超出 decimal128({COLD_DECIMAL_PRECISION}, s)："
+            f"{price_scale} + {quantity_scale}"
+        )
+    scales: dict[str, int] = {}
+    for name in _PRICE_COLUMNS:
+        scales[name] = price_scale
+    for name in _QUANTITY_COLUMNS:
+        scales[name] = quantity_scale
+    for name in _TURNOVER_COLUMNS:
+        scales[name] = price_scale + quantity_scale
+    return scales
+
+
+def instrument_spec_version(instrument: InstrumentSpec) -> str:
+    """对影响 cold 列 scale 的规格字段求稳定摘要，写入 Parquet 元数据。"""
+
+    payload = json.dumps(
+        {
+            "tick_size": format(instrument.tick_size, "f"),
+            "qty_step": format(instrument.qty_step, "f"),
+            "price_precision": instrument.price_precision,
+            "qty_precision": instrument.qty_precision,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _cold_schema(scales: dict[str, int]) -> pa.Schema:
+    fields = [
         pa.field("symbol", pa.string(), nullable=False),
         pa.field("timeframe", pa.string(), nullable=False),
         pa.field("ts_event", pa.int64(), nullable=False),
-        pa.field("open", pa.string(), nullable=False),
-        pa.field("high", pa.string(), nullable=False),
-        pa.field("low", pa.string(), nullable=False),
-        pa.field("close", pa.string(), nullable=False),
-        pa.field("volume", pa.string(), nullable=False),
-        pa.field("turnover", pa.string(), nullable=False),
-        pa.field("ts_available", pa.int64(), nullable=False),
-        pa.field("ts_ingested", pa.int64(), nullable=False),
-        pa.field("ts_committed", pa.int64(), nullable=False),
-        pa.field("precision", pa.string(), nullable=False),
     ]
-)
+    for name in _DECIMAL_COLUMNS:
+        fields.append(
+            pa.field(
+                name,
+                pa.decimal128(COLD_DECIMAL_PRECISION, scales[name]),
+                nullable=False,
+            )
+        )
+    fields.extend(
+        [
+            pa.field("ts_available", pa.int64(), nullable=False),
+            pa.field("ts_ingested", pa.int64(), nullable=False),
+            pa.field("ts_committed", pa.int64(), nullable=False),
+            pa.field("precision", pa.dictionary(pa.int8(), pa.string()), nullable=False),
+            pa.field("revision", pa.int64(), nullable=False),
+        ]
+    )
+    return pa.schema(fields)
+
 
 _SCHEMA_SQL = (
     """
@@ -220,6 +287,26 @@ def _safe_path_part(value: str, label: str) -> str:
     return value
 
 
+def _fits_decimal128(value: Decimal, scale: int) -> tuple[bool, str]:
+    """判断有限十进制值能否无损放进 ``decimal128(18, scale)``。"""
+
+    if not value.is_finite():
+        return False, "不是有限十进制数"
+    # scaleb 在足够大的局部精度下是精确移位；再用整数系数判断是否超过 18 位。
+    with localcontext() as context:
+        context.prec = max(40, len(value.as_tuple().digits) + scale + 2)
+        scaled = value.scaleb(scale)
+        if scaled != scaled.to_integral_value():
+            return False, f"小数位超出列 scale={scale}"
+        coefficient = int(scaled)
+    if len(str(abs(coefficient))) > COLD_DECIMAL_PRECISION:
+        return (
+            False,
+            f"有效数字超出 decimal128({COLD_DECIMAL_PRECISION}, {scale})",
+        )
+    return True, ""
+
+
 def _validate_bars(
     bars: Sequence[RawBar],
     *,
@@ -230,17 +317,33 @@ def _validate_bars(
 
     if not bars:
         raise ColdStoreQualityError("批次为空，拒绝发布")
+    scales = cold_column_scales(instrument)
     tick_size = instrument.tick_size
     qty_step = instrument.qty_step
     previous_ts: int | None = None
+    previous_revision: int | None = None
     for index, bar in enumerate(bars):
         where = f"第 {index} 根柱"
         if bar.symbol != instrument.symbol:
             raise ColdStoreQualityError(f"{where} symbol 与标的规格不一致")
         if bar.timeframe != timeframe:
             raise ColdStoreQualityError(f"{where} timeframe 与批次不一致")
-        if previous_ts is not None and bar.ts_event <= previous_ts:
-            raise ColdStoreQualityError(f"{where} 时间戳未严格递增或重复：{bar.ts_event}")
+        if bar.revision < 0:
+            raise ColdStoreQualityError(f"{where} revision 为负")
+        if previous_ts is not None:
+            if bar.ts_event < previous_ts or (
+                bar.ts_event == previous_ts
+                and previous_revision is not None
+                and bar.revision <= previous_revision
+            ):
+                raise ColdStoreQualityError(
+                    f"{where} 时间戳与修订未严格递增："
+                    f"{bar.ts_event}/{bar.revision}"
+                )
+        for name in _DECIMAL_COLUMNS:
+            fits, reason = _fits_decimal128(getattr(bar, name), scales[name])
+            if not fits:
+                raise ColdStoreQualityError(f"{where} {name} {reason}")
         if bar.high < bar.low:
             raise ColdStoreQualityError(f"{where} high 低于 low")
         if bar.high < max(bar.open, bar.close):
@@ -264,50 +367,150 @@ def _validate_bars(
         if bar.ts_committed < bar.ts_ingested:
             raise ColdStoreQualityError(f"{where} ts_committed 早于 ts_ingested")
         previous_ts = bar.ts_event
+        previous_revision = bar.revision
 
 
-def _write_cold_parquet(path: Path, bars: Sequence[RawBar]) -> None:
+def _write_cold_parquet(
+    path: Path, bars: Sequence[RawBar], *, instrument: InstrumentSpec
+) -> None:
+    scales = cold_column_scales(instrument)
     rows = [
         {
             "symbol": bar.symbol,
             "timeframe": bar.timeframe,
             "ts_event": bar.ts_event,
-            "open": format(bar.open, "f"),
-            "high": format(bar.high, "f"),
-            "low": format(bar.low, "f"),
-            "close": format(bar.close, "f"),
-            "volume": format(bar.volume, "f"),
-            "turnover": format(bar.turnover, "f"),
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "turnover": bar.turnover,
             "ts_available": bar.ts_available,
             "ts_ingested": bar.ts_ingested,
             "ts_committed": bar.ts_committed,
             "precision": bar.precision.value,
+            "revision": bar.revision,
         }
         for bar in bars
     ]
-    table = pa.Table.from_pylist(rows, schema=_COLD_SCHEMA)
-    pq.write_table(table, path, compression="zstd")
+    table = pa.Table.from_pylist(rows, schema=_cold_schema(scales))
+    metadata = {
+        COLD_FORMAT_METADATA: COLD_FORMAT_DECIMAL128,
+        COLD_COLUMN_SCALES_METADATA: json.dumps(
+            scales, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8"),
+        COLD_INSTRUMENT_VERSION_METADATA: instrument_spec_version(instrument).encode("ascii"),
+    }
+    table = table.replace_schema_metadata(metadata)
+    # ADR-0017：decimal128(18, s) 的 Parquet 物理类型必须是 INT64，而不是
+    # fixed_len_byte_array；pyarrow 需显式开启该选项。
+    pq.write_table(
+        table, path, compression="zstd", store_decimal_as_integer=True
+    )
+
+
+def _column_scales_from_metadata(metadata: dict[bytes, bytes]) -> dict[str, int]:
+    raw = metadata.get(COLD_COLUMN_SCALES_METADATA)
+    if raw is None:
+        raise ColdStoreIntegrityError("decimal128 文件缺少逐列 scale 元数据")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ColdStoreIntegrityError("decimal128 逐列 scale 元数据不是合法 JSON") from exc
+    if not isinstance(payload, dict):
+        raise ColdStoreIntegrityError("decimal128 逐列 scale 元数据不是对象")
+    scales: dict[str, int] = {}
+    for name in _DECIMAL_COLUMNS:
+        value = payload.get(name)
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            or value > COLD_DECIMAL_PRECISION
+        ):
+            raise ColdStoreIntegrityError(f"decimal128 列 scale 非法：{name}={value!r}")
+        scales[name] = value
+    return scales
+
+
+def _verify_decimal_schema(schema: pa.Schema, scales: dict[str, int]) -> None:
+    """确认文件物理类型与元数据声明的 scale 一致，读取方不以全局 scale 猜测。"""
+
+    for name, scale in scales.items():
+        if name not in schema.names:
+            raise ColdStoreIntegrityError(f"decimal128 文件缺少列：{name}")
+        expected = pa.decimal128(COLD_DECIMAL_PRECISION, scale)
+        if schema.field(name).type != expected:
+            raise ColdStoreIntegrityError(
+                f"decimal128 列 {name} 类型与元数据不符："
+                f"{schema.field(name).type} != {expected}"
+            )
+    if "revision" not in schema.names or schema.field("revision").type != pa.int64():
+        raise ColdStoreIntegrityError("decimal128 文件缺少 int64 revision 列")
+
+
+def _cold_parquet_is_decimal128(path: Path) -> bool:
+    metadata = pq.read_schema(path).metadata or {}
+    return metadata.get(COLD_FORMAT_METADATA) == COLD_FORMAT_DECIMAL128
 
 
 def _read_cold_parquet(path: Path) -> list[RawBar]:
+    table = pq.read_table(path)
+    metadata = table.schema.metadata or {}
+    format_marker = metadata.get(COLD_FORMAT_METADATA)
+    if format_marker is not None and format_marker != COLD_FORMAT_DECIMAL128:
+        raise ColdStoreIntegrityError(f"未知冷库数值格式：{format_marker!r}")
+    if format_marker == COLD_FORMAT_DECIMAL128:
+        _verify_decimal_schema(table.schema, _column_scales_from_metadata(metadata))
+
+    def decimal_value(value: object) -> Decimal:
+        if isinstance(value, Decimal):
+            return value
+        return Decimal(str(value))
+
     return [
         RawBar(
             symbol=str(row["symbol"]),
             timeframe=str(row["timeframe"]),
             ts_event=int(row["ts_event"]),
-            open=Decimal(str(row["open"])),
-            high=Decimal(str(row["high"])),
-            low=Decimal(str(row["low"])),
-            close=Decimal(str(row["close"])),
-            volume=Decimal(str(row["volume"])),
-            turnover=Decimal(str(row["turnover"])),
+            open=decimal_value(row["open"]),
+            high=decimal_value(row["high"]),
+            low=decimal_value(row["low"]),
+            close=decimal_value(row["close"]),
+            volume=decimal_value(row["volume"]),
+            turnover=decimal_value(row["turnover"]),
             ts_available=int(row["ts_available"]),
             ts_ingested=int(row["ts_ingested"]),
             ts_committed=int(row["ts_committed"]),
             precision=PrecisionTier(str(row["precision"])),
+            revision=int(row.get("revision", 0) or 0),
         )
-        for row in pq.read_table(path).to_pylist()
+        for row in table.to_pylist()
     ]
+
+
+def latest_visible_bars(
+    bars: Iterable[RawBar], *, as_of: int | None = None
+) -> list[RawBar]:
+    """冷库唯一读取语义：先按 ``ts_available <= as_of`` 截断，再每个事件时间取最大修订。
+
+    ``as_of`` 省略时返回每个 ``ts_event`` 的最新修订。同一修订再按
+    ``(ts_available, ts_ingested)`` 取更晚者；键完全相同时后出现者胜，与快照
+    合并里 hot 覆盖 archived 的顺序一致。
+    """
+
+    chosen: dict[int, RawBar] = {}
+    for bar in bars:
+        if as_of is not None and bar.ts_available > as_of:
+            continue
+        current = chosen.get(bar.ts_event)
+        if current is None or (bar.revision, bar.ts_available, bar.ts_ingested) >= (
+            current.revision,
+            current.ts_available,
+            current.ts_ingested,
+        ):
+            chosen[bar.ts_event] = bar
+    return [chosen[ts_event] for ts_event in sorted(chosen)]
 
 
 class ColdStore:
@@ -356,16 +559,28 @@ class ColdStore:
             if existing is not None:
                 self._verify_generation_file(existing)
                 return existing
+            # 先做纯内存质检：任何超出列 scale 或 decimal128 精度的值在写归档前整批拒绝。
+            _validate_bars(
+                batch.bars,
+                instrument=batch.instrument,
+                timeframe=batch.timeframe,
+            )
 
             cursor = self.cursor(batch.instrument, batch.timeframe)
-            first_ts = min(bar.ts_event for bar in batch.bars)
-            if cursor is not None and cursor.last_ts >= first_ts:
-                raise ColdStoreQualityError(
-                    "批次首柱不晚于冷库游标，拒绝非追加发布（append-only monotonic cursor）"
-                )
+            if cursor is not None:
+                # 修订批次可以回写已覆盖的事件时间（ADR-0018），但 revision=0 的旧柱
+                # 仍然只能追加，防止普通发布悄悄改写历史。
+                if any(
+                    bar.ts_event <= cursor.last_ts and bar.revision == 0
+                    for bar in batch.bars
+                ):
+                    raise ColdStoreQualityError(
+                        "批次包含不晚于冷库游标且 revision=0 的柱，拒绝非追加发布"
+                        "（append-only monotonic cursor）"
+                    )
 
             archived = self._archive_content(content, generation_id)
-            self._write_staging(archived, batch.bars)
+            self._write_staging(archived, batch)
             self._quality_check(archived, batch)
             final = self._promote(archived, batch)
             generation = ColdGeneration(
@@ -390,12 +605,18 @@ class ColdStore:
             self._ensure_open()
             return self._select_generations(instrument, timeframe)
 
-    def read_bars(self, instrument: InstrumentSpec, timeframe: str) -> list[RawBar]:
-        """只读取清单列出的文件；逐文件校验哈希，同 timestamp 后发布者胜。"""
+    def read_bars(
+        self,
+        instrument: InstrumentSpec,
+        timeframe: str,
+        *,
+        as_of: int | None = None,
+    ) -> list[RawBar]:
+        """只读取清单列出的文件；逐文件校验哈希后按统一读取语义选版本。"""
 
         with self._lock:
             self._ensure_open()
-            merged: dict[int, RawBar] = {}
+            decoded: list[RawBar] = []
             for generation in self._select_generations(instrument, timeframe):
                 path = self._path_under_root(generation.parquet_path)
                 if not path.is_file():
@@ -404,9 +625,8 @@ class ColdStore:
                     raise ColdStoreIntegrityError(
                         f"generation 文件哈希不符：{generation.parquet_path}"
                     )
-                for bar in _read_cold_parquet(path):
-                    merged[bar.ts_event] = bar
-            return [merged[key] for key in sorted(merged)]
+                decoded.extend(_read_cold_parquet(path))
+            return latest_visible_bars(decoded, as_of=as_of)
 
     def cursor(self, instrument: InstrumentSpec, timeframe: str) -> ColdCursor | None:
         with self._lock:
@@ -460,7 +680,7 @@ class ColdStore:
     def _staging_file(self, archived: ArchivedBatch) -> Path:
         return self._data_dir / STAGING_SUBDIR / archived.sha256 / "bars.parquet"
 
-    def _write_staging(self, archived: ArchivedBatch, bars: Sequence[RawBar]) -> None:
+    def _write_staging(self, archived: ArchivedBatch, batch: ColdBatch) -> None:
         self._hook(ColdPhase.STAGING_BEFORE)
         staging_dir = (self._data_dir / STAGING_SUBDIR) / archived.sha256
         # 上一次崩溃可能留下残片；发布永远从干净 staging 重建，绝不信任旧文件。
@@ -468,7 +688,7 @@ class ColdStore:
             shutil.rmtree(staging_dir)
         staging_dir.mkdir(parents=True)
         temporary = staging_dir / "bars.parquet.tmp"
-        _write_cold_parquet(temporary, bars)
+        _write_cold_parquet(temporary, batch.bars, instrument=batch.instrument)
         with temporary.open("rb") as handle:
             os.fsync(handle.fileno())
         os.replace(temporary, staging_dir / "bars.parquet")
@@ -550,10 +770,18 @@ class ColdStore:
                         venue, symbol, timeframe, generation_id, last_ts, bars, updated_ts
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(venue, symbol, timeframe) DO UPDATE SET
-                        generation_id = excluded.generation_id,
-                        last_ts = excluded.last_ts,
-                        bars = excluded.bars,
-                        updated_ts = excluded.updated_ts
+                        generation_id = CASE
+                            WHEN excluded.last_ts >= cursors.last_ts
+                            THEN excluded.generation_id
+                            ELSE cursors.generation_id
+                        END,
+                        last_ts = MAX(cursors.last_ts, excluded.last_ts),
+                        bars = CASE
+                            WHEN excluded.last_ts >= cursors.last_ts
+                            THEN excluded.bars
+                            ELSE cursors.bars
+                        END,
+                        updated_ts = MAX(cursors.updated_ts, excluded.updated_ts)
                     """,
                     (
                         generation.venue,
