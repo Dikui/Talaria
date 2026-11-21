@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from talaria.feed.supervisor import FeedSupervisor
 from talaria.foundation.alerts import AlertRecord
-from talaria.foundation.errors import TalariaError
+from talaria.foundation.errors import FeatureDisabledError, TalariaError
 from talaria.foundation.feed import FeedTransport
 from talaria.foundation.key_levels import KeyLevel
 from talaria.foundation.market import InstrumentSpec
@@ -54,17 +54,27 @@ class Runtime:
     usage: UsageService
     briefings: BriefingService
     key_level_feedback: KeyLevelFeedbackService
-    alerts: AlertService
-    scanner: ScannerService
+    alerts: AlertService | None
+    scanner: ScannerService | None
     watchlist: WatchlistService
     supervisor: FeedSupervisor | None
     subscription_scheduler: RealtimeSubscriptionScheduler | None
-    cold_store: ColdStore
+    cold_store: ColdStore | None
     snapshot_store: SnapshotStore
     hot_buffer: HotStreamBuffer | None
     state_writer: StateWriterQueue
     desk: DeskBroadcast
     _resources: AsyncExitStack = field(repr=False)
+
+    def require_alerts(self) -> AlertService:
+        if self.alerts is None:
+            raise FeatureDisabledError("预警功能已在数据目录 service.json 中关闭")
+        return self.alerts
+
+    def require_scanner(self) -> ScannerService:
+        if self.scanner is None:
+            raise FeatureDisabledError("扫描功能已在数据目录 service.json 中关闭")
+        return self.scanner
 
     async def aclose(self) -> None:
         """按启动的逆序停止任务、排空状态写入并关闭存储。"""
@@ -88,23 +98,28 @@ async def build_runtime(
             resources.callback(close_connector)
         instruments = pack.instruments()
         instruments_by_id = {spec.instrument_id: spec for spec in instruments}
+        features = settings.features
 
-        cold_store = ColdStore(settings.data_dir)
-        resources.callback(cold_store.close)
-        cold_publishers = {
-            (instrument.instrument_id, timeframe): ColdPublisher(
-                cold_store, instrument=instrument, timeframe=timeframe
-            )
-            for instrument in instruments
-            for timeframe in SUPPORTED_TIMEFRAMES
-        }
+        cold_store: ColdStore | None = None
+        cold_publishers: dict[tuple[str, str], ColdPublisher] | None = None
+        if features.cold_store:
+            cold_store = ColdStore(settings.data_dir)
+            resources.callback(cold_store.close)
+            cold_publishers = {
+                (instrument.instrument_id, timeframe): ColdPublisher(
+                    cold_store, instrument=instrument, timeframe=timeframe
+                )
+                for instrument in instruments
+                for timeframe in SUPPORTED_TIMEFRAMES
+            }
         snapshot_store = SnapshotStore(settings.data_dir)
         resources.callback(snapshot_store.close)
         stream: FeedTransport | None = None
-        if settings.replay_events is not None:
-            stream = ReplayFeed(settings.replay_events, speed=settings.replay_speed)
-        elif settings.fixture_dir is None:
-            stream = pack.create_realtime_stream(now_ms=settings.now_ms)
+        if features.market_data:
+            if settings.replay_events is not None:
+                stream = ReplayFeed(settings.replay_events, speed=settings.replay_speed)
+            elif settings.fixture_dir is None:
+                stream = pack.create_realtime_stream(now_ms=settings.now_ms)
         supervisor = None
         if stream is not None:
             supervisor = FeedSupervisor(
@@ -221,17 +236,19 @@ async def build_runtime(
                 return None
             return level
 
-        alerts = AlertService(
-            state_writer=state_writer,
-            drawings=drawings,
-            instruments=instruments,
-            now_ms=settings.now_ms,
-            bar_history=bar_history if supervisor is not None else None,
-            key_level_provider=alert_key_level,
-            freeze_snapshot=freeze_alert_snapshot,
-            on_change=rebalance_watchlist,
-            on_trigger=desk.publish_alert,
-        )
+        alerts: AlertService | None = None
+        if features.alerts:
+            alerts = AlertService(
+                state_writer=state_writer,
+                drawings=drawings,
+                instruments=instruments,
+                now_ms=settings.now_ms,
+                bar_history=bar_history if supervisor is not None else None,
+                key_level_provider=alert_key_level,
+                freeze_snapshot=freeze_alert_snapshot,
+                on_change=rebalance_watchlist,
+                on_trigger=desk.publish_alert,
+            )
         watchlist = WatchlistService(
             state_writer=state_writer,
             instruments=instruments,
@@ -239,31 +256,40 @@ async def build_runtime(
             supervisor=supervisor,
             scheduler=scheduler,
             now_ms=settings.now_ms,
-            alerted_instruments=alerts.active_instrument_ids,
+            alerted_instruments=(
+                alerts.active_instrument_ids if alerts is not None else (lambda: ())
+            ),
         )
-        scanner = ScannerService(
-            state_writer=state_writer,
-            instruments=instruments,
-            now_ms=settings.now_ms,
-            freeze_snapshot=freeze_snapshot,
-            publish=desk.publish_scanner,
-            on_change=rebalance_watchlist,
-            routing=TriggerRoutingPolicy(co_pilot=briefings, co_pilot_enabled=True),
-        )
-        resources.callback(scanner.close)
-        if isinstance(connector, FixtureConnector) and stream is None:
-            _seed_fixture_scanner(scanner, connector, instruments)
-        if supervisor is not None:
-            resources.callback(supervisor.add_listener(scanner.handle_event))
-        scanner_ticker = asyncio.create_task(_scanner_tick_loop(scanner), name="talaria-scanner-tick")
-        resources.push_async_callback(_stop_task, scanner_ticker)
+        scanner: ScannerService | None = None
+        if features.scanner:
+            scanner = ScannerService(
+                state_writer=state_writer,
+                instruments=instruments,
+                now_ms=settings.now_ms,
+                freeze_snapshot=freeze_snapshot,
+                publish=desk.publish_scanner,
+                on_change=rebalance_watchlist,
+                routing=TriggerRoutingPolicy(co_pilot=briefings, co_pilot_enabled=True),
+            )
+            resources.callback(scanner.close)
+            if isinstance(connector, FixtureConnector) and stream is None:
+                _seed_fixture_scanner(scanner, connector, instruments)
+            if supervisor is not None:
+                resources.callback(supervisor.add_listener(scanner.handle_event))
+            scanner_ticker = asyncio.create_task(
+                _scanner_tick_loop(scanner), name="talaria-scanner-tick"
+            )
+            resources.push_async_callback(_stop_task, scanner_ticker)
 
-        resources.push_async_callback(alerts.close)
-        await alerts.start()
-        if supervisor is not None:
-            resources.callback(supervisor.add_listener(alerts.handle_event))
-        alert_ticker = asyncio.create_task(_alert_tick_loop(alerts), name="talaria-alert-tick")
-        resources.push_async_callback(_stop_task, alert_ticker)
+        if alerts is not None:
+            resources.push_async_callback(alerts.close)
+            await alerts.start()
+            if supervisor is not None:
+                resources.callback(supervisor.add_listener(alerts.handle_event))
+            alert_ticker = asyncio.create_task(
+                _alert_tick_loop(alerts), name="talaria-alert-tick"
+            )
+            resources.push_async_callback(_stop_task, alert_ticker)
         await watchlist.rebalance()
 
         return Runtime(

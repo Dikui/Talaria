@@ -21,13 +21,13 @@ async def list_alerts(
     request: Request,
     status: AlertStatus | None = Query(default=None, description="按状态过滤"),
 ) -> AlertListResponse:
-    alerts = await get_runtime(request).alerts.list_alerts(status)
+    alerts = await get_runtime(request).require_alerts().list_alerts(status)
     return AlertListResponse(alerts=alerts)
 
 
 @router.post("/api/alerts", response_model=AlertRecord, status_code=201)
 async def create_alert(payload: AlertCreate, request: Request) -> AlertRecord:
-    return await get_runtime(request).alerts.create_alert(payload)
+    return await get_runtime(request).require_alerts().create_alert(payload)
 
 
 @router.get("/api/alerts/triggers", response_model=AlertTriggerListResponse)
@@ -37,7 +37,7 @@ async def list_alert_triggers(
     instrument_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> AlertTriggerListResponse:
-    triggers = await get_runtime(request).alerts.list_triggers(
+    triggers = await get_runtime(request).require_alerts().list_triggers(
         alert_id=alert_id, instrument_id=instrument_id, limit=limit
     )
     return AlertTriggerListResponse(triggers=triggers)
@@ -45,28 +45,28 @@ async def list_alert_triggers(
 
 @router.get("/api/alerts/{alert_id}", response_model=AlertRecord)
 async def get_alert(alert_id: str, request: Request) -> AlertRecord:
-    return await get_runtime(request).alerts.get_alert(alert_id)
+    return await get_runtime(request).require_alerts().get_alert(alert_id)
 
 
 @router.patch("/api/alerts/{alert_id}", response_model=AlertRecord)
 async def patch_alert(
     alert_id: str, payload: AlertPatch, request: Request
 ) -> AlertRecord:
-    return await get_runtime(request).alerts.patch_alert(alert_id, payload)
+    return await get_runtime(request).require_alerts().patch_alert(alert_id, payload)
 
 
 @router.delete("/api/alerts/{alert_id}", response_model=AlertRecord)
 async def delete_alert(alert_id: str, request: Request) -> AlertRecord:
-    return await get_runtime(request).alerts.delete_alert(alert_id)
+    return await get_runtime(request).require_alerts().delete_alert(alert_id)
 
 
 @router.post("/api/alerts/{alert_id}/confirm", response_model=AlertRecord)
 async def confirm_alert(alert_id: str, request: Request) -> AlertRecord:
-    return await get_runtime(request).alerts.confirm_alert(alert_id)
+    return await get_runtime(request).require_alerts().confirm_alert(alert_id)
 
 
 @router.post("/api/alerts/{alert_id}/dismiss", response_model=AlertRecord)
 async def dismiss_alert(alert_id: str, request: Request) -> AlertRecord:
-    return await get_runtime(request).alerts.patch_alert(
+    return await get_runtime(request).require_alerts().patch_alert(
         alert_id, AlertPatch(enabled=False)
     )
