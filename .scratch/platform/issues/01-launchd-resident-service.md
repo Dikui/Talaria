@@ -1,4 +1,4 @@
-# 09 — launchd 常驻服务与功能开关
+# 01 — launchd 常驻服务与功能开关
 
 **What to build:** `talaria service install` 后，服务随登录启动、崩溃自动重启，关掉所有页面后 Notebook 仍能取数；`talaria service status` 显示运行状态与已开启的功能；行情、冷库写入、预警、扫描可以按配置单独开关。
 

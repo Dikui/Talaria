@@ -1,8 +1,8 @@
-# 12 — JSON 规则与预警升级
+# 01 — JSON 规则与预警升级
 
 **What to build:** 预警条件可以写成组合规则（如“收盘上穿 EMA20 且 RSI < 70 且资金费率为负”），以带版本号的 JSON 表达式树保存，在服务内求值；已有的单条件预警自动迁移为等价规则，触发行为不变。
 
-**Blocked by:** 11 — 组件接口、运行时上下文与 Python 写法。
+**Blocked by:** analysis/02 — 组件接口、运行时上下文与 Python 写法。
 
 **Source of truth:** ADR-0019；`docs/architecture.md` §5.2、§5.3。
 

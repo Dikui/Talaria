@@ -1,8 +1,8 @@
-# 13 — 图表规则编辑器与规则输出显示
+# 02 — 图表规则编辑器与规则输出显示
 
 **What to build:** 在图表页上组合出一条规则，立即在图上看到它的信号标记和引用的指标线，确认后一键存为预警。
 
-**Blocked by:** 10 — 前端多页面；12 — JSON 规则与预警升级。
+**Blocked by:** platform/02 — 前端多页面；01 — JSON 规则与预警升级。
 
 **Source of truth:** ADR-0019；`docs/architecture.md` §5.2、§5.5。
 

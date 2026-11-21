@@ -1,8 +1,8 @@
-# 21 — agent 写的 Python 策略：批准与隔离运行
+# 06 — agent 写的 Python 策略：批准与隔离运行
 
 **What to build:** agent 写的 Python 策略可以自由回测；要进模拟盘，交易员必须批准与代码内容哈希绑定的版本，代码一改批准即失效。进模拟盘的 agent 代码在资源受限、无网络、读不到数据目录的子进程中运行，只能经宿主传入的已截断数据取数。
 
-**Blocked by:** 14 — 账户进程宿主。
+**Blocked by:** 01 — 账户进程宿主。
 
 **Source of truth:** ADR-0015（agent 生成的代码）、ADR-0019（Python 的运行位置）；`docs/architecture.md` §6.1。
 
