@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/research/tradingview-borrowing-list.md` §5、§5.1（Pine v6 参考手册条目原文已核实，标 [PINE-REF*]）；ADR-0010（单一权威 Python Decimal 实现）。算法依据只用公开文档，不接入 TradingView 私有接口取值，也不用 TV 输出做基准。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 现状与目标
 
@@ -21,21 +21,21 @@ RSI、BOLL（总体标准差）、SMA 算法已一致，不改。
 
 ## 任务
 
-- [ ] **EMA**：`_EmaEngine` 改为首值种子，第一根即有值。`reset()`（FEED_GAP 重预热）后视为新序列起点，同样从下一根首值起算。
-- [ ] **ATR**：`_AtrEngine` 第一根（及 `reset()` 后第一根）TR 取 high − low 并计入种子窗口；种子仍是前 N 个 TR 的简单均值，之后按 RMA 递推。
-- [ ] **VWAP**：默认锚点改为 `session`（UTC 日界，现有实现）；`session` 模式下，序列起点到第一个日界之前输出空（与 Pine 在首个锚点前返回 na 一致）。`snapshot` 保留为可选锚点（从序列起点累计）。改 `spec.py` 中 VWAP 的 anchor 默认值和前端 `INDICATOR_DEFAULTS.VWAP.anchor`。
-- [ ] **默认周期**：`spec.py` 的 `DEFAULT_PERIODS` 与 `dsh/packages/talaria-desk-ui/src/features/indicators/config.ts` 的 `INDICATOR_DEFAULTS` 中 EMA、SMA 改为 9，两处保持一一对应；更新 `config.test.ts`。
-- [ ] **预警参数显式化**：`AlertCondition` 当前允许 `indicator_period`/`compare_period` 为空，评估时回落到 `DEFAULT_PERIODS`（`perception/alerts/engine.py:645`、`:697`，`workbench_api/alert_service.py:350`），VWAP 锚点也没有存。改为：
+- [x] **EMA**：`_EmaEngine` 改为首值种子，第一根即有值。`reset()`（FEED_GAP 重预热）后视为新序列起点，同样从下一根首值起算。
+- [x] **ATR**：`_AtrEngine` 第一根（及 `reset()` 后第一根）TR 取 high − low 并计入种子窗口；种子仍是前 N 个 TR 的简单均值，之后按 RMA 递推。
+- [x] **VWAP**：默认锚点改为 `session`（UTC 日界，现有实现）；`session` 模式下，序列起点到第一个日界之前输出空（与 Pine 在首个锚点前返回 na 一致）。`snapshot` 保留为可选锚点（从序列起点累计）。改 `spec.py` 中 VWAP 的 anchor 默认值和前端 `INDICATOR_DEFAULTS.VWAP.anchor`。
+- [x] **默认周期**：`spec.py` 的 `DEFAULT_PERIODS` 与 `dsh/packages/talaria-desk-ui/src/features/indicators/config.ts` 的 `INDICATOR_DEFAULTS` 中 EMA、SMA 改为 9，两处保持一一对应；更新 `config.test.ts`。
+- [x] **预警参数显式化**：`AlertCondition` 当前允许 `indicator_period`/`compare_period` 为空，评估时回落到 `DEFAULT_PERIODS`（`perception/alerts/engine.py:645`、`:697`，`workbench_api/alert_service.py:350`），VWAP 锚点也没有存。改为：
   - 新建预警时由服务端把生效参数（周期；VWAP 的锚点）写入条件，存下来的条件不再依赖默认值。
   - 已存的预警做一次迁移：周期为空的按旧默认值补齐（EMA/SMA 20、RSI/ATR 14、BOLL 20），VWAP 补 `snapshot` 锚点，使迁移前后触发行为不变。
   - 评估路径不再读 `DEFAULT_PERIODS`。
-- [ ] **用户默认值**：服务端按指标名保存用户的默认参数覆盖（周期、BOLL 倍数、VWAP 锚点），存放沿用 `workbench_api/state_store.py` 的现有状态存储；代码里的 `DEFAULT_PERIODS` 只作出厂值。
+- [x] **用户默认值**：服务端按指标名保存用户的默认参数覆盖（周期、BOLL 倍数、VWAP 锚点），存放沿用 `workbench_api/state_store.py` 的现有状态存储；代码里的 `DEFAULT_PERIODS` 只作出厂值。
   - 提供读取“生效默认值”（出厂值叠加用户覆盖）和写入/清除覆盖的接口，参数校验复用 `spec_from_params`。
   - 前端启动时取生效默认值初始化指标设置（替代直接用 `INDICATOR_DEFAULTS`）；指标参数面板提供“设为默认”和“恢复出厂”。
   - 用户默认值只影响新加的指标和新建的预警，不改已存预警和已打开图表上的实例参数。
-- [ ] **黄金向量**：按 Pine 公式重新生成 `contracts/operator_vectors/ema.json`、`atr.json`、`vwap.json`（含前导空值、FEED_GAP 重预热、增量与全量一致）。生成方式写在向量文件或测试注释里，用独立于 `core.py` 的参考实现逐值算出，不能拿新实现的输出直接回填。`sma.json` 若依赖默认周期一并更新。
-- [ ] **其他引用方**：检查 `foundation/indicators.py`、关键位引擎和 `tests/` 中依赖旧默认值或旧 EMA/ATR/VWAP 前导空值数量的断言，按新语义更新。关键位引擎自带的 `_atr_series`（`key_levels/engine.py:118`）是另一套口径，本单不改，在 Comments 里记一笔是否要统一。
-- [ ] **决策记录**：在 ADR-0010 追加一段“算法语义以 Pine v6 参考手册为准”，列出本单的三处语义与默认周期变更。
+- [x] **黄金向量**：按 Pine 公式重新生成 `contracts/operator_vectors/ema.json`、`atr.json`、`vwap.json`（含前导空值、FEED_GAP 重预热、增量与全量一致）。生成方式写在向量文件或测试注释里，用独立于 `core.py` 的参考实现逐值算出，不能拿新实现的输出直接回填。`sma.json` 若依赖默认周期一并更新。
+- [x] **其他引用方**：检查 `foundation/indicators.py`、关键位引擎和 `tests/` 中依赖旧默认值或旧 EMA/ATR/VWAP 前导空值数量的断言，按新语义更新。关键位引擎自带的 `_atr_series`（`key_levels/engine.py:118`）是另一套口径，本单不改，在 Comments 里记一笔是否要统一。
+- [x] **决策记录**：在 ADR-0010 追加一段“算法语义以 Pine v6 参考手册为准”，列出本单的三处语义与默认周期变更。
 
 ## 测试
 
@@ -89,3 +89,11 @@ RSI、BOLL（总体标准差）、SMA 算法已一致，不改。
 - 迁移只处理周期为空的历史预警；若历史条件中存有其他非法值，仍按原有校验处理。
 - 前端默认值读取为一次性启动流程，服务端不可用时静默使用出厂值；未做浏览器手工验收，界面交互仅由 typecheck/单测覆盖。
 - 手工检查建议：打开指标设置确认 EMA/SMA 显示 9、VWAP 默认“UTC 日界”；保存 EMA 周期后新建 EMA 指标沿用新值；“恢复出厂”回到 9；新建 VWAP 预警在预警列表中回读锚点；跨日 K 线前段 VWAP 为空、日界后重新累计。
+
+
+**合并记录（2026-11-22）**
+
+- 并入 `integration/platform-redesign-batch-1`（merge commit `4301e96`）；`runtime.py` 冲突按“保留 platform/01 的功能开关可空装配，同时注入 indicator_defaults”解决。
+- 合并测试发现 `dsh/packages/talaria-dsh-plugin/create_alert.tool.json` 未随新增的 `indicator_anchor`/`compare_anchor` 更新；已从 `contracts/schemas/dsh-tools/create_alert.tool.json` 同步，`tests/cli/test_dsh_tool_schema.py` 15 passed。
+- 合并后复跑 `pytest tests/perception tests/foundation tests/workbench_api tests/cli tests/evaluation tests/feed -q --deselect tests/cli/test_talaria_desk_profile.py::test_real_dump_config_matches_permission_snapshot` → 595 passed, 1 deselected。
+- 前端 `pnpm --filter @talaria/desk-ui typecheck` 通过；`pnpm --filter @talaria/desk-ui test` → 22 files / 159 tests passed。
