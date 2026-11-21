@@ -27,6 +27,7 @@ class RawBar:
     ts_ingested: int
     ts_committed: int
     precision: PrecisionTier = PrecisionTier.SECOND_VERIFIED
+    revision: int = 0
 
     def to_compact(self, *, status: BarStatus = BarStatus.NORMAL) -> CompactBar:
         if status is BarStatus.FEED_GAP:

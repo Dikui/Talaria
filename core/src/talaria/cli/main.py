@@ -34,6 +34,7 @@ from talaria.cli.dsh_host import (
     write_bridge_descriptor,
 )
 from talaria.packs import DEFAULT_PACK, MARKET_PACKS, get_market_pack
+from talaria.perception.cold_migrate import migrate_cold_store
 from talaria.workbench_api.settings import AppSettings
 
 DEFAULT_DATA_DIR = Path(".talaria")
@@ -384,6 +385,30 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_cold_migrate(args: argparse.Namespace) -> int:
+    from talaria.foundation.errors import ColdStoreError
+
+    pack = get_market_pack(args.pack)
+    try:
+        report = migrate_cold_store(Path(args.data_dir), pack=pack)
+    except ColdStoreError as exc:
+        print(f"冷库迁移失败：{exc}", file=sys.stderr)
+        return 1
+    if not report.manifest_switched:
+        print(
+            f"冷库无需迁移：{report.already_current_generations} 个 generation "
+            "已是 decimal128。"
+        )
+        return 0
+    print(
+        f"冷库迁移完成：迁移 {report.migrated_generations} 个 generation，"
+        f"复用 {report.already_current_generations} 个，"
+        f"更新 {report.updated_cursors} 个游标，"
+        f"新写 {report.written_files} 个文件。"
+    )
+    return 0
+
+
 def _cmd_evaluate_levels(args: argparse.Namespace) -> int:
     from talaria.evaluation.key_levels import (
         EvaluationError,
@@ -635,7 +660,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-json", dest="json", action="store_false", help="只输出可读表格到 stderr"
     )
     evaluate.set_defaults(func=_cmd_evaluate_levels)
-    for command in (up, evaluate):
+
+    migrate = subparsers.add_parser(
+        "cold-migrate",
+        help="把旧字符串冷库 generation 一次性迁移为按列 decimal128",
+    )
+    migrate.add_argument(
+        "--data-dir",
+        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
+        help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
+    )
+    migrate.set_defaults(func=_cmd_cold_migrate)
+    for command in (up, evaluate, migrate):
         command.add_argument(
             "--pack",
             choices=sorted(MARKET_PACKS),

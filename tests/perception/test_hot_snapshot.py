@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -163,6 +164,23 @@ def test_hot_revision_wins_over_archived_same_timestamp(tmp_path: Path) -> None:
         snapshot_store.close()
 
 
+def test_archived_higher_revision_wins_over_later_hot_bar(tmp_path: Path) -> None:
+    archived = replace(_raw(BASE, close="101.0"), revision=1)
+    hot = _raw(BASE, close="99.0", committed=NOW - 5)
+    builder, _, snapshot_store = _builder(
+        tmp_path, history=[archived], hot=StubHotBars([hot])
+    )
+    try:
+        meta = builder.build(instrument=INSTRUMENT, request=_request(cutoff=NOW))
+        record = snapshot_store.get(meta.snapshot_id)
+        assert record is not None
+        entries = read_snapshot_entries(tmp_path, record.parquet_path, TIMEFRAME)
+        assert [entry.bar.close for entry in entries] == [Decimal("101.0")]
+        assert entries[0].ts_committed == BASE + MINUTE + 10
+    finally:
+        snapshot_store.close()
+
+
 def test_snapshot_is_byte_identical_after_store_restart(tmp_path: Path) -> None:
     history = [_raw(BASE), _raw(BASE + MINUTE)]
     hot = StubHotBars([_raw(BASE + 2 * MINUTE, committed=NOW)])
@@ -272,6 +290,7 @@ def test_hot_buffer_tracks_latest_revision_and_commit_time() -> None:
     assert len(latest) == 1
     assert latest[0].close == Decimal("100.8")
     assert latest[0].ts_committed == NOW + 1_000
+    assert latest[0].revision == 1
 
 
 def test_hot_buffer_skips_feed_gap_bars() -> None:
