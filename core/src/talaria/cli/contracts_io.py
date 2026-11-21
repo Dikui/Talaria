@@ -80,6 +80,7 @@ from talaria.foundation.feed import (
 )
 from talaria.foundation.indicators import (
     IndicatorBundle,
+    IndicatorDefaultsResponse,
     IndicatorName,
     IndicatorParams,
     IndicatorPoint,
@@ -201,6 +202,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "indicator_request": IndicatorRequest,
     "operator_request": OperatorRequest,
     "indicator_bundle": IndicatorBundle,
+    "indicator_defaults_response": IndicatorDefaultsResponse,
     "drawing_point": DrawingPoint,
     "drawing_style": DrawingStyle,
     "drawing_create": DrawingCreate,

@@ -75,21 +75,15 @@ class _EmaEngine:
     def __init__(self, spec: IndicatorSpec) -> None:
         self._period = int(spec.period)
         self._alpha = Decimal(2) / Decimal(self._period + 1)
-        self._seed: list[Decimal] = []
         self._ema: Decimal | None = None
 
     def reset(self) -> None:
-        self._seed.clear()
         self._ema = None
 
     def push(self, bar: CompactBar) -> Point:
         close = _close_of(bar)
         if self._ema is None:
-            self._seed.append(close)
-            if len(self._seed) < self._period:
-                return {"value": None}
-            self._ema = sum(self._seed) / Decimal(self._period)
-            self._seed.clear()
+            self._ema = close
             return {"value": self._ema}
         self._ema = self._ema + self._alpha * (close - self._ema)
         return {"value": self._ema}
@@ -159,9 +153,11 @@ class _AtrEngine:
         close = _close_of(bar)
         previous = self._previous_close
         self._previous_close = close
-        if previous is None:
-            return {"value": None}
-        true_range = _true_range(bar, previous)
+        true_range = (
+            _true_range(bar, previous)
+            if previous is not None
+            else _high_of(bar) - _low_of(bar)
+        )
         if self._atr is None:
             self._true_ranges.append(true_range)
             if len(self._true_ranges) < self._period:
@@ -208,18 +204,29 @@ class _VwapEngine:
         self._cumulative_pv = Decimal(0)
         self._cumulative_volume = Decimal(0)
         self._day: int | None = None
+        self._anchored = not self._session_anchored
 
     def reset(self) -> None:
         self._cumulative_pv = Decimal(0)
         self._cumulative_volume = Decimal(0)
         self._day = None
+        self._anchored = not self._session_anchored
 
     def push(self, bar: CompactBar) -> Point:
         day = bar.timestamp // 86_400_000
-        if self._session_anchored and self._day is not None and day != self._day:
-            self._cumulative_pv = Decimal(0)
-            self._cumulative_volume = Decimal(0)
-        self._day = day
+        if self._session_anchored:
+            if self._day is None:
+                self._day = day
+                return {"value": None}
+            if day != self._day:
+                self._day = day
+                self._cumulative_pv = Decimal(0)
+                self._cumulative_volume = Decimal(0)
+                self._anchored = True
+            if not self._anchored:
+                return {"value": None}
+        else:
+            self._day = day
         volume = bar.volume or Decimal(0)
         if volume != 0:
             typical = (_high_of(bar) + _low_of(bar) + _close_of(bar)) / Decimal(3)

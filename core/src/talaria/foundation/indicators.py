@@ -28,7 +28,7 @@ class IndicatorParams(ContractModel):
         return cls(
             period=DEFAULT_PERIODS[name],
             std_dev=None,
-            anchor="snapshot" if name is IndicatorName.VWAP else None,
+            anchor="session" if name is IndicatorName.VWAP else None,
         )
 
 
@@ -86,9 +86,16 @@ class IndicatorBundle(ContractModel):
     series: list[IndicatorSeries]
 
 
+class IndicatorDefaultsResponse(ContractModel):
+    """全部指标当前生效的默认参数。"""
+
+    defaults: dict[IndicatorName, IndicatorParams]
+
+
 __all__ = [
     "CHANNELS",
     "IndicatorBundle",
+    "IndicatorDefaultsResponse",
     "IndicatorName",
     "IndicatorParams",
     "IndicatorPoint",

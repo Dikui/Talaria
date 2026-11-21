@@ -3,7 +3,8 @@
   "params": {
     "period": 3
   },
-  "warmup_bars": 3,
+  "warmup_bars": 4,
+  "post_gap_warmup": 2,
   "bars": [
     {
       "offset": 0,
@@ -17,13 +18,13 @@
     },
     {
       "offset": 1,
-      "open": "11",
-      "high": "12",
-      "low": "10",
-      "close": "11",
-      "volume": "1",
-      "turnover": "11",
-      "status": "NORMAL"
+      "open": null,
+      "high": null,
+      "low": null,
+      "close": null,
+      "volume": null,
+      "turnover": null,
+      "status": "FEED_GAP"
     },
     {
       "offset": 2,
@@ -37,66 +38,26 @@
     },
     {
       "offset": 3,
-      "open": "12",
-      "high": "12",
-      "low": "12",
-      "close": "12",
+      "open": "14",
+      "high": "15",
+      "low": "13",
+      "close": "14",
+      "volume": "2",
+      "turnover": "28",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 4,
+      "open": "14",
+      "high": "14",
+      "low": "14",
+      "close": "14",
       "volume": "0",
       "turnover": "0",
       "status": "NO_TRADES"
     },
     {
-      "offset": 4,
-      "open": "14",
-      "high": "15",
-      "low": "13",
-      "close": "14",
-      "volume": "1",
-      "turnover": "14",
-      "status": "NORMAL"
-    },
-    {
       "offset": 5,
-      "open": null,
-      "high": null,
-      "low": null,
-      "close": null,
-      "volume": null,
-      "turnover": null,
-      "status": "FEED_GAP"
-    },
-    {
-      "offset": 6,
-      "open": "20",
-      "high": "21",
-      "low": "19",
-      "close": "20",
-      "volume": "1",
-      "turnover": "20",
-      "status": "NORMAL"
-    },
-    {
-      "offset": 7,
-      "open": "22",
-      "high": "23",
-      "low": "21",
-      "close": "22",
-      "volume": "1",
-      "turnover": "22",
-      "status": "NORMAL"
-    },
-    {
-      "offset": 8,
-      "open": "18",
-      "high": "19",
-      "low": "17",
-      "close": "18",
-      "volume": "1",
-      "turnover": "18",
-      "status": "NORMAL"
-    },
-    {
-      "offset": 9,
       "open": "16",
       "high": "17",
       "low": "15",
@@ -106,7 +67,57 @@
       "status": "NORMAL"
     },
     {
+      "offset": 6,
+      "open": "15",
+      "high": "16",
+      "low": "14",
+      "close": "15",
+      "volume": "1",
+      "turnover": "15",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 7,
+      "open": "14",
+      "high": "15",
+      "low": "13",
+      "close": "14",
+      "volume": "1",
+      "turnover": "14",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 8,
+      "open": "17",
+      "high": "18",
+      "low": "16",
+      "close": "17",
+      "volume": "1",
+      "turnover": "17",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 9,
+      "open": "18",
+      "high": "19",
+      "low": "17",
+      "close": "18",
+      "volume": "1",
+      "turnover": "18",
+      "status": "NORMAL"
+    },
+    {
       "offset": 10,
+      "open": "16",
+      "high": "17",
+      "low": "15",
+      "close": "16",
+      "volume": "1",
+      "turnover": "16",
+      "status": "NORMAL"
+    },
+    {
+      "offset": 11,
       "open": "20",
       "high": "21",
       "low": "19",
@@ -116,13 +127,13 @@
       "status": "NORMAL"
     },
     {
-      "offset": 11,
+      "offset": 107,
       "open": "24",
       "high": "25",
       "low": "23",
       "close": "24",
-      "volume": "1",
-      "turnover": "24",
+      "volume": "2",
+      "turnover": "48",
       "status": "NORMAL"
     }
   ],
@@ -137,31 +148,34 @@
       "value": null
     },
     {
-      "value": "1.333333333333333333333333333"
-    },
-    {
-      "value": "1.888888888888888888888888889"
-    },
-    {
       "value": null
     },
     {
-      "value": null
+      "value": "1.666666666666666666666666667"
     },
     {
-      "value": null
+      "value": "2.111111111111111111111111111"
     },
     {
-      "value": null
+      "value": "2.074074074074074074074074074"
     },
     {
-      "value": "3.666666666666666666666666667"
+      "value": "2.049382716049382716049382716"
     },
     {
-      "value": "4.11111111111111111111111111"
+      "value": "2.699588477366255144032921811"
     },
     {
-      "value": "4.407407407407407407407407407"
+      "value": "2.466392318244170096021947874"
+    },
+    {
+      "value": "2.644261545496113397347965249"
+    },
+    {
+      "value": "3.429507696997408931565310167"
+    },
+    {
+      "value": "3.953005131331605954376873443"
     }
   ]
 }

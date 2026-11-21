@@ -15,9 +15,11 @@ from talaria.foundation.alerts import (
     AlertDirection,
     AlertMetric,
     AlertPatch,
+    AlertRecord,
     AlertStatus,
 )
 from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.foundation.indicators import IndicatorParams
 from talaria.foundation.types import PrecisionTier
 from talaria.foundation.feed import KlineEvent
 from talaria.foundation.snapshot import SnapshotRequest
@@ -29,6 +31,7 @@ from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import SnapshotStore
 from talaria.workbench_api.alert_service import AlertService
 from talaria.workbench_api.drawing_service import DrawingService
+from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
 from talaria.workbench_api.state_store import StateWriterQueue
 
 pytestmark = pytest.mark.medium
@@ -78,6 +81,35 @@ def _kline(ts: int, close: str) -> KlineEvent:
         bar=bar,
         confirmed=True,
         revision=0,
+    )
+
+
+def _indicator_alert(
+    alert_id: str,
+    indicator: str,
+    *,
+    period: int | None = None,
+    anchor: str | None = None,
+    threshold: str = "12",
+) -> AlertRecord:
+    condition = AlertCondition(
+        kind=AlertConditionKind.INDICATOR_SIGNAL,
+        direction=AlertDirection.ABOVE,
+        indicator=indicator,
+        indicator_period=period,
+        indicator_anchor=anchor,
+        threshold=Decimal(threshold),
+    )
+    return AlertRecord(
+        alert_id=alert_id,
+        instrument_id=INSTRUMENT,
+        timeframe="1m",
+        condition=condition,
+        status=AlertStatus.ARMED,
+        repeat=True,
+        cooldown_ms=0,
+        created_ts=NOW_MS,
+        updated_ts=NOW_MS,
     )
 
 
@@ -311,3 +343,187 @@ def test_trigger_freezes_registered_evidence_snapshot(tmp_path: Path, fixture_di
             snapshot_store.close()
 
     assert asyncio.run(scenario())
+
+
+def test_start_migrates_legacy_indicator_params_to_explicit_values(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        clock = Clock()
+        writer = StateWriterQueue(tmp_path, now_ms=clock)
+        await writer.start()
+        try:
+            legacy = [
+                _indicator_alert("alr_sma", "SMA"),
+                _indicator_alert("alr_vwap", "VWAP", threshold="100"),
+                _indicator_alert("alr_ema", "EMA", period=50),
+            ]
+            await writer.run(
+                lambda store: [store.alerts.write(record) for record in legacy]
+            )
+            service = AlertService(
+                state_writer=writer,
+                drawings=DrawingService(
+                    queue=writer, pack=CRYPTO_PERP_PACK, now_ms=clock
+                ),
+                instruments=INSTRUMENTS,
+                now_ms=clock,
+            )
+            await service.start()
+            try:
+                records = {
+                    record.alert_id: record for record in await service.list_alerts()
+                }
+                assert records["alr_sma"].condition.indicator_period == 20
+                assert records["alr_sma"].condition.indicator_anchor is None
+                assert records["alr_vwap"].condition.indicator_period == 1
+                assert records["alr_vwap"].condition.indicator_anchor == "snapshot"
+                assert records["alr_ema"].condition.indicator_period == 50
+            finally:
+                await service.close()
+        finally:
+            await writer.close()
+
+        writer = StateWriterQueue(tmp_path, now_ms=clock)
+        await writer.start()
+        try:
+            service = AlertService(
+                state_writer=writer,
+                drawings=DrawingService(
+                    queue=writer, pack=CRYPTO_PERP_PACK, now_ms=clock
+                ),
+                instruments=INSTRUMENTS,
+                now_ms=clock,
+            )
+            await service.start()
+            try:
+                records = {
+                    record.alert_id: record for record in await service.list_alerts()
+                }
+                assert records["alr_sma"].condition.indicator_period == 20
+                assert records["alr_vwap"].condition.indicator_anchor == "snapshot"
+            finally:
+                await service.close()
+        finally:
+            await writer.close()
+
+    asyncio.run(scenario())
+
+
+def test_create_alert_fills_effective_defaults_and_explicit_values_win(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        clock = Clock()
+        writer, service = await _make_service(tmp_path, clock)
+        try:
+            ema = await service.create_alert(
+                _create(
+                    condition=AlertCondition(
+                        kind=AlertConditionKind.INDICATOR_SIGNAL,
+                        direction=AlertDirection.ABOVE,
+                        indicator="EMA",
+                        threshold=Decimal("12"),
+                    )
+                )
+            )
+            assert ema.condition.indicator_period == 9
+            assert ema.condition.indicator_anchor is None
+
+            vwap = await service.create_alert(
+                _create(
+                    condition=AlertCondition(
+                        kind=AlertConditionKind.INDICATOR_SIGNAL,
+                        direction=AlertDirection.ABOVE,
+                        indicator="VWAP",
+                        threshold=Decimal("12"),
+                    )
+                )
+            )
+            assert vwap.condition.indicator_period == 1
+            assert vwap.condition.indicator_anchor == "session"
+
+            defaults = IndicatorDefaultsService(writer)
+            await defaults.set("EMA", IndicatorParams(period=30))
+            custom = await service.create_alert(
+                _create(
+                    condition=AlertCondition(
+                        kind=AlertConditionKind.INDICATOR_SIGNAL,
+                        direction=AlertDirection.ABOVE,
+                        indicator="EMA",
+                        indicator_period=5,
+                        threshold=Decimal("12"),
+                    )
+                )
+            )
+            assert custom.condition.indicator_period == 5
+
+            inherited = await service.create_alert(
+                _create(
+                    condition=AlertCondition(
+                        kind=AlertConditionKind.INDICATOR_SIGNAL,
+                        direction=AlertDirection.ABOVE,
+                        indicator="EMA",
+                        threshold=Decimal("12"),
+                    )
+                )
+            )
+            assert inherited.condition.indicator_period == 30
+
+            # 已存预警保留创建时的显式参数，不随后续默认值变化。
+            persisted = await service.get_alert(ema.alert_id)
+            assert persisted.condition.indicator_period == 9
+        finally:
+            await _shutdown(writer, service)
+
+    asyncio.run(scenario())
+
+
+def test_legacy_alert_after_migration_triggers_like_explicit_legacy_period(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        clock = Clock()
+        writer = StateWriterQueue(tmp_path, now_ms=clock)
+        await writer.start()
+        try:
+            legacy = _indicator_alert("alr_legacy", "SMA", threshold="12")
+            explicit = _indicator_alert(
+                "alr_explicit", "SMA", period=20, threshold="12"
+            )
+            await writer.run(
+                lambda store: [
+                    store.alerts.write(record) for record in (legacy, explicit)
+                ]
+            )
+            service = AlertService(
+                state_writer=writer,
+                drawings=DrawingService(
+                    queue=writer, pack=CRYPTO_PERP_PACK, now_ms=clock
+                ),
+                instruments=INSTRUMENTS,
+                now_ms=clock,
+            )
+            await service.start()
+            try:
+                for index in range(23):
+                    close = "10"
+                    if index >= 20:
+                        close = str(20 + (index - 20) * 10)
+                    service.handle_event(_kline(NOW_MS + index * MINUTE, close))
+                await service.flush()
+
+                triggers = await service.list_triggers()
+                assert {trigger.alert_id for trigger in triggers} == {
+                    "alr_legacy",
+                    "alr_explicit",
+                }
+                assert len({trigger.triggered_ts for trigger in triggers}) == 1
+                assert len({trigger.observed for trigger in triggers}) == 1
+                assert all("SMA(20)" in trigger.message for trigger in triggers)
+            finally:
+                await service.close()
+        finally:
+            await writer.close()
+
+    asyncio.run(scenario())

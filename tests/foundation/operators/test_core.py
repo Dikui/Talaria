@@ -77,6 +77,25 @@ def values(bars: Sequence[CompactBar], spec: IndicatorSpec) -> list[Decimal | No
     return [point["value"] for point in compute_series(bars, spec).points]
 
 
+DAY_MS = 86_400_000
+DAY0 = BASE_TS // DAY_MS * DAY_MS
+
+
+def day_bar(day: int, minute: int, *, close: str, volume: str = "1") -> CompactBar:
+    """构造落在指定 UTC 日内的柱。"""
+    timestamp = DAY0 + day * DAY_MS + minute * MINUTE
+    return bar(0, close=close, volume=volume).model_copy(
+        update={"timestamp": timestamp, "ts_available": timestamp + MINUTE}
+    )
+
+
+def gap_at(day: int, minute: int) -> CompactBar:
+    timestamp = DAY0 + day * DAY_MS + minute * MINUTE
+    return bar(0, status=BarStatus.FEED_GAP).model_copy(
+        update={"timestamp": timestamp, "ts_available": timestamp + MINUTE}
+    )
+
+
 def test_sma_has_period_minus_one_leading_nones() -> None:
     bars = [bar(i, close=str(i + 1)) for i in range(5)]
     result = values(bars, IndicatorSpec(name=IndicatorName.SMA, period=3))
@@ -152,10 +171,16 @@ def test_output_length_always_equals_input_length() -> None:
     assert len(compute_series(bars, spec).points) == len(bars)
 
 
-def test_ema_seeds_with_sma_then_smooths() -> None:
+def test_ema_seeds_with_first_close_then_smooths() -> None:
     bars = [bar(i, close=str(i + 1)) for i in range(5)]
     result = values(bars, IndicatorSpec(name=IndicatorName.EMA, period=3))
-    assert result == [None, None, Decimal("2"), Decimal("3"), Decimal("4")]
+    assert result == [
+        Decimal("1"),
+        Decimal("1.5"),
+        Decimal("2.25"),
+        Decimal("3.125"),
+        Decimal("4.0625"),
+    ]
 
 
 def test_ema_keeps_state_through_no_trades() -> None:
@@ -167,7 +192,13 @@ def test_ema_keeps_state_through_no_trades() -> None:
         bar(4, close="5"),
     ]
     result = values(bars, IndicatorSpec(name=IndicatorName.EMA, period=3))
-    assert result == [None, None, Decimal("2"), Decimal("2.5"), Decimal("3.75")]
+    assert result == [
+        Decimal("1"),
+        Decimal("1.5"),
+        Decimal("2.25"),
+        Decimal("2.625"),
+        Decimal("3.8125"),
+    ]
 
 
 def test_rsi_uses_wilder_smoothing() -> None:
@@ -182,26 +213,25 @@ def test_rsi_is_fifty_when_gains_and_losses_balance() -> None:
     assert result == [None, None, Decimal("50")]
 
 
-def test_atr_uses_wilder_true_range() -> None:
+def test_atr_seeds_with_sma_of_true_ranges_including_first_bar() -> None:
     bars = [
-        bar(0, close="9.5", high="10", low="9"),
-        bar(1, close="10.5", high="11", low="10"),
-        bar(2, close="11.5", high="12", low="11"),
-        bar(3, close="13.5", high="14", low="12"),
+        bar(0, close="10", high="15", low="5"),
+        bar(1, close="11", high="12", low="10"),
+        bar(2, close="13", high="14", low="12"),
+        bar(3, close="12", high="13", low="11"),
     ]
     result = values(bars, IndicatorSpec(name=IndicatorName.ATR, period=2))
-    assert result == [None, None, Decimal("1.5"), Decimal("2")]
+    assert result == [None, Decimal("6"), Decimal("4.5"), Decimal("3.25")]
 
 
 def test_atr_treats_no_trades_as_zero_true_range() -> None:
     bars = [
         bar(0, close="9.5", high="10", low="9"),
         bar(1, close="10.5", high="11", low="10"),
-        bar(2, close="11.5", high="12", low="11"),
-        no_trades(3, close="11.5"),
+        no_trades(2, close="10.5"),
     ]
     result = values(bars, IndicatorSpec(name=IndicatorName.ATR, period=2))
-    assert result == [None, None, Decimal("1.5"), Decimal("0.75")]
+    assert result == [None, Decimal("1.25"), Decimal("0.625")]
 
 
 def test_boll_uses_population_deviation_and_configurable_multiplier() -> None:
@@ -232,7 +262,9 @@ def test_vwap_carries_on_zero_volume_and_resets_after_gap() -> None:
         flat_gap(4),
         bar(5, close="18", high="19", low="17", volume="2"),
     ]
-    result = values(bars, IndicatorSpec(name=IndicatorName.VWAP))
+    result = values(
+        bars, IndicatorSpec(name=IndicatorName.VWAP, anchor="snapshot")
+    )
     assert result == [
         Decimal("9"),
         Decimal("10.5"),
@@ -283,16 +315,47 @@ def test_rejects_invalid_period_and_unknown_params() -> None:
         spec_from_params(IndicatorName.EMA, {"period": "three"})
 
 
-def test_vwap_session_anchor_resets_at_utc_midnight() -> None:
+def test_vwap_session_skips_until_first_boundary_and_resets_daily() -> None:
     spec = spec_from_params("VWAP", {"anchor": "session"})
-    day = 1_700_000_000_000 // 86_400_000 * 86_400_000
-    first = bar(0, close="100").model_copy(update={"timestamp": day + 60_000})
-    second = bar(1, close="200").model_copy(
-        update={"timestamp": day + 86_400_000 + 60_000}
-    )
-    points = compute_series([first, second], spec).points
-    assert points[0]["value"] == Decimal("100")
-    assert points[1]["value"] == Decimal("200")
+    bars = [
+        day_bar(0, 1, close="100"),
+        day_bar(0, 2, close="110"),
+        day_bar(1, 1, close="200"),
+        day_bar(1, 2, close="210"),
+        day_bar(2, 1, close="300"),
+    ]
+    points = compute_series(bars, spec).points
+    assert [point["value"] for point in points] == [
+        None,
+        None,
+        Decimal("200"),
+        Decimal("205"),
+        Decimal("300"),
+    ]
+
+
+def test_vwap_session_rewarms_after_gap_within_same_day() -> None:
+    spec = spec_from_params("VWAP", {"anchor": "session"})
+    bars = [
+        day_bar(0, 1, close="100"),
+        gap_at(0, 2),
+        day_bar(0, 3, close="110"),
+        day_bar(1, 1, close="200"),
+    ]
+    values_ = [point["value"] for point in compute_series(bars, spec).points]
+    assert values_ == [None, None, None, Decimal("200")]
+
+
+def test_defaults_follow_tradingview_ema_and_sma_nine() -> None:
+    assert spec_from_params("EMA").period == 9
+    assert spec_from_params("SMA").period == 9
+    assert spec_from_params("VWAP").anchor == "session"
+    bars = [bar(i, close=value) for i, value in enumerate(["100", "101", "102"])]
+    assert values(bars, spec_from_params("EMA")) == [
+        Decimal("100"),
+        Decimal("100.2"),
+        Decimal("100.56"),
+    ]
 
 
 def test_anchor_is_rejected_for_non_vwap() -> None:

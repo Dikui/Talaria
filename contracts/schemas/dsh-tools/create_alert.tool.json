@@ -8,6 +8,22 @@
         "additionalProperties": false,
         "description": "一条可评估条件；字段组合由 ``kind`` 决定。",
         "properties": {
+          "compare_anchor": {
+            "default": null,
+            "oneOf": [
+              {
+                "enum": [
+                  "snapshot",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compare Anchor"
+          },
           "compare_indicator": {
             "default": null,
             "oneOf": [
@@ -96,6 +112,22 @@
                 "type": "null"
               }
             ]
+          },
+          "indicator_anchor": {
+            "default": null,
+            "oneOf": [
+              {
+                "enum": [
+                  "snapshot",
+                  "session"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indicator Anchor"
           },
           "indicator_channel": {
             "default": null,

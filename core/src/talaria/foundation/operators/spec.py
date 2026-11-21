@@ -24,8 +24,8 @@ class IndicatorName(StrEnum):
 
 #: 各指标的默认周期；BOLL 同时带默认标准差倍数。
 DEFAULT_PERIODS: dict[IndicatorName, int] = {
-    IndicatorName.EMA: 20,
-    IndicatorName.SMA: 20,
+    IndicatorName.EMA: 9,
+    IndicatorName.SMA: 9,
     IndicatorName.RSI: 14,
     IndicatorName.ATR: 14,
     IndicatorName.BOLL: 20,
@@ -100,7 +100,7 @@ class IndicatorSpec:
         else:
             std_dev = None
         if name is IndicatorName.VWAP:
-            anchor = "snapshot" if self.anchor is None else str(self.anchor)
+            anchor = "session" if self.anchor is None else str(self.anchor)
             if anchor not in VWAP_ANCHORS:
                 raise ValueError(f"VWAP 的 anchor 只能是 {'/'.join(VWAP_ANCHORS)}")
         else:

@@ -237,6 +237,9 @@ export interface IndicatorBundle {
   timeframe: string;
   series: IndicatorSeries[];
 }
+export interface IndicatorDefaultsResponse {
+  defaults: Record<IndicatorName, IndicatorParams>;
+}
 export interface DrawingPoint {
   ts: number;
   price: DecimalString;
@@ -413,9 +416,11 @@ export interface AlertCondition {
   threshold?: DecimalString | null;
   indicator?: IndicatorName | null;
   indicator_period?: number | null;
+  indicator_anchor?: "snapshot" | "session" | null;
   indicator_channel?: string | null;
   compare_indicator?: IndicatorName | null;
   compare_period?: number | null;
+  compare_anchor?: "snapshot" | "session" | null;
   drawing_id?: string | null;
   overlay_mode?: AlertOverlayMode | null;
   overlay_ratio?: DecimalString | null;

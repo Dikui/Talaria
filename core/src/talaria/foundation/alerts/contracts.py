@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -77,9 +78,11 @@ class AlertCondition(ContractModel):
     threshold: DecimalStr | None = None
     indicator: IndicatorName | None = None
     indicator_period: int | None = Field(default=None, ge=1, le=5000)
+    indicator_anchor: Literal["snapshot", "session"] | None = None
     indicator_channel: str | None = Field(default=None, max_length=16)
     compare_indicator: IndicatorName | None = None
     compare_period: int | None = Field(default=None, ge=1, le=5000)
+    compare_anchor: Literal["snapshot", "session"] | None = None
     drawing_id: str | None = Field(default=None, max_length=64)
     overlay_mode: AlertOverlayMode | None = None
     overlay_ratio: DecimalStr | None = None
@@ -97,9 +100,11 @@ class AlertCondition(ContractModel):
                 for value in (
                     self.indicator,
                     self.indicator_period,
+                    self.indicator_anchor,
                     self.indicator_channel,
                     self.compare_indicator,
                     self.compare_period,
+                    self.compare_anchor,
                     self.drawing_id,
                     self.overlay_mode,
                     self.overlay_ratio,
@@ -128,12 +133,22 @@ class AlertCondition(ContractModel):
                 self.indicator
             ]:
                 raise ValueError(f"{self.indicator} 不支持通道 {self.indicator_channel}")
+            if (
+                self.indicator_anchor is not None
+                and self.indicator is not IndicatorName.VWAP
+            ):
+                raise ValueError("只有 VWAP 支持 anchor 参数")
             if self.compare_indicator is not None and self.compare_indicator in {
                 IndicatorName.FUNDING_QUANTILE,
                 IndicatorName.OI_DIVERGENCE,
                 IndicatorName.NET_ODDS,
             }:
                 raise ValueError("衍生品指标暂不支持预警")
+            if (
+                self.compare_anchor is not None
+                and self.compare_indicator is not IndicatorName.VWAP
+            ):
+                raise ValueError("只有 VWAP 支持 anchor 参数")
             if any(
                 value is not None
                 for value in (
@@ -161,9 +176,11 @@ class AlertCondition(ContractModel):
                     self.threshold,
                     self.indicator,
                     self.indicator_period,
+                    self.indicator_anchor,
                     self.indicator_channel,
                     self.compare_indicator,
                     self.compare_period,
+                    self.compare_anchor,
                     self.drawing_id,
                     self.overlay_mode,
                     self.overlay_ratio,
@@ -185,9 +202,11 @@ class AlertCondition(ContractModel):
                 self.threshold,
                 self.indicator,
                 self.indicator_period,
+                self.indicator_anchor,
                 self.indicator_channel,
                 self.compare_indicator,
                 self.compare_period,
+                self.compare_anchor,
             )
         ):
             raise ValueError("OVERLAY_CROSS 不接受 metric 或指标字段")

@@ -32,7 +32,6 @@ from talaria.foundation.feed import FeedEvent
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.operators import (
     CHANNELS,
-    DEFAULT_PERIODS,
     DERIVATIVE_INDICATORS,
     IndicatorName,
     spec_from_params,
@@ -40,11 +39,31 @@ from talaria.foundation.operators import (
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.alerts import AlertEngine
 from talaria.workbench_api.drawing_service import DrawingService
+from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
 from talaria.workbench_api.state_store import StateWriterQueue
 
 logger = logging.getLogger(__name__)
 
 _NOT_ALERTABLE_KINDS = frozenset({DrawingKind.TEXT_LABEL})
+
+#: 迁移标记；写入后不再重复改写历史规则。
+_ALERT_PARAMS_MIGRATION_KEY = "alerts.explicit_params.v1"
+
+#: 迁移写入的旧默认值：当时由 DEFAULT_PERIODS 隐式补齐。
+_LEGACY_ALERT_PERIODS: dict[IndicatorName, int] = {
+    IndicatorName.EMA: 20,
+    IndicatorName.SMA: 20,
+    IndicatorName.RSI: 14,
+    IndicatorName.ATR: 14,
+    IndicatorName.BOLL: 20,
+    IndicatorName.VWAP: 1,
+}
+
+#: 主/比较指标的名称、周期、锚点字段名。
+_INDICATOR_FIELDS = (
+    ("indicator", "indicator_period", "indicator_anchor"),
+    ("compare_indicator", "compare_period", "compare_anchor"),
+)
 
 
 class AlertService:
@@ -62,8 +81,12 @@ class AlertService:
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
         on_change: Callable[[], Awaitable[None]] | None = None,
         on_trigger: Callable[[AlertTriggerRecord], None] | None = None,
+        indicator_defaults: IndicatorDefaultsService | None = None,
     ) -> None:
         self._state_writer = state_writer
+        self._indicator_defaults = indicator_defaults or IndicatorDefaultsService(
+            state_writer
+        )
         self._drawings = drawings
         self._instruments = {spec.instrument_id: spec for spec in instruments}
         self._now_ms = now_ms
@@ -82,6 +105,7 @@ class AlertService:
     # ------------------------------------------------------------- 生命周期
 
     async def start(self) -> None:
+        await self._migrate_legacy_parameters()
         records = await self._state_writer.read(lambda store: store.alerts.list())
         self._engine.load(records)
         expired = self._engine.tick()
@@ -135,13 +159,15 @@ class AlertService:
         self._check_timeframe(payload.timeframe)
         if payload.expires_at is not None and payload.expires_at <= self._now_ms():
             raise InvalidRequestError("expires_at 必须晚于当前时间")
-        await self._validate_condition(payload.condition, payload.instrument_id)
+        condition = await self._validate_condition(
+            payload.condition, payload.instrument_id
+        )
         now = self._now_ms()
         record = AlertRecord(
             alert_id=f"alr_{uuid4().hex}",
             instrument_id=payload.instrument_id,
             timeframe=payload.timeframe,
-            condition=payload.condition,
+            condition=condition,
             status=AlertStatus.DRAFT if payload.draft else AlertStatus.ARMED,
             repeat=payload.repeat,
             cooldown_ms=payload.cooldown_ms,
@@ -175,16 +201,19 @@ class AlertService:
 
     async def patch_alert(self, alert_id: str, patch: AlertPatch) -> AlertRecord:
         record = await self.get_alert(alert_id)
+        normalized = None
         if patch.condition is not None:
-            await self._validate_condition(patch.condition, record.instrument_id)
+            normalized = await self._validate_condition(
+                patch.condition, record.instrument_id
+            )
         if patch.expires_at is not None and patch.expires_at <= self._now_ms():
             raise InvalidRequestError("expires_at 必须晚于当前时间")
         now = self._now_ms()
         updates: dict[str, Any] = {"updated_ts": now}
         reset = False
-        if patch.condition is not None:
-            updates["condition"] = patch.condition
-            reset = reset or patch.condition != record.condition
+        if normalized is not None:
+            updates["condition"] = normalized
+            reset = reset or normalized != record.condition
         if patch.note is not None:
             updates["note"] = patch.note
         if patch.repeat is not None:
@@ -308,12 +337,13 @@ class AlertService:
 
     async def _validate_condition(
         self, condition: AlertCondition, instrument_id: str
-    ) -> None:
+    ) -> AlertCondition:
         if condition.kind is AlertConditionKind.INDICATOR_SIGNAL:
-            self._validate_indicator(condition)
-            return
+            normalized = await self._normalize_indicator_condition(condition)
+            self._validate_indicator(normalized)
+            return normalized
         if condition.kind is not AlertConditionKind.OVERLAY_CROSS:
-            return
+            return condition
         assert condition.drawing_id is not None
         drawing = await self._drawings.get_drawing(
             condition.drawing_id, after_pending_writes=True
@@ -335,21 +365,88 @@ class AlertService:
         )
         if bounds is None:
             raise InvalidRequestError("该画线在当前时刻不可见")
+        return condition
+
+    async def _normalize_indicator_condition(
+        self, condition: AlertCondition
+    ) -> AlertCondition:
+        updates: dict[str, Any] = {}
+        for name_field, period_field, anchor_field in _INDICATOR_FIELDS:
+            name = getattr(condition, name_field)
+            if name is None:
+                continue
+            effective = await self._indicator_defaults.get(name)
+            updates[period_field] = getattr(condition, period_field) or effective.period
+            if name is IndicatorName.VWAP:
+                updates[anchor_field] = (
+                    getattr(condition, anchor_field)
+                    or effective.anchor
+                    or "session"
+                )
+        return condition.model_copy(update=updates)
 
     @staticmethod
     def _validate_indicator(condition: AlertCondition) -> None:
-        for name, period in (
-            (condition.indicator, condition.indicator_period),
-            (condition.compare_indicator, condition.compare_period),
+        for name, period, anchor in (
+            (
+                condition.indicator,
+                condition.indicator_period,
+                condition.indicator_anchor,
+            ),
+            (
+                condition.compare_indicator,
+                condition.compare_period,
+                condition.compare_anchor,
+            ),
         ):
             if name is None:
                 continue
             if name in DERIVATIVE_INDICATORS:
                 raise InvalidRequestError("衍生品指标暂不支持预警")
+            if period is None:
+                raise InvalidRequestError(f"{name} 缺少显式周期")
+            params: dict[str, Any] = {"period": period}
+            if name is IndicatorName.VWAP:
+                params["anchor"] = anchor or "session"
             try:
-                spec_from_params(name, {"period": period or DEFAULT_PERIODS[name]})
+                spec_from_params(name, params)
             except ValueError as exc:
                 raise InvalidRequestError(str(exc)) from exc
             channel = condition.indicator_channel
             if channel is not None and name is condition.indicator and channel not in CHANNELS[name]:
                 raise InvalidRequestError(f"{name} 不支持通道 {channel}")
+
+    async def _migrate_legacy_parameters(self) -> None:
+        marker = await self._state_writer.get_meta(_ALERT_PARAMS_MIGRATION_KEY)
+        if marker == 1:
+            return
+        records = await self._state_writer.read(lambda store: store.alerts.list())
+        updates: list[AlertRecord] = []
+        for record in records:
+            condition = self._legacy_condition(record.condition)
+            if condition != record.condition:
+                updates.append(record.model_copy(update={"condition": condition}))
+        if updates:
+            await self._state_writer.run(
+                lambda store: [store.alerts.write(record) for record in updates]
+            )
+        await self._state_writer.set_meta(_ALERT_PARAMS_MIGRATION_KEY, 1)
+
+    @staticmethod
+    def _legacy_condition(condition: AlertCondition) -> AlertCondition:
+        if condition.kind is not AlertConditionKind.INDICATOR_SIGNAL:
+            return condition
+        updates: dict[str, Any] = {}
+        for name_field, period_field, anchor_field in _INDICATOR_FIELDS:
+            name = getattr(condition, name_field)
+            if name is None:
+                continue
+            if getattr(condition, period_field) is None:
+                legacy_period = _LEGACY_ALERT_PERIODS.get(name)
+                if legacy_period is not None:
+                    updates[period_field] = legacy_period
+            if name is IndicatorName.VWAP and getattr(condition, anchor_field) is None:
+                updates[anchor_field] = "snapshot"
+        if not updates:
+            return condition
+        return condition.model_copy(update=updates)

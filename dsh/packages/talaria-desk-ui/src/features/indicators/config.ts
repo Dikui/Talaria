@@ -12,20 +12,59 @@ export const INDICATOR_ORDER: IndicatorName[] = [
   "OI_DIVERGENCE",
 ];
 
-export const INDICATOR_DEFAULTS: Record<
-  IndicatorName,
-  { period: number; stdDev: string; anchor: "snapshot" | "session" }
-> = {
-  EMA: { period: 20, stdDev: "2", anchor: "snapshot" },
-  SMA: { period: 20, stdDev: "2", anchor: "snapshot" },
+export interface IndicatorDefaultValues {
+  period: number;
+  stdDev: string;
+  anchor: "snapshot" | "session";
+}
+
+export type IndicatorDefaults = Record<IndicatorName, IndicatorDefaultValues>;
+export type ServerIndicatorDefaults = Partial<
+  Record<IndicatorName, IndicatorParams>
+>;
+
+/** 出厂值；与后端 operators/spec.py 的 DEFAULT_PERIODS 一一对应。 */
+export const INDICATOR_DEFAULTS: IndicatorDefaults = {
+  EMA: { period: 9, stdDev: "2", anchor: "snapshot" },
+  SMA: { period: 9, stdDev: "2", anchor: "snapshot" },
   BOLL: { period: 20, stdDev: "2", anchor: "snapshot" },
-  VWAP: { period: 1, stdDev: "2", anchor: "snapshot" },
+  VWAP: { period: 1, stdDev: "2", anchor: "session" },
   RSI: { period: 14, stdDev: "2", anchor: "snapshot" },
   ATR: { period: 14, stdDev: "2", anchor: "snapshot" },
   FUNDING_QUANTILE: { period: 30, stdDev: "2", anchor: "snapshot" },
   OI_DIVERGENCE: { period: 30, stdDev: "2", anchor: "snapshot" },
   NET_ODDS: { period: 20, stdDev: "2", anchor: "snapshot" },
 };
+
+/** 服务端“生效默认值”归一化为前端设置形状；缺省项回落到出厂值。 */
+export function defaultsFromParams(
+  params: ServerIndicatorDefaults,
+): IndicatorDefaults {
+  const defaults = {} as IndicatorDefaults;
+  for (const name of INDICATOR_ORDER) {
+    const fallback = INDICATOR_DEFAULTS[name];
+    const value = params[name];
+    defaults[name] = {
+      period: value?.period ?? fallback.period,
+      stdDev:
+        value?.std_dev == null ? fallback.stdDev : String(value.std_dev),
+      anchor: value?.anchor ?? fallback.anchor,
+    };
+  }
+  return defaults;
+}
+
+/** 仅替换参数，保留启用状态（用户已打开的图表实例立即跟随新默认值）。 */
+export function applyDefaults(
+  settings: IndicatorSettings,
+  defaults: IndicatorDefaults,
+): IndicatorSettings {
+  const next = {} as IndicatorSettings;
+  for (const name of INDICATOR_ORDER) {
+    next[name] = { ...settings[name], ...defaults[name] };
+  }
+  return next;
+}
 
 export const INDICATOR_CHANNELS: Record<IndicatorName, string[]> = {
   EMA: ["value"],
@@ -88,8 +127,9 @@ export function enabledIndicatorNames(
 export function isDefaultParams(
   name: IndicatorName,
   setting: IndicatorSetting,
+  defaultsMap: IndicatorDefaults = INDICATOR_DEFAULTS,
 ): boolean {
-  const defaults = INDICATOR_DEFAULTS[name];
+  const defaults = defaultsMap[name];
   if (setting.period !== defaults.period) {
     return false;
   }
@@ -106,8 +146,9 @@ export function isDefaultParams(
 export function needsOperatorRequest(
   names: IndicatorName[],
   settings: IndicatorSettings,
+  defaults: IndicatorDefaults = INDICATOR_DEFAULTS,
 ): boolean {
-  return names.some((name) => !isDefaultParams(name, settings[name]));
+  return names.some((name) => !isDefaultParams(name, settings[name], defaults));
 }
 
 export function operatorParams(
