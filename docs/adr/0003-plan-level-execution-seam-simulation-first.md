@@ -13,5 +13,5 @@ status: accepted
 
 ## Consequences
 
-- **诚实仿真红线不可裁剪**：为避免日内与永续模拟产生虚高收益，`SimExecutionAdapter` 至少必须强制实现以下四项物理约束（完整六条法则见架构规范 §3.5）：① 注入真实的 `Decision Latency (Δt)` 时间偏移；② 区分 Maker 穿价成交与 Taker 盘口滑点/费率；③ K 线内同时触及止盈止损时按保守先止损结算；④ 照常执行永续整点 `Funding Settlement` 与 `Mark Price` 模拟强平。
+- **诚实仿真红线不可裁剪**：为避免日内与永续模拟产生虚高收益，`SimExecutionAdapter` 至少必须强制实现以下四项物理约束（完整六条法则见架构规范 §6.4）：① 注入真实的 `Decision Latency (Δt)` 时间偏移；② 区分 Maker 穿价成交与 Taker 盘口滑点/费率；③ K 线内同时触及止盈止损时按保守先止损结算；④ 照常执行永续整点 `Funding Settlement` 与 `Mark Price` 模拟强平。
 - **未来实盘零侵入升级**：当模拟验证具备扣除全成本后的稳定正期望时，发送前持久化 Outbox、`client_order_id` 去重、网络超时 `UNKNOWN` 查询对账及原生柜台/Nautilus 适配全部封装在新建的 `LiveExecutionAdapter` 内部，上游数据、扫描、DSH 认知、组合风控与账本评测代码无需重构。

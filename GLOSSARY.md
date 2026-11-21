@@ -9,7 +9,7 @@
 _Avoid_: Daemon, backend, server
 
 **Account Process（账户进程）**:
-承载一个或一组虚拟子账户、按交易方案装配插件并运行回测或模拟盘的独立进程，是这些子账户账本的唯一写者。
+承载一个或一组虚拟子账户、按交易方案装配插件并运行回测或模拟盘的独立进程；模拟盘时持有这些子账户的排他锁，是其账本的唯一写者。
 _Avoid_: Strategy process, bot, worker
 
 **Trading Scheme（交易方案）**:
@@ -29,7 +29,7 @@ _Avoid_: Script, study, module
 _Avoid_: Data handle, environment
 
 **Rule（规则）**:
-只调用已注册算子、带版本号的 JSON 表达式树写法的组件，可以安全地在常驻服务中求值，用于图表规则、预警与扫描。
+只调用已注册算子、带版本号的 JSON 表达式树写法的组件，可以安全地在常驻服务中求值，用于图表规则、预警与扫描；分收盘求值与事件驱动两种求值时机。
 _Avoid_: Script, Pine code, formula
 
 ## 数据与时点语义
@@ -131,7 +131,7 @@ _Avoid_: Hot code injection, free prompt rule
 _Avoid_: Default hold, silent fallback
 
 **Staged Plan Draft（暂存交易草案）**:
-智能体在人机协同模式下产出的待审阅交易方案草稿，须经交易员在工作台确认或微调入场与止损参数后方可送入组合风控审批。
+智能体在人机协同模式下产出的待审阅交易方案草稿，保存在常驻服务中可反复编辑；只有交易员确认后的不可变版本才会提交给账户进程，经定仓与风控审批。
 _Avoid_: Pending order, unverified execution
 
 **Decision Origin（决策来源归因）**:
