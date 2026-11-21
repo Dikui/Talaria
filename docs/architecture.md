@@ -1,328 +1,441 @@
-# Talaria 系统分层架构与模块接口规范
+# Talaria 系统架构与模块接口规范
 
-本文档定义 Talaria 多资产人机协同智能体研究与模拟交易系统的全局软件分层、模块接口（Interface）、可替换缝隙（Seam）、数据模型、高保真仿真物理法则以及单机轻量化部署拓扑。领域统一术语以根目录 [GLOSSARY.md](../GLOSSARY.md) 为准，核心架构决策记录于：
+Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美股。产品按功能组织，参照 TradingView 的使用方式：行情数据、图表、指标与关键位、预警、扫描各自可以单独打开，也可以组合使用；出策略时，Notebook、策略、agent 和图表拿到的是同一份、同一口径的数据。策略走历史回测和模拟盘，暂不接实盘。
 
-- [ADR-0001：采用 DeepSeek Harness 与 Python 确定性底座分离的双平面架构](./adr/0001-dual-plane-dsh-and-python-core.md)
-- [ADR-0002：通过通用标的内核与 Capability Traits 市场包实现跨资产扩展](./adr/0002-capability-traits-and-market-packs.md)
-- [ADR-0003：在完整执行计划层设置 Execution Seam，模拟优先并暂缓实盘柜台对接](./adr/0003-plan-level-execution-seam-simulation-first.md)
-- [ADR-0004：采用确定性异动扫描前置门禁与日内快慢双模认知机制](./adr/0004-dual-mode-intraday-cognition-and-scanner-gate.md)
-- [ADR-0005：看盘工作台采用本地快通道直连 Python 底座并与 DSH 插槽解耦](./adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)
-- [ADR-0006：采用多虚拟子账户单标的单一仓位回合模型与按写者物理分库](./adr/0006-single-position-round-per-subaccount-and-isolated-ledgers.md)
-- [ADR-0007：将防过拟合 Optuna 参数寻优置于外圈编排层并强制前置门禁与三段封存](./adr/0007-guarded-optuna-optimization-in-outer-orchestration.md)
-- [ADR-0008：初版以人机共用分析工作台为先，并由确定性关键位引擎产出重要价位](./adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
-- [ADR-0009：以模型知识截止日划分智能体评估证据等级，历史回放默认仅作诊断](./adr/0009-agent-evaluation-evidence-tiers-by-model-knowledge-cutoff.md)
-- [ADR-0010：v1 指标核以纯 Python Decimal 为唯一权威，第三方指标库只作锁定依赖](./adr/0010-pure-python-indicator-core.md)
-- [ADR-0011：冷库发布由快照冻结触发，使用只追加的游标](./adr/0011-cold-store-publish-on-snapshot-freeze.md)
-- [ADR-0012：状态库写入走专用写线程，读取用只读连接绕过写队列](./adr/0012-state-store-dedicated-writer-thread-and-read-only-connections.md)
-- [ADR-0013：L0 底座只放纯契约与纯计算，有状态引擎和 I/O 放到上层](./adr/0013-foundation-holds-only-pure-contracts-and-computation.md)
+本文档描述目标架构、模块接口、可替换的插槽、数据模型、仿真法则与单机部署。每节标明当前状态：**已实现**、**改造中**（现有代码需要按新架构调整）或**规划中**。领域术语以根目录 [GLOSSARY.md](../GLOSSARY.md) 为准。需求与决策过程见 `.scratch/platform-redesign/spec.md`。
 
-*(前置外部接口与开源底座许可核查证据存档于 [`docs/research/`](./research/)。)*
+架构决策：
+
+- [ADR-0001：DeepSeek Harness 与 Python 确定性底座分离的双平面架构](./adr/0001-dual-plane-dsh-and-python-core.md)
+- [ADR-0002：通用标的内核与 Capability Traits 市场包](./adr/0002-capability-traits-and-market-packs.md)（按 `R` 定仓已由 ADR-0015 降为默认插件规则）
+- [ADR-0003：在完整执行计划层设置 Execution Seam，模拟优先](./adr/0003-plan-level-execution-seam-simulation-first.md)
+- [ADR-0004：确定性异动扫描前置门禁与日内快慢双模认知](./adr/0004-dual-mode-intraday-cognition-and-scanner-gate.md)
+- [ADR-0005：看盘工作台走本地快通道并与 DSH 插槽解耦](./adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)
+- [ADR-0006：子账户单标的单一仓位回合与按写者分库](./adr/0006-single-position-round-per-subaccount-and-isolated-ledgers.md)（单一仓位回合已由 ADR-0015 降为默认插件规则）
+- [ADR-0007：Optuna 防过拟合寻优置于外圈编排](./adr/0007-guarded-optuna-optimization-in-outer-orchestration.md)
+- [ADR-0008：初版以分析工作台为先，确定性关键位引擎](./adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
+- [ADR-0009：按模型知识截止日划分智能体评估证据等级](./adr/0009-agent-evaluation-evidence-tiers-by-model-knowledge-cutoff.md)
+- [ADR-0010：指标核以纯 Python Decimal 为唯一权威](./adr/0010-pure-python-indicator-core.md)
+- [ADR-0011：冷库发布由快照冻结触发](./adr/0011-cold-store-publish-on-snapshot-freeze.md)（已被 ADR-0018 取代）
+- [ADR-0012：状态库写入走专用写线程，读取用只读连接](./adr/0012-state-store-dedicated-writer-thread-and-read-only-connections.md)
+- [ADR-0013：L0 底座只放纯契约与纯计算](./adr/0013-foundation-holds-only-pure-contracts-and-computation.md)
+- [ADR-0014：一个 launchd 常驻服务 + 浏览器多页面](./adr/0014-resident-service-and-browser-multi-page.md)
+- [ADR-0015：交易流水线运行在独立的账户进程，账户进程是插件宿主](./adr/0015-account-process-as-plugin-host.md)
+- [ADR-0016：取数 SDK 按清单直读 Parquet，最新部分向常驻服务补齐](./adr/0016-sdk-reads-parquet-directly-with-service-tail.md)
+- [ADR-0017：冷库按标的精度存 decimal128(18, s)](./adr/0017-cold-store-per-instrument-decimal128.md)
+- [ADR-0018：冷库在每根 K 线收盘后持续写入](./adr/0018-cold-store-continuous-publish-on-bar-close.md)
+- [ADR-0019：指标、信号、策略使用统一组件模型](./adr/0019-unified-component-model-with-runtime-context.md)
+
+调研证据存档于 [`docs/research/`](./research/)。
 
 ---
 
-## 1. 全局软件分层架构（`1 底座 + 5 单向核心业务层 + 2 外圈编排与交互层`）
+## 1. 产品形态与进程拓扑
 
-为同时满足“人机协同双轨分析（`Co-Pilot Analysis`）”、“人工操作零大模型阻塞”与“核心流水线严格单向无环”三大约束，全系统划分为 **1 个公共底座契约层（L0）**、**5 个自上而下严格单向流转的核心业务层（L1–L5）**，以及 **2 个站在核心流水线外侧单向组装调用的编排与交互层（O1–O2）**。
-
-下图展示目标分层。当前代码交付 M1/M2 的感知与分析工作台，交易闭环和外圈编排规划见 §1.3。
+系统由四类进程组成。常驻服务是数据的唯一写者，其他进程都是它的使用方。
 
 ```mermaid
 flowchart TB
-  subgraph O2["外圈交互层 O2：人机协同工作台 (Workbench Layer)"]
+  subgraph Front["浏览器多页面（同源 127.0.0.1，可装成 PWA）"]
     direction LR
-    W1["talaria-desk-ui (零 DSH 依赖 React + KLineChart v10 组件包)"]
-    W2["workbench_api (Python 127.0.0.1 HTTP/WS 快通道与静态托管)"]
-    W3["talaria-dsh-plugin (talaria-desk Web 插槽 + 会诊工具)"]
-    W1 <-->|"本地快通道 (<10ms，零模型阻塞)"| W2
-    W1 <-->|"同屏插槽挂载"| W3
+    PChart["图表页"]
+    PAlert["预警页"]
+    PScan["扫描页"]
+    PAcct["账户与复盘页（规划中）"]
+    PChart <-. "BroadcastChannel 联动" .-> PAlert
   end
 
-  subgraph O1["外圈编排层 O1：运行与寻优编排（规划中 M3/M4）"]
-    direction LR
-    R1["shadow_coordinator (实时守护循环 + Trigger 限流路由 + 回撤熔断器)"]
-    R2["replay_runner (Historical PIT / Observed Replay 虚拟时钟驱动)"]
-    R3["study_optimizer (前置截断与预热双审计 + Optuna 三段封存寻优)"]
-  end
+  DSH["DSH 协同宿主（talaria-desk Profile，工作台插槽 + 会诊工具）"]
 
-  subgraph Core["五层单向核心业务流水线 (Core Domain Pipeline —— 禁止反向导入外圈)"]
+  subgraph Svc["常驻服务 talaria service（launchd 用户级 Agent）"]
     direction TB
-    subgraph L1["L1 数据与盘面感知层 (Perception Layer)"]
-      P1["packs (市场行情与衍生品连接器)"] --> P2["perception (热流缓冲 + 物化快照 + Parquet 冷库)"]
-      P2 --> P3["工作台自选池与画线状态"]
-      P2 --> P5["快照关键位 (KeyLevelSet)"]
-      P5 --> P4
-      P3 --> P4["scanner & alert_engine (统一 MarketEventFeed 触发与冷却状态机)"]
-    end
-
-    subgraph L2["L2 策略与协同草案层（规划中 M3）"]
-      direction LR
-      S1["quant_strategies (纯代码基线 + 有界 ParamSpace)"]
-      S2["agent_strategies (DSH 战术洞察 + 持久化 ControllerPatch)"]
-      S3["plan_drafter (StagedPlanDraft 协同流转 + 手动草案同构转换)"]
-    end
-
-    subgraph L3["L3 多子账户组合与风控层（规划中 M3）"]
-      K1["position_sizer (单子账户 R-Unit 算仓 + 拖拽无副作用预试算)"] --> K2["hard_risk_guard (单一仓位回合不变量 / 强平安全垫 / 时段与事件门禁)"]
-    end
-
-    subgraph L4["L4 执行与高保真仿真层（规划中 M3，Execution Seam）"]
-      E1["position_executor (单子账户单标的四重保护屏障自治状态机)"]
-      E2["sim_broker (Δt 延迟墙 / 挂吃单滑点 / 悲观止损 / Mark 强平与 Funding)"]
-      E3["live_gateway_stub (未来实盘柜台 Outbox 与对账预留 Adapter)"]
-      E1 --> E2
-      E1 -. "Execution Seam" .-> E3
-    end
-
-    subgraph L5["L5 复式账本与复盘层（规划中 M3）"]
-      J1["double_entry_ledger (多子账户十进制复式分录 + 全量认知 Token 台账)"] --> J2["cost_evaluator (六维全成本瀑布 + 反事实沙箱 Co-Pilot Lift)"] --> J3["trade_journal (冰封画线快照 + 人工批注 + DSH Trajectory 溯源)"]
-    end
-
-    L1 -- "1. EvidenceSnapshot + TriggerEvent[]" --> L2
-    L2 -- "2. PlanCandidate (HUMAN/CO_PILOT/AGENT) | ControllerPatch" --> L3
-    L3 -- "3. ApprovedExecutionPlan | ApprovedBarrierAmendment" --> L4
-    L4 -- "4. ExecutionEvent[]" --> L5
-    J1 -. "5. 唯一只读反馈：AccountState / MarginValuationView" .-> L3
+    Feed["行情接入：packs + feed supervisor"]
+    Cold["冷库写入：收盘后写尾部文件 → 合并 → 清单原子切换"]
+    Ana["分析：指标、关键位、JSON 规则"]
+    AlertScan["预警与扫描引擎"]
+    Snap["证据快照"]
+    Api["HTTP / WS：范围取数、实时订阅、草案转发、账本只读展示"]
+    Feed --> Cold
+    Feed --> AlertScan
+    Ana --> AlertScan
+    Feed --> Api
   end
 
-  subgraph L0["公共底座契约层 L0：Foundation Layer"]
-    F1["高精度定点 Decimal / 五重时间戳 + PrecisionTier / 跨层不可变契约模型"]
-    F2["Instrument + 五大 Capability Traits / SessionCompactBars 单一实现算子核与关键位算法"]
+  subgraph Acct["账户进程（插件宿主，每个交易方案一个或一组）"]
+    direction LR
+    Data["数据入口"] --> Strat["策略"] --> Size["定仓"] --> Risk["风控"] --> Fill["成交"] --> Ledger["账本"]
   end
 
-  W2 -->|"快照与实时行情"| L1
-  O2 -. "提交草案 / 紧急减平仓" .-> O1
-  O1 -->|"单向组装驱动与投喂只读估值视图"| Core
+  NB["Notebook / 脚本（取数 SDK）"]
+  Orch["编排：replay_runner、study_optimizer（批量启动账户进程）"]
+  Store[("Parquet 冷库 + data_manifest.sqlite")]
+
+  Front <-->|"HTTP / WS"| Api
+  DSH <-->|"受控桥接工具"| Api
+  Cold --> Store
+  NB -->|"按清单直读"| Store
+  NB -. "补最新几根" .-> Api
+  Data -->|"回测：直读 + 虚拟时钟"| Store
+  Data -. "实时：本机 WS 订阅" .-> Api
+  Api -. "人工 / agent 草案转发" .-> Strat
+  Api -. "只读" .-> Ledger
+  Orch --> Acct
 ```
 
-### 1.1 分层依赖与权限铁律
+### 1.1 进程职责
 
-第 1、2 条描述 M3 交易闭环的设计约束。当前 L0 的导入边界由 `tests/foundation/test_import_boundaries.py` 校验，契约与纯函数层禁止导入 I/O 库或业务层。
+| 进程 | 职责 | 写哪些存储 | 状态 |
+|---|---|---|---|
+| 常驻服务 | 行情接入、冷库写入、快照、指标与关键位、预警、扫描、HTTP/WS；各功能按配置开关 | 冷库、快照库、协同状态库 | 已实现为 `talaria up` 前台进程；launchd 常驻、功能开关、冷库持续写入为改造中 |
+| 浏览器页面 | 每个功能一个可直接打开的路由；页面间用 `BroadcastChannel` 同步标的、周期与十字光标 | 不直接写 | 单页工作台已实现；多页面路由为改造中 |
+| DSH 协同宿主 | agent 会诊、标注、预警草案；工作台插槽 | 不直接写，经服务受控接口 | 已实现 |
+| 账户进程 | 按交易方案装配插件，跑回测或模拟盘 | 自己子账户的账本 | 规划中 |
+| Notebook / 脚本 | 用取数 SDK 研究；可以直接调用组件做实验 | 不写 | 规划中 |
 
-1. **核心五层严格单向无环**：包导入与同步业务流仅允许沿 `L1 → L2 → L3 → L4 → L5` 推进（核心五层均只依赖 `L0` 契约对象，互不反向导入上游或外圈 `O1/O2`）。全系统唯一的闭环数据流是 `L5` 产出的不可变值对象 `AccountState`（及派生的只读保证金估值视图 `MarginValuationView`），由外圈 `O1` 读取后单向传入 `L3` 定仓风控与 `L4` 全仓维持保证金检查。
-2. **开仓与放宽风险必过 L3，收敛风险允许直达 L4**：
-   - 任何新建仓、同向加仓以及**放宽活跃仓位止损距离**的操作（无论来自 `HUMAN`、`CO_PILOT` 还是 `AGENT`），一律必须经过 `L3` 组合风控层校验逻辑证伪止损价、单笔风险上限与衍生品强平安全垫；
-   - **只减不增风险的避险操作**（向有利方向收紧止损、移至保本、撤销未成交入场单、主动市价减仓/全平、将子账户切入 `REDUCING` 或 `HALTED`）允许由 `O1/O2` 直达 `L4` 执行引擎毫秒级生效，`L4` 内部硬断言风险敞口单调不增，绝不回调 `L3`。
-3. **跨品种零条件分支**：`L1–L5` 核心模块面向 `L0` 的能力特征与 `MarketPack` 协议编程，场所差异由横向 `packs/<market>/` 提供。当前 `packs/__init__.py` 的 `MARKET_PACKS` 按名称注册市场包，`talaria up --pack` 与 `talaria evaluate-levels --pack` 均默认选择 `crypto_perp`。市场包提供标的及能力特征、历史连接器、实时流、原始存档目录标识（`crypto_perp` 为 `bybit_linear`）和会诊提示词第二段的市场领域技能文本。
+服务的生命周期独立于任何窗口：关掉所有页面后，Notebook 和账户进程仍能取到数据。服务未运行时，SDK 只读本地已有数据，回测不受影响。
 
-### 1.2 量化策略支持范围与预留扩展点
+### 1.2 依赖与权限铁律
 
-**规划中（M3/M4）。** 纯量化策略与人工、协同、智能体三类来源共用同一条 `L2 → L5` 流水线，并独享 `ReplayRunner` 与 `StudyOptimizer` 寻优链路。受 `R` 定仓（[ADR-0002](./adr/0002-capability-traits-and-market-packs.md)）与单一仓位回合不变量（[ADR-0006](./adr/0006-single-position-round-per-subaccount-and-isolated-ledgers.md)）约束，设计支持范围如下：
+1. **L0 纯净**：`foundation` 只放契约、算子和纯计算，不做 I/O（ADR-0013，由 `tests/foundation/test_import_boundaries.py` 强制）。
+2. **每个存储只有一个写者**（ADR-0006、ADR-0012）：冷库和快照只由常驻服务写；每个子账户的账本只由承载它的账户进程写；其他进程只读。
+3. **开仓与放宽风险必过风控插槽，收敛风险可直达成交插槽**（ADR-0015 底线 2）：新建仓、同向加仓、放宽止损一律经过风控插槽，无论来自人工、agent 还是策略；只减不增风险的操作（收紧止损、移至保本、撤未成交入场单、减仓、全平、切 `REDUCING`/`HALTED`）直达成交插槽，成交插槽内部断言风险敞口单调不增。
+4. **防前视由运行时负责**：组件只能通过 `ctx` 取数，`ctx` 按 `as_of` 截断、只在收盘后求值（ADR-0019）；SDK 与回测共用同一套截断实现。
+5. **跨品种零条件分支**：业务代码面向 L0 的能力特征与 `MarketPack` 协议编程，场所差异由 `packs/<market>/` 提供（ADR-0002）。`packs/__init__.py` 的 `MARKET_PACKS` 按名称注册，`talaria up --pack` 与 `talaria evaluate-levels --pack` 默认 `crypto_perp`。市场包提供标的与能力特征、历史连接器、实时流、原始存档目录标识（`crypto_perp` 为 `bybit_linear`）和会诊提示词中的市场领域技能文本。
 
-| 量化形态 | 设计支持 | 约束来源 |
+### 1.3 交易方式的支持范围
+
+交易方式由交易方案的插件组合决定（ADR-0015），框架本身不限制。下表列出首批默认插件覆盖的范围，以及其他方式需要新增哪类插件：
+
+| 交易方式 | 首批默认插件 | 需要新增 |
 |---|---|---|
 | 单标的趋势 / 突破 / 均值回归择时（分钟级及以上） | 支持 | — |
 | 资金费率、OI 背离、基差等衍生品信号 | 支持 | — |
-| 慢层 `ControllerPatch` 调参 + 快层纯代码控制器 | 支持 | — |
-| 横截面多因子 / 目标权重组合再平衡 | 不支持 | `L3` 仅按止损距离反推数量，无目标权重定仓路径 |
-| 配对 / 统计套利 / 多腿对冲 | 仅可拆为互相独立的回合，无原子开平与价差屏障 | `PositionExecutor` 以单标的回合为粒度 |
-| 同一子账户同标的多空对冲或多子仓 | 禁止（可拆分子账户） | 单一仓位回合不变量 |
-| 无止损策略（网格、定投、持有型） | 不支持 | `invalidation_price` 必填 |
+| 慢层 `ControllerPatch` 调参 + 快层确定性策略 | 支持 | — |
+| 网格、定投、持有型（无止损） | 不支持 | 名义金额定仓插件 + 不要求止损的风控插件 |
+| 横截面多因子 / 目标权重再平衡 | 不支持 | 目标权重定仓插件；策略输出 `PortfolioIntent` |
+| 配对 / 统计套利 / 多腿对冲 | 只能拆为独立回合 | 篮子成交插件（多腿原子开平、价差屏障） |
+| 同一子账户同标的多空对冲 | 默认风控拒绝（可拆子账户） | 允许多回合的风控与成交插件 |
 | 做市 / 订单簿高频 / 跨所低延迟套利 | 范围外 | 定位为分钟级及以上 |
 
-预留扩展点（均不改变核心五层单向依赖，需要时另立 ADR，不进入首个里程碑）：
+### 1.4 实施状态与路线
 
-1. **组合再平衡**：`L2` 新增 `PortfolioIntent`（目标权重）输出形态，`L3` 新增与 `R` 定仓并列的 `TargetWeightSizer`（按波动率或风险预算折算数量），`L4` 按差额生成多个回合。
-2. **多腿篮子**：在 `L3/L4` 之间引入 `BasketPlan`，由回合组承载多腿并以价差定义屏障；会改变 `PositionExecutor` 粒度，是三项中改动最大的一项。
-3. **替代定仓模式**：子账户可声明名义金额或波动率定仓，此时止损降为可选保护项，`R` 相关风控步骤按模式切换。
-4. **离线研究循环**：在 `O1` 旁设研究编排器，由智能体提出假设、生成策略代码并在沙箱回放中迭代；产出只能以新的 `quant_strategies` 版本经 `StudyOptimizer` 全部门禁与人工签字后上线，研究进程不持有任何运行态写权限。
+M1（数据接入、冷库、指标、关键位、看盘页、价位预警）与 M2（DSH 协同会诊、标注、扫描简报）已交付。按“数据 + 策略取数优先”，后续按以下顺序推进，任务单见 `.scratch/platform-redesign/issues/`：
 
-### 1.3 初版范围与里程碑
-
-按 [ADR-0008](./adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)，初版先交付人机共用的分析工作台，分层不变，只调整实现顺序：
-
-| 里程碑 | 交付内容 | 涉及分层 |
-|---|---|---|
-| M1 | `Bybit V5 Linear` 数据接入与冷库；指标算子；关键位引擎；`talaria up --solo` 看盘页（指标 + `SYSTEM_LEVEL` 图层）；价位预警；分析接口按工具形态设计 | `L0`、`L1`、`O2`（无 DSH） |
-| M2 | 接入 DSH 协同：读取指标与关键位做解读、会诊与 `AGENT_ANNOTATION` 标注；后台扫描简报 | `L0`（协同契约）、`L1`、`O2` |
-| M3（规划中） | 交易闭环：`L2` 策略与草案、`L3` 风控、`L4` 模拟撮合、`L5` 账本与复盘、`ReplayRunner` | `L2–L5`、`O1` |
-| M4（规划中） | `talaria-auto / talaria-eval` 智能体自治与评估、`StudyOptimizer`、`us_equity` 市场包 | `O1`、`packs/` |
+| 阶段 | 内容 |
+|---|---|
+| P1 数据底座 | 冷库数值格式迁移（ADR-0017）、持续写入（ADR-0018）、HTTP 范围取数与补尾、取数 SDK（ADR-0016）、策略订阅语义、逐笔与买一卖一落盘 |
+| P2 常驻与多页面 | launchd 常驻、功能开关、关键位不再依赖快照路由、前端多页面路由 |
+| P3 组件模型 | 组件接口与 `ctx`、Python 写法、JSON 规则、预警升级与图表规则编辑器 |
+| P4 账户进程 | 插件宿主与底线、默认定仓 / 风控 / 成交插件、账本、草案转发、回放编排 |
+| 以后 | 美股市场包、快讯、`study_optimizer` 与 agent 自治评估、Tauri 薄壳、实盘成交插件 |
 
 ---
 
-## 2. 单仓库目录结构与跨语言契约流水线
-
-下图按当前仓库的主要目录列出实现位置。标为“规划中”的路径对应未来分层。
+## 2. 目录结构
 
 ```text
 Talaria/
 ├── GLOSSARY.md                         # 领域统一词汇表
-├── contracts/                          # Python 自动导出的跨语言 JSON Schema 与算子黄金测试向量
+├── contracts/                          # 从 Python 导出的 JSON Schema 与算子黄金测试向量
 │   ├── schemas/
 │   └── operator_vectors/
-├── core/                               # Plane B：Python 确定性底座（uv 管理）
-│   ├── pyproject.toml
-│   └── src/talaria/
-│       ├── foundation/                 # 【L0】Decimal、时点、能力特征、不可变契约与协议
-│       │   ├── operators/              #   确定性指标算子核
-│       │   └── key_levels/             #   关键位契约与纯函数算法
-│       ├── feed/                       # 【L1 行情支撑】实时状态机、缺口合成与重连回填
-│       ├── replay/                     # 【L1 行情支撑】JSONL 回放传输、断流/恢复与可注入时钟
-│       ├── perception/                 # 【L1】原始存档、紧凑化、热流缓冲、快照与冷库
-│       │   ├── alerts/                 #   AlertEngine 预警引擎
-│       │   ├── scanner/                #   ScannerEngine 扫描与触发路由
-│       │   └── sqlite.py                #   进程内 SQLite 单写者守卫与 WAL 关闭辅助
-│       ├── evaluation/                 # 【离线分析】关键位质量评估，由 evaluate-levels 调用
-│       ├── workbench_api/              # 【O2 后端】本地 HTTP/WS 快通道与静态托管
-│       │   ├── app.py                  #   FastAPI 中间件与挂载
-│       │   ├── runtime.py              #   运行时组装与资源生命周期
-│       │   ├── routes/                 #   按领域拆分的 HTTP/WS 路由
-│       │   ├── desk_broadcast.py       #   WS 有界广播与关键位投影
-│       │   ├── state_repositories/     #   协同状态库的九个仓储
-│       │   └── usage_scan.py            #   DSH 轨迹的 Token 用量扫描
-│       ├── packs/                      # 【横向市场规则包】按名称注册
-│       │   ├── crypto_perp/            #   Bybit V5 Linear 历史连接器、实时流、标的与领域技能
-│       │   ├── testing.py              #   通用的离线历史 fixture 连接器
-│       │   └── us_equity/              #   规划中（M4）：美股市场包
-│       ├── strategy/                   # 【L2】规划中（M3）：策略、参数补丁与暂存交易草案
-│       ├── portfolio_risk/             # 【L3】规划中（M3）：子账户、定仓与硬风控
-│       ├── execution/                  # 【L4】规划中（M3）：Execution Seam 与模拟撮合
-│       ├── ledger_journal/             # 【L5】规划中（M3）：复式账本与复盘
-│       ├── orchestration/              # 【O1】规划中（M3/M4）：交易回放、实时守护与寻优
-│       └── cli/                        # up / dsh-install / contract-check / usage-scan / evaluate-levels
-│           └── contracts_io.py         #   契约导出与零漂移检查
-├── dsh/                                # Plane A：前端看盘包与 DeepSeek Harness 插件工程（pnpm workspace）
-│   ├── package.json
-│   ├── pnpm-workspace.yaml
-│   ├── profiles/                       # talaria-desk Profile 配置
-│   └── packages/
-│       ├── talaria-contracts/          # 由 Python 生成的 TypeScript 契约
-│       ├── talaria-desk-ui/            # 【O2 前端】独立 React + KLineChart v10 分析工作台
-│       ├── talaria-dsh-plugin/         # 【O2 插件】Web 插槽、bridge.js、守卫及工具 Schema
-│       ├── dsh-bridge/                 # 规划中（M3/M4）：面向交易与自治宿主的独立桥接包
-│       └── dsh-strategy-agents/        # 规划中（M3/M4）：交易策略与自治智能体
-├── tests/                              # Python 模块测试、契约黄金向量测试与 M1/M2 验收
+├── core/src/talaria/                   # Python 确定性底座（uv 管理）
+│   ├── foundation/                     # L0：Decimal、时点、能力特征、契约、算子、关键位纯函数
+│   │   ├── operators/
+│   │   └── key_levels/
+│   ├── packs/                          # 市场包：crypto_perp（Bybit V5 Linear）；us_equity 规划中
+│   ├── feed/                           # 实时状态机、缺口合成、重连回填
+│   ├── replay/                         # JSONL 行情回放与可注入时钟
+│   ├── perception/                     # 冷库、热流缓冲、快照、预警引擎、扫描引擎、SQLite 守卫
+│   ├── evaluation/                     # 关键位质量离线评估
+│   ├── workbench_api/                  # 常驻服务的 HTTP/WS 层、组合根、协同状态库
+│   ├── sdk/                            # 规划中：取数 SDK（清单直读、补尾、as_of、to_frame）
+│   ├── components/                     # 规划中：组件接口、ctx、JSON 规则编译与求值
+│   ├── account/                        # 规划中：账户进程宿主、插槽注册、事件循环、账本
+│   ├── plugins/                        # 规划中：默认插件（定仓、风控、成交、数据入口、工具）
+│   ├── orchestration/                  # 规划中：replay_runner、study_optimizer
+│   └── cli/                            # up / service / dsh-install / contract-check / usage-scan / evaluate-levels
+├── dsh/packages/
+│   ├── talaria-contracts/              # 由 Python 生成的 TypeScript 契约
+│   ├── talaria-desk-ui/                # React + KLineChart v10 前端（改造为多页面路由）
+│   └── talaria-dsh-plugin/             # DSH Web 插槽、bridge.js、守卫与工具 Schema
+├── tests/
 └── docs/
-    ├── architecture.md                 # 本架构规范
-    └── adr/                            # 架构决策记录 (ADR-0001 .. ADR-0013)
+    ├── architecture.md                 # 本文档
+    ├── adr/
+    └── research/
 ```
 
-`feed/` 与 `replay/` 是与 `perception/` 同级的包。工作台组装 `feed/supervisor.py` 的实时状态机与 `replay/replay.py` 的行情回放传输层。交易编排器 `ReplayRunner` 规划于 M3。`evaluation/key_levels.py` 离线评估确定性关键位，智能体评估规划于 M4。
-
-`workbench_api/app.py` 负责 ASGI 应用配置、中间件与挂载，`workbench_api/runtime.py` 负责组装，`workbench_api/routes/` 存放路由，`workbench_api/desk_broadcast.py` 负责工作台 WS 广播。契约导出由 `cli/contracts_io.py` 实现，`usage-scan` 用 `workbench_api/usage_scan.py` 从 DSH 会话轨迹补录 Token 用量。
+`workbench_api/runtime.py` 是常驻服务的组合根；`workbench_api/app.py` 负责 ASGI 配置与挂载，`routes/` 按领域存放路由，`desk_broadcast.py` 负责 WS 广播。`sdk/`、`components/` 只依赖 `foundation` 与 `perception` 的只读部分，不依赖 `workbench_api`，因此 Notebook 和账户进程不需要启动 Web 层。
 
 ---
 
-## 3. 各层职责与公开接口契约
+## 3. 公共底座契约层（L0 `foundation`）
 
-### 3.1 公共底座契约层（L0 `foundation`）
-
-封装全层通用的数值精度、时间因果模型、跨资产特征协议与纯数学算子核，不包含任何网络或磁盘 I/O：
+**已实现。** 封装全系统通用的数值精度、时间因果模型、跨资产特征协议与纯数学算子，不包含网络或磁盘 I/O。
 
 1. **定点十进制与五重时点纪律**：
-   - 所有价格、数量、名义本金、手续费、资金费率与账户余额在 Python 内强制使用 `Decimal`，跨 JSON 边界一律序列化为十进制字符串（`DecimalStr`），仅在前端 `KLineChart` Canvas 像素绘制最后一跳转换为浮点数。
-   - 所有市场与事件事实显式区分五重时间戳：`ts_event`（`Event Time`）、`ts_published`（来源声称发布时刻）、`ts_available`（`Available Time`）+ 精度等级 `PrecisionTier`（`SECOND_VERIFIED | SESSION_BOUND | DATE_CONSERVATIVE`）、`ts_ingested`（系统接收时刻）与 `ts_committed`（`Committed Time`）。
+   - 所有价格、数量、名义本金、手续费、资金费率与账户余额在 Python 内使用 `Decimal`；跨 JSON 边界序列化为十进制字符串（`DecimalStr`）；Parquet 存储层用 `decimal128(18, 标的精度)`（ADR-0017）；只有前端绘制和 `.to_frame()` 研究视图转为浮点数。
+   - 所有市场与事件事实区分五重时间戳：`ts_event`（`Event Time`）、`ts_published`（来源声称的发布时刻）、`ts_available`（`Available Time`）+ 精度等级 `PrecisionTier`（`SECOND_VERIFIED | SESSION_BOUND | DATE_CONSERVATIVE`）、`ts_ingested`（系统接收时刻）与 `ts_committed`（`Committed Time`）。
 2. **`InstrumentSpec` 与五大可组合能力特征（`Capability Traits`）**：
 
-下表列举各特征可封装的规则。当前市场数据接入为 Bybit V5 Linear。
-
-| 特征接口 | 封装的市场与数据源差异 | 加密永续合约示例 (`BTC-USDT-PERP`) | 美股日内示例（规划中 M4） |
+| 特征接口 | 封装的市场与数据源差异 | 加密永续合约示例（`BTC-USDT-PERP`） | 美股日内示例（规划中） |
 |---|---|---|---|
 | `FeedCapabilityTrait` | 数据源标识 `feed_id`、实时供流窗口、心跳超时、REST 回溯上限、归档回填器 | `BYBIT_LINEAR` 全历史免密钥；`BINANCE_USDM` 近 30 天 REST + 远端归档补齐；`HYPERLIQUID_PERP` 实时落盘补 5,000 根限制 | `ALPACA_IEX`（实时仅 `08:00–17:00 ET`，≤30 标的稀疏单场所）与 `ALPACA_SIP`（历史延迟 ≥15m 全市场）严格分流标记 |
-| `MarginTrait` | 保证金制度、杠杆上限、未实现盈亏与强平估值基准价 | `CROSS / ISOLATED` 初始与维持保证金率，强制按 `Mark Price` 判定强平 | `CASH`（全额现金禁做空）或 `REG_T`（日内 4x / 隔夜 2x 融资） |
+| `MarginTrait` | 保证金制度、杠杆上限、未实现盈亏与强平估值基准价 | `CROSS / ISOLATED` 初始与维持保证金率，按 `Mark Price` 判定强平 | `CASH`（全额现金禁做空）或 `REG_T`（日内 4x / 隔夜 2x 融资） |
 | `CarryTrait` | 持仓跨越结算周期的现金流计提 | 整点（1h/4h/8h）按持仓名义价值与 `FundingRate` 多空直接收付 | 融券空头按年化费率跨结算日计提借券利息 |
-| `SessionTrait` | 可交易时段、场所供流联动保护与强平窗口 | `24x7` 连续交易 | 盘前 / 常规 RTH / 盘后分段；绑定 `ALPACA_IEX` 实时源时自动限制在有实时报价覆盖窗口内持仓（默认 ≤`16:55 ET` 平仓） |
-| `OrderConstraintTrait` | 委托标志、做空准入与监管频次限制 | 原生双向开空、支持 `POST_ONLY` 与 `reduce_only` | 非 RTH 时段禁用市价单；`< $25,000` Reg-T 账户受滚动 5 交易日 PDT 次数硬约束 |
+| `SessionTrait` | 可交易时段、场所供流联动保护与强平窗口 | `24x7` 连续交易 | 盘前 / 常规 RTH / 盘后分段；绑定 `ALPACA_IEX` 时限制在有实时报价覆盖的窗口内持仓（默认 ≤`16:55 ET` 平仓） |
+| `OrderConstraintTrait` | 委托标志、做空准入与监管频次限制 | 原生双向开空、支持 `POST_ONLY` 与 `reduce_only` | 非 RTH 时段禁用市价单；`< $25,000` Reg-T 账户受滚动 5 交易日 PDT 次数约束 |
 
-上述五项为所有标的的**必需**能力。衍生品数据是可选扩展：支持标记价、资金费率结算或持仓量的 Market Pack 额外声明 `DerivativeCapabilityTrait(kinds, history, realtime)`；不支持的 Pack 不声明该 trait，核心层仍只处理 `DerivativePoint`，不出现交易所或资产类别分支。
+上述五项为所有标的的必需能力。衍生品数据是可选扩展：支持标记价、资金费率结算或持仓量的市场包额外声明 `DerivativeCapabilityTrait(kinds, history, realtime)`；不支持的市场包不声明，核心代码只处理 `DerivativePoint`，不出现交易所或资产类别分支。
 
-3. **双层时间序列与单一实现确定性算子核（`foundation/operators`）**：
+3. **双层时间序列与单一实现的确定性算子（`foundation/operators`）**：
    - **横截面网格表（`GridAlignedTable`，规划中）**：保留正常休市（`SESSION_CLOSED`）、停牌（`HALTED`）、时段内无成交（`NO_TRADES`）与异常断流（`FEED_GAP`）显式状态，服务多品种横截面对齐。
-   - **单标的紧凑交易序列（`SessionCompactBars`）**：剔除正常休市 `SESSION_CLOSED` 空槽，保留 `FEED_GAP` 供算子重置状态。技术与衍生品算子（EMA、SMA、RSI、ATR、BOLL、VWAP、资金费率分位数、OI 背离度、净赔率几何验算）的批量输出与输入等长同序，预热期输出前导 `null`。遇到 `NO_TRADES` 时，技术指标按平盘零量柱递推，衍生品算子沿用上一结果。遇到 `FEED_GAP` 时，算子输出 `null` 并重新预热。前端跳过 `FEED_GAP` 柱，按时间戳将指标结果对齐到 `KLineChart` 的 `dataList`。
-   - **算子只在 Python 中实现一份**：按 [ADR-0010](./adr/0010-pure-python-indicator-core.md)，`foundation/operators` 的纯 Python `Decimal` 实现是批量计算与增量更新的唯一权威，以 `contracts/operator_vectors/` 黄金测试向量做回归。`TA-Lib==0.8.3` 与 `talipp==2.7.0` 保留在 `core/pyproject.toml`，作为未来优化的固定版本候选依赖，运行时不使用。指标查询、临时算子、预警和图表共用 Python 结果，智能体经宿主工具获取同一口径的数值。
-4. **关键位纯函数算法（`foundation/key_levels`）**：摆动高低点（按 ATR 阈值的分形 / ZigZag，多周期）、触及价位聚类、成交量分布（`POC / VAH / VAL`）、锚定 VWAP 与 `±σ` 带、时段参考位、跳空缺口与整数关口的识别均为无 I/O 纯函数。**摆动类算法严禁使用确认点之后的数据**：枢轴须经 `confirm_bars` 根后续 K 线确认后才产出，其可见时刻记为确认 K 线收盘时刻。
+   - **单标的紧凑交易序列（`SessionCompactBars`）**：剔除正常休市空槽，保留 `FEED_GAP` 供算子重置状态。技术与衍生品算子（EMA、SMA、RSI、ATR、BOLL、VWAP、资金费率分位数、OI 背离度、净赔率几何验算）的批量输出与输入等长同序，预热期输出前导 `null`。遇到 `NO_TRADES` 时技术指标按平盘零量柱递推，衍生品算子沿用上一结果；遇到 `FEED_GAP` 时输出 `null` 并重新预热。前端跳过 `FEED_GAP` 柱，按时间戳对齐到 `KLineChart` 的 `dataList`。
+   - **算子只在 Python 中实现一份**（ADR-0010）：`foundation/operators` 的 `Decimal` 实现是批量计算与增量更新的唯一权威，以 `contracts/operator_vectors/` 黄金向量回归。`TA-Lib==0.8.3` 与 `talipp==2.7.0` 保留为固定版本候选依赖，运行时不使用。组件模型的算子注册表（§5.1）以此为准。
+4. **关键位纯函数算法（`foundation/key_levels`）**：摆动高低点（按 ATR 阈值的分形 / ZigZag，多周期）、触及价位聚类、成交量分布（`POC / VAH / VAL`）、锚定 VWAP 与 `±σ` 带、时段参考位、跳空缺口与整数关口均为无 I/O 纯函数。**摆动类算法不得使用确认点之后的数据**：枢轴须经 `confirm_bars` 根后续 K 线确认后才产出，可见时刻记为确认 K 线收盘时刻。
 
 ---
 
-### 3.2 第一层：数据与盘面感知层（L1 `perception`）
+## 4. 数据平面（常驻服务）
 
-当前感知层提供历史与实时行情、时点快照、预警和扫描事件。事件日历外部接入与交易回放按以下规划演进。
+### 4.1 行情接入与实时传输
 
-1. **冷热一体时点存储与热端冻结物化**：
-   - **冷库单写者发布**：按 [ADR-0011](./adr/0011-cold-store-publish-on-snapshot-freeze.md)，快照冻结触发 `ColdPublisher` 发布已可见的已闭合柱，按 `ts_event` 排序、同时间戳后出现者胜，只追加 `ts_event > cursor.last_ts` 的柱。发布顺序为内容哈希归档 → staging Parquet 质检 → 不可变 generation 落盘并 `fsync` → `data/data_manifest.sqlite` 短事务提交清单与游标。发布失败记录 warning，快照继续返回。冷库读取经 PyArrow 打开清单显式列出的 Parquet 文件并校验哈希。
-   - **实时热流与物化保障**：`SnapshotBuilder` 合并 `data/raw/<archive_id>/` 已归档柱与 `HotStreamBuffer` 的近期柱，按 cutoff 裁剪、紧凑化，将冻结结果写入 `state/hot_snapshots/<snapshot_id>.parquet` 并登记于 `state/runtime_snapshots.sqlite`。快照查询读取快照索引登记的物化文件。
-   - **双时点回放模式**：当前快照支持 `HISTORICAL_PIT`，约束 `ts_available <= cutoff_ts`。`OBSERVED_REPLAY` 规划于 M3，额外约束 `ts_committed <= cutoff_ts`，严格修订重放需要新增修订追加路径。
-2. **`Catalyst Calendar`（事件日历）双时间模型与防前视折算（外部接入规划中，M4）**：
-   - 预期侧存储 `scheduled_date`、`scheduled_session`（`BMO | DMH | AMC | EXACT_UTC | DATE_ONLY`）、`scheduled_ts_utc`（由 BLS `.ics`、BEA JSON/ICS、FOMC 官方时刻表提供如 `08:30 ET` / `14:00 ET` 精确钟点；近端财报排期由 Finnhub 免费层每日增量快照积累）与排期获知时刻 `schedule_available_ts`。
-   - 实际披露侧存储 `actual_payload`、`ts_available` 与 `PrecisionTier`：美股财报实际披露采用免密钥 **SEC EDGAR `submissions`（`8-K` Item `2.02` / `10-Q` / `10-K`）** 经美东时区与 Reg S-T `17:30 ET` 规则校准后的秒级 `acceptanceDateTime`（辅以 Alpaca News 秒级 `created_at`），严禁爬虫抓取违规站点；宏观修订序列接入 FRED / ALFRED `vintagedates`。
-   - **防前视硬裁剪**：当 `cutoff_ts < effective_available_ts` 时隐藏 `actual_payload`（置为 `UNRELEASED`）：`SECOND_VERIFIED` 取精确秒级时刻；无秒级证据的 `SESSION_BOUND` 将 `BMO` 保守折算至当日 `09:30 ET`、将 `AMC` 保守折算至当日 `20:00 ET`（二者由 `us_equity` 市场包的 `SessionTrait` 提供）；仅有日期的 `DATE_CONSERVATIVE` 一律推迟至事件所属市场 `SessionTrait.next_regular_open(date)` 返回的下一常规开盘时刻（美国宏观数据挂美股日历，纯加密事件按来源时区当日结束加可配置缓冲），`L1` 不写死任何市场时区。对缺少免费历史事前排期的早期美股回测区间，显式标记 `EarningsScheduleCoverage = EX_POST_ONLY` 并在报告披露，严禁借事后 `8-K` 伪造盘前静默门禁。
-3. **`Watchlist`、共享 `Chart Overlay` 与统一 `MarketEventFeed` 预警扫描**：
-   - `workbench_api/subscriptions.py` 按“当前图表 > 活跃预警 > 自选顺序”分配实时订阅配额。
-   - `perception/alerts` 中的 `AlertEngine` 支持价格/衍生品阈值、技术指标交叉、画线触碰/收盘突破和关键位事件（触及 / 突破 / 回踩，按 `level_id` 跟踪）。`perception/scanner` 中的 `ScannerEngine` 维护扫描窗口与触发冷却。两者可接收实时流或 JSONL 回放的同一套 `MarketEventFeed` 事件；跨层预警与扫描契约仍在 `foundation`。
-4. **`MarketEventFeed` 实时传输实现**：
-   - `foundation/feed.py` 定义跨数据源统一的 `KlineEvent`（含 `confirmed` 与单调递增 `revision`）、`OrderBookEvent`、`FeedHealthEvent` 与 `MarketEventFeed` 协议；这些契约同时导出 JSON Schema 与 TypeScript 类型，前后端共用同一份形状。
-   - `feed/supervisor.py` 持有唯一状态机：12s（默认 `stale_after_ms=12000`）无任何事件即 `LIVE → STALE`；传输层报错立即 `STALE`；重连成功后先 `RECOVERING` 并应用 REST 回填，再回 `LIVE`。断流窗口以“最后一根已知柱的事件时间 + 断流墙钟时长”记录，因此历史回放（事件时间与运行墙钟错位）不会伪造未来时间戳的缺口。
-   - 缺口合成口径与 `perception/compaction.py` 共用 `classify_flat_bar`：正常稀疏分钟补前收平盘零量的 `NO_TRADES`；断流窗口内补 OHLCV 全空的 `FEED_GAP`。同一 `timestamp` 的多次发布按 `revision` 追加保留、last-write-wins，REST 回填与实时推送可安全重放。
-   - `packs/crypto_perp/stream.py` 是 Bybit V5 Linear 公共 WS 传输层（`websockets>=15`）：topic 为 `kline.{interval}.{symbol}` 与 `orderbook.1.{symbol}`，等待订阅 ack、应用层 ping/pong、断线由 supervisor 指数退避重连；连接失败抛 `FeedTransportError`。
-   - `workbench_api` 暴露 `GET /api/feed/health` 与 `WS /ws/desk`：每客户端一条有界队列（256，“满则丢最旧”），慢客户端不会阻塞广播；前端 `useMarketStream` 按页面地址推导 WS URL、指数退避重连，并在标的/周期切换时先退订再订阅。图表增量走 KLineChart v10 的 `DataLoader.subscribeBar`（同 timestamp 更新、新 timestamp 追加），`FEED_GAP` 永不进入 `dataList`。
-   - `talaria up --solo --pack crypto_perp --replay-events <path> [--replay-speed F]` 用 JSONL 回放驱动实时链路，用于离线确定性与浏览器验收；可加 `--fixture-dir` 提供历史快照，`/api/health.feed_mode` 区分 `fixture` / `replay` / `bybit`。
+**已实现**（逐笔与买一卖一落盘、策略订阅语义为规划中）。
 
-5. **确定性关键位引擎**：
-   - `workbench_api/service.py` 调用 L0 的 `foundation/key_levels`，按冻结快照的 `cutoff_ts` 产出绑定 `snapshot_id` 的不可变 `KeyLevelSet`。工作台创建快照时向订阅者广播关键位，实时关键位预警以最近一次冻结结果为准。
-   - 初版价位类别：① 结构位（确认后的摆动高低点、多次触及聚成的支撑阻力区间）；② 时段参考位（前日高 / 低 / 收、周与月开盘价、开盘区间、加密亚洲 / 伦敦 / 纽约时段高低点；美股盘前高低点规划于 M4）；③ 成交量位（`POC / VAH / VAL`、锚定 VWAP 及 `±σ` 带）；④ 未回补跳空缺口与整数关口；⑤ 基于 OI 变化与杠杆假设推算的清算密集区（`evidence_class` 为 `ESTIMATED`，与观测类价位分开展示）。
-   - 契约 `KeyLevel`：`level_id`（跨快照稳定）、`instrument_id`、`kind`、`price` 或 `[low, high]` 区间、`timeframe`、`strength` 及其构成（触及次数、最近触及时刻、成交量权重）、`status`（`ACTIVE | BROKEN | FLIPPED`）、`ts_available`、`method_version` 与参数。
-   - **质量评估**：离线统计各 `kind` 被触及后 `X` 倍 ATR 内出现反应的比例并与随机价位对照；人工在图表上的采纳 / 忽略操作记入协同状态库，供后续调整强度权重。
+- `foundation/feed.py` 定义跨数据源统一的 `KlineEvent`（含 `confirmed` 与单调递增 `revision`）、`OrderBookEvent`、`FeedHealthEvent` 与 `MarketEventFeed` 协议；这些契约同时导出 JSON Schema 与 TypeScript 类型。
+- `feed/supervisor.py` 持有唯一状态机：12s（`stale_after_ms=12000`）无事件即 `LIVE → STALE`；传输层报错立即 `STALE`；重连成功后先 `RECOVERING` 并应用 REST 回填，再回 `LIVE`。断流窗口以“最后一根已知柱的事件时间 + 断流墙钟时长”记录，历史回放不会伪造未来时间戳的缺口。
+- 缺口合成与 `perception/compaction.py` 共用 `classify_flat_bar`：正常稀疏分钟补前收平盘零量的 `NO_TRADES`；断流窗口内补 OHLCV 全空的 `FEED_GAP`。同一 `timestamp` 的多次发布按 `revision` 追加保留、后到者胜，REST 回填与实时推送可安全重放。
+- `packs/crypto_perp/stream.py` 是 Bybit V5 Linear 公共 WS 传输层：topic 为 `kline.{interval}.{symbol}` 与 `orderbook.1.{symbol}`，等待订阅 ack、应用层 ping/pong、断线由 supervisor 指数退避重连。**规划中**：对实时订阅的标的增加 `publicTrade.{symbol}`，把买一卖一与逐笔成交落盘（§4.2）。
+- `workbench_api/subscriptions.py` 按“当前图表 > 活跃预警 > 自选顺序”分配实时订阅配额。
+- **实时订阅的两种语义**：
+  - 图表页面（`WS /ws/desk`，已实现）：每客户端一条有界队列（256），满则丢最旧，慢客户端不阻塞广播；前端 `useMarketStream` 指数退避重连，切换标的或周期时先退订再订阅；图表增量走 KLineChart v10 的 `DataLoader.subscribeBar`，`FEED_GAP` 不进入 `dataList`。
+  - 策略订阅（规划中）：不静默丢弃；队列满则服务断开连接，客户端按最后收到的 `ts_event` 经范围取数补齐后重新订阅。实测本机 WS 从事件到策略回调 p99 约 1–2 ms。
+- `talaria up --solo --pack crypto_perp --replay-events <path> [--replay-speed F]` 用 JSONL 回放驱动实时链路，用于离线确定性与浏览器验收；可加 `--fixture-dir` 提供历史快照，`/api/health.feed_mode` 区分 `fixture` / `replay` / `bybit`。
 
----
+### 4.2 冷库
 
-### 3.3 第二层：策略与协同草案层（L2 `strategy`）
+**改造中。** 当前冷库在快照冻结时发布、以字符串存价格（ADR-0011）。目标如下。
 
-**规划中（M3）。** 当前分析会诊通过 `workbench_api` 与 DSH 工作台插件运行，使用市场包提供的领域技能文本。以下是交易策略与草案层的接口设计。
+1. **持续写入**（ADR-0018）：服务在每根 K 线 `confirmed` 后写入该分区的尾部小文件；定期把尾部文件合并进分区文件，在 `data/data_manifest.sqlite` 中短事务原子切换清单；被替换的文件延迟删除。同一时间戳后出现者胜，迟到修订按 `revision` 追加。写入失败只记 warning，不阻塞行情与图表。写入顺序保留现有纪律：内容哈希归档 → staging Parquet 质检 → 落盘并 `fsync` → 清单短事务提交。
+2. **目录布局**：
 
-消费冻结 `EvidenceSnapshot` 产出方向观点或受限参数补丁，不感知账户本金，不直接触碰执行层：
+| 数据集 | 分区 | 内容 |
+|---|---|---|
+| K 线 | `标的/周期/月` | OHLCV、`turnover` 与时点列 |
+| 逐笔成交 | `标的/日` | 实时订阅标的的逐笔；历史从 Bybit 公开归档 `public.bybit.com` 按日补 |
+| 买一卖一 | `标的/日` | 实时订阅标的的 L1 盘口；多档盘口暂不存 |
+| 衍生品 | `标的/类别/月` | 标记价、资金费率、持仓量 |
+| 公司行为（美股，规划中） | `标的` | 拆股、分红；读取时按 `as_of` 复权 |
+| 快讯（暂缓） | `来源/日` | 见 `.scratch/platform-redesign/spec.md` D5 的设计约束 |
+
+3. **数值与列**（ADR-0017）：每个标的一个文件，价格、数量、成交额为 `decimal128(18, 该标的精度)`，物理 INT64。列：`ts_event`、OHLCV 与 `turnover`、`ts_available`、`ts_ingested`、`ts_committed`（int64 毫秒）、`precision`（字典编码）、`revision`。
+4. **容量**：BTC 永续逐笔约 255 万笔/天，Parquet 约 15 MB/天；加买一卖一估算约 30–65 MB/天。定存储预算前先落盘 1–2 周实测。
+5. **清单**继续自写，暂不采用 DuckLake（ADR-0016）。读者只读清单显式列出的文件，并校验哈希。
+
+### 4.3 取数 SDK 与范围查询
+
+**规划中**（ADR-0016）。
 
 ```python
-class Strategy(Protocol):
-    param_space: ParamSpace
+from talaria import sdk
 
-    def evaluate(
-        self,
-        snapshot: EvidenceSnapshot,
-        triggers: list[TriggerEvent],
-        active_patch: ControllerPatch | None = None,
-    ) -> StrategyDecision:
-        """返回 list[SetupInsight]、有界 ControllerPatch 或显式 Abstain。"""
+bars = sdk.bars("BTC-USDT-PERP", "1m", start="2026-11-01", end=None, as_of=None)
+bars[-1].close            # Decimal
+df = bars.to_frame()      # float DataFrame，供研究
+
+trades = sdk.trades("BTC-USDT-PERP", day="2026-11-19")
+async for ev in sdk.subscribe("BTC-USDT-PERP", "1m"):   # 策略订阅语义，断线自动补齐
+    ...
 ```
 
-1. **三类同构输入流汇合**：
-   - `quant_strategies`：纯 Python 确定性策略，既是快慢双模架构中的毫秒级执行载体，也是衡量智能体净超额收益的永久基线对照组；
-   - `agent_strategies`：按“静态风控契约前缀 → 匹配 `Market Pack` 的领域 `Skill` → 当前快照增量”三段式组装提示词以最大化前缀缓存命中率，强制在 `@deepseek-ai/dsh-ptc-runtime`（PTC）中调用同口径算子禁止心算；凡缺止损价、多空止损/止盈几何倒挂、越界引用或推理超时，适配器一律强制降级为 `Abstain`；
-   - `plan_drafter`：管理人机协同下的 `StagedPlanDraft`（`STAGED → MODIFIED → SUBMITTED | DISCARDED | EXPIRED`）及纯人工手动建仓表单，统一封装为带互斥 `DecisionOrigin`（`HUMAN | CO_PILOT | AGENT`）的 `PlanCandidate` 送入 `L3`。**草案提交时重新冻结快照**：`L3` 以提交时刻的新快照审批，入场价带已被越过或已触及止损时返回 `DRAFT_STALE`；草案生成至提交之间的时长记为 `deliberation_ms` 单独留档，不计入 `Decision Latency`。
-2. **`ControllerPatch` 生命周期**：慢层智能体签发的 `ControllerPatch` 仅允许修改目标策略 `ParamSpace` 白名单边界内的参数，携带 `valid_until_ts` 与 `dsh_turn_id` 持久化于协同状态库，到期未续签自动回退默认基线参数；生效期内触发的交易标记 `cognition_mode = CONTROLLER_PATCH` 以支持完整轨迹归因。
+- 历史部分按清单直读 Parquet；冷库尚未写入的最新几根向服务的 `GET /api/bars?instrument=&timeframe=&start=&end=` 取，按 `ts_event` 拼接去重；服务未运行时只用本地数据。
+- `as_of` 按 `ts_available <= as_of` 截断；回测数据入口与组件 `ctx` 用同一实现。
+- 返回 `Decimal` 契约对象；`.to_frame()` 只在研究视图里转 float。
+- DSH 工具与 SDK 共用同一套 HTTP 契约。
+- 待实测：服务补尾与直读在并发读写下的一致性；Arrow IPC 经本机 HTTP 传输千万行的耗时。
+
+### 4.4 证据快照
+
+**已实现。** 快照用于固定 agent 会诊、预警与扫描触发时的证据，日常取数不再需要先建快照。
+
+- `SnapshotBuilder` 合并已归档柱与 `HotStreamBuffer` 的近期柱，按 cutoff 裁剪、紧凑化，把冻结结果写入 `state/hot_snapshots/<snapshot_id>.parquet` 并登记于 `state/runtime_snapshots.sqlite`。快照查询读取登记的物化文件。
+- 时点模式：`HISTORICAL_PIT` 约束 `ts_available <= cutoff_ts`（已实现）；`OBSERVED_REPLAY` 额外约束 `ts_committed <= cutoff_ts`（规划中）。
+- 新增 HTTP 按时间范围取快照内数据（规划中）。
+
+### 4.5 事件日历
+
+**规划中**（随美股市场包）。
+
+- 预期侧存储 `scheduled_date`、`scheduled_session`（`BMO | DMH | AMC | EXACT_UTC | DATE_ONLY`）、`scheduled_ts_utc`（BLS `.ics`、BEA JSON/ICS、FOMC 官方时刻表；近端财报排期由 Finnhub 免费层每日增量快照积累）与排期获知时刻 `schedule_available_ts`。
+- 实际披露侧存储 `actual_payload`、`ts_available` 与 `PrecisionTier`：美股财报采用免密钥 SEC EDGAR `submissions`（`8-K` Item `2.02` / `10-Q` / `10-K`）经美东时区与 Reg S-T `17:30 ET` 规则校准的秒级 `acceptanceDateTime`（辅以 Alpaca News 秒级 `created_at`）；宏观修订序列接入 FRED / ALFRED `vintagedates`。
+- **防前视裁剪**：`cutoff_ts < effective_available_ts` 时隐藏 `actual_payload`（置为 `UNRELEASED`）。`SECOND_VERIFIED` 取精确时刻；`SESSION_BOUND` 将 `BMO` 保守折算至当日 `09:30 ET`、`AMC` 折算至 `20:00 ET`（由 `us_equity` 的 `SessionTrait` 提供）；`DATE_CONSERVATIVE` 推迟至 `SessionTrait.next_regular_open(date)`。缺少历史事前排期的美股回测区间标记 `EarningsScheduleCoverage = EX_POST_ONLY` 并在报告中披露。
+
+### 4.6 快讯
+
+**暂缓。** 设计约束（统一快讯契约、每个数据源一个插件、按来源/日分区、逐条标记能否供策略与 agent 使用、删除同步用追加标记加定期重写）与备选数据源组合记录在 `.scratch/platform-redesign/spec.md` 的 D5 与 `docs/research/news-feed-data-sources.md`。
 
 ---
 
-### 3.4 第三层：多子账户组合与风控层（L3 `portfolio_risk`）
+## 5. 分析与组件模型
 
-**规划中（M3）。**
+### 5.1 组件接口与运行时上下文
 
-全系统新建仓、同向加仓及放宽止损距离的**唯一确定性放行防火墙**：
+**规划中**（ADR-0019）。指标、信号、策略是三类组件，上一类可以引用下一类：
 
-1. **虚拟子账户（`Sub-Account`）隔离与单一仓位回合不变量**：
+```python
+class Component(Protocol):
+    meta: ComponentMeta    # 名称、版本、输入、参数及取值范围、输出类型
+
+class Indicator(Component, Protocol):
+    def compute(self, ctx: Ctx) -> Series: ...          # 数值序列
+
+class Signal(Component, Protocol):
+    def evaluate(self, ctx: Ctx) -> list[SignalEvent]: ...
+
+class Strategy(Component, Protocol):
+    def on_bar(self, ctx: Ctx) -> StrategyDecision: ...  # SetupInsight / ControllerPatch / Abstain
+```
+
+- `ctx` 是组件取数的唯一入口：`ctx.bars(timeframe)`、`ctx.indicator(name, **params)`、`ctx.derivatives(kind)`、`ctx.now`。`ctx` 按 `as_of` 截断，只在 K 线收盘后求值；跨周期只能看到大周期最近一根已收盘的柱。
+- 算子注册表：每个可被组件引用的算子带名称、参数 Schema、版本和黄金向量；JSON 规则只能调用已注册算子。
+- `ComponentMeta` 的参数取值范围供 `study_optimizer` 寻优使用。
+
+### 5.2 写法
+
+| 写法 | 运行位置 | 用途 | 状态 |
+|---|---|---|---|
+| Python | 账户进程或 Notebook（隔离进程） | 策略、自定义指标与信号 | 规划中 |
+| JSON 规则（带版本号的表达式树） | 常驻服务或账户进程 | 图表规则、预警、扫描、简单策略 | 规划中 |
+| 文字语法 / Pine 风格子集 | 编译为 JSON 规则 | 图表上手写规则 | 以后 |
+
+现有 `AlertCondition` 只能表达单个条件，升级为 JSON 规则，并配图表规则编辑器。不采用受限 Python 作为规则语言，不采用现成 Pine 实现。
+
+### 5.3 预警与扫描
+
+**已实现**（规则形式改造中）。
+
+- `perception/alerts` 的 `AlertEngine` 支持价格/衍生品阈值、技术指标交叉、画线触碰/收盘突破和关键位事件（触及 / 突破 / 回踩，按 `level_id` 跟踪）。`perception/scanner` 的 `ScannerEngine` 维护扫描窗口与触发冷却。两者接收实时流或 JSONL 回放的同一套 `MarketEventFeed` 事件。
+- `Trigger Routing Policy` 决定触发只做本地提醒还是进入协同简报（ADR-0004）。
+- 改造：预警条件改为 JSON 规则；预警与扫描作为常驻服务的可开关功能。
+
+### 5.4 确定性关键位引擎
+
+**已实现**（关键位发布方式改造中）。
+
+- 服务调用 `foundation/key_levels`，按冻结快照的 `cutoff_ts` 产出绑定 `snapshot_id` 的不可变 `KeyLevelSet`。
+- **改造**：当前关键位只在 `POST /api/snapshots` 路由里写入广播器缓存，没有前端创建快照时关键位预警拿不到数据。改为服务内的关键位注册表：任何来源的快照冻结都写入，按 `(instrument, timeframe)` 读最新；广播器和预警都从注册表读取。
+- 初版价位类别：① 结构位（确认后的摆动高低点、多次触及聚成的支撑阻力区间）；② 时段参考位（前日高 / 低 / 收、周与月开盘价、开盘区间、加密亚洲 / 伦敦 / 纽约时段高低点；美股盘前高低点规划中）；③ 成交量位（`POC / VAH / VAL`、锚定 VWAP 及 `±σ` 带）；④ 未回补跳空缺口与整数关口；⑤ 基于 OI 变化与杠杆假设推算的清算密集区（`evidence_class` 为 `ESTIMATED`，与观测类价位分开展示）。
+- 契约 `KeyLevel`：`level_id`（跨快照稳定）、`instrument_id`、`kind`、`price` 或 `[low, high]` 区间、`timeframe`、`strength` 及其构成、`status`（`ACTIVE | BROKEN | FLIPPED`）、`ts_available`、`method_version` 与参数。
+- 质量评估：离线统计各 `kind` 被触及后 `X` 倍 ATR 内出现反应的比例并与随机价位对照；人工的采纳 / 忽略记入协同状态库。
+
+### 5.5 图表图层与人机共用接口
+
+**已实现**（`EXECUTION_BARRIER` 规划中）。前端基于 `KLineChart v10`（Apache-2.0），已锁定 `klinecharts 10.1.1`：外部指标结果通过注册指标模板并以 `createIndicator({ name, calc })` 返回与 `dataList` 等长同序的数组，更新时换新闭包并调用 `overrideIndicator`；历史分页使用 `setDataLoader`。组件输出（§5.1）以同样方式显示。
+
+| 图层（`groupId`） | 写入主体与存储 | 交互与校验 |
+|---|---|---|
+| `HUMAN_DRAWING` | 交易员绘制；持久化于 `collaboration_state.sqlite` | 自由拖拽（前端乐观重绘、松手落库）、撤销重做、一键挂载 `OVERLAY_CROSS` 预警 |
+| `SYSTEM_LEVEL` | 关键位注册表经 WS 单向投影，不入画线表 | 只读；按 `kind` / 强度过滤；一键采纳为 `HUMAN_DRAWING` 或挂载 `LEVEL_EVENT` 预警；采纳 / 忽略记为质量反馈 |
+| `AGENT_ANNOTATION` | agent 调用 `write_agent_overlay`，经硬门控后存入 `collaboration_state.sqlite` | ① 校验 `snapshot_id` 与非空 `evidence_refs`（须引用 `level_id` 或具体 K 线时间戳）；② 价格锚点为正、合乎 `tick_size`，且落在 `[min_low - 3*ATR_14, max_high + 3*ATR_14]` 内；③ 单标的未采纳活跃条数 ≤12 |
+| `EXECUTION_BARRIER`（规划中） | 账户进程的草案与活跃回合经服务单向投影 | 拖动草案线触发定仓插件预试算；拖动活跃止损线按收紧/放宽方向路由到成交插槽或风控插槽 |
+
+**人机共用分析接口**：浏览器与 agent 是同一套接口的两个调用方，读到的数据、算法与 `cutoff_ts` 一致，`level_id` 共享。接口由服务提供，经 `talaria-dsh-plugin/bridge.js` 包装为 agent 工具。
+
+| 接口 / 工具 | 作用 | 权限 |
+|---|---|---|
+| `get_snapshot` | 冻结截止时刻，返回 `snapshot_id`，后续调用绑定该快照 | 只读 |
+| `get_indicators(instrument, timeframe, names, params)` | 指标序列（默认最近 N 根 + 摘要） | 只读 |
+| `get_key_levels(instrument, timeframes, top_n, kinds)` | 按强度排序的 `KeyLevel` 及强度构成 | 只读 |
+| `compute_operator(...)` | 以非默认参数临时调用算子 | 只读 |
+| `get_chart_view` | 当前标的、周期、视窗与可见 `HUMAN_DRAWING` | 只读 |
+| `write_agent_overlay` | 写入 agent 标注（经上表硬门控） | 受控写 |
+| `create_alert` | 以草案形式创建预警，人工确认后生效 | 草案 |
+
+返回值为带 `snapshot_id` 与稳定 ID 的结构化 JSON 加摘要；agent 不能修改关键位或指标结果。不接入自行拉取行情的第三方技术分析 MCP，以免绕过冻结快照。
+
+---
+
+## 6. 账户进程与交易方案
+
+**规划中**（ADR-0015）。原 L2–L5 分层的设计在这里作为第一批默认插件保留。
+
+### 6.1 宿主、插槽与底线
+
+账户进程承载一个或一组子账户。一个**交易方案**是一份配置，为每个插槽选一个插件：
+
+```yaml
+scheme: btc-breakout-paper
+interface_version: 1
+sub_accounts: [sa-breakout]
+slots:
+  data: live_ws            # 回测时换成 parquet_replay
+  strategy: {python: strategies/breakout.py, params: {lookback: 20}}
+  sizing: r_unit           # 按止损距离定仓
+  risk: seven_step         # 七步风控 + 单一仓位回合不变量
+  fill: bar_sim_1m         # 或 l1_trade_sim
+  tools: [get_bars, get_indicators, draft_plan]
+```
+
+| 插槽 | 首批默认插件 | 以后可加 |
+|---|---|---|
+| 数据入口 | 实时本机 WS；回测 Parquet + 虚拟时钟 | 其他数据源 |
+| 策略 | 组件模型的策略：Python、JSON 规则、agent 交易计划、`ControllerPatch` | 其他写法 |
+| 定仓 | 按止损距离定仓（`R`） | 名义金额、波动率、目标权重 |
+| 风控 | 七步风控 + 单一仓位回合不变量 | 网格、定投、再平衡所需规则 |
+| 成交 | 1m K 线模拟（六条诚实仿真法则）；买一卖一加逐笔模拟 | 实盘（`Execution Seam`，ADR-0003） |
+| 工具 | agent 可调用的工具集 | 按方案开放不同工具 |
+
+固定底线（改动需要新 ADR）：
+
+1. 事件顺序与时钟：数据 → 策略 → 定仓与风控 → 成交 → 记账；回测与实时同一时钟语义；组件取数经 `ctx` 截断。
+2. 开仓、加仓、放宽止损必须经过风控插槽；只减风险的操作直达成交插槽。三种来源同样适用。
+3. 账本格式统一，每个子账户的账本只有一个写入方。
+4. 插件接口带版本号，插件声明兼容的接口版本。
+
+连接方式：
+
+- 回测与模拟盘是同一个账户进程，只换数据入口。
+- 图表人工下单和 agent 会诊产出的 `Staged Plan Draft` 由服务转发给对应账户进程，进入策略插槽之后的同一条流水线；服务只读账本用于展示。
+- agent 默认产出交易计划、JSON 规则或参数补丁，都经过风控插槽。agent 写的 Python 策略可以自由回测；进入模拟盘前需要人工批准，并在资源受限的独立进程中运行。
+
+### 6.2 默认策略插件
+
+消费 `ctx` 与冻结的 `EvidenceSnapshot`，产出方向观点或受限参数补丁，不感知账户本金，不直接触碰成交插槽。
+
+1. **三类来源汇入同一流水线**：
+   - 确定性策略：Python 组件或 JSON 规则，既是快慢双模中的快层执行载体，也是衡量 agent 净超额收益的基线对照组。
+   - agent 策略：按“静态风控契约前缀 → 匹配 `Market Pack` 的领域技能 → 当前快照增量”三段式组装提示词以提高前缀缓存命中率，在 PTC 中调用同口径算子；缺止损价、止损/止盈几何倒挂、越界引用或推理超时时一律降级为 `Abstain`。
+   - 草案：管理 `StagedPlanDraft`（`STAGED → MODIFIED → SUBMITTED | DISCARDED | EXPIRED`）与人工下单表单，统一封装为带 `DecisionOrigin`（`HUMAN | CO_PILOT | AGENT`）的 `PlanCandidate`。**草案提交时重新冻结快照**，入场价带已被越过或已触及止损时返回 `DRAFT_STALE`；草案生成至提交的时长记为 `deliberation_ms`，不计入 `Decision Latency`。
+2. **`ControllerPatch` 生命周期**：只能修改目标策略参数取值范围内的参数，携带 `valid_until_ts` 与 `dsh_turn_id`，到期未续签回退默认参数；生效期内的交易标记 `cognition_mode = CONTROLLER_PATCH`。
+
+### 6.3 默认定仓与风控插件
+
+新建仓、同向加仓及放宽止损的确定性放行关口。
+
+1. **子账户隔离与单一仓位回合不变量**：
    - 每个 `Sub-Account` 独立配置初始资金、计价币种、保证金模式、风险单元比例 `r_unit_pct`、相关性簇上限、回撤熔断阈值及 `TradingState`。
-   - **单一仓位回合（`Position Round`）硬不变量**：同一 `(sub_account_id, instrument_id)` 在同一时刻最多只允许存在一个方向的活跃或挂单仓位回合；同向获批加仓合并入当前活跃回合统一管理屏障与成本，反向开仓草案在本层直接拒单（`OPPOSITE_POSITION_OPEN`，须先平清当前回合再反手），多策略或人机独立对照通过拆分不同虚拟子账户实现。
-   - **同向加仓沿用回合屏障**：加仓以 `AddOnCandidate` 提交并必须携带目标 `round_id`，不自带新的 `ExitBarrierSpec`；本层按当前回合止损计算加仓后整个回合的总风险，不得突破 `max_single_r_pct`。需要不同止损时，先经收紧直通或 `approve_barrier_widening` 改动回合屏障，再提交加仓，杜绝借加仓放宽止损。
-   - **按子账户串行审批与风险预留（`Risk Reservation`）**：`O1` 为每个 `sub_account_id` 维护一条串行审批队列，`evaluate_candidate → submit_plan → 登记预留` 在同一临界区内完成；预留记录已放行但账本尚未可见的 `R`、保证金与仓位回合，对应 `ExecutionEvent` 入账或计划撤销 / 拒绝后释放。传入本层的 `AccountState` 由账本投影叠加预留合成，单一仓位回合不变量与风险簇检查同样计入预留，消除“两笔计划同时看到旧状态”的时间窗。
-2. **公开深接口**：
-   - `evaluate_candidate(candidate: PlanCandidate, account_state: AccountState, snapshot: EvidenceSnapshot) -> ApprovedExecutionPlan | RejectedPlanRecord`
-   - `approve_barrier_widening(req: BarrierWideningRequest, account_state: AccountState, snapshot: EvidenceSnapshot) -> ApprovedBarrierAmendment | RejectedPlanRecord`
-   - `preview_sizing(draft: StagedPlanDraft, account_state: AccountState, snapshot: EvidenceSnapshot) -> SizingPreview`（纯函数无副作用试算，支撑前端拖动止损线 `< 5ms` 实时回显仓位与强平距离）。
-3. **七步确定性硬风控流水线**：
-   - ① 校验子账户 `TradingState == ACTIVE`、日内与峰值回撤未触熔断线，且 `invalidation_price` 必填、方向几何合法；
-   - ② 按止损距离与双边摩擦缓冲 $c_{\text{buf}}$ 反推风险单元数量（手动指定数量时反算隐含亏损不得突破 `max_single_r_pct`）：
+   - 同一 `(sub_account_id, instrument_id)` 同一时刻最多一个方向的活跃或挂单回合；同向加仓并入当前回合；反向开仓拒单（`OPPOSITE_POSITION_OPEN`）。
+   - 加仓以 `AddOnCandidate` 提交并携带 `round_id`，沿用回合屏障；按当前回合止损计算加仓后总风险，不得突破 `max_single_r_pct`。需要不同止损时先改屏障再加仓。
+   - **串行审批与风险预留**：账户进程内每个子账户一条串行审批队列，`evaluate_candidate → submit_plan → 登记预留` 在同一临界区完成；预留记录已放行但账本尚未可见的 `R`、保证金与回合，入账或撤销后释放。
+2. **接口**：
+   - `evaluate_candidate(candidate, account_state, snapshot) -> ApprovedExecutionPlan | RejectedPlanRecord`
+   - `approve_barrier_widening(req, account_state, snapshot) -> ApprovedBarrierAmendment | RejectedPlanRecord`
+   - `preview_sizing(draft, account_state, snapshot) -> SizingPreview`（无副作用，支撑前端拖动止损线 `< 5ms` 回显仓位与强平距离）
+3. **七步风控**：
+   - ① 校验 `TradingState == ACTIVE`、日内与峰值回撤未触熔断线，`invalidation_price` 必填、方向几何合法；
+   - ② 按止损距离与双边摩擦缓冲 $c_{\text{buf}}$ 反推数量（手动指定数量时反算隐含亏损不得突破 `max_single_r_pct`）：
      $$Q_{\text{raw}} = \frac{E_{\text{sub}} \times r_{\text{unit}}}{\left(\lvert P_{\text{entry,worst}} - P_{\text{stop}} \rvert + P_{\text{entry,worst}} \times c_{\text{buf}}\right) \times M}$$
-   - ③ 校验同一子账户相关性簇未锁定在途与持仓风险敞口 $\sum R_{\text{open}}$（移动止损已越过保本线的仓位释放原 $R$ 占用）未超簇上限；
-   - ④ 校验 `SessionTrait`（含 `ALPACA_IEX` 供流窗口持仓收窄约束）、`OrderConstraintTrait`（非 RTH 禁市价单、PDT 剩余回合数）及可选重大催化剂事前静默窗口；
-   - ⑤ 按 `MarginTrait` 与最新 `Mark Price` 核算初始保证金充足率，并强制硬止损先于强平触发（留足安全缓冲垫）：逐仓按单仓预估强平价 $P_{\text{liq}}$ 校验；全仓改由 `MarginTrait.account_liquidation_check(positions, marks)` 做账户级压力测试——假设本标的走到止损价、其余持仓维持当前 `Mark Price`（可选同风险簇持仓同时走到各自止损），账户维持保证金率仍须高于安全线；
-   - ⑥ 按 `CarryTrait` 扣除预估手续费、冲击滑点与预计持仓上限期内资金费率/融券成本后，校验净收益风险比达标；
-   - ⑦ 签发不可变 `ApprovedExecutionPlan`（冻结 `plan_id`、`round_id`、`sub_account_id`、`DecisionOrigin`、`ExitBarrierSpec`（加仓计划引用回合现有屏障）与 `ts_decision`）。
+   - ③ 校验相关性簇的在途与持仓风险 $\sum R_{\text{open}}$ 未超上限（移动止损越过保本线的仓位释放 $R$ 占用）；
+   - ④ 校验 `SessionTrait`、`OrderConstraintTrait` 及可选的重大事件静默窗口；
+   - ⑤ 按 `MarginTrait` 与最新 `Mark Price` 核算保证金，硬止损须先于强平触发：逐仓校验单仓预估强平价；全仓由 `MarginTrait.account_liquidation_check(positions, marks)` 做账户级压力测试；
+   - ⑥ 按 `CarryTrait` 扣除手续费、滑点与持仓期内资金费率/融券成本后，校验净收益风险比；
+   - ⑦ 签发不可变 `ApprovedExecutionPlan`（`plan_id`、`round_id`、`sub_account_id`、`DecisionOrigin`、`ExitBarrierSpec`、`ts_decision`）。
+4. **回撤熔断**：监听 `Mark Price` 与账本变动，触及日内回撤软阈值切 `REDUCING`，触及硬线切 `HALTED`，按 `liquidate_on_halt` 配置下发全平。
 
----
+### 6.4 成交插槽与默认模拟成交
 
-### 3.5 第四层：执行与高保真仿真层（L4 `execution` —— `Execution Seam`）
-
-**规划中（M3）。**
-
-托管单子账户单标的仓位回合从建仓、同向加仓合并到四重屏障退出的全闭环，对外暴露严守单向风险纪律的六方法深接口：
+成交插槽的接口就是 `Execution Seam`（ADR-0003）：
 
 ```python
 class ExecutionEngine(Protocol):
@@ -336,122 +449,93 @@ class ExecutionEngine(Protocol):
     def poll_events(self, up_to_ts: int) -> list[ExecutionEvent]: ...
 ```
 
-1. **`PositionExecutor` 本地自治四重保护屏障（`Exit Barrier Set`）状态机**：每个 `PositionExecutor` 托管一个完整 `Position Round`（而非单笔计划），同向获批加仓并入该回合并沿用回合屏障；
-   - 状态流转：`PENDING_ENTRY → PARTIALLY_FILLED_PROTECTED → ACTIVE_PROTECTED → EXITING → CLOSED | CANCELLED | LIQUIDATED`。首笔部分成交瞬间立即按已成交量挂载硬止损、止盈、激活式单调移动止损与 `max_holding_ms` 垂直时间上限，全程在本地毫秒/Tick/K线级独立闭环，不依赖大模型或工作台在线。
-2. **`SimExecutionAdapter` 六条诚实仿真物理法则**：
-   - ① **决策延迟墙（`Decision Latency Δt`）**：冻结于 $t_{\text{decision}}$ 的计划必须在 $t \ge t_{\text{decision}} + \Delta t$ 之后的盘口/K线方可参与撮合；
-   - ② **微观挂吃单区分**：`POST_ONLY` 穿价即拒；`LIMIT` 须后续行情实质穿价才计 Maker 费率；主动吃单叠加点差与冲击滑点并计 Taker 费率；
-   - ③ **同根 K 线悲观止损优先**：无逐笔路径时同根 K 线同时触及止损与止盈一律按先止损结算；
+1. **`PositionExecutor` 四重保护屏障状态机**：每个执行器托管一个完整 `Position Round`。状态流转 `PENDING_ENTRY → PARTIALLY_FILLED_PROTECTED → ACTIVE_PROTECTED → EXITING → CLOSED | CANCELLED | LIQUIDATED`。首笔部分成交即按已成交量挂载硬止损、止盈、激活式单调移动止损与 `max_holding_ms` 时间上限，在本地闭环，不依赖模型或前端在线。
+2. **1m K 线模拟成交的六条诚实仿真法则**：
+   - ① **决策延迟墙**：冻结于 $t_{\text{decision}}$ 的计划只能与 $t \ge t_{\text{decision}} + \Delta t$ 之后的行情撮合；
+   - ② **挂吃单区分**：`POST_ONLY` 穿价即拒；`LIMIT` 须后续行情实质穿价才计 Maker 费率；主动吃单叠加点差与冲击滑点并计 Taker 费率；
+   - ③ **同根 K 线先止损**：没有逐笔路径时，同根 K 线同时触及止损与止盈一律按先止损结算；
    - ④ **跳空真实滑点**：开盘跳空越过止损位时按跳空后真实可成交价结算；
-   - ⑤ **永续 `Mark Price` 强平与周期持仓现金流**：由外圈 `O1` 在每步显式投喂只读 `MarginValuationView`，严格按 `Mark Price` 实时检查全仓/逐仓维持保证金率并触发 `PositionLiquidated`；跨越整点按 $-\text{signed\_qty} \times M \times P_{\text{mark}} \times R_{\text{funding}}$ 自动生成 `FundingSettled` 事件，美股空头跨日生成 `BorrowFeeAccrued` 事件；
-   - ⑥ **字节级确定性可复现**：相同快照、摩擦配置与种子下事件序列逐字节一致。
-3. **`LiveExecutionAdapter` 预留卡槽**：未来实盘接入时，持久化 Outbox、幂等 `client_order_id`、超时 `UNKNOWN` 主动查询对账及场所原生连接器全部封装在该 Adapter 内，上游 `L1–L3` 与下游 `L5` 零代码侵入。
+   - ⑤ **`Mark Price` 强平与持仓现金流**：每步按只读 `MarginValuationView` 检查维持保证金率并触发 `PositionLiquidated`；跨越结算点生成 `FundingSettled`，美股空头跨日生成 `BorrowFeeAccrued`；
+   - ⑥ **确定性可复现**：相同数据、摩擦配置与种子下事件序列逐字节一致。
+3. **买一卖一加逐笔模拟成交**：有逐笔路径的区间按成交顺序判定止损与止盈先后，按买一卖一计算吃单价，取代法则 ③ 的悲观假设。
+4. **实盘成交插件（以后）**：持久化 Outbox、幂等 `client_order_id`、超时 `UNKNOWN` 主动对账与场所连接器全部封装在插件内，其他插槽不改。
+
+### 6.5 账本与复盘
+
+1. **多子账户十进制复式账本**：仅追加 `ledger_entries` + `ledger_postings` 双表，按 `(run_id, sub_account_id, currency)` 隔离核算可用现金、挂单冻结、保证金、已结毛利、手续费、资金费率/融券收支与强平罚金，每次写入校验借贷差为 `Decimal('0')`。账本由承载该子账户的账户进程单写，服务只读。
+2. **认知成本流水（`EXPENSE_LLM_COGNITION`）**：每次 DSH 模型调用（含成交、`Abstain`、风控拒单、超时撤单、废弃草案、会诊与 `ControllerPatch`）都写入认知成本，子账户净收益与净夏普扣减同期全部推理开销。`talaria-desk` 会话绑定 `sub_account_id`，由桥接层在每轮结束时上报 `(dsh_session_id, dsh_turn_id, 输入 / 缓存命中 / 输出 Token)`，按 `(dsh_session_id, dsh_turn_id)` 幂等入账；缺失用量标记待补，不按 0 入账；定期扫描 `$DSH_HOME` 轨迹补齐漏报；无法归属的计入默认子账户的 `UNALLOCATED`。
+3. **六维全成本瀑布与 `Co-Pilot Lift`**：按完整回合拆解 `无摩擦理论毛利 − 决策延迟漂移 − 撮合滑点 − 手续费 + 资金费率/融券净额 − 认知成本 = 真实净收益`，与账本结转盈亏恒等。`Co-Pilot Lift` 在草案生成时刻用独立的反事实沙箱跑原始草案（被风控拒单则基准记 0），量化人机协同相对纯 agent 的边际贡献。
+4. **`Trade Journal`**：每笔终态回合自动建档，绑定 ① 执行、改止损与六维归因明细；② 开平仓 `snapshot_id` 及当时可见的 `HUMAN_DRAWING / AGENT_ANNOTATION / EXECUTION_BARRIER` 冻结副本；③ 指向 `$DSH_HOME` 轨迹的 `dsh_session_id / dsh_turn_id / patch_id` 与草案修订 Diff；④ 人工纪律标签与复盘总结（经验只在完全平仓后带 `resolved_ts` 归档，回测检索过滤 `resolved_ts <= cutoff_ts`）。
 
 ---
 
-### 3.6 第五层：复式账本与复盘层（L5 `ledger_journal`）
+## 7. 编排：回放、寻优与评估
 
-**规划中（M3）。**
+**规划中。** 编排器不自己跑交易逻辑，而是批量启动账户进程（ADR-0015）。
 
-1. **多子账户十进制复式账本与全量认知成本台账（`DoubleEntryLedger`）**：
-   - 采用仅追加 `ledger_entries` + `ledger_postings` 双表，按 `(run_id, sub_account_id, currency)` 隔离核算可用现金、挂单冻结、全仓/逐仓保证金、已结毛利、手续费、资金费率/融券收支与强平罚金，每次写入强制校验借贷差严格为 `Decimal('0')`。
-   - **子账户级全量认知成本流水（`EXPENSE_LLM_COGNITION`）**：每一次 DSH 模型调用（涵盖最终成交、`Abstain`、`L3` 拒单、挂单超时取消、人工废弃草案、框选会诊与 `ControllerPatch` 调参）均实时写入认知成本流水；子账户区间净收益与净夏普强制扣减同期全部认知推理总开销，杜绝只统计成交单的幸存者偏差。
-   - **用量采集通道**：`talaria-auto / talaria-eval` 由守护进程经 SDK 直接取得用量；`talaria-desk` 会话在开始时绑定 `sub_account_id`（随 `ConsultationPacket` 传入），由 `dsh-bridge` 在宿主侧（非模型可调用工具）于每轮结束时上报 `(dsh_session_id, dsh_turn_id, 输入 / 缓存命中 / 输出 Token)`，账本按 `(dsh_session_id, dsh_turn_id)` 幂等入账（`turn` 仅为会话内序号，不能单独作为幂等键）；`turn/end` 事件本身不含 usage，需在 bridge 侧折叠该 turn 内全部 attempt 事件，缺失或 `undefined` 的用量不得按 0 入账，须标记待补；守护进程定期扫描 `$DSH_HOME` 轨迹文件补齐漏报。无法归属的会话计入默认子账户的 `UNALLOCATED` 认知成本，不丢弃。（2026-11-19 核实：`deriveTurnTokenUsage` 非公开导出，bridge 侧需按同一规则自行折叠并以黄金测试锁定。）
-2. **六维全成本瀑布与 `Co-Pilot Lift` 反事实评测（`CostAttributionEvaluator`）**：
-   - 按完整 `Position Round` 精确拆解：`无摩擦理论毛利 − 决策延迟漂移(Δt) − 撮合滑点 − 交易所手续费 + 持仓资金费率/融券净额 − 关联认知 Token 成本 = 真实净收益`，与复式账本结转盈亏恒等对齐。
-   - **`Co-Pilot Lift` 隔离沙箱评估**：对源出结构化 `StagedPlanDraft` 的协同交互，在草案生成时刻基于独立无副作用 `CounterfactualSimSandbox`（克隆当时子账户净值，不占用真实保证金与风险簇额度）跑完原始草案的 `L3→L4` 影子结果（原始草案被 `L3` 拒单则基准净利记 `0`，人工否决亏损草案记正避险增益），量化人机协同相对纯智能体的真实边际净贡献。
-3. **`Trade Journal`（交易复盘日志）四维锚定模型**：
-   - 每笔终态回合自动建档，永久绑定：① 完整执行、改止损与六维归因明细；② 开平仓物化 `snapshot_id` 及当时图上全部可见 `HUMAN_DRAWING / AGENT_ANNOTATION / EXECUTION_BARRIER` 的冰封 `frozen_overlays_json`（事后删改主图画线仍可原样重现复盘现场）；③ `dsh_session_id / dsh_turn_id / patch_id` 指向 `$DSH_HOME` 只读压缩 `Trajectory` 的溯源指针与草案修订前后 Diff；④ 人工纪律标签与复盘总结（盘后经验仅允许在完全平仓后携明确 `resolved_ts` 归档，历史回测检索强制过滤 `resolved_ts <= cutoff_ts`）。
-
----
-
-## 4. 外圈编排、人机共享图表交互与防过拟合寻优规范
-
-### 4.1 人机共享图表四图层与双轨交互契约（O2 `workbench`）
-
-前端核心包 `talaria-desk-ui` 直接基于 `KLineChart v10`（Apache-2.0）构建，当前使用人工画线、系统关键位与智能体标注三个图层。已锁定 `klinecharts 10.1.1` 正式版（2026-11-16 发布）：外部指标结果不能直接注入，需注册指标模板并以 `createIndicator({ name, calc })` 的 `calc` 回调返回与 `dataList` 等长同序的数组，更新时换新闭包并调用 `overrideIndicator`；历史分页使用 `setDataLoader`（`init / forward / backward / update` 与 `callback(data, more)`）。
-
-| 图层标识 (`groupId`) | 写入主体与存储位置 | 交互与安全校验规则 |
-|---|---|---|
-| `HUMAN_DRAWING` | 交易员鼠标绘制；经本地快通道持久化于 `collaboration_state.sqlite` | 自由拖拽（前端 `60fps` 乐观重绘、松手落库）、撤销重做栈、一键挂载 `OVERLAY_CROSS` 盘面预警 |
-| `SYSTEM_LEVEL` | 不入普通画线表；快照绑定的 `KeyLevelSet` 由 `workbench_api/desk_broadcast.py` 经 WS 单向投影 | 只读；按 `kind` / 强度过滤显隐；一键“采纳”复制为 `HUMAN_DRAWING`，一键挂载 `LEVEL_EVENT` 预警；采纳 / 忽略操作记录为质量反馈 |
-| `AGENT_ANNOTATION` | 智能体调用 `write_agent_overlay`；经硬门控校验后存入 `collaboration_state.sqlite` | **写入前硬门控**：① 校验 `snapshot_id` 与非空 `evidence_refs`（须引用系统 `level_id` 或具体 K 线时间戳，不得凭空给出价位）；② 所有价格锚点须为正、合乎 `tick_size` 且落在分析窗口 `[min_low - 3*ATR_14, max_high + 3*ATR_14]` 包络内，越界幻觉直接拦截；③ 限制单标的未采纳活跃条数（≤12 条），支持人工一键采纳转为实线或清理 |
-| `EXECUTION_BARRIER`（规划中 M3） | 不入普通画线表；由后端 `StagedPlanDraft` 与活跃 `PositionExecutor` 经 WS 单向实时投影 | 拖动草案线实时触发 `L3.preview_sizing` 试算；拖动活跃仓位止损线根据收紧/放宽方向路由至 `L4.tighten_barrier` 或 `L3.approve_barrier_widening → L4`，杜绝图线与真实屏障脱节 |
-
-**人机共用分析接口**：浏览器与智能体是同一套分析接口的两个调用方，二者读到的数据、算法与 `cutoff_ts` 完全一致，`level_id` 在双方之间共享。接口由 `workbench_api` 提供，经 `dsh/packages/talaria-dsh-plugin/bridge.js` 包装为智能体工具。
-
-| 接口 / 工具 | 作用 | 权限 |
-|---|---|---|
-| `get_snapshot` | 冻结截止时刻，返回 `snapshot_id`，后续调用均绑定该快照 | 只读 |
-| `get_indicators(instrument, timeframe, names, params)` | 指标序列（默认仅最近 N 根 + 摘要统计） | 只读 |
-| `get_key_levels(instrument, timeframes, top_n, kinds)` | 按强度排序的 `KeyLevel` 列表及强度构成 | 只读 |
-| `compute_operator(...)` | 以非默认参数临时调用 Python 算子 | 只读 |
-| `get_chart_view` | 当前标的、周期、视窗与可见 `HUMAN_DRAWING` | 只读 |
-| `write_agent_overlay` | 写入智能体标注（经上表硬门控） | 受控写 |
-| `create_alert` | 以草案形式创建预警，人工确认后生效 | 草案 |
-
-返回值一律为带 `snapshot_id` 与稳定 ID 的结构化 JSON 加摘要；智能体不能修改系统关键位或指标结果。不接入自行拉取行情的第三方技术分析 MCP，以免绕过冻结快照。
-
-### 4.2 外圈回测、熔断守护与 `Optuna` 防过拟合寻优（O1 `orchestration`）
-
-**规划中（M3/M4）。** 交易回放和回撤守护属于 M3，参数寻优与智能体评估属于 M4。
-
-1. **实时盘中回撤硬熔断守护（`DrawdownCircuitBreaker`）**：在 `ShadowCoordinator` 与 `ReplayRunner` 中持续监听 `Mark Price` 与账本变动；一旦子账户触及日内回撤软阈值自动置为 `REDUCING`，触及硬熔断线自动置为 `HALTED` 并按子账户 `liquidate_on_halt` 配置下发全平指令。
-2. **基于 `Optuna`（MIT）的四道防过拟合寻优铁律（`StudyOptimizer`）**：
-   - **适用范围**：截断前视审计与字节级确定性要求只适用于纯量化策略及智能体调用的确定性工具层；含 LLM 的策略按第 3 条证据等级评估。
-   - **前置双审计门禁**：启动 `study.optimize()` 前强制执行 ① **截断式前视一致性审计**（随机抽取多个截断点 $t_k$ 断言 `cutoff=t_k` 与全区间快照下 $\le t_k$ 的输出逐字节一致）与 ② **递归指标预热漂移审计**（对比 `1x` 与 `2x warmup_bars` 起点偏差），任一不过直接阻断。
-   - **三段式物理封存切分**：绑定不可变 `dataset_snapshot_id`，切分为 `Train` / `Validation`（交界处强制插入 $\ge \text{max\_holding\_ms} + \text{warmup}$ 的 `embargo` 隔离带） / `Holdout OOS`；迭代采样期传入 `ReplayRunner` 的读取器在接口层物理裁除 `Holdout OOS`（多目标模式禁用不支持的 `trial.report()` 剪枝，改用 `trial.set_constraint` 约束最低交易笔数与回撤上限）。
-   - **全量试验计数留痕**：多 Worker 并发追加写入 `Optuna JournalStorage`，结束后由主进程将包含失败与淘汰试验在内的完整 `n_trials` 汇总写入 `study_registry.sqlite`。
-   - **邻域平坦度与同源 `feed_id` 晋升门禁**：最优参数须先通过 `±5% / ±10%` 邻域微扰平坦度检验，再在封存 `Holdout OOS` 上执行唯一一次终审盲测；若寻优基于 `ALPACA_SIP` 而目标实时子账户为 `ALPACA_IEX`，禁止包含绝对成交量阈值且须补过 `ALPACA_IEX` 同源切片核验，人工签字后方可激活上线。
-3. **智能体评估证据等级（[ADR-0009](./adr/0009-agent-evaluation-evidence-tiers-by-model-knowledge-cutoff.md)）**：数据层时点纪律挡不住模型权重中的记忆，因此 `AGENT / CO_PILOT` 评估按模型 Profile 声明的 `model_knowledge_cutoff` 分级：
-   - `SHADOW_FORWARD`（Shadow Run 实时前向）与 `POST_CUTOFF_REPLAY`（区间严格晚于全部参与模型截止日 + 默认 30 天缓冲）是晋升、`Co-Pilot Lift` 与跨子账户对比的唯一证据来源，须计入手续费、资金费率与滑点，并报告样本长度与统计不确定性；
-   - 其余回放一律记为 `DIAGNOSTIC`，只用于调试与缺陷排查；美股诊断回放同时运行匿名化对照（替换公司名、代码、产品与高管名，价格归一、日期相对化），加密永续诊断回放不用于评估 alpha；模型升级后落入新截止日的区间自动降级；
-   - `decay = 指标(截止后) − 指标(截止前)` 作为常规指标并标注各窗口市场状态，财报与宏观事件驱动类策略只认前两类证据；
-   - 回放中的 LLM 响应按 `(模型版本, prompt 哈希, snapshot_id)` 录制复用，实现“录制后可复现”。
+1. **`replay_runner`**：为一个交易方案启动数据入口为 Parquet + 虚拟时钟的账户进程，结果写入 `runs/<run_id>/`。
+2. **`study_optimizer`（Optuna，ADR-0007）**：
+   - 适用范围：截断前视审计与逐字节确定性只适用于确定性策略及 agent 调用的确定性工具；含 LLM 的策略按第 3 条证据等级评估。
+   - 前置双审计：启动前执行 ① 截断式前视一致性审计（随机抽取截断点 $t_k$，断言 `cutoff=t_k` 与全区间下 $\le t_k$ 的输出逐字节一致）与 ② 递归指标预热漂移审计（对比 `1x` 与 `2x warmup_bars` 起点），任一不过即阻断。
+   - 三段封存切分：绑定不可变 `dataset_snapshot_id`，切为 `Train` / `Validation`（交界处插入 $\ge \text{max\_holding\_ms} + \text{warmup}$ 的 `embargo`）/ `Holdout OOS`；寻优期传给账户进程的数据入口在接口层裁除 `Holdout OOS`（多目标模式用 `trial.set_constraint` 约束最低交易笔数与回撤上限）。
+   - 全量试验计数：多 Worker 追加写 `Optuna JournalStorage`，结束后主进程把含失败与淘汰在内的完整 `n_trials` 写入 `study_registry.sqlite`。
+   - 晋升门禁：最优参数须通过 `±5% / ±10%` 邻域平坦度检验，再在 `Holdout OOS` 上做唯一一次终审；寻优基于 `ALPACA_SIP` 而目标为 `ALPACA_IEX` 时，禁止绝对成交量阈值并补做同源切片核验，人工签字后上线。
+3. **智能体评估证据等级（ADR-0009）**：
+   - `SHADOW_FORWARD`（实时前向）与 `POST_CUTOFF_REPLAY`（区间晚于全部参与模型截止日 + 默认 30 天缓冲）是晋升、`Co-Pilot Lift` 与跨子账户对比的唯一证据，须计入手续费、资金费率与滑点，并报告样本长度与统计不确定性；
+   - 其余回放记为 `DIAGNOSTIC`，只用于调试；美股诊断回放同时运行匿名化对照，加密永续诊断回放不用于评估 alpha；模型升级后落入新截止日的区间自动降级；
+   - `decay = 指标(截止后) − 指标(截止前)` 作为常规指标；
+   - 回放中的 LLM 响应按 `(模型版本, prompt 哈希, snapshot_id)` 录制复用。
 
 ---
 
-## 5. 双平面通信拓扑、单机部署与数据库免锁隔离
+## 8. 部署、通信与存储
 
-### 5.1 智能体双宿主物理隔离与三通道 IPC
+### 8.1 进程与通信
 
 ```mermaid
 flowchart LR
-  Browser["浏览器工作台 (talaria-desk-ui)"]
-  Daemon["Python 确定性守护进程 (talaria-daemon :8765)"]
-  DSHWeb["DSH 协同宿主 (dsh --profile talaria-desk :8766)"]
-  DSHAuto["DSH 自治/回测子进程 (规划中 M4，talaria-auto / talaria-eval via stdio SDK)"]
+  Launchd["launchd 用户级 Agent"]
+  Svc["常驻服务 talaria service :8765"]
+  Browser["浏览器多页面 / PWA"]
+  DSHWeb["DSH 协同宿主 :8766"]
+  Acct["账户进程（每个交易方案）"]
+  NB["Notebook / 脚本"]
+  DSHAuto["DSH 自治 / 评估子进程（以后，stdio SDK）"]
 
-  Browser <-->|"通道 1 & 2：本地 HTTP/WS 快通道 (行情/预警/画线)"| Daemon
-  Browser <-->|"通道 3a：DSH typert (协同对话 / Trajectory 溯源 / 单次审批)"| DSHWeb
-  DSHWeb <-->|"受控桥接：快照查询、会诊、write_agent_overlay、预警草案"| Daemon
-  Daemon -. "通道 3b：deepseek-harness-sdk (stdio JSON-RPC 2.0 唤醒自治子账户与历史回放)" .-> DSHAuto
+  Launchd -->|"登录启动、崩溃重启"| Svc
+  Browser <-->|"HTTP / WS 快通道"| Svc
+  Browser <-->|"DSH typert（会诊、轨迹、审批）"| DSHWeb
+  DSHWeb <-->|"受控桥接工具"| Svc
+  Acct <-->|"实时订阅、草案、账本只读"| Svc
+  NB -. "补尾" .-> Svc
+  Acct -. "deepseek-harness-sdk" .-> DSHAuto
 ```
 
-- **权限物理隔离**：当前 `talaria-desk` 提供分析查询、标注与预警草案工具。M3 规划让协同会话将 `StagedPlanDraft` 交由人工确认。M4 的自治子账户（`talaria-auto`）与历史回测（`talaria-eval`）规划基于 `sdk-minimal` 剔除 `shell`、外网与文件写权限，统一由 Python 经 `deepseek-harness-sdk`（`stdio`）受控调用。
-- **版本基线与探针**：截至 2026-11-19，DSH 尚无 stable release，本机基线锁定 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`；`typert` 仍为 0.x 预览版。客户端插槽（`ctx.slots`、`ctx.sidebarRightTabs`）由 DSH 0.2.2-rc.3 安装包自带，不再依赖单独发布的 `ui-slots 0.0.1-rc.1`。可用 `--dsh-bin` 或 `TALARIA_DSH_BIN` 指定 DSH 可执行文件，宿主继承环境中的 `DSH_HOME`。升级 DSH 或 SDK 前必须重跑 `dsh --profile <name> --dump-config` 与确定性探针。
-- **三种轻量化运行态（零 Docker / 零 Redis / 零 Kafka）**：
-  1. `talaria up --pack crypto_perp` 启动 Python 守护进程与 `dsh --profile talaria-desk --no-open --port <dsh_port>`。加 `--solo` 时只启动守护进程，可直接访问 `http://127.0.0.1:8765/desk` 独立看盘。双进程模式在 `<data-dir>/runtime/dsh-bridge.json`（0600）写入回环基址与 Bearer Token，并在 `/api/collaboration` 提供宿主状态。DSH 缺失或启动失败时宿主标为 `offline`，快通道继续服务。两种模式的 `--pack` 均从 `packs` 注册表取值，与 `talaria evaluate-levels --pack` 共用默认值 `crypto_perp` 和原始存档子目录 `bybit_linear`。
-  2. **规划中（M3）**：`talaria replay` 在单进程内用虚拟时钟驱动历史交易回放。M4 规划按需启动 `talaria-eval` 子进程。现有行情 JSONL 回放入口为 `talaria up --replay-events`。
-  3. **规划中（M4）**：`talaria optimize --workers N` 使用 $N$ 个只读共享冷库 Parquet 的 Worker，在各自 `:memory:` 内存账本中并发跑回测，结果追加写文件锁日志。
+- **运行方式**：
+  1. `talaria up --pack crypto_perp`（已实现）：前台启动服务与 `dsh --profile talaria-desk --no-open --port <dsh_port>`；`--solo` 只启动服务，访问 `http://127.0.0.1:8765/desk`。双进程模式在 `<data-dir>/runtime/dsh-bridge.json`（0600）写入回环基址与 Bearer Token；DSH 缺失或启动失败时宿主标为 `offline`，快通道继续服务。
+  2. `talaria service install | uninstall | status`（规划中）：写入 launchd plist（显式 `ProcessType`、`KeepAlive`），服务常驻；功能开关由数据目录下的配置文件决定。
+  3. `talaria account run <scheme.yaml> [--mode backtest|paper]`（规划中）：启动一个账户进程。
+  4. `talaria replay` / `talaria optimize --workers N`（规划中）：批量启动账户进程。
+- **DSH 权限隔离与版本**：`talaria-desk` 提供分析查询、标注与预警草案工具；交易草案经人工确认。以后的自治子账户（`talaria-auto`）与评估（`talaria-eval`）基于 `sdk-minimal` 剔除 shell、外网与文件写权限，由 Python 经 `deepseek-harness-sdk`（stdio）调用。截至 2026-11-19，本机基线锁定 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`；客户端插槽由 DSH 安装包自带。可用 `--dsh-bin` 或 `TALARIA_DSH_BIN` 指定 DSH 可执行文件。升级前须重跑 `dsh --profile <name> --dump-config` 与确定性探针。
+- 零 Docker / 零 Redis / 零 Kafka。
 
-### 5.2 按唯一写者拆分的本地存储布局
+### 8.2 按写者拆分的本地存储
 
-运行数据目录由 `--data-dir` 指定，默认取 `TALARIA_DATA_DIR` 或 `./.talaria`。当前启用冷库清单、快照、协同状态三个 SQLite 库，均使用 `WAL` 并由 `perception/sqlite.py` 提供进程内单写者守卫。回放运行库、账本库、寻优注册库按里程碑规划。
+数据目录由 `--data-dir` 指定，默认取 `TALARIA_DATA_DIR` 或 `./.talaria`。SQLite 库均使用 `WAL`，由 `perception/sqlite.py` 提供进程内单写者守卫。
 
-| 存储路径 | 唯一独占写者 | 承载核心数据 |
-|---|---|---|
-| `data/raw/<archive_id>/` | `RawStore` | 历史回填的原始 K 线 JSONL |
-| `data/raw_archive/<sha256>.jsonl`、`data/cold/<venue>/<symbol>/<timeframe>/<sha256>.parquet` 与 `data/data_manifest.sqlite` | `ColdStore`，由 `ColdPublisher` 在快照冻结时触发 | 冷库批次原始归档、K 线 generation、发布清单与游标 |
-| `state/runtime_snapshots.sqlite` + `state/hot_snapshots/*.parquet` | `SnapshotBuilder` / `SnapshotStore` | 快照索引与物化的 K 线、衍生品数据 |
-| `state/collaboration_state.sqlite` | `StateWriterQueue` 的专用写线程 | 元数据与事件、自选池、画线、关键位反馈、预警、智能体标注、会诊、简报与 Token 用量 |
-| `runs/<run_id>/run_state.sqlite`（规划中 M3；寻优 Worker 改用 `:memory:`） | 该次回放进程单写者 | 回放期间的 `AlertRule` 状态推进、`ControllerPatch`、草案与关键位反馈；回放开始时从实盘协同库只读复制规则定义，**回放绝不写入 `state/collaboration_state.sqlite`** |
-| `state/trading_ledger.sqlite`（规划中 M3；回放分至 `runs/<run_id>/ledger.sqlite`） | `talaria-daemon` 账本单协程（`synchronous=FULL`） | 多子账户十进制复式分录、持仓批次、全量认知 Token 成本流水与 `TradeJournal` 主档案 |
-| `studies/study_registry.sqlite` + `studies/<id>/journal.log`（规划中 M4） | `talaria optimize` 主进程单写注册库；多 Worker 仅追加写 `journal.log` | Study 三段切分封存记录、累计总 `n_trials` 与邻域稳健性晋升审计记录 |
+| 存储路径 | 唯一写者 | 内容 | 状态 |
+|---|---|---|---|
+| `data/raw/<archive_id>/`、`data/raw_archive/<sha256>.jsonl` | 常驻服务 | 历史回填原始 K 线与冷库批次原始归档 | 已实现 |
+| `data/cold/<venue>/<symbol>/...`（布局见 §4.2）+ `data/data_manifest.sqlite` | 常驻服务（冷库写入） | K 线、逐笔、买一卖一、衍生品分区文件与尾部文件；清单 | 改造中 |
+| `state/runtime_snapshots.sqlite` + `state/hot_snapshots/*.parquet` | 常驻服务（`SnapshotBuilder`） | 证据快照索引与物化数据 | 已实现 |
+| `state/collaboration_state.sqlite` | 常驻服务的 `StateWriterQueue` 写线程（ADR-0012） | 元数据、自选、画线、关键位反馈、预警、标注、会诊、简报、Token 用量 | 已实现 |
+| `accounts/<scheme>/ledger.sqlite` | 承载该方案的账户进程 | 子账户复式账本、持仓批次、认知成本、`Trade Journal` | 规划中 |
+| `runs/<run_id>/`（`ledger.sqlite`、`run_state.sqlite`） | 该次回放的账户进程 | 回放的账本、规则状态、草案；回放不写 `state/collaboration_state.sqlite` | 规划中 |
+| `studies/study_registry.sqlite` + `studies/<id>/journal.log` | `study_optimizer` 主进程；Worker 只追加 `journal.log` | 三段切分封存、`n_trials`、晋升审计 | 规划中 |
 
-守护进程内，`workbench_api/state_store.py` 的 `StateWriterQueue` 由单协程按提交顺序把写操作派发到一条专用写线程。该线程持有唯一写连接，启用 `synchronous=FULL`。纯读通过默认线程池执行，每次读取打开独立的 `mode=ro` 连接并启用 `query_only`，同次读取共享一个已提交的 WAL 快照，无需等待写队列。协同状态按上述九个领域拆入 `workbench_api/state_repositories/`，表结构未变。
+服务内 `StateWriterQueue` 由单协程按提交顺序把写操作派发到专用写线程，线程持有唯一写连接（`synchronous=FULL`）；读取走线程池，每次打开 `mode=ro` 连接并启用 `query_only`。协同状态按九个领域拆在 `workbench_api/state_repositories/`。
 
-### 5.3 异常降级与跨缝隙自动化契约门禁
+### 8.3 降级与契约门禁
 
-1. **优雅降级**：行情传输失联时标记 `STALE`，预警与扫描据健康状态暂停行情触发。DSH 超时或离线会影响会诊，本地快通道继续提供人工看盘、画线和盘面预警。策略降级 `Abstain`、子账户自动切换为 `REDUCING` 与离线仓位保护规划于 M3。
-2. **五项自动化契约回归检查**：① `cli/contracts_io.py` 从 `foundation` 契约导出 JSON Schema 与 `@talaria/contracts`，检查生成物零漂移及十进制字符串类型；② DSH 工具 Schema 经 `assertSupportedJsonSchema` 子集规则（零根级 `$schema`、零未展开 `$defs`）静态门禁；③ `talaria-desk` Profile 的权限配置快照断言（`dsh --profile <name> --dump-config`，输出为含 `!!js` 的 YAML 风格文本），以及运行时 `ctx.tools.guard` 拦截历史轨迹 `fork` 重放的行为测试，`talaria-auto / talaria-eval` 对应检查规划于 M4；④ `contracts/operator_vectors/` Python 算子与关键位算法黄金回归测试（含 `NO_TRADES` 与 `FEED_GAP` 重预热、摆动点确认延迟无前视断言）；⑤ 守护进程只接受回环 IP 绑定，默认 `127.0.0.1`，并检查会话随机 Bearer Token 鉴权。
+1. **优雅降级**：行情失联时标记 `STALE`，预警与扫描暂停行情触发；冷库写入失败只记 warning；DSH 离线只影响会诊；服务未运行时 SDK 只读本地数据；账户进程失去实时订阅时由风控插件按配置切 `REDUCING`（规划中）。
+2. **契约回归检查**：① `cli/contracts_io.py` 从 `foundation` 导出 JSON Schema 与 `@talaria/contracts`，检查零漂移与十进制字符串类型；② DSH 工具 Schema 经 `assertSupportedJsonSchema` 子集规则静态门禁；③ `talaria-desk` Profile 权限快照断言与 `ctx.tools.guard` 拦截轨迹 `fork` 重放的行为测试；④ `contracts/operator_vectors/` 算子与关键位黄金回归（含 `NO_TRADES`、`FEED_GAP` 重预热与摆动点确认延迟）；⑤ 服务只接受回环绑定，默认 `127.0.0.1`，并检查会话随机 Bearer Token；⑥ 规划中：插件接口版本兼容检查、JSON 规则 Schema 版本检查、截断前视审计（§7）。

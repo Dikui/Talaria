@@ -2,6 +2,36 @@
 
 面向多资产日内与波段交易的智能体研究与交易系统上下文：在严格时点数据纪律下融合智能体认知推理与确定性资金风险控制，首发覆盖加密永续合约与美股，并支持跨市场扩展。
 
+## 产品形态与交易方案
+
+**Resident Service（常驻服务）**:
+由 launchd 守护、独立于任何窗口运行的本机后台进程，是行情、冷库、快照与协同状态的唯一写者，其余页面、Notebook 和账户进程都是它的使用方。
+_Avoid_: Daemon, backend, server
+
+**Account Process（账户进程）**:
+承载一个或一组虚拟子账户、按交易方案装配插件并运行回测或模拟盘的独立进程，是这些子账户账本的唯一写者。
+_Avoid_: Strategy process, bot, worker
+
+**Trading Scheme（交易方案）**:
+为账户进程的每个插槽选定插件及参数的一份配置；不同交易方式只换方案，不改框架。
+_Avoid_: Strategy config, setup, profile
+
+**Plugin Slot（插槽）**:
+账户进程中可替换的一个环节（数据入口、策略、定仓、风控、成交、工具），插件按带版本号的接口填入。
+_Avoid_: Hook, extension point, layer
+
+**Component（组件）**:
+指标、信号或策略三类可复用计算单元的统称，带输入、参数范围、输出类型与版本元数据，上一类可以引用下一类。
+_Avoid_: Script, study, module
+
+**Runtime Context（运行时上下文 `ctx`）**:
+组件取数的唯一入口，按当前时刻截断、只暴露已收盘的柱和已收盘的大周期柱，使防前视不依赖组件写法。
+_Avoid_: Data handle, environment
+
+**Rule（规则）**:
+只调用已注册算子、带版本号的 JSON 表达式树写法的组件，可以安全地在常驻服务中求值，用于图表规则、预警与扫描。
+_Avoid_: Script, Pine code, formula
+
 ## 数据与时点语义
 
 **Evidence Snapshot（证据快照）**:

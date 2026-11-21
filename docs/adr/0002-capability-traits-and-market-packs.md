@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted（按 R 定仓由 ADR-0015 降为默认定仓插件的规则）
 ---
 
 # 通过通用标的内核与 Capability Traits 市场包实现跨资产扩展

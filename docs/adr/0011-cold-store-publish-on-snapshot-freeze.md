@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0018
 ---
 
 # 冷库发布由快照冻结触发，使用 append-only 游标而非独立后台采集循环
