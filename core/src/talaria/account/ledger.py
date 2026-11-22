@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from fractions import Fraction
@@ -77,6 +78,7 @@ class RunJournal:
 def read_journal(path: Path) -> RunJournal:
     """按入账顺序读取，剔除运行 ID 与 SQLite 物理行标识。"""
     with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as db:
+        db.execute("PRAGMA query_only=ON")
         db.execute("BEGIN")
         events_by_seq = {}
         for index, (seq, payload) in enumerate(
@@ -101,20 +103,31 @@ def read_journal(path: Path) -> RunJournal:
 
 
 @contextmanager
-def open_ledger(path: Path, run_id: str, sub_accounts: Sequence[str]) -> Iterator[LedgerWriter]:
-    """为回测创建独立账本，已有账本通过 read_journal 读取。"""
+def open_ledger(
+    path: Path, run_id: str | None, sub_accounts: Sequence[str], *, resume: bool = False,
+) -> Iterator[LedgerWriter]:
+    """创建独立账本，模拟盘可以在子账户锁内继续追加。"""
     claim_writer(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            path.touch(mode=0o600, exist_ok=False)
-        except FileExistsError as exc:
-            raise LedgerError(f"回测账本已存在：{path}") from exc
+        existing = resume and path.is_file()
+        if not existing:
+            try:
+                path.touch(mode=0o600, exist_ok=False)
+            except FileExistsError as exc:
+                raise LedgerError(f"回测账本已存在：{path}") from exc
         db = open_writer_connection(path)
         try:
             db.execute("PRAGMA foreign_keys = ON")
-            db.executescript(_SCHEMA)
-            yield LedgerWriter(db, run_id, sub_accounts)
+            initialized = existing and db.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+            previous = read_journal(path) if initialized else RunJournal((), ())
+            if not initialized:
+                db.executescript(f"BEGIN IMMEDIATE;{_SCHEMA}COMMIT;")
+            if resume:
+                db.execute("""CREATE TABLE IF NOT EXISTS paper_checkpoint (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1), event_count INTEGER NOT NULL, payload TEXT NOT NULL
+                )""")
+            yield LedgerWriter(db, run_id, sub_accounts, previous)
         finally:
             checkpoint_and_close(db)
     finally:
@@ -122,14 +135,48 @@ def open_ledger(path: Path, run_id: str, sub_accounts: Sequence[str]) -> Iterato
 
 
 class LedgerWriter:
-    def __init__(self, db: sqlite3.Connection, run_id: str, sub_accounts: Sequence[str]) -> None:
+    def __init__(
+        self, db: sqlite3.Connection, run_id: str | None, sub_accounts: Sequence[str], previous: RunJournal,
+    ) -> None:
         self._db = db
         self._run_id = run_id
-        self._event_count = 0
-        self._last_ts = -1
+        postings = {entry.event_id: entry.postings for entry in previous.entries}
+        self.previous = tuple(event.model_copy(update={"postings": postings[event.event_id]})
+                              if event.event_id in postings else event for event in previous.events)
+        self._event_count = len(previous.events)
+        self._last_ts = max((event.ts_event for event in previous.events), default=-1)
         self._balances: dict[str, dict[tuple[str, str], Decimal]] = {
             account: {} for account in sub_accounts
         }
+        for entry in previous.entries:
+            balances = self._balances[entry.sub_account_id]
+            for posting in entry.postings:
+                key = (posting.currency, posting.account)
+                balances[key] = _add(balances.get(key, Decimal(0)), posting.amount)
+
+    @contextmanager
+    def transaction(self):
+        balances, count, last_ts = self._balances.copy(), self._event_count, self._last_ts
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            self._balances, self._event_count, self._last_ts = balances, count, last_ts
+            raise
+
+    def save_checkpoint(self, payload: dict) -> None:
+        self._db.execute("INSERT OR REPLACE INTO paper_checkpoint VALUES (1, ?, ?)",
+                         (self._event_count, json.dumps(payload, separators=(",", ":"))))
+
+    def checkpoint(self) -> dict | None:
+        row = self._db.execute("SELECT event_count, payload FROM paper_checkpoint WHERE singleton = 1").fetchone()
+        if row is None:
+            return None
+        if row[0] != self._event_count:
+            raise LedgerError("模拟盘检查点与账本事件序号不一致")
+        return json.loads(row[1])
 
     def balances(self, sub_account_id: str) -> Mapping[tuple[str, str], Decimal]:
         return MappingProxyType(self._balances[sub_account_id].copy())
@@ -155,8 +202,7 @@ class LedgerWriter:
                 key = (posting.currency, posting.account)
                 balances[key] = _add(balances.get(key, Decimal(0)), posting.amount)
 
-        self._db.execute("BEGIN IMMEDIATE")
-        try:
+        with nullcontext() if self._db.in_transaction else self.transaction():
             for index, event in enumerate(events, start=self._event_count + 1):
                 event = event.model_copy(update={"event_id": f"event-{index}"})
                 seq = self._db.execute(
@@ -175,10 +221,6 @@ class LedgerWriter:
                             for i, posting in enumerate(event.postings)
                         ),
                     )
-            self._db.commit()
-        except BaseException:
-            self._db.rollback()
-            raise
-        self._balances.update(next_balances)
-        self._event_count += len(events)
-        self._last_ts = last_ts
+            self._balances.update(next_balances)
+            self._event_count += len(events)
+            self._last_ts = last_ts

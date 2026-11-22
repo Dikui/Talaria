@@ -155,3 +155,8 @@ test('consultation charts store preferences under their own session id', () => {
   assert.equal(panelLinkKey('chart', 'session', 'alpha'), 'session:alpha:chart')
   assert.notEqual(panelLinkKey('chart', 'session', 'alpha'), panelLinkKey('chart', 'session', 'beta'))
 })
+
+test('restores accounts as a chart dock destination', async () => {
+  const { dockPanels } = await import('../client/panelPreferences.mjs')
+  assert.deepEqual(dockPanels(['chart', 'accounts', 'levels']), ['accounts', 'levels'])
+})

@@ -52,7 +52,7 @@ def _manage_strategy_code(args: argparse.Namespace) -> int:
 
 
 def _run_account(args: argparse.Namespace) -> int:
-    from talaria.account.host import open_account_process, run_backtest
+    from talaria.account.host import run_backtest, run_paper
     from talaria.account.scheme import SchemeError
 
     data_dir = args.data_dir
@@ -61,9 +61,12 @@ def _run_account(args: argparse.Namespace) -> int:
     try:
         if args.mode == "paper":
             if args.replay or args.run_id is not None:
-                raise SchemeError("--replay 仅用于回测")
-            with open_account_process(args.scheme, data_dir, mode="paper"):
-                raise SchemeError("模拟盘实时数据和账本接线由 trading/04 提供")
+                raise SchemeError("--replay 和 --run-id 仅用于回测")
+            try:
+                run_paper(args.scheme, data_dir)
+            except KeyboardInterrupt:
+                pass
+            return 0
         run = run_backtest(args.scheme, data_dir, replay=args.replay, run_id=args.run_id)
     except (OSError, sqlite3.Error, TalariaError, ValueError) as exc:
         print(f"账户进程失败：{exc}", file=sys.stderr)

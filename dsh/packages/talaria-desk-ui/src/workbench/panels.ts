@@ -3,6 +3,7 @@ export const PANEL_LABELS = {
   alerts: "预警",
   scanner: "扫描",
   levels: "关键位",
+  accounts: "账户",
 } as const;
 
 export type PanelName = keyof typeof PANEL_LABELS;

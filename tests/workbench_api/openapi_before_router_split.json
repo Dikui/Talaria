@@ -1490,6 +1490,58 @@
         "title": "CompactBar",
         "type": "object"
       },
+      "ConfirmedDraft": {
+        "additionalProperties": false,
+        "properties": {
+          "basis_cutoff_ts": {
+            "title": "Basis Cutoff Ts",
+            "type": "integer"
+          },
+          "confirmed_by": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Confirmed By",
+            "type": "string"
+          },
+          "confirmed_ts": {
+            "title": "Confirmed Ts",
+            "type": "integer"
+          },
+          "content": {
+            "$ref": "#/components/schemas/DraftContent"
+          },
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "created_ts": {
+            "title": "Created Ts",
+            "type": "integer"
+          },
+          "draft_id": {
+            "title": "Draft Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "content_hash",
+          "confirmed_by",
+          "draft_id",
+          "content",
+          "basis_cutoff_ts",
+          "created_ts",
+          "confirmed_ts"
+        ],
+        "title": "ConfirmedDraft",
+        "type": "object"
+      },
       "ConsultRequest": {
         "additionalProperties": false,
         "description": "前端发起会诊的请求；``snapshot_id`` 必须由快通道先冻结。",
@@ -2082,6 +2134,337 @@
         "title": "DerivativeSummary",
         "type": "object"
       },
+      "Direction": {
+        "enum": [
+          "LONG",
+          "SHORT"
+        ],
+        "type": "string"
+      },
+      "DraftConfirmation": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed_by": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Confirmed By",
+            "type": "string"
+          },
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "content_hash",
+          "confirmed_by"
+        ],
+        "title": "DraftConfirmation",
+        "type": "object"
+      },
+      "DraftContent": {
+        "additionalProperties": false,
+        "properties": {
+          "consultation_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consultation Id"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/Direction"
+          },
+          "entry_high": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Entry High",
+            "type": "string"
+          },
+          "entry_low": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Entry Low",
+            "type": "string"
+          },
+          "inherited_barriers": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExitBarrierSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "instrument_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "invalidation_stop": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Invalidation Stop",
+            "type": "string"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id"
+          },
+          "snapshot_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "sub_account_id": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "title": "Sub Account Id",
+            "type": "string"
+          },
+          "take_profit": {
+            "items": {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Take Profit",
+            "type": "array"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          }
+        },
+        "required": [
+          "sub_account_id",
+          "instrument_id",
+          "snapshot_id",
+          "direction",
+          "entry_low",
+          "entry_high",
+          "invalidation_stop",
+          "take_profit"
+        ],
+        "title": "DraftContent",
+        "type": "object"
+      },
+      "DraftDeliveryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "instrument_id": {
+            "title": "Instrument Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instrument_id"
+        ],
+        "title": "DraftDeliveryRequest",
+        "type": "object"
+      },
+      "DraftEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/DraftContent"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "content"
+        ],
+        "title": "DraftEdit",
+        "type": "object"
+      },
+      "DraftEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "bars": {
+            "items": {
+              "$ref": "#/components/schemas/CompactBar"
+            },
+            "title": "Bars",
+            "type": "array"
+          },
+          "current_bar": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CompactBar"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cutoff_ts": {
+            "title": "Cutoff Ts",
+            "type": "integer"
+          },
+          "instrument_id": {
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "title": "Snapshot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "instrument_id",
+          "cutoff_ts",
+          "bars"
+        ],
+        "title": "DraftEvidence",
+        "type": "object"
+      },
+      "DraftReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "draft_id": {
+            "title": "Draft Id",
+            "type": "string"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "draft_id",
+          "version",
+          "accepted"
+        ],
+        "title": "DraftReceipt",
+        "type": "object"
+      },
+      "DraftRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "claimed": {
+            "title": "Claimed",
+            "type": "boolean"
+          },
+          "content": {
+            "$ref": "#/components/schemas/DraftContent"
+          },
+          "content_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "draft_id": {
+            "title": "Draft Id",
+            "type": "string"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DraftReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "STAGED",
+              "MODIFIED",
+              "CONFIRMED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "draft_id",
+          "version",
+          "content_hash",
+          "content",
+          "status",
+          "claimed"
+        ],
+        "title": "DraftRecord",
+        "type": "object"
+      },
       "DrawingClearResponse": {
         "additionalProperties": false,
         "description": "按 Instrument 清理的软删除计数。",
@@ -2551,6 +2934,47 @@
           "label"
         ],
         "title": "EvidenceRef",
+        "type": "object"
+      },
+      "ExitBarrierSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "max_holding_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Holding Ms",
+            "type": "integer"
+          },
+          "stop": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Stop",
+            "type": "string"
+          },
+          "take_profit": {
+            "items": {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Take Profit",
+            "type": "array"
+          },
+          "trailing_stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrailingStopSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "stop",
+          "take_profit",
+          "max_holding_ms"
+        ],
+        "title": "ExitBarrierSpec",
         "type": "object"
       },
       "FeedHealthEvent": {
@@ -3438,6 +3862,166 @@
           "operator"
         ],
         "title": "OperatorRequest",
+        "type": "object"
+      },
+      "PaperAccountView": {
+        "additionalProperties": false,
+        "properties": {
+          "fills": {
+            "items": {
+              "$ref": "#/components/schemas/PaperFill"
+            },
+            "title": "Fills",
+            "type": "array"
+          },
+          "positions": {
+            "items": {
+              "$ref": "#/components/schemas/PaperRound"
+            },
+            "title": "Positions",
+            "type": "array"
+          },
+          "rounds": {
+            "items": {
+              "$ref": "#/components/schemas/PaperRound"
+            },
+            "title": "Rounds",
+            "type": "array"
+          },
+          "sub_account_id": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "title": "Sub Account Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sub_account_id",
+          "positions",
+          "rounds",
+          "fills"
+        ],
+        "title": "PaperAccountView",
+        "type": "object"
+      },
+      "PaperFill": {
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "instrument_id": {
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "ENTRY_FILLED",
+              "EXIT_FILLED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "price": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Price",
+            "type": "string"
+          },
+          "quantity": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "round_id": {
+            "title": "Round Id",
+            "type": "string"
+          },
+          "ts_event": {
+            "title": "Ts Event",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "event_id",
+          "round_id",
+          "instrument_id",
+          "kind",
+          "ts_event",
+          "quantity",
+          "price"
+        ],
+        "title": "PaperFill",
+        "type": "object"
+      },
+      "PaperRound": {
+        "additionalProperties": false,
+        "properties": {
+          "barriers": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExitBarrierSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "direction": {
+            "$ref": "#/components/schemas/Direction"
+          },
+          "instrument_id": {
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
+          },
+          "quantity": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Quantity",
+            "type": "string"
+          },
+          "round_id": {
+            "title": "Round Id",
+            "type": "string"
+          },
+          "stop": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Stop",
+            "type": "string"
+          },
+          "sub_account_id": {
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "title": "Sub Account Id",
+            "type": "string"
+          },
+          "take_profit": {
+            "default": [],
+            "items": {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            "title": "Take Profit",
+            "type": "array"
+          }
+        },
+        "required": [
+          "round_id",
+          "sub_account_id",
+          "instrument_id",
+          "direction",
+          "quantity",
+          "stop"
+        ],
+        "title": "PaperRound",
         "type": "object"
       },
       "PrecisionTier": {
@@ -4997,6 +5581,27 @@
           "timeframes"
         ],
         "title": "SnapshotRequest",
+        "type": "object"
+      },
+      "TrailingStopSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "activation_pct": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Activation Pct",
+            "type": "string"
+          },
+          "distance_pct": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Distance Pct",
+            "type": "string"
+          }
+        },
+        "required": [
+          "activation_pct",
+          "distance_pct"
+        ],
+        "title": "TrailingStopSpec",
         "type": "object"
       },
       "UsageReport": {
@@ -7689,6 +8294,414 @@
           }
         },
         "summary": "Compute Operator"
+      }
+    },
+    "/api/paper/accounts": {
+      "get": {
+        "operationId": "accounts_api_paper_accounts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+                    "type": "string"
+                  },
+                  "title": "Response Accounts Api Paper Accounts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Accounts"
+      }
+    },
+    "/api/paper/accounts/{account}": {
+      "get": {
+        "operationId": "ledger_api_paper_accounts__account__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Account",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaperAccountView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ledger"
+      }
+    },
+    "/api/paper/accounts/{account}/draft-receipt": {
+      "post": {
+        "operationId": "acknowledge_api_paper_accounts__account__draft_receipt_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Account",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftReceipt"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge"
+      }
+    },
+    "/api/paper/accounts/{account}/next-draft": {
+      "post": {
+        "operationId": "next_draft_api_paper_accounts__account__next_draft_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "title": "Account",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftDeliveryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ConfirmedDraft"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Next Draft Api Paper Accounts  Account  Next Draft Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Next Draft"
+      }
+    },
+    "/api/paper/barriers": {
+      "get": {
+        "operationId": "barriers_api_paper_barriers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "instrument",
+            "required": true,
+            "schema": {
+              "title": "Instrument",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PaperRound"
+                  },
+                  "title": "Response Barriers Api Paper Barriers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Barriers"
+      }
+    },
+    "/api/paper/draft-evidence": {
+      "post": {
+        "operationId": "freeze_draft_api_paper_draft_evidence_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnapshotRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftEvidence"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Freeze Draft"
+      }
+    },
+    "/api/paper/drafts": {
+      "get": {
+        "operationId": "drafts_api_paper_drafts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DraftRecord"
+                  },
+                  "title": "Response Drafts Api Paper Drafts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Drafts"
+      },
+      "post": {
+        "operationId": "save_api_paper_drafts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftContent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save"
+      }
+    },
+    "/api/paper/drafts/{draft_id}": {
+      "put": {
+        "operationId": "edit_api_paper_drafts__draft_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "title": "Draft Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit"
+      }
+    },
+    "/api/paper/drafts/{draft_id}/confirm": {
+      "post": {
+        "operationId": "confirm_api_paper_drafts__draft_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "title": "Draft Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftConfirmation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm"
       }
     },
     "/api/scanner/briefings": {

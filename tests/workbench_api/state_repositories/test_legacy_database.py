@@ -147,6 +147,12 @@ def test_legacy_database_round_trips_through_repositories(tmp_path: Path) -> Non
             assert [(row.input_tokens, row.cached_input_tokens) for row in usage] == [
                 (120, None)
             ]
+            from talaria.foundation.paper import DraftContent
+            content = DraftContent(sub_account_id="alpha", instrument_id="BTC-USDT-PERP", snapshot_id="snap_old",
+                                   direction="LONG", entry_low="99", entry_high="100", invalidation_stop="90",
+                                   take_profit=["120"])
+            draft = await queue.run(lambda store: store.paper.save(content, 1000))
+            assert await queue.read(lambda store: store.paper.get(draft.draft_id)) == draft
             assert await queue.submit("note", {}) == 8
 
         async with StateWriterQueue(tmp_path / "fresh"):
@@ -158,6 +164,6 @@ def test_legacy_database_round_trips_through_repositories(tmp_path: Path) -> Non
         assert connection.execute(
             "SELECT payload FROM events WHERE event_id = 7"
         ).fetchone() == ('{"text":"保留"}',)
-    assert _schema(legacy_db) == legacy_schema
-    # 全新库的表、列、索引和外键也必须与旧库使用相同的定义。
-    assert _schema(tmp_path / "fresh" / STATE_DB) == legacy_schema
+    upgraded = _schema(legacy_db)
+    assert set(legacy_schema) <= set(upgraded)
+    assert _schema(tmp_path / "fresh" / STATE_DB) == upgraded

@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 async def _send(websocket: WebSocket, session: StrategySession) -> None:
-    await websocket.send_text(session.ready.model_dump_json())
+    await websocket.send_text(session.ready.model_dump_json(exclude_none=True))
     for offset in range(0, len(session.baseline), 512):
         await websocket.send_json({"type": "baseline", "ids": session.baseline[offset:offset + 512]})
     seq = session.ready.seq
@@ -92,7 +92,7 @@ async def strategy_socket(websocket: WebSocket) -> None:
     try:
         session = await stream.attach(
             request.owner, key, request.after,
-            include_baseline=request.include_baseline,
+            include_baseline=request.include_baseline, report_replay_through=request.report_replay_through,
         )
     except TalariaError as exc:
         await _reject(websocket, exc.code, exc.message)

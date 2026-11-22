@@ -23,6 +23,7 @@ class SubscriptionRequest(ContractModel):
     owner: str = Field(min_length=1, max_length=64)
     after: SubscriptionCursor | None = None
     include_baseline: bool = False
+    report_replay_through: bool = False
     kind: DerivativeKind | None = None
 
 
@@ -31,6 +32,7 @@ class SubscriptionReady(SubscriptionCursor):
     server_ts: int
     started_ts: int
     baseline_count: int = 0
+    replay_through: int | None = None
 
 
 class StrategyBarEvent(ContractModel):

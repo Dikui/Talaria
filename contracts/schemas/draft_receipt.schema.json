@@ -1,0 +1,61 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "title": "Accepted",
+      "type": "boolean"
+    },
+    "draft_id": {
+      "title": "Draft Id",
+      "type": "string"
+    },
+    "plan_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plan Id"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "snapshot_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Snapshot Id"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "draft_id",
+    "version",
+    "accepted"
+  ],
+  "title": "DraftReceipt",
+  "type": "object"
+}

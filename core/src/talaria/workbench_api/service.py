@@ -118,6 +118,12 @@ class WorkbenchService:
             self._key_levels.register(version)
         return meta
 
+    async def create_snapshot_async(self, request: SnapshotRequest) -> SnapshotMeta:
+        meta, versions = await asyncio.to_thread(self._prepare_snapshot, request)
+        for version in versions:
+            self._key_levels.register(version)
+        return meta
+
     def _prepare_snapshot(self, request: SnapshotRequest) -> tuple[SnapshotMeta, list[KeyLevelSet]]:
         if request.mode is SnapshotMode.OBSERVED_REPLAY:
             raise FeatureNotImplementedError(

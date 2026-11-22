@@ -13,7 +13,7 @@ import types
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Iterable, Literal, Union, get_args, get_origin
+from typing import Annotated, Any, Iterable, Literal, TypeAliasType, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -115,6 +115,10 @@ from talaria.foundation.briefings import (
     ScannerBriefing,
 )
 from talaria.foundation.market import InstrumentSpec
+from talaria.foundation.paper import (
+    ExitBarrierSpec, TrailingStopSpec, ConfirmedDraft, DraftConfirmation, DraftContent, DraftDeliveryRequest, DraftEdit, DraftEvidence,
+    DraftReceipt, DraftRecord, PaperAccountView, PaperFill, PaperRound,
+)
 from talaria.foundation.scanner import (
     ScannerConditionKind,
     ScannerEvidence,
@@ -202,6 +206,17 @@ from talaria.foundation.watchlist import (
 SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "temporal_stamp": TemporalStamp,
     "instrument_spec": InstrumentSpec,
+    "confirmed_draft": ConfirmedDraft,
+    "draft_content": DraftContent,
+    "draft_edit": DraftEdit,
+    "draft_evidence": DraftEvidence,
+    "draft_confirmation": DraftConfirmation,
+    "draft_delivery_request": DraftDeliveryRequest,
+    "draft_receipt": DraftReceipt,
+    "draft_record": DraftRecord,
+    "paper_account_view": PaperAccountView,
+    "paper_fill": PaperFill,
+    "paper_round": PaperRound,
     "compact_bar": CompactBar,
     "bars_query": BarsQuery,
     "range_bar": RangeBar,
@@ -537,6 +552,8 @@ def _to_dsh_subset(node: Any) -> Any:
 
 
 def _ts_type(annotation: Any, prop: dict[str, Any]) -> str:
+    if isinstance(annotation, TypeAliasType):
+        return _ts_type(annotation.__value__, prop)
     if get_origin(annotation) is Annotated:
         base, *metadata = get_args(annotation)
         if base is Decimal:
@@ -555,8 +572,8 @@ def _ts_type(annotation: Any, prop: dict[str, Any]) -> str:
         return " | ".join(
             json.dumps(member, ensure_ascii=False) for member in get_args(annotation)
         )
-    if get_origin(annotation) is list:
-        (item_annotation,) = get_args(annotation)
+    if get_origin(annotation) is list or (get_origin(annotation) is tuple and get_args(annotation)[1:] == (Ellipsis,)):
+        item_annotation = get_args(annotation)[0]
         item_prop = prop.get("items", {}) if isinstance(prop, dict) else {}
         item_type = _ts_type(item_annotation, item_prop)
         return f"({item_type})[]" if " | " in item_type else f"{item_type}[]"
@@ -644,7 +661,7 @@ def _render_ts() -> str:
     for enum_type in ENUM_TYPES:
         members = " | ".join(json.dumps(member.value, ensure_ascii=False) for member in enum_type)
         lines.append(f"export type {enum_type.__name__} = {members};\n\n")
-    for model in (*SCHEMA_MODELS.values(), *RULE_NODE_TYPES):
+    for model in (*SCHEMA_MODELS.values(), ExitBarrierSpec, TrailingStopSpec, *RULE_NODE_TYPES):
         schema = _schema_for(model)
         if "$ref" in schema:
             schema = schema["$defs"][model.__name__]

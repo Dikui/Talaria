@@ -103,7 +103,7 @@ function fitIndicatorPanes(chart: Chart, chartHeight: number) {
   const preferredHeight = count >= 4 ? 88 : count >= 3 ? 104 : 132;
   const axisHeight = chart.getSize("x_axis_pane")?.height ?? 0;
   const plotHeight = chartHeight - axisHeight - count * chart.getStyles().separator.size;
-  // 编辑器展开时画布至少 480px，优先给主图留出 320px。
+  // 图表上方的面板展开时画布至少 480px，优先给主图留出 320px。
   const candleHeight = Math.min(320, Math.floor(plotHeight * 0.75));
   const heightPerPane = Math.floor((plotHeight - candleHeight) / count);
   const subHeight = Math.max(1, Math.min(preferredHeight, heightPerPane));

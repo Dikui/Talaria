@@ -12,6 +12,7 @@ from fractions import Fraction
 from threading import RLock
 from types import MappingProxyType
 
+from talaria.account.checkpoint import RuntimeCheckpoint
 from talaria.account.contracts import (
     AccountState,
     ApprovedBarrierAmendment,
@@ -71,6 +72,26 @@ class _FillUpdate:
     remaining_cost: Fraction
 
 
+class _GateCheckpoint(RuntimeCheckpoint):
+    states: dict[str, TradingState]
+    state_reasons: dict[str, str]
+    positions: dict[str, RoundStatus]
+    position_costs: dict[str, tuple[str, Fraction]]
+    pending_reductions: dict[str, Fraction]
+    round_origins: dict[str, RoundStatus]
+    barriers: dict[str, ExitBarrierSpec]
+    plans: dict[str, ApprovedExecutionPlan]
+    submitted_plan_rounds: dict[str, str | None]
+    filled: dict[str, Fraction]
+    amendment_ids: set[str]
+    last_execution_ts: int
+    market_as_of: int
+    marks: dict[str, DerivativePoint]
+    approval_marks: dict[str, DerivativePoint]
+    funding_rates: dict[str, DerivativePoint]
+    audit: dict[str, list[ExecutionEvent]]
+
+
 class ExecutionGate:
     """把策略、人工和 agent 的候选交给同一风控通道。"""
 
@@ -89,6 +110,7 @@ class ExecutionGate:
         self._record = record
         self._allow_late_events = allow_late_events
         self._states = dict.fromkeys(sub_accounts, TradingState.ACTIVE)
+        self._state_reasons: dict[str, str] = {}
         self._approvals = {account: RLock() for account in sub_accounts}
         self._submit_lock = RLock()
         self._positions: dict[str, RoundStatus] = {}
@@ -111,6 +133,30 @@ class ExecutionGate:
         self._start_trading_day = getattr(risk, "start_trading_day", None)
         self._entry_fill_allows = getattr(risk, "entry_fill_allows", None)
         self._market_pack = get_market_pack(DEFAULT_PACK)
+
+    def checkpoint(self) -> dict:
+        return _GateCheckpoint.capture(self)
+
+    def restore_checkpoint(self, state: dict) -> None:
+        _GateCheckpoint.restore(self, state)
+        if self._states.keys() != self._approvals.keys():
+            raise AccountProcessError("检查点所属子账户不符")
+        for account, reason in self._state_reasons.copy().items():
+            if reason == "PAPER_STOPPING":
+                self._states[account] = TradingState.ACTIVE
+                self._state_reasons.pop(account)
+                self._fill.resume_after_stop(account)
+                self._write_event(ExecutionEvent(kind="TRADING_STATE_CHANGED", sub_account_id=account,
+                                                 ts_event=max(self._market_as_of, self._last_execution_ts),
+                                                 reason="PAPER_RESUMED:ACTIVE"))
+
+    def restore_closed_history(self, events: Sequence[ExecutionEvent]) -> None:
+        for event in events:
+            position = event.position
+            if position is not None:
+                self._round_origins.setdefault(position.round_id, position)
+                self._positions[position.round_id] = position
+            self._last_execution_ts = max(self._last_execution_ts, event.ts_event)
 
     def _approval_lock(self, account: str) -> RLock:
         try:
@@ -203,6 +249,10 @@ class ExecutionGate:
                 return RejectedPlanRecord(reason="ADD_ON_ROUND_MISMATCH")
             if position.direction != candidate.direction:
                 return RejectedPlanRecord(reason="OPPOSITE_POSITION_OPEN")
+            if candidate.inherited_barriers is not None:
+                barriers = state.barriers.get(candidate.round_id)
+                if barriers is None or barriers.model_copy(update={"stop": position.stop}) != candidate.inherited_barriers:
+                    return RejectedPlanRecord(reason="ADD_ON_BARRIERS_CHANGED")
         try:
             sizing = self._sizing.size(candidate, state, self._valuation)
         except SizingRejected as exc:
@@ -217,6 +267,8 @@ class ExecutionGate:
         if decision.candidate != candidate or decision.sizing != sizing:
             raise AccountProcessError("风控插件不得更改候选意图或定仓结果")
         with self._submit_lock:
+            if candidate.draft_plan_id is not None:
+                decision = decision.model_copy(update={"plan_id": candidate.draft_plan_id})
             return self._submit_approved(decision)
 
     def _submit_approved(self, decision: ApprovedExecutionPlan) -> PlanReceipt:
@@ -242,6 +294,8 @@ class ExecutionGate:
                 )
                 if decision.barriers is not None:
                     self._barriers[decision.round_id] = decision.barriers
+        if receipt.accepted and candidate.draft_plan_id is not None:
+            return receipt.model_copy(update={"plan_id": decision.plan_id})
         return receipt
 
     def change_barrier(self, request: BarrierChangeRequest) -> BarrierReceipt | RejectedPlanRecord:
@@ -376,6 +430,7 @@ class ExecutionGate:
                 raise AccountProcessError("减风险通道不允许从 HALTED 恢复为 REDUCING")
         for account in accounts:
             self._states[account] = state
+            self._state_reasons[account] = reason
         try:
             self._fill.set_trading_state(sub_account_id, state, reason)
         finally:
@@ -394,6 +449,8 @@ class ExecutionGate:
             for point in points:
                 if point.kind == DerivativeKind.MARK_PRICE and point.value > 0 and point.visible_at(as_of):
                     self._update_observation(self._approval_marks, point)
+                elif point.kind == DerivativeKind.FUNDING_RATE and not point.is_funding_settlement and point.visible_at(as_of):
+                    self._update_observation(self._funding_rates, point)
 
     @staticmethod
     def _update_observation(observations: dict[str, DerivativePoint], point: DerivativePoint) -> None:
