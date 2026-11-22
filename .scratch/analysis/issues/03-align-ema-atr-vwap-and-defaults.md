@@ -134,3 +134,8 @@ DSH_HOME="$talaria_test_dsh" PYTHONPATH="$PWD/core/src" /Users/dikui/Project/Tal
 - v1 迁移已把缺省周期写成显式值。v2 用 v1 标记的时间戳和规则创建时点判断原规则是否早于 Pine 切换。数据库无法还原已迁移规则最初是否显式填写了周期，也无法区分后续修改与触发造成的更新时间变化。
 - 实盘补历史由合成分页连接器和预警回放覆盖。真实交易所和 DSH 浏览器交互未手工验证。
 - 首次 `git add` 被沙箱拒绝，报错为 `Unable to create '/Users/dikui/Project/Talaria/.git/worktrees/analysis-03/index.lock': Operation not permitted`。返工文件均留在 `fix/analysis-03` 工作树，且无新提交哈希。基准为 `af85480`。
+
+**返工合并记录（2026-11-22）**
+
+- 三个返工分支 `fix/data-access-01`、`fix/platform-01`、`fix/analysis-03` 依次并入 main（最后一个合并提交 `33f1bd4`）；`snapshot_builder.py` 冲突按“保留修订选版 + 行情关闭时不回填并报 FEATURE_DISABLED”合并。
+- 合并后复跑：全量 `pytest` → 691 passed, 1 deselected；`talaria contract-check` 零漂移；desk-ui typecheck 通过，163 tests passed。

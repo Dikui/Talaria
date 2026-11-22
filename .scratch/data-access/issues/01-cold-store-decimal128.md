@@ -86,3 +86,8 @@
 - 持续发布循环按任务边界留给 data-access/02。此前已使用旧实现切换且丢失原始归档映射的 decimal128 清单没有可靠映射来源，本次迁移保留尚待迁移的 generation 的原始引用。
 - 未在真实数据目录执行迁移，未运行 `launchctl`。
 - 提交受沙箱阻断。`git add -- <逐文件路径>` 无法在共享 Git 元数据目录创建 `index.lock`（`Operation not permitted`），分支 `fix/data-access-01` 的 HEAD 仍为 `af85480`。
+
+**返工合并记录（2026-11-22）**
+
+- 三个返工分支 `fix/data-access-01`、`fix/platform-01`、`fix/analysis-03` 依次并入 main（最后一个合并提交 `33f1bd4`）；`snapshot_builder.py` 冲突按“保留修订选版 + 行情关闭时不回填并报 FEATURE_DISABLED”合并。
+- 合并后复跑：全量 `pytest` → 691 passed, 1 deselected；`talaria contract-check` 零漂移；desk-ui typecheck 通过，163 tests passed。

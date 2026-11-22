@@ -90,3 +90,9 @@
 - `tests/cli/test_usage_scan_service.py::test_usage_scan_writes_through_running_service`
 
 本单 8 项均已修复。真实 launchd 登录启动、崩溃重启和卸载需按上文人工步骤验证。本轮以 fake runner 验证 launchd 指令，没有访问真实数据目录。
+
+**返工合并记录（2026-11-22）**
+
+- 三个返工分支 `fix/data-access-01`、`fix/platform-01`、`fix/analysis-03` 依次并入 main（最后一个合并提交 `33f1bd4`）；`snapshot_builder.py` 冲突按“保留修订选版 + 行情关闭时不回填并报 FEATURE_DISABLED”合并。
+- 合并后复跑：全量 `pytest` → 691 passed, 1 deselected；`talaria contract-check` 零漂移；desk-ui typecheck 通过，163 tests passed。
+- 取舍：`up` 退出时改为无限期 `worker.join()` 后才释放数据目录锁。若写入线程卡死，进程会一直挂起、launchd 不会重启，需手动结束；换来的是不会出现两个写者。
