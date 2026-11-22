@@ -15,11 +15,11 @@
     "guard.js",
     "*.tool.json",
     "client/index.js",
-    "talaria-desk.patch.yml"
+    "cordis.patch.yml"
   ],
   "dsh": {
     "bundle": {
-      "patch": "./talaria-desk.patch.yml"
+      "patch": "./cordis.patch.yml"
     },
     "client": {
       "platform": "web",

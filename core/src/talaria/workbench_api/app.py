@@ -85,6 +85,7 @@ def create_app(
     app = FastAPI(title="Talaria 分析工作台", version=__version__, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
+        allow_origins=["dsh-app://app"],
         allow_origin_regex=r"^http://(127\.0\.0\.1|localhost)(:\d+)?$",
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],

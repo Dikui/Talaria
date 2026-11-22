@@ -18,7 +18,7 @@ pnpm -C dsh install
 pnpm -C dsh build
 ```
 
-在 macOS 安装 DSH 后，用下面的命令安装工作台插件和登录自启的常驻服务。
+在 macOS 安装 DeepSeek Harness 桌面应用（基线 0.2.2-rc.5）。首次打开应用，让它初始化 `desktop` profile，然后完全退出应用，再安装工作台插件和登录自启的常驻服务。
 
 ```bash
 uv run talaria dsh-install
@@ -26,7 +26,9 @@ uv run talaria service install
 uv run talaria open
 ```
 
-日常用 `talaria open` 进入工作台。DSH 离线时会打开看盘兜底页面，`talaria service status` 会显示宿主状态和日志路径。只需看盘时可用 `talaria service install --solo`。
+日常用 `talaria open` 打开桌面应用，从侧边栏进入图表、预警、扫描和关键位。未安装桌面应用时会打开常驻服务托管的 `/desk`。用 `talaria service status` 查看常驻服务、桌面应用与 Talaria 插件状态。升级已安装的常驻服务时，再运行一次 `talaria service install` 更新 launchd 作业。
+
+如果常驻服务使用自定义数据目录，给 `dsh-install`、`service install` 和 `open` 传入同一个 `--data-dir`。省略时，`dsh-install` 和 `open` 依次读取 `TALARIA_DATA_DIR`、默认 launchd 作业及 `./.talaria`。
 
 ### 离线确定性样本
 
@@ -112,7 +114,7 @@ uv run talaria up --solo --pack crypto_perp --history-base-url https://api.bybit
 
 `--history-base-url` 可覆盖市场包默认的历史接口地址，`--bybit-base-url` 仍可作为兼容别名使用。`talaria up` 只接受回环 IP，工作台端口默认 8765。
 
-省略 `--solo` 时，`talaria up --pack crypto_perp` 同时尝试启动 `talaria-desk` DSH 宿主（默认端口 8766）。可用 `talaria dsh-install` 安装工作台插件。DSH 缺失或启动失败时，`/api/collaboration` 显示离线，`/desk` 继续提供本地看盘。
+开发和自动化测试可先运行 `talaria dsh-install --dsh-profile talaria-desk`，再运行 `talaria up --pack crypto_perp` 启动服务与独立 DSH Web 宿主（默认端口 8766）。用终端打印的宿主地址进入开发工作台。宿主离线时，`/desk` 继续提供本地看盘。
 
 ## 实时流与本地回放
 

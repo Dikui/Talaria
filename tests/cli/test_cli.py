@@ -544,3 +544,48 @@ def test_up_dual_keeps_fast_path_when_dsh_binary_missing(tmp_path: Path) -> None
             process.wait(timeout=5)
     output = process.stdout.read() if process.stdout is not None else ""
     assert "DSH 协同宿主：离线" in output
+
+
+@pytest.mark.spec
+def test_solo_service_publishes_private_bridge_credentials_until_shutdown(tmp_path, monkeypatch):
+    # platform/04: coordinate the fake Uvicorn server with the real CLI lifecycle.
+    bridge = bridge_descriptor_path(tmp_path)
+
+    def run_server(server):
+        server.started = True
+        _wait_for(bridge.is_file, timeout=1)
+        descriptor = read_service_descriptor(tmp_path)
+        assert json.loads(bridge.read_text()) == {
+            "version": 1,
+            "base_url": descriptor.base_url,
+            "token": descriptor.token,
+            "daemon_pid": descriptor.pid,
+            "created_at": json.loads(bridge.read_text())["created_at"],
+        }
+        assert bridge.stat().st_mode & 0o777 == 0o600
+
+    monkeypatch.setattr(uvicorn.Server, "run", run_server)
+    assert main(["up", "--solo", "--data-dir", str(tmp_path)]) == 0
+    assert not bridge.exists()
+
+
+@pytest.mark.spec
+def test_solo_service_finds_desktop_collaboration_after_it_starts(tmp_path, monkeypatch):
+    desktop = tmp_path / "runtime/dsh-desktop.json"
+    base_url = "http://127.0.0.1:32190"
+
+    def run_server(server):
+        server.started = True
+        client = TestClient(server.config.app)
+        assert client.get("/api/collaboration").json()["host"] != "online"
+        desktop.parent.mkdir(exist_ok=True)
+        desktop.write_text(json.dumps({"base_url": base_url, "pid": os.getpid()}))
+        online = client.get("/api/collaboration").json()
+        assert online["host"] == "online"
+        assert online["url"] == base_url
+        desktop.write_text(json.dumps({"base_url": "http://remote.example", "pid": os.getpid()}))
+        assert client.get("/api/collaboration").json()["host"] != "online"
+        desktop.unlink()
+
+    monkeypatch.setattr(uvicorn.Server, "run", run_server)
+    assert main(["up", "--solo", "--data-dir", str(tmp_path)]) == 0

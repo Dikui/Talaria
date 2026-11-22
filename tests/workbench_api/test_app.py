@@ -429,3 +429,15 @@ def test_failed_cold_history_submission_does_not_fail_chart_or_block_retry(
     assert "history submission failed" in caplog.text
     instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
     assert len(ColdReader(settings.data_dir).read_bars(instrument, "1m")) == 10
+
+
+@pytest.mark.spec
+def test_dsh_desktop_origin_can_make_authorized_fast_path_requests(client) -> None:
+    origin = "dsh-app://app"
+    response = client.options("/api/collaboration/consult", headers={
+        "Origin": origin,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization,content-type",
+    })
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin

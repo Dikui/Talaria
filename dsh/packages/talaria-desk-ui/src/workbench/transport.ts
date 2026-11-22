@@ -18,13 +18,15 @@ export function openBroadcastTransport() {
 
 /** Use the resident-service origin for the same BroadcastChannel as the fallback pages. */
 export function connectEmbeddedRelay(): void {
-  if (window.parent === window || !document.referrer) return;
-  const parent = new URL(document.referrer);
-  if (!["127.0.0.1", "localhost", "[::1]"].includes(parent.hostname)) return;
+  if (window.parent === window) return;
+  const referrer = document.referrer ? new URL(document.referrer) : null;
+  const webOrigin = referrer && ["127.0.0.1", "localhost", "[::1]"].includes(referrer.hostname)
+    ? referrer.origin : null;
 
   window.addEventListener("message", function connect(event) {
     if (
-      event.source !== window.parent || event.origin !== parent.origin ||
+      event.source !== window.parent ||
+      (event.origin !== "dsh-app://app" && event.origin !== webOrigin) ||
       event.data !== LINK_CONNECT || event.ports.length !== 1
     ) return;
     window.removeEventListener("message", connect);

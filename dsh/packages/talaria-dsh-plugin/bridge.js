@@ -1,8 +1,7 @@
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { isIPv4 } from 'node:net'
 import { homedir } from 'node:os'
-import { isAbsolute, resolve } from 'node:path'
-
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+import { resolve } from 'node:path'
 
 export class BridgeError extends Error {
   constructor(message, options = {}) {
@@ -14,12 +13,12 @@ export class BridgeError extends Error {
 }
 
 function credentialCandidates(config) {
-  const candidates = []
-  if (config.credentialFile) candidates.push(resolve(config.credentialFile))
-  if (process.env.TALARIA_DSH_BRIDGE) candidates.push(resolve(process.env.TALARIA_DSH_BRIDGE))
-  candidates.push(resolve(config.cwd ?? process.cwd(), '.talaria/runtime/dsh-bridge.json'))
-  candidates.push(resolve(homedir(), '.talaria/runtime/dsh-bridge.json'))
-  return [...new Set(candidates)]
+  const configured = process.env.TALARIA_DSH_BRIDGE || config.credentialFile
+  if (configured) return [resolve(configured)]
+  return [...new Set([
+    resolve(config.cwd ?? process.cwd(), '.talaria/runtime/dsh-bridge.json'),
+    resolve(homedir(), '.talaria/runtime/dsh-bridge.json'),
+  ])]
 }
 
 function assertLoopback(baseUrl) {
@@ -29,7 +28,10 @@ function assertLoopback(baseUrl) {
   } catch (error) {
     throw new BridgeError(`Talaria 桥接 base_url 无效：${baseUrl}`, { code: 'TALARIA_BRIDGE_CONFIG', cause: error })
   }
-  if (url.protocol !== 'http:' || !LOOPBACK_HOSTS.has(url.hostname)) {
+  const { hostname } = url
+  const loopback = hostname === 'localhost' || hostname === '[::1]'
+    || (isIPv4(hostname) && hostname.startsWith('127.'))
+  if (url.protocol !== 'http:' || !loopback || url.username || url.password) {
     throw new BridgeError(
       `Talaria 桥接必须使用回环 HTTP 地址，收到 ${url.origin}；拒绝非本机地址。`,
       { code: 'TALARIA_BRIDGE_CONFIG' },
@@ -58,7 +60,7 @@ function readCredential(config) {
         cause: error,
       })
     }
-    if (typeof parsed.base_url !== 'string' || typeof parsed.token !== 'string' || parsed.token.length === 0) {
+    if (!parsed || typeof parsed.base_url !== 'string' || typeof parsed.token !== 'string' || parsed.token.length === 0) {
       throw new BridgeError(`Talaria 桥接凭据缺少 base_url/token：${path}`, {
         code: 'TALARIA_BRIDGE_CONFIG',
       })
@@ -66,8 +68,7 @@ function readCredential(config) {
     return parsed
   }
   throw new BridgeError(
-    '未找到 Talaria 桥接凭据。请先运行 talaria up（会写入 .talaria/runtime/dsh-bridge.json），'
-      + '或设置 TALARIA_DSH_BRIDGE 指向该文件。',
+    'Talaria 常驻服务离线：未找到桥接凭据。请运行 talaria service install 或 talaria up。',
     { code: 'TALARIA_BRIDGE_UNAVAILABLE' },
   )
 }
@@ -78,30 +79,14 @@ function readCredential(config) {
  */
 export function createBridge(config = {}) {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch
-  const cache = { path: null, mtimeMs: 0, value: null }
-
   function credential() {
-    if (config.baseUrl && config.token) return { base_url: config.baseUrl, token: config.token }
-    for (const path of credentialCandidates(config)) {
-      let stat
-      try {
-        stat = statSync(path)
-      } catch {
-        continue
-      }
-      if (cache.path !== path || cache.mtimeMs !== stat.mtimeMs || cache.value === null) {
-        cache.path = path
-        cache.mtimeMs = stat.mtimeMs
-        cache.value = readCredential({ ...config, credentialFile: path })
-      }
-      return cache.value
-    }
-    return readCredential(config)
+    const { base_url, token } = readCredential(config)
+    return { base_url: assertLoopback(base_url), token }
   }
 
   async function requestJson(method, path, { body, signal } = {}) {
     const credentials = credential()
-    const baseUrl = assertLoopback(credentials.base_url)
+    const baseUrl = credentials.base_url
     let response
     try {
       response = await fetchImpl(`${baseUrl}${path}`, {
@@ -117,7 +102,7 @@ export function createBridge(config = {}) {
     } catch (error) {
       if (error?.name === 'AbortError') throw error
       throw new BridgeError(
-        `无法连接 Talaria 守护进程 ${baseUrl}：请确认 talaria up 仍在运行。`,
+        `无法连接 Talaria 常驻服务 ${baseUrl}：请运行 talaria service install 或 talaria up。`,
         { code: 'TALARIA_BRIDGE_UNAVAILABLE', cause: error },
       )
     }
