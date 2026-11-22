@@ -120,20 +120,20 @@ RSI、BOLL（总体标准差）、SMA 算法已一致，不改。
 
 ```sh
 talaria_test_dsh=$(mktemp -d /tmp/talaria-analysis-03-dsh.XXXXXX)
-DSH_HOME="$talaria_test_dsh" PYTHONPATH="$PWD/core/src" /Users/dikui/Project/Talaria/.venv/bin/pytest tests/perception tests/foundation tests/workbench_api tests/cli tests/evaluation tests/feed -q -p no:cacheprovider
+DSH_HOME="$talaria_test_dsh" PYTHONPATH="$PWD/core/src" .venv/bin/pytest tests/perception tests/foundation tests/workbench_api tests/cli tests/evaluation tests/feed -q -p no:cacheprovider
 ```
 
 - 全范围结果为 `6 failed, 611 passed, 1 skipped, 1 warning, 1 error in 22.52s`。6 个失败和 1 个 fixture 错误均由沙箱拒绝绑定回环套接字导致。
 - 同一命令用 `--deselect` 排除上述 7 个用例后，结果为 `611 passed, 1 skipped, 7 deselected, 1 warning in 20.96s`。排除项为 `test_host_dispatch_ignores_ambient_http_proxy`、`test_up_dual_keeps_fast_path_when_dsh_fails`、`test_up_dual_keeps_fast_path_when_dsh_binary_missing`、`test_host_starts_probes_and_stops_with_redacted_log`、`test_sigterm_shuts_down_gracefully`、`test_usage_scan_fails_closed_when_service_endpoint_is_unreachable`、`test_usage_scan_writes_through_running_service`。临时 DSH 目录下无已安装插件，实际 profile 快照测试跳过。
 - `cd dsh && pnpm --filter @talaria/desk-ui typecheck && pnpm --filter @talaria/desk-ui test` 通过，22 个文件、163 项测试。
-- `PYTHONPATH="$PWD/core/src" /Users/dikui/Project/Talaria/.venv/bin/python -m tests.foundation.operators.pine_reference --write` 已重生成向量。使用同一 `PYTHONPATH` 执行 `/Users/dikui/Project/Talaria/.venv/bin/talaria contract-check --write`，并再次运行 `contract-check` 确认零漂移。同步 DSH 工具副本和 OpenAPI 快照。
+- `PYTHONPATH="$PWD/core/src" .venv/bin/python -m tests.foundation.operators.pine_reference --write` 已重生成向量。使用同一 `PYTHONPATH` 执行 `.venv/bin/talaria contract-check --write`，并再次运行 `contract-check` 确认零漂移。同步 DSH 工具副本和 OpenAPI 快照。
 - `git diff --check` 通过。
 
 **假设与未验证项**
 
 - v1 迁移已把缺省周期写成显式值。v2 用 v1 标记的时间戳和规则创建时点判断原规则是否早于 Pine 切换。数据库无法还原已迁移规则最初是否显式填写了周期，也无法区分后续修改与触发造成的更新时间变化。
 - 实盘补历史由合成分页连接器和预警回放覆盖。真实交易所和 DSH 浏览器交互未手工验证。
-- 首次 `git add` 被沙箱拒绝，报错为 `Unable to create '/Users/dikui/Project/Talaria/.git/worktrees/analysis-03/index.lock': Operation not permitted`。返工文件均留在 `fix/analysis-03` 工作树，且无新提交哈希。基准为 `af85480`。
+- 首次 `git add` 被沙箱拒绝，报错为 `Unable to create '.git/worktrees/analysis-03/index.lock': Operation not permitted`。返工文件均留在 `fix/analysis-03` 工作树，且无新提交哈希。基准为 `af85480`。
 
 **返工合并记录（2026-11-22）**
 

@@ -64,7 +64,7 @@
 
 **实际运行命令和结果**
 
-以下 pytest 命令均从本 worktree 执行，命令前缀为 `PYTHONPATH=/Users/dikui/Project/Talaria-wt/data-access-01/core/src /Users/dikui/Project/Talaria/.venv/bin/pytest`。
+以下 pytest 命令均从本 worktree 执行，命令前缀为 `PYTHONPATH=core/src .venv/bin/pytest`。
 
 | 前缀后的参数 | 实际结果 |
 | --- | --- |
@@ -79,7 +79,7 @@
 
 首次指定范围测试中，DSH 现装配置用例尝试写入本机 Profile，被沙箱拒绝。隔离 `DSH_HOME` 后该用例跳过，其余 6 个失败及 1 个 setup error 均为沙箱拒绝绑定回环端口。任务相关回归用例全部通过。
 
-`PYTHONPATH=/Users/dikui/Project/Talaria-wt/data-access-01/core/src /Users/dikui/Project/Talaria/.venv/bin/python -c 'from talaria.cli.main import main; raise SystemExit(main())' contract-check` 输出「契约生成物零漂移。」。`git diff --check` 通过。
+`PYTHONPATH=core/src .venv/bin/python -c 'from talaria.cli.main import main; raise SystemExit(main())' contract-check` 输出「契约生成物零漂移。」。`git diff --check` 通过。
 
 **未修项与未验证项**
 
