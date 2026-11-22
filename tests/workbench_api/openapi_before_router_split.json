@@ -5683,6 +5683,26 @@
             }
           },
           {
+            "description": "策略重同步。核对范围中已有的历史柱，要求从此事件时间起连续覆盖，返回范围内全部可见确认修订。",
+            "in": "query",
+            "name": "resync_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "策略重同步。核对范围中已有的历史柱，要求从此事件时间起连续覆盖，返回范围内全部可见确认修订。",
+              "title": "Resync From"
+            }
+          },
+          {
             "description": "策略重同步用。按可获取时间下界（含）返回全部已确认修订，仅为该时刻附近及之后的范围补历史。",
             "in": "query",
             "name": "available_since",
@@ -5741,6 +5761,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "范围重取不完整，可以重试"
           },
           "504": {
             "content": {

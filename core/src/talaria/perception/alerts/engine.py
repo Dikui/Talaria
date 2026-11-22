@@ -317,6 +317,10 @@ class AlertEngine:
             drawing = self._drawings.get(drawing_id)
         return drawing
 
+    def suspend_channel(self, key: tuple[str, str]) -> None:
+        """配额退订或行情断流后，等待 LIVE 并重新建立求值基线。"""
+        self._stale.add(key)
+
     def _handle_health(self, event: FeedHealthEvent) -> None:
         key = (event.instrument_id, event.timeframe)
         if event.status is FeedHealthStatus.LIVE:
@@ -332,7 +336,7 @@ class AlertEngine:
                         runtime.level_breakout = None
                         runtime.level_breakout_ts = None
             return
-        self._stale.add(key)
+        self.suspend_channel(key)
 
     def _store_event_bars(self, event: FeedEvent) -> None:
         if not isinstance(event, KlineEvent):

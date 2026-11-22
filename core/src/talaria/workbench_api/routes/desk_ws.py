@@ -54,20 +54,24 @@ async def desk_socket(websocket: WebSocket) -> None:
     await websocket.accept()
     runtime = get_runtime(websocket)
     supervisor = runtime.supervisor
+    scheduler = runtime.subscription_scheduler
+    subscriptions: set[tuple[str, str]] = set()
+    denied = scheduler.denied_alerts if scheduler is not None else []
     await websocket.send_json(
         {
             "type": "hello",
+            "denied_alerts": denied,
             "feed_mode": runtime.workbench.feed_mode,
             "server_ts": websocket.app.state.settings.now_ms(),
             "live": supervisor is not None,
         }
     )
-    scheduler = runtime.subscription_scheduler
+    queue = runtime.desk.attach(subscriptions)
+    if scheduler is not None and scheduler.denied_alerts != denied:
+        enqueue(queue, {"type": "alert_quota", "denied_alerts": scheduler.denied_alerts})
     watchlist = runtime.watchlist
     valid_ids = {spec.instrument_id for spec in runtime.workbench.instruments()}
-    subscriptions: set[tuple[str, str]] = set()
     retainers = runtime.desk.chart_subscribers
-    queue = runtime.desk.attach(subscriptions)
 
     async def rebalance_watchlist() -> None:
         with contextlib.suppress(TalariaError):
@@ -125,6 +129,9 @@ async def desk_socket(websocket: WebSocket) -> None:
                             {
                                 "type": "error",
                                 "code": exc.code,
+                                "owner": "chart",
+                                "instrument_id": instrument_id,
+                                "timeframe": timeframe,
                                 "message": exc.message,
                             }
                         )

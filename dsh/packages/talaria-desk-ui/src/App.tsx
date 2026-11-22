@@ -706,6 +706,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
           </div>
         )}
 
+        {stream.chartQuotaDenied && <p role="status">图表实时行情配额不足，正在等待重订。</p>}
         <FeedAlert
           health={stream.feedHealth}
           now={stream.now}
@@ -722,6 +723,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
         {rightTab === "alerts" && (
           <AlertPanel
             controller={alerts}
+            deniedAlerts={stream.deniedAlerts}
             instruments={instruments}
             drawings={drawings.drawings}
             currentInstrument={instrumentId}

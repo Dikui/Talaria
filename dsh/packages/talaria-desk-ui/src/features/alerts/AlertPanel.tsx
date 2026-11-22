@@ -53,6 +53,7 @@ export interface AlertFormSeed {
 }
 
 export interface AlertPanelProps {
+  deniedAlerts?: string[];
   controller: AlertsController;
   instruments: InstrumentSpec[];
   drawings: DrawingRecord[];
@@ -65,6 +66,7 @@ export interface AlertPanelProps {
 }
 
 export function AlertPanel({
+  deniedAlerts = [],
   controller,
   instruments,
   drawings,
@@ -631,6 +633,7 @@ export function AlertPanel({
             <AlertCard
               key={alert.alert_id}
               alert={alert}
+              quotaDenied={deniedAlerts.includes(alert.alert_id)}
               drawings={drawings}
               now={now}
               controller={controller}
@@ -682,6 +685,7 @@ export function AlertPanel({
 }
 
 interface AlertCardProps {
+  quotaDenied: boolean;
   alert: AlertRecord;
   drawings: DrawingRecord[];
   now: number;
@@ -689,7 +693,7 @@ interface AlertCardProps {
   onEdit: () => void;
 }
 
-function AlertCard({ alert, drawings, now, controller, onEdit }: AlertCardProps) {
+function AlertCard({ quotaDenied, alert, drawings, now, controller, onEdit }: AlertCardProps) {
   const kind = drawingKindFor(alert.condition.drawing_id ?? "", drawings);
   return (
     <article
@@ -699,7 +703,7 @@ function AlertCard({ alert, drawings, now, controller, onEdit }: AlertCardProps)
     >
       <header className="alert-item-head">
         <span className={`alert-status alert-status--${alert.status.toLowerCase()}`}>
-          {ALERT_STATUS_LABELS[alert.status]}
+          {quotaDenied ? "配额不足、未在监听" : ALERT_STATUS_LABELS[alert.status]}
         </span>
         <span className="alert-instrument">
           {alert.instrument_id} · {alert.timeframe}

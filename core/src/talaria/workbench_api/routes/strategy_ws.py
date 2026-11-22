@@ -19,6 +19,8 @@ router = APIRouter()
 
 async def _send(websocket: WebSocket, session: StrategySession) -> None:
     await websocket.send_text(session.ready.model_dump_json())
+    for offset in range(0, len(session.baseline), 512):
+        await websocket.send_json({"type": "baseline", "ids": session.baseline[offset:offset + 512]})
     seq = session.ready.seq
     for event in session.replay:
         await websocket.send_text(event.model_dump_json())
@@ -77,7 +79,10 @@ async def strategy_socket(websocket: WebSocket) -> None:
         await _reject(websocket, "VALIDATION_ERROR", f"不支持的周期：{request.timeframe}")
         return
     try:
-        session = stream.attach(request.owner, (request.instrument, request.timeframe), request.after)
+        session = await stream.attach(
+            request.owner, (request.instrument, request.timeframe), request.after,
+            include_baseline=request.include_baseline,
+        )
     except TalariaError as exc:
         await _reject(websocket, exc.code, exc.message)
         return

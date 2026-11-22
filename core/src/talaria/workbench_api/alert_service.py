@@ -136,7 +136,9 @@ class AlertService:
         return {
             alert.alert_id: (alert.instrument_id, alert.timeframe)
             for alert in self._engine.list_alerts()
-            if alert.status in {AlertStatus.ARMED, AlertStatus.COOLDOWN}
+            if alert.status is AlertStatus.ARMED or (
+                alert.status is AlertStatus.COOLDOWN and alert.condition.kind is AlertConditionKind.LEVEL_EVENT
+            )
         }
 
     def active_key_level_pairs(self) -> set[tuple[str, str]]:

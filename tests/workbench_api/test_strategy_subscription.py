@@ -451,3 +451,460 @@ def test_cursor_requires_resync_after_upstream_channel_was_released(tmp_path):
             await scenario()
 
     asyncio.run(run())
+
+
+# 审查修复，data-access/06。ASGI 替代 TCP，REST 替身模拟离线期间的交易所。
+def raw_bar(ts=BASE, price="100", revision=0):
+    from talaria.foundation.connector import RawBar
+    from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+
+    value = Decimal(price)
+    return RawBar(
+        symbol=CRYPTO_PERP_PACK.instrument(BTC).symbol, timeframe="1m", ts_event=ts,
+        open=value, high=value, low=value, close=value, volume=Decimal(2), turnover=value * 2,
+        ts_available=ts + MINUTE, ts_ingested=ts + MINUTE, ts_committed=ts + MINUTE,
+        revision=revision,
+    )
+
+
+def archive(config, *bars):
+    from contextlib import closing
+    from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+    from talaria.perception.cold_store import ColdBatch, ColdStore
+
+    with closing(ColdStore(config.data_dir)) as store:
+        store.publish(ColdBatch(CRYPTO_PERP_PACK.instrument(BTC), "1m", bars))
+
+
+def range_params(ts, **extra):
+    return {"instrument": BTC, "timeframe": "1m", "start": ts, "end": ts, **extra}
+
+
+@pytest.mark.regression
+def test_sdk_sees_successive_old_corrections_with_archived_revision_offset(tmp_path, monkeypatch):
+    # One-slot hot tail reproduces immediate eviction of an old corrected slot.
+    from talaria import sdk
+    from talaria.perception.hot_buffer import HotStreamBuffer
+
+    original = HotStreamBuffer.__init__
+    monkeypatch.setattr(HotStreamBuffer, "__init__", lambda self, **kw: original(
+        self, **kw, max_bars_per_series=1,
+    ))
+    config = settings(tmp_path)
+    archive(config, raw_bar(revision=12))
+    app = create_app(config)
+
+    async def run():
+        async with app.router.lifespan_context(app), httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            install_sdk_transport(monkeypatch, app, lambda *a, **kw: asgi_socket(app))
+            async with aclosing(sdk.subscribe(BTC, "1m", data_dir=config.data_dir)) as events:
+                pending = asyncio.create_task(anext(events))
+                runtime = app.state.runtime
+                await wait_for_channel(runtime, "1m")
+                runtime.supervisor.ingest(kline(BASE + MINUTE))
+                await asyncio.wait_for(pending, 2)
+                for rev, value in [(13, "101"), (14, "102")]:
+                    runtime.supervisor.ingest(kline(value=value))
+                    event = await asyncio.wait_for(anext(events), 2)
+                    bars = (await client.get("/api/bars", params=range_params(BASE))).json()["bars"]
+                    assert (event.bar.revision, event.bar.close) == (rev, Decimal(value))
+                    assert bars == [event.bar.model_dump(mode="json")]
+    asyncio.run(run())
+
+
+@pytest.mark.regression
+def test_recovered_close_uses_receipt_of_ws_correction_before_and_after_publish(tmp_path, monkeypatch):
+    from threading import Event
+    from talaria.perception.cold_store import ColdStore
+
+    entered, release = Event(), Event()
+    publish = ColdStore.publish
+    def hold(store, batch):
+        entered.set()
+        assert release.wait(5)
+        return publish(store, batch)
+    monkeypatch.setattr(ColdStore, "publish", hold)
+    now = BASE + MINUTE + 3_000
+    config = replace(settings(tmp_path, cold_store=True), now_ms=lambda: now)
+    app = create_app(config)
+    with TestClient(app) as client, client.websocket_connect("/ws/strategy", headers=AUTH) as ws:
+        ws.send_json(request())
+        ws.receive_json()
+        supervisor = app.state.runtime.supervisor
+        try:
+            client.portal.call(lambda: supervisor.transport_restored(backfill=[raw_bar()]))
+            assert entered.wait(2)
+            assert ws.receive_json()["bar"]["ts_available"] == BASE + MINUTE
+            client.portal.call(supervisor.ingest, kline(value="101"))
+            update = ws.receive_json()["bar"]
+            assert update["ts_available"] == now
+        finally:
+            release.set()
+    with TestClient(create_app(config)) as client:
+        assert client.get("/api/bars", params=range_params(BASE)).json()["bars"] == [update]
+
+
+@pytest.mark.regression
+def test_http_fill_is_delivered_even_when_ws_confirms_identical_content(tmp_path, fixture_dir, monkeypatch):
+    from talaria.packs.testing import FixtureConnector
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", lambda *a, **kw: [raw_bar()])
+    app = create_app(replace(settings(tmp_path, cold_store=True), fixture_dir=fixture_dir))
+
+    async def run():
+        async with app.router.lifespan_context(app), asgi_socket(app) as ws, httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            await ws.send(json.dumps(request()))
+            await ws.recv()
+            bars = (await client.get("/api/bars", params=range_params(BASE))).json()["bars"]
+            assert json.loads(await asyncio.wait_for(ws.recv(), 1))["bar"] == bars[0]
+            app.state.runtime.supervisor.ingest(kline())
+            app.state.runtime.supervisor.ingest(kline(value="101"))
+            assert json.loads(await asyncio.wait_for(ws.recv(), 1))["bar"]["close"] == "101"
+    asyncio.run(run())
+
+
+@pytest.mark.regression
+def test_future_close_waits_until_service_clock_reaches_availability(tmp_path):
+    now = BASE + MINUTE - 20
+    app = create_app(replace(settings(tmp_path), now_ms=lambda: now))
+    async def run():
+        nonlocal now
+        async with app.router.lifespan_context(app), asgi_socket(app) as ws:
+            await ws.send(json.dumps(request()))
+            await ws.recv()
+            app.state.runtime.supervisor.ingest(kline())
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(ws.recv(), .08)
+            now += 20
+            assert json.loads(await asyncio.wait_for(ws.recv(), 1))["bar"]["ts_available"] == now
+    asyncio.run(run())
+
+
+@pytest.mark.regression
+def test_expired_lease_refreshes_existing_exchange_slot_and_diffs_subscription_baseline(
+    tmp_path, fixture_dir, monkeypatch,
+):
+    from talaria import sdk
+    from talaria.packs.testing import FixtureConnector
+    from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+    from talaria.perception.cold_store import ColdBatch
+
+    now = BASE + MINUTE
+    config = replace(settings(tmp_path, cold_store=True), now_ms=lambda: now, fixture_dir=fixture_dir)
+    archive(config, raw_bar())
+    app = create_app(config)
+    exchange = {BASE: raw_bar()}
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", lambda _, end_ts, limit, **kw: [
+        exchange[ts] for ts in sorted(exchange) if ts <= end_ts
+    ][-limit:])
+    monkeypatch.setattr("talaria.workbench_api.strategy_stream.RECONNECT_LEASE_SECONDS", .01)
+
+    async def run():
+        nonlocal now
+        async with app.router.lifespan_context(app):
+            socket = None
+            @asynccontextmanager
+            async def connect(*a, **kw):
+                nonlocal socket
+                async with asgi_socket(app) as socket:
+                    yield socket
+            install_sdk_transport(monkeypatch, app, connect)
+            async with aclosing(sdk.subscribe(BTC, "1m", data_dir=config.data_dir)) as events:
+                pending = asyncio.create_task(anext(events))
+                runtime = app.state.runtime
+                await wait_for_channel(runtime, "1m")
+                now += 1
+                runtime.supervisor.ingest(kline())  # 同值 WS 确认可以比冷库这一版晚到。
+                now += MINUTE - 1
+                exchange[BASE + MINUTE] = raw_bar(BASE + MINUTE)
+                runtime.supervisor.ingest(kline(BASE + MINUTE))
+                assert (await pending).bar.ts_event == BASE + MINUTE
+                await socket.disconnect()
+                while runtime.supervisor.has_channel(BTC, "1m"):
+                    await asyncio.sleep(.01)
+                # 同一个可获取窗口：订阅前的旧值、新回填的更老柱、已落盘槽的新值。
+                older = raw_bar(BASE - 10 * MINUTE, "88")
+                exchange[older.ts_event] = older
+                runtime.cold_store.publish(ColdBatch(CRYPTO_PERP_PACK.instrument(BTC), "1m", [older]))
+                now += 1
+                exchange[BASE] = raw_bar(BASE, "109")
+                received = [await asyncio.wait_for(anext(events), 3) for _ in range(2)]
+                assert [(ev.bar.ts_event, ev.bar.close) for ev in received] == [
+                    (older.ts_event, Decimal(88)), (BASE, Decimal(109)),
+                ]
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                    authoritative = (await client.get("/api/bars", params=range_params(BASE))).json()["bars"]
+                assert authoritative == [received[-1].bar.model_dump(mode="json")]
+    asyncio.run(asyncio.wait_for(run(), 6))
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("preview", [False, True])
+def test_resync_incomplete_history_is_retryable(tmp_path, fixture_dir, monkeypatch, preview):
+    from talaria.packs.testing import FixtureConnector
+
+    def fetch(*args, **kwargs):
+        if preview:
+            return [raw_bar()]
+        raise OSError("offline")
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", fetch)
+    app = create_app(replace(settings(tmp_path, cold_store=True), fixture_dir=fixture_dir))
+    with TestClient(app) as client, client.websocket_connect("/ws/strategy", headers=AUTH) as ws:
+        ws.send_json(request())
+        ws.receive_json()
+        if preview:
+            client.portal.call(app.state.runtime.supervisor.ingest, kline(confirmed=False))
+        response = client.get("/api/bars", params=range_params(BASE, resync_from=BASE))
+        assert response.status_code in (503, 504), response.text
+
+
+@pytest.mark.regression
+def test_restart_delivers_new_content_even_with_same_revision_number(tmp_path, monkeypatch):
+    from talaria import sdk
+    config = settings(tmp_path)
+    apps = [create_app(config), create_app(config)]
+    async def run():
+        active = apps[0]
+        socket = None
+        @asynccontextmanager
+        async def connect(*a, **kw):
+            nonlocal socket
+            async with asgi_socket(active) as socket:
+                yield socket
+        class RangeTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                return await httpx.ASGITransport(app=active).handle_async_request(request)
+
+        install_sdk_transport(monkeypatch, active, connect, transport=RangeTransport())
+        async with aclosing(sdk.subscribe(BTC, "1m", data_dir=config.data_dir)) as events:
+            async with active.router.lifespan_context(active):
+                first = asyncio.create_task(anext(events))
+                await wait_for_channel(active.state.runtime, "1m")
+                active.state.runtime.supervisor.ingest(kline())
+                assert (await first).bar.revision == 0
+                await socket.disconnect()
+            active = apps[1]
+            async with active.router.lifespan_context(active):
+                pending = asyncio.create_task(anext(events))
+                await wait_for_channel(active.state.runtime, "1m")
+                active.state.runtime.supervisor.ingest(kline(value="110"))
+                event = await asyncio.wait_for(pending, 2)
+                assert (event.bar.revision, event.bar.close) == (0, Decimal(110))
+    asyncio.run(asyncio.wait_for(run(), 5))
+
+
+@pytest.mark.regression
+def test_ordinary_alert_releases_quota_during_cooldown(tmp_path, fixture_dir):
+    app = create_app(replace(settings(tmp_path, quota=1), fixture_dir=fixture_dir))
+    with TestClient(app) as client:
+        alert_id = create_5m_alert(client, cooldown_ms=60_000)
+        for i, price in enumerate(["100", "100", "130"]):
+            client.portal.call(app.state.runtime.supervisor.ingest, kline(BASE + i*5*MINUTE, price, timeframe="5m"))
+        client.portal.call(app.state.runtime.alerts.flush)
+        assert client.get("/api/alerts/" + alert_id).json()["status"] == "COOLDOWN"
+        assert not app.state.runtime.supervisor.has_channel(BTC, "5m")
+
+
+@pytest.mark.regression
+def test_evicted_alert_reestablishes_baseline_after_quota_returns(tmp_path, fixture_dir):
+    app = create_app(replace(settings(tmp_path, quota=1), fixture_dir=fixture_dir))
+    with TestClient(app) as client:
+        alert_id = create_5m_alert(client)
+        runtime = app.state.runtime
+        for ts in (BASE - 5*MINUTE, BASE):
+            client.portal.call(runtime.supervisor.ingest, kline(ts, timeframe="5m"))
+        with client.websocket_connect("/ws/desk") as ws:
+            ws.receive_json()
+            ws.send_json({"op": "subscribe", "instrument_id": ETH, "timeframe": "1m"})
+            while ws.receive_json()["type"] != "health":
+                pass
+        assert runtime.supervisor.has_channel(BTC, "5m")
+        client.portal.call(runtime.supervisor.ingest, kline(BASE + 5*MINUTE, "150", timeframe="5m"))
+        assert client.get("/api/alerts/triggers", params={"alert_id": alert_id}).json()["triggers"] == []
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("cold_store", [False, True])
+def test_confirming_after_twenty_thousand_previews_keeps_event_loop_responsive(tmp_path, cold_store, record_property):
+    from time import perf_counter
+    config = settings(tmp_path, cold_store=cold_store)
+    app = create_app(config)
+    async def run():
+        async with app.router.lifespan_context(app), asgi_socket(app) as ws:
+            await ws.send(json.dumps(request()))
+            await ws.recv()
+            runtime = app.state.runtime
+            for i in range(20_000):
+                runtime.supervisor.ingest(kline(value=str(i + 1), confirmed=False))
+            stalls = []
+            async def heartbeat():
+                while True:
+                    start = perf_counter()
+                    await asyncio.sleep(.001)
+                    stalls.append(perf_counter() - start)
+            timer = asyncio.create_task(heartbeat())
+            await asyncio.sleep(0)
+            try:
+                runtime.supervisor.ingest(kline())
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                    message, response = await asyncio.wait_for(asyncio.gather(
+                        ws.recv(), client.get("/api/bars", params=range_params(BASE)),
+                    ), 3)
+                assert response.json()["bars"] == [json.loads(message)["bar"]]
+                await asyncio.sleep(.002)
+                record_property("max_stall_ms", round(max(stalls) * 1000, 2))
+                assert max(stalls) < .015
+            finally:
+                timer.cancel()
+    asyncio.run(run())
+
+
+@pytest.mark.regression
+def test_new_desk_connection_sees_current_alert_quota_denials_and_recovery(tmp_path):
+    app = create_app(settings(tmp_path, quota=1))
+    with TestClient(app) as client, client.websocket_connect("/ws/desk") as chart:
+        chart.receive_json()
+        chart.send_json({"op": "subscribe", "instrument_id": BTC, "timeframe": "1m"})
+        assert chart.receive_json()["type"] == "health"
+        alert_id = create_5m_alert(client)
+        with client.websocket_connect("/ws/desk") as desk:
+            assert desk.receive_json()["denied_alerts"] == [alert_id]
+            chart.send_json({"op": "unsubscribe", "instrument_id": BTC, "timeframe": "1m"})
+            assert desk.receive_json() == {"type": "alert_quota", "denied_alerts": []}
+
+
+@pytest.mark.regression
+def test_partial_range_retries_original_cursor_before_delivering_sorted_revisions(tmp_path, monkeypatch):
+    """先返回一页，再报告下一页回填失败；恢复时第一段也可能已补到更老的柱。"""
+    from talaria import sdk
+    from talaria.foundation.bars import RangeBar
+    from talaria.service_endpoint import DATA_DIR_HEADER, data_dir_id
+    from websockets.exceptions import ConnectionClosedError
+
+    requests = []
+    attempts = 0
+    ready = {"epoch": "first", "seq": 0, "server_ts": BASE, "started_ts": BASE}
+    @asynccontextmanager
+    async def connect(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        class Socket:
+            async def send(self, message):
+                requests.append(json.loads(message)["after"])
+            async def recv(self):
+                if attempts == 1:
+                    if self.handshake:
+                        raise ConnectionClosedError(None, None)
+                    self.handshake = True
+                    return json.dumps({"type": "ready", **ready})
+                return json.dumps({**ready, "type": "resync", "epoch": "next", "seq": 9})
+            handshake = False
+            async def close(self, code):
+                pass
+        yield Socket()
+
+    def serve(request):
+        start = int(request.url.params["start"])
+        end = int(request.url.params["end"])
+        if start == 0 and end == BASE - MINUTE:
+            return httpx.Response(400, json={"code": "BARS_RANGE_TOO_LARGE"})
+        if start and attempts == 2:
+            return httpx.Response(503)
+        rows = [] if start else [raw_bar(2 * MINUTE)]
+        if not start and attempts >= 3:
+            rows.insert(0, raw_bar(MINUTE))
+        return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path)}, json={
+            "instrument_id": BTC, "timeframe": "1m", "generation": 1,
+            "bars": [RangeBar.model_validate(row, from_attributes=True).model_dump(mode="json") for row in rows],
+        })
+    install_sdk_transport(monkeypatch, None, connect, transport=httpx.MockTransport(serve))
+    async def run():
+        async with aclosing(sdk.subscribe(BTC, "1m", data_dir=tmp_path)) as events:
+            first = await anext(events)
+            assert requests == [None, {"epoch": "first", "seq": 0}, {"epoch": "first", "seq": 0}]
+            assert [first.bar.ts_event, (await anext(events)).bar.ts_event] == [MINUTE, 2 * MINUTE]
+    asyncio.run(asyncio.wait_for(run(), 3))
+
+
+@pytest.mark.regression
+def test_last_release_discards_journal_while_range_worker_is_reading(tmp_path, monkeypatch):
+    from threading import Event
+    from talaria.perception.cold_store import ColdReader
+
+    app = create_app(settings(tmp_path))
+    async def run():
+        async with app.router.lifespan_context(app):
+            entered, finish = Event(), Event()
+            read = ColdReader.read_manifest_revisions
+            def hold(*args, **kwargs):
+                entered.set()
+                assert finish.wait(3)
+                return read(*args, **kwargs)
+            try:
+                async with asgi_socket(app) as ws:
+                    await ws.send(json.dumps(request()))
+                    ready = json.loads(await ws.recv())
+                    monkeypatch.setattr(ColdReader, "read_manifest_revisions", hold)
+                    app.state.runtime.supervisor.ingest(kline())
+                    assert await asyncio.to_thread(entered.wait, 1)
+            finally:
+                finish.set()
+            async with asgi_socket(app) as resumed:
+                await resumed.send(json.dumps(request(after={"seq": ready["seq"], "epoch": ready["epoch"]})))
+                assert json.loads(await resumed.recv())["type"] == "resync"
+    asyncio.run(asyncio.wait_for(run(), 4))
+
+
+@pytest.mark.regression
+def test_restart_with_renumbered_identical_content_delivers_only_actual_changes(tmp_path, monkeypatch):
+    from talaria import sdk
+
+    config = settings(tmp_path)
+    app = create_app(config)
+    async def run():
+        socket = None
+        @asynccontextmanager
+        async def connect(*a, **kw):
+            nonlocal socket
+            async with asgi_socket(app) as socket:
+                yield socket
+        install_sdk_transport(monkeypatch, app, connect)
+        async with aclosing(sdk.subscribe(BTC, "1m", data_dir=config.data_dir)) as events:
+            async with app.router.lifespan_context(app):
+                first = asyncio.create_task(anext(events))
+                await wait_for_channel(app.state.runtime, "1m")
+                app.state.runtime.supervisor.ingest(kline(confirmed=False))
+                app.state.runtime.supervisor.ingest(kline())
+                assert (await first).bar.revision == 1
+                await socket.disconnect()
+            async with app.router.lifespan_context(app):
+                next_event = asyncio.create_task(anext(events))
+                await wait_for_channel(app.state.runtime, "1m")
+                for value in ("100", "101", "100"):
+                    app.state.runtime.supervisor.ingest(kline(value=value))
+                assert (await next_event).bar.close == Decimal(101)
+                # 冷库可表示同毫秒内变回原值的另一修订，也必须交付。
+                assert (await anext(events)).bar.revision == 2
+    asyncio.run(asyncio.wait_for(run(), 4))
+
+
+@pytest.mark.regression
+def test_live_range_keeps_confirmations_evicted_while_read_is_queued(tmp_path, monkeypatch):
+    from talaria.perception.hot_buffer import HotStreamBuffer
+
+    original = HotStreamBuffer.__init__
+    monkeypatch.setattr(HotStreamBuffer, "__init__", lambda self, **kw: original(
+        self, **kw, max_bars_per_series=1,
+    ))
+    app = create_app(settings(tmp_path))
+    async def run():
+        async with app.router.lifespan_context(app), asgi_socket(app) as ws:
+            await ws.send(json.dumps(request()))
+            await ws.recv()
+            for ts in (BASE, BASE + MINUTE):
+                app.state.runtime.supervisor.ingest(kline(ts))
+            assert [json.loads(await ws.recv())["bar"]["ts_event"] for _ in range(2)] == [BASE, BASE + MINUTE]
+    asyncio.run(asyncio.wait_for(run(), 2))

@@ -17,6 +17,7 @@ from talaria.foundation.strategy_subscription import (
     SubscriptionCursor,
     SubscriptionReady,
     SubscriptionRequest,
+    identified_revisions,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
 from talaria.service_endpoint import DATA_DIR_HEADER, data_dir_id, read_service_connection
@@ -34,14 +35,15 @@ class SubscriptionRejectedError(TalariaError):
 
 async def _range_revisions(
     base_url: str, directory_id: str, request: SubscriptionRequest, *,
-    since: int, now: int, interval: int,
-) -> AsyncGenerator[RangeBar]:
+    coverage_start: int, now: int, interval: int, seen: set[str],
+) -> list[tuple[str, RangeBar]]:
+    result: list[tuple[str, RangeBar]] = []
     end = last_closed_bar_start(now, interval)
     if end < 0:
-        return
+        return result
     params = {
         "instrument": request.instrument, "timeframe": request.timeframe,
-        "as_of": now, "available_since": since,
+        "resync_from": coverage_start,
     }
     ranges = [(0, end)]
     async with AsyncClient(base_url=base_url, trust_env=False, timeout=35) as client:
@@ -60,9 +62,13 @@ async def _range_revisions(
                 or (payload.instrument_id, payload.timeframe) != (request.instrument, request.timeframe)
             ):
                 raise TransportError("重同步响应的数据目录、标的或周期与订阅不一致")
-            for bar in payload.bars:
-                if bar.confirmed:
-                    yield bar
+            confirmed = [bar for bar in payload.bars if bar.confirmed]
+            covered = {bar.ts_event for bar in confirmed}
+            first = (max(start, coverage_start) + interval - 1) // interval * interval
+            if not covered.issuperset(range(first, end + 1, interval)):
+                raise TransportError("重同步响应缺少已确认柱")
+            result.extend((key, bar) for key, bar in identified_revisions(confirmed) if key not in seen)
+    return result
 
 
 async def subscribe(
@@ -70,6 +76,8 @@ async def subscribe(
 ) -> AsyncGenerator[StrategyBarEvent]:
     """订阅已收盘柱修订，断线时自动重连。
 
+    重同步按 ts_event 升序交付，同一时间槽按权威修订顺序交付。
+    初次握手的序号与内容基线界定订阅起点；覆盖不完整时从原游标重试。
     数据目录与 ``bars()`` 的解析规则相同。主动停止消费时可用
     ``contextlib.aclosing`` 及时释放本次订阅。常驻服务明确拒绝时抛出
     ``SubscriptionRejectedError``。
@@ -77,12 +85,14 @@ async def subscribe(
     if timeframe not in SUPPORTED_TIMEFRAMES:
         raise InvalidRequestError(f"不支持的周期：{timeframe}")
     root = Path(data_dir or os.environ.get("TALARIA_DATA_DIR") or ".talaria").expanduser().resolve()
-    request = SubscriptionRequest(instrument=instrument, timeframe=timeframe, owner=uuid4().hex)
+    request = SubscriptionRequest(
+        instrument=instrument, timeframe=timeframe, owner=uuid4().hex, include_baseline=True,
+    )
     directory_id = data_dir_id(root)
     interval = timeframe_ms(timeframe)
     cursor: SubscriptionCursor | None = None
-    since: int | None = None
-    seen: set[tuple[int, int]] = set()
+    coverage_start: int | None = None
+    seen: set[str] = set()
     delay = 0.1
     while True:
         endpoint = read_service_connection(root)
@@ -100,22 +110,28 @@ async def subscribe(
                     if answer.get("type") == "error":
                         raise SubscriptionRejectedError(answer["code"], answer["message"])
                     ready = SubscriptionReady.model_validate(answer)
-                    if since is None:
-                        # 重取窗口覆盖订阅时刚收盘、确认尚在途中的柱。
-                        since = max(0, ready.started_ts - interval)
+                    if cursor is None:
+                        baseline = set()
+                        while len(baseline) < ready.baseline_count:
+                            chunk = json.loads(await socket.recv())
+                            if chunk.get("type") != "baseline" or not chunk.get("ids"):
+                                raise TransportError("订阅内容基线不完整")
+                            baseline.update(chunk["ids"])
+                        seen.update(baseline)
+                        coverage_start = ready.started_ts // interval * interval
+                    assert coverage_start is not None
                     if ready.type == "resync":
                         try:
-                            async for bar in _range_revisions(
-                                endpoint.base_url, directory_id, request, since=since,
-                                now=ready.server_ts, interval=interval,
-                            ):
-                                identity = (bar.ts_event, bar.revision)
-                                if identity not in seen:
-                                    seen.add(identity)
-                                    yield StrategyBarEvent(
-                                        instrument_id=instrument, timeframe=timeframe,
-                                        epoch=ready.epoch, seq=None, bar=bar,
-                                    )
+                            recovered = await _range_revisions(
+                                endpoint.base_url, directory_id, request, coverage_start=coverage_start,
+                                now=ready.server_ts, interval=interval, seen=seen,
+                            )
+                            for identity, bar in recovered:
+                                seen.add(identity)
+                                yield StrategyBarEvent(
+                                    instrument_id=instrument, timeframe=timeframe,
+                                    epoch=ready.epoch, seq=None, bar=bar, content_id=identity,
+                                )
                         except (HTTPStatusError, TransportError):
                             await socket.close(code=1012)
                             raise
@@ -129,7 +145,7 @@ async def subscribe(
                         if event.seq <= cursor.seq:
                             continue
                         cursor = SubscriptionCursor(epoch=event.epoch, seq=event.seq)
-                        identity = (event.bar.ts_event, event.bar.revision)
+                        identity = event.content_id
                         if identity not in seen:
                             seen.add(identity)
                             yield event

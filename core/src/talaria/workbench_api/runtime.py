@@ -163,6 +163,12 @@ async def build_runtime(
             if key_level_tasks:
                 await asyncio.gather(*key_level_tasks)
 
+        strategy_stream: StrategyStream | None = None
+
+        def published(key: tuple[str, str], start: int, end: int) -> None:
+            if strategy_stream is not None:
+                strategy_stream.changed(key, start, end)
+
         policy = BackfillPolicy(target_bars=settings.backfill_bars, max_pages=settings.max_pages)
         supervisor: FeedSupervisor | None = None
         cold_store: ColdStore | None = None
@@ -180,6 +186,7 @@ async def build_runtime(
                     has_channel=lambda instrument_id, timeframe: (
                         supervisor is not None and supervisor.has_channel(instrument_id, timeframe)
                     ),
+                    on_publish=lambda key, start, end: loop.call_soon_threadsafe(published, key, start, end),
                     on_history_complete=lambda instrument_id, timeframe: loop.call_soon_threadsafe(
                         history_completed, instrument_id, timeframe
                     ),
@@ -266,22 +273,27 @@ async def build_runtime(
             state_writer=state_writer, drawings=drawings, now_ms=settings.now_ms
         )
         indicator_defaults = IndicatorDefaultsService(state_writer)
+        alerts: AlertService | None = None
+
+        def subscription_denied(owner: tuple[str, str, tuple[str, str]]) -> None:
+            if owner[0] == "alert" and alerts is not None:
+                alerts.engine.suspend_channel(owner[2])
+            desk.publish_subscription_error(owner)
+
         scheduler = (
             RealtimeSubscriptionScheduler(
-                supervisor, quota=settings.realtime_quota, on_degraded=desk.publish_subscription_error,
+                supervisor, quota=settings.realtime_quota, on_degraded=subscription_denied,
+                on_alert_quota=desk.publish_alert_quota,
             )
             if supervisor is not None
             else None
         )
-        strategy_stream = None
         if supervisor is not None and hot_buffer is not None and scheduler is not None:
             strategy_stream = StrategyStream(
                 scheduler=scheduler, hot_buffer=hot_buffer, reader=ColdReader(settings.data_dir),
                 instruments=instruments, now_ms=settings.now_ms,
             )
             resources.callback(strategy_stream.close)
-            task = asyncio.create_task(strategy_stream.run(), name="talaria-strategy-stream")
-            resources.push_async_callback(_stop_task, task)
             resources.callback(supervisor.add_listener(strategy_stream.ingest))
 
         async def rebalance_watchlist() -> None:
@@ -318,7 +330,6 @@ async def build_runtime(
                 cutoff_ts=now,
             )
 
-        alerts: AlertService | None = None
         if features.alerts:
             alerts = AlertService(
                 state_writer=state_writer,

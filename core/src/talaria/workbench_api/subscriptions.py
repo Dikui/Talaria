@@ -35,6 +35,7 @@ class RealtimeSubscriptionScheduler:
         *,
         quota: int,
         watchlist_timeframe: str = WATCHLIST_TIMEFRAME,
+        on_alert_quota: Callable[[list[str]], None] | None = None,
         on_degraded: Callable[[Owner], None] | None = None,
     ) -> None:
         if quota <= 0:
@@ -42,11 +43,11 @@ class RealtimeSubscriptionScheduler:
         self._supervisor = supervisor
         self._quota = quota
         self._watchlist_timeframe = watchlist_timeframe
+        self._on_alert_quota = on_alert_quota
         self._on_degraded = on_degraded
         self._accounts: dict[str, SubscriptionKey] = {}
         self._chart_refs: Counter[SubscriptionKey] = Counter()
         self._managed: set[SubscriptionKey] = set()
-        self._interruptions: Counter[SubscriptionKey] = Counter()
         self._watchlist_order: tuple[str, ...] = ()
         self._alerts: dict[str, SubscriptionKey] = {}
         self._denied: set[Owner] = set()
@@ -59,10 +60,11 @@ class RealtimeSubscriptionScheduler:
     def used(self) -> int:
         return len(self._managed)
 
-    def interruptions(self, key: SubscriptionKey) -> int:
-        return self._interruptions[key]
+    @property
+    def denied_alerts(self) -> list[str]:
+        return sorted(owner_id for kind, owner_id, _ in self._denied if kind == "alert")
 
-    def acquire_account(self, owner: str, key: SubscriptionKey) -> None:
+    def check_account(self, owner: str, key: SubscriptionKey) -> None:
         if self._accounts.get(owner) == key:
             return
         if owner in self._accounts:
@@ -70,6 +72,9 @@ class RealtimeSubscriptionScheduler:
         # 已用配额保留给现有使用方。订阅同一通道可以共享配额。
         if key not in self._managed and self.used >= self.quota:
             raise self._quota_error(key)
+
+    def acquire_account(self, owner: str, key: SubscriptionKey) -> None:
+        self.check_account(owner, key)
         self._accounts[owner] = key
         self._assign()
 
@@ -135,16 +140,18 @@ class RealtimeSubscriptionScheduler:
         for instrument, timeframe in sorted(self._managed - wanted):
             self._supervisor.unsubscribe(instrument_id=instrument, timeframe=timeframe)
             self._managed.remove((instrument, timeframe))
-            self._interruptions[instrument, timeframe] += 1
         for instrument, timeframe in sorted(wanted - self._managed):
             self._supervisor.subscribe(instrument_id=instrument, timeframe=timeframe)
             self._managed.add((instrument, timeframe))
 
         newly_denied = denied - self._denied
+        previous_alerts = self.denied_alerts
         self._denied = denied
         if self._on_degraded is not None:
             for owner in sorted(newly_denied):
                 self._on_degraded(owner)
+        if self._on_alert_quota is not None and previous_alerts != self.denied_alerts:
+            self._on_alert_quota(self.denied_alerts)
 
     @staticmethod
     def _quota_error(key: SubscriptionKey) -> SubscriptionQuotaError:
