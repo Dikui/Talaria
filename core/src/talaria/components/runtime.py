@@ -55,7 +55,9 @@ def _read_closed_bars(
         (bar for bar in rows if bar.confirmed and start <= bar.ts_event <= end),
         as_of=as_of,
     )
-    return sdk.BarsResult(tuple(visible), tail_completed=getattr(rows, "tail_completed", True))
+    return sdk.BarsResult(
+        tuple(bar.model_copy() for bar in visible), tail_completed=getattr(rows, "tail_completed", True),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,9 +186,10 @@ class Evaluation[T]:
     tail_completed: bool = True
 
 
-def _confirmation_times(
+def confirmed_bars(
     read: BarReader, instrument: str, timeframe: str, *, start: int, end: int,
-) -> list[tuple[int, int, bool]]:
+) -> list[tuple[int, RangeBar, bool]]:
+    """返回各柱首次确认可用的时点、该版本的行情和补尾状态。"""
     interval = timeframe_ms(timeframe)
     latest = _read_closed_bars(
         read, instrument, timeframe, start=start,
@@ -206,8 +209,8 @@ def _confirmation_times(
             if not earlier:
                 break
             bar = earlier[0]
-        times.append((max(close, bar.ts_available), slot, tail_completed))
-    return sorted(times)
+        times.append((max(close, bar.ts_available), bar, tail_completed))
+    return sorted(times, key=lambda step: (step[0], step[1].ts_event))
 
 
 def run_history[T](
@@ -234,9 +237,10 @@ def run_history[T](
         raise ValueError("须满足 0 <= history_start <= start <= end")
     if read_bars is None:
         read_bars = partial(sdk.bars, data_dir=data_dir)
-    confirmations = _confirmation_times(read_bars, instrument, timeframe, start=start, end=end)
+    confirmations = confirmed_bars(read_bars, instrument, timeframe, start=start, end=end)
     defaults = sdk.indicator_defaults(data_dir=data_dir) if confirmations else {}
-    for cutoff, slot, tail_completed in confirmations:
+    for cutoff, bar, tail_completed in confirmations:
+        slot = bar.ts_event
         ctx = Ctx(
             instrument, timeframe, history_start, cutoff,
             _read_bars=read_bars, _read_derivatives=read_derivatives, _bar_ts=slot,
