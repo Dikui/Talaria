@@ -4517,6 +4517,19 @@
           "params": {
             "$ref": "#/components/schemas/RuleIndicatorParams"
           },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          },
           "source": {
             "const": "indicator",
             "title": "Source",
@@ -4526,6 +4539,15 @@
             "const": "1",
             "default": "1",
             "title": "Version",
+            "type": "string"
+          },
+          "window": {
+            "default": "alert",
+            "enum": [
+              "chart",
+              "alert"
+            ],
+            "title": "Window",
             "type": "string"
           }
         },
@@ -4702,6 +4724,143 @@
           "direction"
         ],
         "title": "RuleOverlay",
+        "type": "object"
+      },
+      "RulePreviewIndicator": {
+        "additionalProperties": false,
+        "properties": {
+          "operand": {
+            "$ref": "#/components/schemas/RuleIndicator"
+          },
+          "pane": {
+            "enum": [
+              "main",
+              "sub"
+            ],
+            "title": "Pane",
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/IndicatorPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operand",
+          "pane",
+          "points"
+        ],
+        "title": "RulePreviewIndicator",
+        "type": "object"
+      },
+      "RulePreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 300,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/Rule-Input"
+          },
+          "timeframe": {
+            "title": "Timeframe",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timeframe",
+          "rule"
+        ],
+        "title": "RulePreviewRequest",
+        "type": "object"
+      },
+      "RulePreviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "condition_true": {
+            "items": {
+              "$ref": "#/components/schemas/RulePreviewSignal"
+            },
+            "title": "Condition True",
+            "type": "array"
+          },
+          "history_incomplete": {
+            "default": false,
+            "title": "History Incomplete",
+            "type": "boolean"
+          },
+          "indicators": {
+            "items": {
+              "$ref": "#/components/schemas/RulePreviewIndicator"
+            },
+            "title": "Indicators",
+            "type": "array"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/Rule-Output"
+          },
+          "unavailable_current_levels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unavailable Current Levels",
+            "type": "array"
+          },
+          "would_trigger": {
+            "items": {
+              "$ref": "#/components/schemas/RulePreviewSignal"
+            },
+            "title": "Would Trigger",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rule",
+          "condition_true",
+          "would_trigger",
+          "indicators"
+        ],
+        "title": "RulePreviewResponse",
+        "type": "object"
+      },
+      "RulePreviewSignal": {
+        "additionalProperties": false,
+        "description": "timestamp 对齐图表槽；observed_at 是本次观察或触发的毫秒时刻。",
+        "properties": {
+          "observed_at": {
+            "title": "Observed At",
+            "type": "integer"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timestamp",
+          "observed_at",
+          "price"
+        ],
+        "title": "RulePreviewSignal",
         "type": "object"
       },
       "ScannerBriefing": {
@@ -7308,6 +7467,16 @@
             }
           },
           {
+            "in": "query",
+            "name": "all_timeframes",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "All Timeframes",
+              "type": "boolean"
+            }
+          },
+          {
             "description": "可视窗口左边界（UTC 毫秒）",
             "in": "query",
             "name": "from_ts",
@@ -9275,6 +9444,55 @@
           }
         },
         "summary": "Get Key Levels"
+      }
+    },
+    "/api/snapshots/{snapshot_id}/rule-preview": {
+      "post": {
+        "operationId": "preview_rule_api_snapshots__snapshot_id__rule_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RulePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RulePreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Rule"
       }
     },
     "/api/trades/backfill": {

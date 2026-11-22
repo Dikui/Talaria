@@ -93,7 +93,7 @@ def create_app(
         allow_origins=["dsh-app://app"],
         allow_origin_regex=r"^http://(127\.0\.0\.1|localhost)(:\d+)?$",
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "X-Preview-Client"],
         max_age=600,
     )
     app.state.token = token

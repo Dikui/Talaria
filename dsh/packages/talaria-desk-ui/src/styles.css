@@ -78,7 +78,12 @@ body:has(.talaria-desk--standalone) {
   min-height: 100dvh;
   background: var(--bg);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(var(--chart-layout-min-height, 0px), 1fr) auto;
+}
+
+.app-shell:has(.rule-editor-content:not([hidden])) {
+  /* 视口放不下编辑器和图表时，让外层页面滚动。 */
+  --chart-layout-min-height: min-content;
 }
 
 .app-header {
@@ -454,7 +459,7 @@ body:has(.talaria-desk--standalone) {
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(var(--chart-layout-min-height, 0px), 1fr);
   grid-template-areas:
     "error"
     "alert"
@@ -496,6 +501,19 @@ body:has(.talaria-desk--standalone) {
 
 .workspace > .workspace-sidebar {
   grid-area: sidebar;
+}
+
+@media (width > 720px) {
+  .workspace:has(.rule-editor-content:not([hidden])):not(:has(> .workspace-copilot)) > .workspace-sidebar {
+    contain: size;
+  }
+}
+
+@media (width > 1100px) {
+  .workspace:has(.rule-editor-content:not([hidden])) > :is(.workspace-sidebar, .workspace-copilot) {
+    /* 同一行的侧栏继续在各自的区域内滚动。 */
+    contain: size;
+  }
 }
 
 .error-banner {
@@ -541,16 +559,25 @@ body:has(.talaria-desk--standalone) {
   letter-spacing: 0.04em;
 }
 
-.chart-panel {
-  position: relative;
+.chart-workbench {
   grid-area: chart;
-  flex: 1 1 auto;
   min-height: 320px;
+  min-width: 0;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+.chart-panel {
+  position: relative;
+  display: flex;
+  flex: 1 1 180px;
+  flex-direction: column;
+  min-height: var(--chart-layout-min-height, 180px);
+  overflow: hidden;
 }
 
 .market-chart {
@@ -558,7 +585,6 @@ body:has(.talaria-desk--standalone) {
   width: 100%;
   min-width: 0;
   min-height: 0;
-  height: 100%;
 }
 
 .loading-state,
@@ -736,7 +762,7 @@ body:has(.talaria-desk--standalone) {
     padding: 10px 10px 8px;
   }
 
-  .chart-panel {
+  .chart-workbench {
     min-height: 300px;
     border-radius: 11px;
   }
@@ -762,16 +788,189 @@ body:has(.talaria-desk--standalone) {
   }
 }
 
-/* 指标条：legend 数据全部来自后端 IndicatorSeries，前端只负责排版。 */
-.chart-panel {
-  flex-direction: column;
-}
-
 .chart-stage {
+  position: relative;
   display: flex;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   min-width: 0;
+  overflow: hidden;
+}
+
+.chart-workbench:has(.rule-editor-content:not([hidden])) .chart-stage {
+  min-height: 480px;
+}
+
+.chart-rule-editor {
+  container-type: inline-size;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  max-block-size: min(45dvh, 24rem);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.rule-editor-header,
+.rule-editor-footer,
+.rule-node-header,
+.rule-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.rule-editor-header,
+.rule-editor-footer {
+  padding: 6px 12px;
+}
+
+.rule-editor-header {
+  flex: none;
+  min-height: 38px;
+}
+
+.rule-editor-header .rule-field {
+  flex-direction: row;
+  align-items: center;
+}
+
+.rule-editor-content {
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.rule-editor-body {
+  padding: 8px 12px;
+  border-block: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.rule-status,
+.rule-warmup,
+.rule-empty p {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.rule-editor-footer .primary-button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.rule-editor-footer .primary-button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.rule-warmup {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.rule-hit-details {
+  overflow-wrap: anywhere;
+  padding: 4px 12px;
+}
+
+.rule-hit-details li:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.rule-node {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.rule-sr-only {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.rule-node-header {
+  justify-content: space-between;
+  align-items: end;
+}
+
+.rule-children,
+.rule-operand {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rule-children {
+  margin-top: 6px;
+  padding-inline-start: 5px;
+  border-inline-start: 2px solid var(--border-strong);
+}
+
+.rule-children > button {
+  justify-self: start;
+}
+
+.rule-comparison,
+.rule-reference {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(5.6rem, .55fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.rule-reference {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+}
+
+.rule-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.rule-field :is(select, input) {
+  min-height: 28px;
+  width: 100%;
+  padding: 3px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.rule-field select {
+  cursor: pointer;
+}
+
+.rule-field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.rule-field [aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+@container (max-width: 30rem) {
+  .rule-comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .indicator-bar {
@@ -1362,7 +1561,7 @@ body:has(.talaria-desk--standalone) {
 @media (max-width: 720px) {
   .workspace:has(> .workspace-sidebar) {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(var(--chart-layout-min-height, 0px), 1fr);
     grid-template-areas:
       "error"
       "alert"
@@ -1385,7 +1584,7 @@ body:has(.talaria-desk--standalone) {
     padding-right: 0;
   }
 
-  .workspace:has(> .workspace-sidebar) .chart-panel {
+  .workspace:has(> .workspace-sidebar) .chart-workbench {
     min-height: 460px;
   }
 
@@ -1778,7 +1977,7 @@ body:has(.talaria-desk--standalone) {
   min-height: 0;
 }
 
-.talaria-desk--embedded .chart-panel {
+.talaria-desk--embedded .chart-workbench {
   min-height: 260px;
 }
 
