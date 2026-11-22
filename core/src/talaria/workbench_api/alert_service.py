@@ -131,6 +131,14 @@ class AlertService:
     def active_instrument_ids(self) -> tuple[str, ...]:
         return self._engine.active_instrument_ids()
 
+    def active_key_level_pairs(self) -> set[tuple[str, str]]:
+        return {
+            (alert.instrument_id, alert.timeframe)
+            for alert in self._engine.list_alerts()
+            if alert.condition.kind is AlertConditionKind.LEVEL_EVENT
+            and alert.status in {AlertStatus.ARMED, AlertStatus.COOLDOWN}
+        }
+
     def handle_event(self, event: FeedEvent) -> None:
         """同步监听入口；状态变化异步落盘，不阻塞 feed 分发。"""
 

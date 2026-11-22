@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from bisect import bisect_right
 from decimal import Decimal
 from pathlib import Path
@@ -57,6 +59,8 @@ from talaria.foundation.snapshot import (
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.perception.cold_publisher import ColdPublisher
+from talaria.perception.cold_store import ColdReader
+from talaria.perception.key_level_registry import KeyLevelRegistry
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import (
     SnapshotRecord,
@@ -64,6 +68,8 @@ from talaria.perception.snapshot_store import (
     read_derivative_points,
     read_snapshot_bars,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class WorkbenchService:
@@ -75,6 +81,7 @@ class WorkbenchService:
         data_dir: Path,
         snapshot_store: SnapshotStore,
         builder: SnapshotBuilder,
+        key_levels: KeyLevelRegistry,
         feed_mode: str | None = None,
         cold_publisher: ColdPublisher | None = None,
     ) -> None:
@@ -85,6 +92,7 @@ class WorkbenchService:
         self._builder = builder
         self._feed_mode = feed_mode
         self._cold_publisher = cold_publisher
+        self._key_levels = key_levels
 
     @property
     def feed_mode(self) -> str:
@@ -110,7 +118,35 @@ class WorkbenchService:
             if timeframe not in SUPPORTED_TIMEFRAMES:
                 raise InvalidRequestError(f"不支持的周期：{timeframe}")
         normalized = request.model_copy(update={"timeframes": timeframes})
-        return self._builder.build(instrument=instrument, request=normalized)
+        meta = self._builder.build(instrument=instrument, request=normalized)
+        self._register_key_levels(meta)
+        return meta
+
+    def _register_key_levels(self, meta: SnapshotMeta) -> None:
+        for timeframe in meta.timeframes:
+            self._key_levels.register(
+                self.get_key_levels(meta.snapshot_id, timeframe=timeframe)
+            )
+
+    async def warm_key_levels(
+        self, pairs: set[tuple[str, str]], *, cutoff_ts: int
+    ) -> None:
+        reader = ColdReader(self._data_dir)
+        for instrument_id, timeframe in sorted(pairs):
+            instrument = self._pack.instrument(instrument_id)
+            if instrument is None:
+                continue
+            try:
+                bars = await asyncio.to_thread(
+                    reader.read_bars, instrument, timeframe, as_of=cutoff_ts
+                )
+                if bars:
+                    meta = self._builder.build_from_cold_bars(
+                        instrument=instrument, timeframe=timeframe, cutoff_ts=cutoff_ts, bars=bars
+                    )
+                    self._register_key_levels(meta)
+            except Exception:
+                logger.exception("冷库预热关键位失败：%s %s", instrument_id, timeframe)
 
     def get_snapshot(self, snapshot_id: str) -> SnapshotMeta:
         record = self._snapshot_store.get(snapshot_id)

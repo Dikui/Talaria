@@ -128,8 +128,19 @@ def test_unknown_snapshot_returns_404(client) -> None:
     assert response.json()["code"] == "SNAPSHOT_NOT_FOUND"
 
 
-def test_key_levels_ws_projection_replays_cached_set(client) -> None:
+@pytest.mark.spec
+def test_key_levels_ws_projection_replays_latest_cutoff(client) -> None:
+    # analysis/01：后冻结的历史快照不覆盖图表的最新版本。
     meta = _snapshot(client)
+    older = client.post(
+        "/api/snapshots",
+        json={
+            "instrument_id": INSTRUMENT, "timeframes": ["1m"],
+            "cutoff_ts": meta["cutoff_ts"] - 60_000,
+        },
+        headers=AUTH,
+    )
+    assert older.status_code == 200, older.text
     with client.websocket_connect("/ws/desk") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"

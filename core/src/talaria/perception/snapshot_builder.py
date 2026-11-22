@@ -80,10 +80,7 @@ class SnapshotBuilder:
     ) -> SnapshotMeta:
         now = self._now_ms()
         cutoff = request.cutoff_ts if request.cutoff_ts is not None else now
-        snapshot_id = uuid.uuid4().hex
         frames: list[tuple[str, Sequence[SnapshotBar]]] = []
-        bar_counts: dict[str, int] = {}
-        committed_ts: int | None = None
 
         for timeframe in request.timeframes:
             if self._connector is not None:
@@ -113,19 +110,43 @@ class SnapshotBuilder:
             compact = compact_series(raw_bars, timeframe=timeframe, cutoff_ts=cutoff)
             entries = _snapshot_entries(compact, raw_bars, cutoff_ts=cutoff)
             frames.append((timeframe, entries))
-            bar_counts[timeframe] = len(compact)
-            if entries:
-                frame_committed = max(
-                    entry.ts_committed
-                    for entry in entries
-                    if entry.ts_committed is not None
-                )
-                committed_ts = (
-                    frame_committed
-                    if committed_ts is None
-                    else max(committed_ts, frame_committed)
-                )
 
+        derivative_points = self._derivative_points(
+            instrument=instrument, request=request, cutoff_ts=cutoff
+        )
+        return self._freeze(
+            instrument, request, frames, cutoff, now, derivative_points=derivative_points
+        )
+
+    def build_from_cold_bars(
+        self,
+        *,
+        instrument: InstrumentSpec,
+        timeframe: str,
+        cutoff_ts: int,
+        bars: Sequence[RawBar],
+    ) -> SnapshotMeta:
+        """冻结冷库已选版的收盘柱，供启动时计算关键位。"""
+        request = SnapshotRequest(
+            instrument_id=instrument.instrument_id, timeframes=[timeframe], cutoff_ts=cutoff_ts
+        )
+        compact = compact_series(bars, timeframe=timeframe, cutoff_ts=cutoff_ts)
+        entries = _snapshot_entries(compact, bars, cutoff_ts=cutoff_ts)
+        return self._freeze(
+            instrument, request, [(timeframe, entries)], cutoff_ts, self._now_ms()
+        )
+
+    def _freeze(
+        self,
+        instrument: InstrumentSpec,
+        request: SnapshotRequest,
+        frames: Sequence[tuple[str, Sequence[SnapshotBar]]],
+        cutoff: int,
+        now: int,
+        *,
+        derivative_points: Sequence[DerivativePoint] = (),
+    ) -> SnapshotMeta:
+        snapshot_id = uuid.uuid4().hex
         meta = SnapshotMeta(
             snapshot_id=snapshot_id,
             instrument_id=instrument.instrument_id,
@@ -133,14 +154,20 @@ class SnapshotBuilder:
             cutoff_ts=cutoff,
             created_ts=now,
             mode=request.mode,
-            bar_counts=bar_counts,
+            bar_counts={timeframe: len(entries) for timeframe, entries in frames},
+        )
+        committed_ts = max(
+            (
+                entry.ts_committed
+                for _, entries in frames
+                for entry in entries
+                if entry.ts_committed is not None
+            ),
+            default=None,
         )
         parquet_path = write_snapshot_parquet(self._data_dir, snapshot_id, frames)
         derivatives_path = None
         try:
-            derivative_points = self._derivative_points(
-                instrument=instrument, request=request, cutoff_ts=cutoff
-            )
             if derivative_points:
                 derivatives_path = write_derivative_parquet(
                     self._data_dir, snapshot_id, derivative_points

@@ -14,7 +14,6 @@ from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.errors import FeatureDisabledError, TalariaError
 from talaria.foundation.feed import FeedTransport
-from talaria.foundation.key_levels import KeyLevel
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotRequest
 from talaria.foundation.timeframes import TIMEFRAME_MS
@@ -25,6 +24,7 @@ from talaria.perception.cold_publisher import ColdPublisher
 from talaria.perception.cold_store import ColdStore
 from talaria.perception.compaction import compact_series
 from talaria.perception.hot_buffer import HotStreamBuffer
+from talaria.perception.key_level_registry import KeyLevelRegistry
 from talaria.perception.raw_store import RawStore
 from talaria.perception.scanner.routing import TriggerRoutingPolicy
 from talaria.perception.snapshot_builder import SnapshotBuilder
@@ -69,6 +69,7 @@ class Runtime:
     hot_buffer: HotStreamBuffer | None
     state_writer: StateWriterQueue
     desk: DeskBroadcast
+    key_levels: KeyLevelRegistry
     _resources: AsyncExitStack = field(repr=False)
 
     def require_alerts(self) -> AlertService:
@@ -167,6 +168,8 @@ async def build_runtime(
             now_ms=settings.now_ms,
             hot_bars=hot_buffer,
         )
+        desk = DeskBroadcast()
+        key_levels = KeyLevelRegistry(on_latest=desk.project_levels)
         workbench = WorkbenchService(
             pack=pack,
             connector=connector,
@@ -175,12 +178,10 @@ async def build_runtime(
             builder=builder,
             cold_publisher=cold_publisher,
             feed_mode=stream.feed_mode if stream is not None else None,
+            key_levels=key_levels,
         )
-        desk = DeskBroadcast()
-        if supervisor is not None:
-            await supervisor.start()
-            if hot_buffer is not None:
-                resources.callback(supervisor.add_listener(hot_buffer.ingest))
+        if supervisor is not None and hot_buffer is not None:
+            resources.callback(supervisor.add_listener(hot_buffer.ingest))
 
         state_writer = StateWriterQueue(settings.data_dir, now_ms=settings.now_ms)
         resources.push_async_callback(state_writer.close)
@@ -228,9 +229,8 @@ async def build_runtime(
                 await watchlist.rebalance()
 
         def freeze_snapshot(instrument_id: str, timeframe: str, now: int) -> str:
-            meta = builder.build(
-                instrument=instruments_by_id[instrument_id],
-                request=SnapshotRequest(
+            meta = workbench.create_snapshot(
+                SnapshotRequest(
                     instrument_id=instrument_id, timeframes=[timeframe], cutoff_ts=now
                 ),
             )
@@ -258,18 +258,6 @@ async def build_runtime(
                 cutoff_ts=now,
             )
 
-        def alert_key_level(
-            instrument_id: str, timeframe: str, level_id: str, cutoff_ts: int
-        ) -> KeyLevel | None:
-            """用最近一次快照已冻结的关键位求值，避免引擎按实时窗口重算出不同 id。"""
-            level_set = desk.levels_for((instrument_id, timeframe))
-            if level_set is None:
-                return None
-            level = next((item for item in level_set.levels if item.level_id == level_id), None)
-            if level is None or level.ts_available > cutoff_ts:
-                return None
-            return level
-
         alerts: AlertService | None = None
         if features.alerts:
             alerts = AlertService(
@@ -283,7 +271,7 @@ async def build_runtime(
                     if supervisor is not None and settings.replay_events is None
                     else None
                 ),
-                key_level_provider=alert_key_level,
+                key_level_provider=key_levels.level_at,
                 freeze_snapshot=freeze_alert_snapshot,
                 on_change=rebalance_watchlist,
                 on_trigger=desk.publish_alert,
@@ -332,6 +320,16 @@ async def build_runtime(
             )
             resources.push_async_callback(_stop_task, alert_ticker)
         await watchlist.rebalance()
+        warm_pairs = alerts.active_key_level_pairs() if alerts is not None else set()
+        if supervisor is not None:
+            warm_pairs.update(
+                (channel.instrument_id, channel.timeframe)
+                for channel in supervisor.health().channels
+            )
+        await workbench.warm_key_levels(warm_pairs, cutoff_ts=settings.now_ms())
+        # 预热完成后才接收首批行情，避免预警因缺版本跳过事件。
+        if supervisor is not None:
+            await supervisor.start()
 
         return Runtime(
             workbench=workbench,
@@ -352,6 +350,7 @@ async def build_runtime(
             hot_buffer=hot_buffer,
             state_writer=state_writer,
             desk=desk,
+            key_levels=key_levels,
             _resources=resources.pop_all(),
         )
 
