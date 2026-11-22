@@ -389,7 +389,7 @@ class Strategy(Component, Protocol):
 
 ```yaml
 scheme: btc-breakout-paper
-interface_version: 1
+interface_version: 2
 sub_accounts: [sa-breakout]   # 模拟盘时宿主对每个子账户取排他锁
 slots:
   data: live_ws            # 回测时换成 parquet_replay

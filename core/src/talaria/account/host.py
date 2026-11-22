@@ -18,18 +18,22 @@ from talaria.account.contracts import (
     EntryCandidate,
     ExecutionEvent,
     FillSlot,
+    LedgerPosting,
     MarginValuation,
     MarketData,
     MarketEvent,
-    RejectedPlanRecord,
     RiskSlot,
     SizingSlot,
+    TradingState,
 )
 from talaria.account.execution import AccountProcessError, ExecutionGate
 from talaria.account.ledger import open_ledger
 from talaria.account.ownership import AccountOwnership, hold_sub_accounts
 from talaria.account.parameters import validate_parameters
 from talaria.account.plugins.parquet import parquet_replay
+from talaria.account.plugins.r_unit import RUnitSizer, r_unit
+from talaria.account.plugins.seven_step import SevenStepRisk, seven_step
+from talaria.account.risk_config import AccountRiskConfig
 from talaria.account.scheme import (
     Mode,
     PluginContext,
@@ -43,9 +47,11 @@ from talaria.components import ComponentMeta, ControllerPatch, Ctx, Strategy
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.collaboration.contracts import Abstain, SetupInsight
 from talaria.foundation.indicators import IndicatorParams
+from talaria.foundation.margin import MARGIN_VALUATION_VERSION
 from talaria.foundation.operators import IndicatorName
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.foundation.types import ContractModel
+from talaria.packs import DEFAULT_PACK, get_market_pack
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +97,8 @@ class _Plugins:
 def default_registry() -> PluginRegistry:
     registry = PluginRegistry()
     registry.register("parquet_replay", parquet_replay)
+    registry.register("r_unit", r_unit)
+    registry.register("seven_step", seven_step)
     return registry
 
 
@@ -114,7 +122,8 @@ def _assemble(
             schema = definition.parameters_schema
             if schema is not None or slot != Slot.STRATEGY:
                 validate_parameters(selection.params, schema if schema is not None else {})
-            plugin = definition.create(context, deepcopy(selection.params))
+            plugin_context = replace(context, account_risk=deepcopy(context.account_risk))
+            plugin = definition.create(plugin_context, deepcopy(selection.params))
         except Exception as exc:
             raise SchemeError(f"{slot} 插槽插件 {selection.reference}：{exc}") from exc
         if slot == Slot.STRATEGY:
@@ -173,9 +182,7 @@ def _evaluate_intent(
         signal_bar_close=signal_bar_close,
         evidence_ids=tuple(ref.evidence_id for ref in decision.evidence_refs),
     )
-    receipt = gate.submit_candidate(candidate)
-    if isinstance(receipt, RejectedPlanRecord) or not receipt.accepted:
-        return _reject(sub_account_id, now, receipt.reason or "FILL_REJECTED")
+    gate.submit_candidate(candidate)
     return None
 
 
@@ -204,10 +211,16 @@ class AccountProcess:
 
         plugins = self._plugins
         accounts = self.scheme.sub_accounts
+        default_risk = isinstance(plugins.risk, SevenStepRisk) or isinstance(plugins.sizing, RUnitSizer)
+        if valuation is None and default_risk:
+            valuation = get_market_pack(DEFAULT_PACK).margin_valuation()
+        if valuation is not None and getattr(valuation, "interface_version", None) != MARGIN_VALUATION_VERSION:
+            raise SchemeError(f"保证金估值须兼容接口版本 {MARGIN_VALUATION_VERSION}")
         gate = ExecutionGate(
             accounts, plugins.sizing, plugins.risk, plugins.fill,
             balances=ledger.balances, valuation=valuation, record=record,
         )
+        self._initialize_risk_accounts(ledger, gate, default_risk=default_risk)
         now = 0
         for market in plugins.data.events():
             with guard():
@@ -224,9 +237,15 @@ class AccountProcess:
                 ))
                 raise
 
-            fill_market = replace(market, bar=market.bar.model_copy(), ctx=None, source=None)
+            visible = tuple(
+                point for point in market.derivative_points if point.visible_at(now)
+            )
+            fill_market = replace(
+                market, bar=market.bar.model_copy(), ctx=None, source=None,
+                derivative_points=tuple(point.model_copy() for point in visible),
+            )
             plugins.fill.on_market(fill_market, valuation)
-            gate.poll_events(now)
+            gate.poll_events(now, points=visible)
             if ctx is not None:
                 rejected = []
                 decision = plugins.strategy.on_bar(ctx)
@@ -245,6 +264,29 @@ class AccountProcess:
                 finally:
                     for rejection in rejected:
                         gate.record_host_event(rejection)
+
+    def _initialize_risk_accounts(
+        self, ledger: AccountLedger, gate: ExecutionGate, *, default_risk: bool,
+    ) -> None:
+        for account in self.scheme.sub_accounts:
+            config = self.scheme.account_risk.get(account)
+            if config is None:
+                if not default_risk:
+                    continue
+                config = AccountRiskConfig()
+            if not ledger.balances(account):
+                gate.record_host_event(ExecutionEvent(
+                    kind="ACCOUNT_FUNDED", sub_account_id=account, ts_event=0,
+                    postings=(
+                        LedgerPosting(account="CASH_AVAILABLE", currency=config.currency, amount=config.initial_capital),
+                        LedgerPosting(
+                            account="OWNER_CAPITAL", currency=config.currency, amount=config.initial_capital.copy_negate(),
+                        ),
+                    ),
+                ))
+            initial_state = TradingState(config.trading_state)
+            if initial_state != TradingState.ACTIVE:
+                gate.set_trading_state(account, initial_state, "ACCOUNT_CONFIG")
 
     def _prepare_market(self, market: MarketEvent, now: int) -> tuple[int, Ctx | None]:
         if market.timeframe not in SUPPORTED_TIMEFRAMES:
@@ -277,7 +319,7 @@ def _open_process(
 ) -> Iterator[AccountProcess]:
     scheme = config.scheme
     clock = _EventClock()
-    context = PluginContext(config.data_dir, mode, scheme.seed, clock.now)
+    context = PluginContext(config.data_dir, mode, scheme.seed, clock.now, scheme.account_risk)
     ownership = hold_sub_accounts(config.data_dir, scheme.sub_accounts) if mode == "paper" else nullcontext()
     with ownership as held:
         plugins = _assemble(scheme, config.scheme_dir, registry or default_registry(), context)
@@ -286,6 +328,12 @@ def _open_process(
 
 def _resolve_config(scheme_path: Path, data_dir: Path) -> _RunConfig:
     scheme = load_scheme(scheme_path)
+    if scheme.slots.selection(Slot.SIZING).reference == "r_unit" or (
+        scheme.slots.selection(Slot.RISK).reference == "seven_step"
+    ):
+        scheme = scheme.model_copy(update={"account_risk": {
+            account: scheme.account_risk.get(account) or AccountRiskConfig() for account in scheme.sub_accounts
+        }})
     data_dir = data_dir.expanduser().resolve()
     return _RunConfig(
         version=1, scheme=scheme, scheme_dir=scheme_path.resolve().parent, data_dir=data_dir,

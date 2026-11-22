@@ -1,5 +1,5 @@
 scheme: replay-example
-interface_version: 1
+interface_version: 2
 sub_accounts: [example]
 seed: 17
 slots:

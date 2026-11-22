@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
@@ -17,9 +17,10 @@ from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
 from talaria.account.parameters import ParameterSchema
+from talaria.account.risk_config import AccountRiskConfig
 from talaria.foundation.types import ContractModel
 
-INTERFACE_VERSION = 1
+INTERFACE_VERSION = 2
 ACCOUNT_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 type Mode = Literal["backtest", "paper"]
 type AccountId = Annotated[str, StringConstraints(pattern=ACCOUNT_ID_PATTERN)]
@@ -81,11 +82,14 @@ class TradingScheme(ContractModel):
     sub_accounts: tuple[AccountId, ...] = Field(min_length=1)
     seed: StrictInt = 0
     slots: SchemeSlots
+    account_risk: dict[AccountId, AccountRiskConfig] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _distinct_sub_accounts(self) -> Self:
         if len(set(self.sub_accounts)) != len(self.sub_accounts):
             raise ValueError("sub_accounts 不能重复")
+        if self.account_risk.keys() - set(self.sub_accounts):
+            raise ValueError("account_risk 只能配置方案声明的子账户")
         return self
 
 
@@ -116,6 +120,7 @@ class PluginContext:
     mode: Mode
     seed: int
     now: Callable[[], int]
+    account_risk: Mapping[str, AccountRiskConfig] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

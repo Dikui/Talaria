@@ -1,5 +1,6 @@
 """trading/01 与 ADR-0015 的止损路由、回合和获批数量契约。"""
 
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -18,6 +19,7 @@ from talaria.account.contracts import (
     SizingDecision,
 )
 from talaria.account.execution import AccountProcessError, ExecutionGate
+from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 
 pytestmark = [pytest.mark.small, pytest.mark.spec]
 
@@ -68,6 +70,9 @@ class TestSlots:
         events, self.events = self.events, []
         return events
 
+    def set_trading_state(self, account, state, reason):
+        pass
+
 
 def candidate(direction, **changes):
     return EntryCandidate(
@@ -78,12 +83,17 @@ def candidate(direction, **changes):
     )
 
 
-def execute_entry(gate, slots, candidate, *, plan_id, position_quantity, fill_quantity, price="10"):
+def submit(gate, entry):
+    gate.observe_market(entry.ts_decision, ())
+    return gate.submit_candidate(entry)
+
+
+def execute_entry(gate, slots, candidate, *, plan_id, position_quantity, fill_quantity, price="10", multiplier=1):
     position = RoundStatus(
         round_id="round", sub_account_id=candidate.sub_account_id, instrument_id=candidate.instrument_id,
         direction=candidate.direction, quantity=position_quantity, stop=candidate.invalidation_stop,
     )
-    cost = Decimal(fill_quantity) * Decimal(price) * (1 if candidate.direction == "LONG" else -1)
+    cost = Decimal(fill_quantity) * Decimal(price) * multiplier * (1 if candidate.direction == "LONG" else -1)
     slots.events.append(ExecutionEvent(
         kind="ENTRY_FILLED", sub_account_id="example", ts_event=candidate.ts_decision + 1,
         plan_id=plan_id, quantity=fill_quantity, price=price, position=position,
@@ -102,7 +112,7 @@ def test_only_widening_needs_risk_approval(direction, tighten, widen):
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate(direction)
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="2", fill_quantity="2")
 
     tighter = BarrierChangeRequest(sub_account_id="example", round_id="round", stop=tighten)
@@ -120,11 +130,11 @@ def test_an_add_on_uses_its_own_risk_approval_and_quantity():
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="2", fill_quantity="2")
 
     add_on = candidate("LONG", ts_decision=102, round_id="round")
-    assert gate.submit_candidate(add_on).accepted
+    assert submit(gate, add_on).accepted
     execute_entry(gate, slots, add_on, plan_id="plan-102", position_quantity="3", fill_quantity="1")
     assert gate.account_state("example").rounds["round"].quantity == Decimal(3)
 
@@ -135,16 +145,16 @@ def test_an_add_on_uses_its_own_risk_approval_and_quantity():
 def test_two_pending_openings_cannot_use_the_same_round_id():
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
-    assert gate.submit_candidate(candidate("LONG")).accepted
+    assert submit(gate, candidate("LONG")).accepted
     with pytest.raises(AccountProcessError, match="新的回合 ID"):
-        gate.submit_candidate(candidate("LONG", ts_decision=101))
+        submit(gate, candidate("LONG", ts_decision=101))
 
 
 def test_first_fill_checks_approved_stop_even_with_a_pending_round():
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     pending = RoundStatus(
         round_id="round", sub_account_id="example", instrument_id=entry.instrument_id,
         direction="LONG", quantity="0", stop="9.5",
@@ -168,7 +178,7 @@ def test_terminal_plan_cannot_fill_with_its_old_approval(terminal):
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     if terminal == "CANCEL_ENTRY":
         gate.intervene_position("round", terminal, None, "test")
     else:
@@ -184,7 +194,7 @@ def test_tightening_is_measured_from_last_accepted_stop():
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="2", fill_quantity="2")
     assert gate.change_barrier(BarrierChangeRequest(
         sub_account_id="example", round_id="round", stop="9.8",
@@ -199,7 +209,7 @@ def test_reduce_ratio_rejects_risk_increase_from_last_accepted_status(monkeypatc
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="2", fill_quantity="2")
     original = gate.account_state("example").rounds["round"]
     responses = iter([
@@ -223,13 +233,13 @@ def test_bad_fill_does_not_change_risk_position(kind, plan_id, postings, message
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="1", fill_quantity="1")
     add_on = candidate("LONG", ts_decision=101, round_id="round")
-    assert gate.submit_candidate(add_on).accepted
+    assert submit(gate, add_on).accepted
     if plan_id == "denied-plan":
         monkeypatch.setattr(slots, "evaluate_candidate", lambda *_: RejectedPlanRecord(reason="TEST_RISK_LIMIT"))
-        assert gate.submit_candidate(add_on).reason == "TEST_RISK_LIMIT"
+        assert submit(gate, add_on).reason == "TEST_RISK_LIMIT"
     before = gate.account_state("example").rounds["round"]
     after = before.model_copy(update={"quantity": Decimal(2 if kind == "ENTRY_FILLED" else 0)})
     slots.events.append(ExecutionEvent(
@@ -257,7 +267,7 @@ def test_entry_fill_must_be_inside_approved_range_with_slippage(price, slippage,
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     slots.allowed_slippage = slippage
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     args = dict(plan_id="plan-100", position_quantity="1", fill_quantity="1", price=price)
     if accepted:
         execute_entry(gate, slots, entry, **args)
@@ -272,7 +282,7 @@ def test_expired_approval_cannot_fill():
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG", valid_until=100)
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
 
     with pytest.raises(AccountProcessError, match="计划已过期"):
         execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="1", fill_quantity="1")
@@ -282,7 +292,7 @@ def test_round_cancellation_without_a_plan_id_retires_the_pending_entry():
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     slots.events.append(ExecutionEvent(
         kind="ENTRY_CANCELLED", sub_account_id="example", ts_event=100,
         position=RoundStatus(
@@ -303,7 +313,7 @@ def test_risk_does_not_see_a_fill_when_the_ledger_write_fails():
 
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {}, record=fail_record)
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     with pytest.raises(OSError, match="账本不可写"):
         execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="1", fill_quantity="1")
     assert not gate.account_state("example").rounds
@@ -314,7 +324,7 @@ def test_full_exit_releases_the_round_cost_from_its_ledger(cost, accepted):
     slots = TestSlots()
     gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
     entry = candidate("LONG")
-    assert gate.submit_candidate(entry).accepted
+    assert submit(gate, entry).accepted
     execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="2", fill_quantity="2")
     before = gate.account_state("example").rounds["round"]
     postings = [
@@ -335,3 +345,43 @@ def test_full_exit_releases_the_round_cost_from_its_ledger(cost, accepted):
         with pytest.raises(AccountProcessError, match="持仓成本分录与成交不一致"):
             gate.poll_events(102)
         assert gate.account_state("example").rounds["round"] == before
+
+
+def test_halt_invalidates_pending_entries():
+    from talaria.account.contracts import TradingState
+
+    slots = TestSlots()
+    gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
+    entry = candidate("LONG")
+    assert submit(gate, entry).accepted
+    gate.set_trading_state("example", TradingState.HALTED, "test")
+    assert not gate.account_state("example").reservations
+    with pytest.raises(AccountProcessError, match="未经风控批准|HALTED"):
+        execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="1", fill_quantity="1")
+
+
+def test_public_candidate_cannot_decide_ahead_of_host_clock():
+    slots = TestSlots()
+    gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
+    gate.observe_market(99, ())
+    assert gate.submit_candidate(candidate("LONG")).reason == "FUTURE_DECISION"
+
+
+def test_fill_postings_use_contract_multiplier_and_project_price_per_unit(monkeypatch):
+    pack = CRYPTO_PERP_PACK
+    original = pack.traits
+
+    def traits(instrument_id):
+        trait = original(instrument_id)
+        return replace(trait, margin=replace(trait.margin, contract_multiplier=Decimal(10)))
+
+    monkeypatch.setattr(pack, "traits", traits)
+    slots = TestSlots()
+    gate = ExecutionGate(("example",), slots, slots, slots, balances=lambda _: {})
+    entry = candidate("LONG")
+    assert submit(gate, entry).accepted
+    with pytest.raises(AccountProcessError, match="对价分录"):
+        execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="2", fill_quantity="2")
+    execute_entry(gate, slots, entry, plan_id="plan-100", position_quantity="2", fill_quantity="2", multiplier=10)
+    exposure, = gate.account_state("example").positions
+    assert exposure.position.entry_price == Decimal(10)
