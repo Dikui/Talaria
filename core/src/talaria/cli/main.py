@@ -295,10 +295,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
             print("回放模式必须显式指定 --data-dir", file=sys.stderr)
             return 2
         protected_dirs = [Path(default_data_dir).expanduser().resolve(), *_launchd_data_dirs()]
-        if any(
-            data_dir.is_relative_to(protected) or protected.is_relative_to(data_dir)
-            for protected in protected_dirs
-        ):
+        if any(_data_dirs_overlap(data_dir, protected) for protected in protected_dirs):
             print(f"回放数据目录不能与日常数据目录重叠：{data_dir}", file=sys.stderr)
             return 2
     if args.realtime_quota <= 0:
@@ -346,6 +343,18 @@ def _cmd_up(args: argparse.Namespace) -> int:
         )
     finally:
         service_lock.release()
+
+
+def _data_dirs_overlap(left: Path, right: Path) -> bool:
+    """比较已规范化的路径；尚不存在的路径也可能在大小写不敏感的卷上重叠。"""
+    folded_left, folded_right = Path(str(left).casefold()), Path(str(right).casefold())
+    try:
+        same_directory = os.path.samefile(left, right)
+    except OSError:
+        same_directory = folded_left == folded_right
+    return (
+        same_directory or folded_left in folded_right.parents or folded_right in folded_left.parents
+    )
 
 
 def _launchd_data_dirs() -> list[Path]:

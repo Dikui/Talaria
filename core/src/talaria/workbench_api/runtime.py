@@ -144,6 +144,7 @@ async def build_runtime(
                 now_ms=settings.now_ms,
                 stale_after_ms=settings.stale_after_ms,
                 on_bar_close=cold_publisher.record_close if cold_publisher else None,
+                on_recovered_bar=cold_publisher.record_recovered_bar if cold_publisher else None,
                 on_subscribe=(
                     cold_publisher.backfill_subscription
                     if cold_publisher is not None and settings.replay_events is None else None

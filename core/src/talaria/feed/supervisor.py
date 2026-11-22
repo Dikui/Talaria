@@ -36,6 +36,7 @@ from talaria.foundation.feed import (
     KlineEvent,
     MarketEventFeed,
     OrderBookEvent,
+    ReceivedKlineEvent,
     worst_status,
 )
 from talaria.foundation.market import InstrumentSpec
@@ -45,6 +46,7 @@ from talaria.foundation.types import PrecisionTier
 logger = logging.getLogger(__name__)
 
 DEFAULT_STALE_AFTER_MS = 12_000
+BAR_CLOSE_GRACE_MS = 5_000
 TICK_INTERVAL_SECONDS = 0.5
 BACKOFF_INITIAL_SECONDS = 0.2
 BACKOFF_MAX_SECONDS = 5.0
@@ -108,6 +110,7 @@ class FeedSupervisor(MarketEventFeed):
         stale_after_ms: int = DEFAULT_STALE_AFTER_MS,
         on_subscribe: Callable[[InstrumentSpec, str, int], None] | None = None,
         on_bar_close: Callable[[InstrumentSpec, str, CompactBar, int], None] | None = None,
+        on_recovered_bar: Callable[[InstrumentSpec, RawBar], None] | None = None,
         tick_interval_seconds: float = TICK_INTERVAL_SECONDS,
         backoff_initial_seconds: float = BACKOFF_INITIAL_SECONDS,
         backoff_max_seconds: float = BACKOFF_MAX_SECONDS,
@@ -122,6 +125,7 @@ class FeedSupervisor(MarketEventFeed):
         self._stale_after_ms = stale_after_ms
         self._on_subscribe = on_subscribe
         self._on_bar_close = on_bar_close
+        self._on_recovered_bar = on_recovered_bar
         self._tick_interval_seconds = tick_interval_seconds
         self._backoff_initial_seconds = backoff_initial_seconds
         self._backoff_max_seconds = backoff_max_seconds
@@ -254,8 +258,10 @@ class FeedSupervisor(MarketEventFeed):
             )
             self._apply_bar(
                 key, bar.to_compact(status=status), confirmed=True, now=now, source=True,
-                received_ts=bar.ts_ingested,
+                received_ts=bar.ts_ingested, recovered=True,
             )
+            if self._on_recovered_bar is not None:
+                self._on_recovered_bar(self._instruments[key[0]], bar)
 
         for channel in self._channels.values():
             self._fill_outage_windows(channel, now)
@@ -332,7 +338,10 @@ class FeedSupervisor(MarketEventFeed):
                 force_gap=key in self._resume_pending,
             )
         self._resume_pending.discard(key)
-        self._apply_bar(key, event.bar, confirmed=event.confirmed, now=now, source=True)
+        self._apply_bar(
+            key, event.bar, confirmed=event.confirmed, now=now, source=True,
+            received_ts=event.ts_ingested if isinstance(event, ReceivedKlineEvent) else now,
+        )
 
     def _accept_derivative_tick(self, event: DerivativeTickEvent, now: int) -> None:
         if not any(
@@ -363,31 +372,31 @@ class FeedSupervisor(MarketEventFeed):
         now: int,
         source: bool = False,
         received_ts: int | None = None,
+        recovered: bool = False,
     ) -> None:
         series = self._series.setdefault(key, {})
         record = series.get(bar.timestamp)
+        # 交易所也可能确认零量柱，合成柱通过来源标记区分。
         source_confirmed = source and confirmed and bar.status is not BarStatus.FEED_GAP
         if source_confirmed:
             received = now if received_ts is None else received_ts
             close_ts = bar.timestamp + timeframe_ms(key[1])
-            available = (
-                max(close_ts, record.bar.ts_available, received)
-                if record is not None and record.source_confirmed else close_ts
-            )
+            if record is not None and record.source_confirmed:
+                previous = record.bar.ts_available
+                unchanged = bar.model_copy(update={"ts_available": previous}) == record.bar
+                available = previous if unchanged else max(previous, received)
+            else:
+                available = close_ts if recovered or received <= close_ts + BAR_CLOSE_GRACE_MS else received
             bar = bar.model_copy(update={"ts_available": available})
-            if self._on_bar_close is not None:
+            if not recovered and self._on_bar_close is not None:
+                # 重发可补一次失败的写入，沿用已知版本的可获取时刻。
                 self._on_bar_close(self._instruments[key[0]], key[1], bar, received)
         if record is not None:
             if record.source_confirmed and not confirmed:
                 return  # 已收盘的柱不能退回进行中
             same_kind = record.confirmed == confirmed and record.source_confirmed == source_confirmed
-            if same_kind:
-                comparable = (
-                    bar.model_copy(update={"ts_available": record.bar.ts_available})
-                    if source_confirmed else bar
-                )
-                if record.bar == comparable:
-                    return
+            if same_kind and record.bar == bar:
+                return
         revision = 0 if record is None else record.revision + 1
         series[bar.timestamp] = _BarVersion(
             bar=bar, confirmed=confirmed, revision=revision, source_confirmed=source_confirmed,

@@ -6,10 +6,12 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from websockets.asyncio.server import serve
 
+from talaria.feed.supervisor import FeedSupervisor
 from talaria.foundation.bars import BarStatus
 from talaria.foundation.errors import FeedTransportError
 from talaria.foundation.feed import DerivativeTickEvent, KlineEvent, OrderBookEvent
@@ -54,20 +56,21 @@ def kline_payload(
         "topic": f"kline.{interval}.{symbol}",
         "type": "snapshot",
         "ts": BASE,
-        "data": {
-            "start": start,
-            "end": start + MINUTE,
-            "interval": interval,
-            "open": close,
-            "high": close,
-            "low": close,
-            "close": close,
-            "volume": volume,
-            "turnover": "100",
-            "confirm": confirm,
-            "timestamp": start + 1_000,
-            "symbol": symbol,
-        },
+        "data": [
+            {
+                "start": start,
+                "end": start + MINUTE - 1,
+                "interval": interval,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": volume,
+                "turnover": "100",
+                "confirm": confirm,
+                "timestamp": start + 1_000,
+            },
+        ],
     }
 
 
@@ -153,6 +156,64 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
         assert tick.open_interest == Decimal("12345.6")
 
     asyncio.run(Harness(handler).run(scenario))
+
+
+@pytest.mark.regression
+def test_kline_without_symbol_in_data_uses_topic(monkeypatch) -> None:
+    # 任务单 02：用假的 WebSocket 连接提供 Bybit V5 报文，无需绑定端口。
+    async def scenario() -> None:
+        ws = MagicMock(send=AsyncMock(), close=AsyncMock())
+        ws.__aiter__.return_value = [
+            json.dumps({"success": True, "op": "subscribe"}),
+            json.dumps(kline_payload(confirm=True)),
+        ]
+        monkeypatch.setattr("talaria.packs.crypto_perp.stream.ws_connect", AsyncMock(return_value=ws))
+        stream = make_stream("ws://unused", ping_interval_seconds=None)
+        await stream.connect()
+        try:
+            await stream.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+            event = await asyncio.wait_for(stream.recv(), timeout=1)
+            assert isinstance(event, KlineEvent)
+            assert (event.instrument_id, event.timeframe, event.confirmed) == (INSTRUMENT, "1m", True)
+        finally:
+            await stream.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.regression
+def test_bybit_available_time_uses_parser_receipt_even_when_consumer_is_delayed(monkeypatch) -> None:
+    # ADR-0018: use the parsed frame's time for both close and correction.
+    async def scenario() -> None:
+        end = BASE + MINUTE
+        now = end + 5_000
+
+        async def frames():
+            nonlocal now
+            yield json.dumps({"success": True, "op": "subscribe"})
+            yield json.dumps(kline_payload(confirm=True))
+            now = end + 8_000
+            yield json.dumps(kline_payload(confirm=True, close="101"))
+            now = end + 20_000
+
+        ws = MagicMock(send=AsyncMock(), close=AsyncMock())
+        ws.__aiter__.side_effect = frames
+        monkeypatch.setattr("talaria.packs.crypto_perp.stream.ws_connect", AsyncMock(return_value=ws))
+        stream = make_stream("ws://unused", now_ms=lambda: now, ping_interval_seconds=None)
+        supervisor = FeedSupervisor(stream=stream, instruments=CRYPTO_PERP_PACK.instruments())
+        supervisor.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+        observed = []
+        supervisor.add_listener(observed.append)
+        await stream.connect()
+        try:
+            await stream.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+            for _ in range(2):
+                supervisor.ingest(await stream.recv(), now=now)
+        finally:
+            await stream.close()
+        assert [event.bar.ts_available for event in observed] == [end, end + 8_000]
+
+    asyncio.run(scenario())
 
 
 def test_flat_zero_volume_bar_is_no_trades() -> None:

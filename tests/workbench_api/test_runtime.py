@@ -4,14 +4,15 @@ import asyncio
 import json
 import time
 import threading
-from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from talaria.foundation.bars import CompactBar
+from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.connector import RawBar
 from talaria.foundation.errors import SingleWriterViolationError
 from talaria.foundation.feed import KlineEvent
@@ -194,6 +195,84 @@ def test_replay_publishes_only_confirmed_bars_and_preserves_revisions_on_restart
         assert close_at() == [Decimal("102")]
 
 
+def _idle_replay_settings(tmp_path, fixture_dir, now_ms):
+    replay = tmp_path / "events.jsonl"
+    replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+    return AppSettings(
+        data_dir=tmp_path / "data", dist_dir=tmp_path / "dist", fixture_dir=fixture_dir,
+        replay_events=replay, now_ms=now_ms, features=FeatureToggles(alerts=False, scanner=False),
+    )
+
+
+@asynccontextmanager
+async def _subscribed_supervisor(settings, instrument):
+    runtime = await build_runtime(settings)
+    try:
+        runtime.supervisor.subscribe(instrument_id=instrument.instrument_id, timeframe="1m")
+        yield runtime.supervisor
+    finally:
+        await runtime.aclose()
+
+
+def _confirmed_kline(instrument, timestamp, close, *, volume="1", status=BarStatus.NORMAL):
+    bar = CompactBar(
+        timestamp=timestamp, open=close, high=close, low=close, close=close,
+        volume=volume, turnover=str(Decimal(close) * Decimal(volume)), status=status,
+        ts_available=timestamp + 60_000, precision="SECOND_VERIFIED",
+    )
+    return KlineEvent(
+        instrument_id=instrument.instrument_id, timeframe="1m", bar=bar, confirmed=True, revision=0,
+    )
+
+
+@pytest.mark.medium
+@pytest.mark.regression
+@pytest.mark.parametrize("initial", ["failed_write", "restart"])
+def test_late_revision_is_only_available_from_receipt(tmp_path, fixture_dir, monkeypatch, initial):
+    # ADR-0018: if a write fails or the service restarts, the correction cannot appear early.
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    timestamp = 1_795_045_500_000
+    end = timestamp + 60_000
+    now = end + 1_000
+    settings = _idle_replay_settings(tmp_path, fixture_dir, lambda: now)
+    publish = ColdStore.publish
+
+    def publish_with_failure(store, batch):
+        if batch.bars[0].close == Decimal("100"):
+            raise OSError("simulated first write failure")
+        return publish(store, batch)
+
+    if initial == "failed_write":
+        monkeypatch.setattr(ColdStore, "publish", publish_with_failure)
+
+    async def run():
+        nonlocal now
+        correction = _confirmed_kline(instrument, timestamp, "101")
+        async with _subscribed_supervisor(settings, instrument) as supervisor:
+            supervisor.ingest(_confirmed_kline(instrument, timestamp, "100"))
+            if initial == "failed_write":
+                now = end + 3_000
+                supervisor.ingest(correction)
+        if initial == "restart":
+            now = end + 15_000
+            async with _subscribed_supervisor(settings, instrument) as supervisor:
+                available = []
+                supervisor.add_listener(
+                    lambda event: available.append(event.bar.ts_available)
+                    if isinstance(event, KlineEvent) else None
+                )
+                supervisor.ingest(correction)
+                assert available == [now]
+
+    asyncio.run(run())
+    reader = ColdReader(settings.data_dir)
+    earlier = [Decimal("100")] if initial == "restart" else []
+    assert [bar.close for bar in reader.read_bars(instrument, "1m", as_of=now - 1)] == earlier
+    assert [(bar.close, bar.ts_available) for bar in reader.read_bars(instrument, "1m")] == [
+        (Decimal("101"), now),
+    ]
+
+
 @pytest.mark.medium
 @pytest.mark.spec
 def test_first_live_subscription_backfills_history_across_months(tmp_path: Path, monkeypatch) -> None:
@@ -254,3 +333,89 @@ def test_first_live_subscription_backfills_history_across_months(tmp_path: Path,
         assert [
             generation.parquet_path.parent.name for generation in store.generations(instrument, "1m")
         ] == ["2025-11", "2025-12"]
+
+
+@pytest.mark.medium
+@pytest.mark.regression
+def test_reconnect_history_only_fills_missing_cold_bars(tmp_path, fixture_dir):
+    # Ticket 02: the recovery REST response can include an already stored realtime bar.
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    timestamp = 1_795_045_500_000
+    minute = 60_000
+    now = timestamp + 4 * minute
+    settings = _idle_replay_settings(tmp_path, fixture_dir, lambda: now)
+
+    def raw(ts, price):
+        value = Decimal(price)
+        return RawBar(
+            symbol=instrument.symbol, timeframe="1m", ts_event=ts,
+            open=value, high=value, low=value, close=value, volume=Decimal("1"), turnover=value,
+            ts_available=now, ts_ingested=now, ts_committed=now,
+        )
+
+    async def run():
+        async with _subscribed_supervisor(settings, instrument) as supervisor:
+            supervisor.ingest(_confirmed_kline(instrument, timestamp, "101"))
+            supervisor.transport_lost(now=now)
+            supervisor.transport_restored(now=now, backfill=[
+                raw(timestamp, "90"), raw(timestamp + minute, "95"),
+            ])
+
+    asyncio.run(run())
+    rows = ColdReader(settings.data_dir).read_bars(instrument, "1m")
+    assert [(bar.close, bar.revision, bar.ts_available) for bar in rows] == [
+        (Decimal("101"), 0, now), (Decimal("95"), 0, timestamp + 2 * minute),
+    ]
+
+
+@pytest.mark.medium
+@pytest.mark.regression
+def test_cold_submission_failure_does_not_interrupt_realtime_feed(
+    tmp_path, fixture_dir, monkeypatch, caplog,
+):
+    # Ticket 02: failure before a write starts must still deliver the confirmed event.
+    class RejectingExecutor(ThreadPoolExecutor):
+        def submit(self, *args, **kwargs):
+            raise OSError("write submission failed")
+
+    monkeypatch.setattr("talaria.perception.cold_publisher.ThreadPoolExecutor", RejectingExecutor)
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    timestamp = 1_795_045_500_000
+    now = timestamp + 60_000
+    settings = _idle_replay_settings(tmp_path, fixture_dir, lambda: now)
+
+    async def run():
+        async with _subscribed_supervisor(settings, instrument) as supervisor:
+            events = []
+            supervisor.add_listener(events.append)
+            event = _confirmed_kline(instrument, timestamp, "100")
+            supervisor.ingest(event)
+            assert [observed.bar for observed in events] == [event.bar]
+
+    asyncio.run(run())
+    assert "write submission failed" in caplog.text
+
+
+@pytest.mark.medium
+@pytest.mark.regression
+def test_only_exchange_no_trades_bars_are_published_to_cold_store(tmp_path, fixture_dir):
+    # Ticket 02: a missing minute is synthesized hot, while a real zero-volume close is archived.
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    start = 1_795_045_500_000
+    minute = 60_000
+    settings = _idle_replay_settings(tmp_path, fixture_dir, lambda: start + 3 * minute)
+
+    async def run():
+        async with _subscribed_supervisor(settings, instrument) as supervisor:
+            supervisor.ingest(_confirmed_kline(instrument, start, "100"))
+            supervisor.ingest(_confirmed_kline(
+                instrument, start + 2 * minute, "100", volume="0", status=BarStatus.NO_TRADES,
+            ))
+            hot = supervisor.recent_bars(instrument_id=instrument.instrument_id, timeframe="1m")
+            assert hot[1].timestamp == start + minute and hot[1].status is BarStatus.NO_TRADES
+
+    asyncio.run(run())
+    cold = ColdReader(settings.data_dir).read_bars(instrument, "1m")
+    assert [(bar.ts_event, bar.volume) for bar in cold] == [
+        (start, Decimal(1)), (start + 2 * minute, Decimal(0)),
+    ]

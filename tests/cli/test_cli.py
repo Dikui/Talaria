@@ -199,6 +199,48 @@ def test_replay_protects_data_dir_of_loaded_launchd_job(tmp_path, monkeypatch, c
     assert not daily.exists()
 
 
+@pytest.mark.regression
+@pytest.mark.parametrize("daily,replay_dir", [
+    ("Talaria/Data", "talaria/data"),
+    ("Talaria/Data", "talaria/data/nested"),
+    ("Talaria/Data/nested", "talaria/data"),
+])
+def test_replay_rejects_casefolded_directory_overlap(tmp_path, monkeypatch, capsys, daily, replay_dir):
+    # Ticket 02: paths can overlap on a case-insensitive volume before directories exist.
+    monkeypatch.setenv("TALARIA_DATA_DIR", str(tmp_path / daily))
+    monkeypatch.setattr("talaria.cli.main._run_up", lambda *args, **kwargs: 99)
+    replay = tmp_path / "events.jsonl"
+    replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+
+    assert main([
+        "up", "--solo", "--replay-events", str(replay), "--data-dir", str(tmp_path / replay_dir),
+    ]) == 2
+    assert "日常数据目录" in capsys.readouterr().err
+
+
+@pytest.mark.regression
+def test_replay_rejects_existing_paths_with_same_directory_identity(tmp_path, monkeypatch, capsys):
+    # Ticket 02: simulate different normalized names referring to one filesystem directory.
+    daily, alias = tmp_path / "daily", tmp_path / "alias"
+    daily.mkdir()
+    alias.mkdir()
+    monkeypatch.setenv("TALARIA_DATA_DIR", str(daily))
+    monkeypatch.setattr("talaria.cli.main._run_up", lambda *args, **kwargs: 99)
+    samefile = os.path.samefile
+
+    def same_directory(left, right):
+        return {Path(left), Path(right)} == {daily, alias} or samefile(left, right)
+
+    monkeypatch.setattr(os.path, "samefile", same_directory)
+    replay = tmp_path / "events.jsonl"
+    replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+
+    assert main([
+        "up", "--solo", "--replay-events", str(replay), "--data-dir", str(alias),
+    ]) == 2
+    assert "日常数据目录" in capsys.readouterr().err
+
+
 
 def _free_port() -> int:
     with socket.socket() as sock:

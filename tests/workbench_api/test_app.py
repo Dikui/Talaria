@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from talaria.foundation.errors import FeedUnavailableError
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+from talaria.packs.testing import FixtureConnector
 from talaria.perception.cold_store import ColdReader, ColdStore
 from talaria.workbench_api.app import create_app
 from talaria.workbench_api.settings import AppSettings
@@ -346,6 +349,24 @@ def test_chart_history_is_readable_from_cold_store_after_shutdown(
         assert client.get(f"/api/snapshots/{snapshot_id}").status_code == 200
 
 
+@pytest.mark.regression
+@pytest.mark.parametrize("method", [
+    "fetch_mark_price_bars", "fetch_funding_settlements", "fetch_open_interest",
+])
+def test_derivative_feed_failure_does_not_fail_snapshot(client, monkeypatch, caplog, method):
+    # Ticket 02: fail one optional upstream endpoint while K-line history remains available.
+    def unavailable(*args, **kwargs):
+        raise FeedUnavailableError(f"unavailable: {method}")
+
+    monkeypatch.setattr(FixtureConnector, method, unavailable)
+    snapshot = _create(client)
+    assert snapshot.status_code == 200
+    meta = snapshot.json()
+    assert meta["bar_counts"]["1m"] > 0
+    assert client.get(f"/api/snapshots/{meta['snapshot_id']}").status_code == 200
+    assert f"unavailable: {method}" in caplog.text
+
+
 # data-access/02: inject a disk failure at the cold writer boundary.
 @pytest.mark.regression
 def test_cold_disk_failure_does_not_fail_chart(tmp_path, fixture_dir, dist_dir, monkeypatch, caplog):
@@ -360,3 +381,34 @@ def test_cold_disk_failure_does_not_fail_chart(tmp_path, fixture_dir, dist_dir, 
         assert len(page.json()["bars"]) == 10
 
     assert "冷库发布失败" in caplog.text and "disk full" in caplog.text
+
+
+@pytest.mark.regression
+def test_failed_cold_history_submission_does_not_fail_chart_or_block_retry(
+    tmp_path, fixture_dir, dist_dir, monkeypatch, caplog,
+):
+    # Ticket 02: a synchronous executor failure must leave the range eligible for retry.
+    class FailsFirstHistorySubmission(ThreadPoolExecutor):
+        failed = False
+
+        def submit(self, *args, **kwargs):
+            if self._thread_name_prefix == "cold-history" and not self.failed:
+                self.failed = True
+                raise OSError("history submission failed")
+            return super().submit(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "talaria.perception.cold_publisher.ThreadPoolExecutor", FailsFirstHistorySubmission,
+    )
+    settings = _app_settings(tmp_path, fixture_dir, dist=dist_dir)
+    with TestClient(create_app(settings)) as client:
+        snapshot_id = _create(client).json()["snapshot_id"]
+        url = f"/api/snapshots/{snapshot_id}/bars?timeframe=1m&limit=10"
+        for _ in range(2):
+            page = client.get(url)
+            assert page.status_code == 200
+            assert len(page.json()["bars"]) == 10
+
+    assert "history submission failed" in caplog.text
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    assert len(ColdReader(settings.data_dir).read_bars(instrument, "1m")) == 10

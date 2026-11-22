@@ -40,6 +40,12 @@ class KlineEvent(ContractModel):
     revision: int = Field(ge=0)
 
 
+class ReceivedKlineEvent(KlineEvent):
+    """传输层收到的 K 线，携带解析时记录的本地接收时刻。"""
+
+    ts_ingested: int = Field(exclude=True)
+
+
 class OrderBookEvent(ContractModel):
     """最优一档盘口；``ts_event`` 为交易所时间，``ts_ingested`` 为本地接收时间。"""
 

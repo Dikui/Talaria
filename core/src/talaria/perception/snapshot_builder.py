@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 from typing import Callable, Sequence
@@ -27,6 +28,8 @@ from talaria.perception.snapshot_store import (
     write_derivative_parquet,
     write_snapshot_parquet,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _snapshot_entries(

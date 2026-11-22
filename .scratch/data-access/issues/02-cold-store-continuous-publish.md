@@ -50,3 +50,25 @@ pytest 命令统一使用前缀 `PYTHONPATH=$PWD/core/src /Users/dikui/Project/T
 
 - Bybit WebSocket 的 `test_subscribe_ack_then_kline_and_orderbook`、`test_flat_zero_volume_bar_is_no_trades`、`test_rejected_subscription_raises_feed_transport_error`、`test_closed_connection_surfaces_transport_error`、`test_application_ping_and_pong_keep_connection_alive` 和 `test_tickers_subscription_is_shared_across_timeframes` 均因沙箱禁止绑定 `127.0.0.1` 失败，触发 `PermissionError: [Errno 1]`。真实交易所、实际加载的 launchd 作业及月分区生产负载未实测。
 - 沙箱拒绝创建主仓库下的 worktree `index.lock`，`git add -- core/src/talaria/cli/main.py` 返回 128。改动保留在 `ticket/data-access-02` 工作区，HEAD 为 `e2d6722`。
+
+### 审查修复（2026-11-22）
+
+- Bybit V5 K 线从 `kline.<interval>.<SYMBOL>` 主题识别标的。WebSocket 读循环在解析原始报文前记录本地接收时刻，并把该时刻传到热端。回归夹具使用官方报文形状，`data` 数组元素省略 `symbol`。
+- 热端对首个交易所收盘版本使用 5 秒宽限。接收时刻不晚于柱结束加 5 秒时，`ts_available` 为柱结束，ADR-0018 的首版规则在宽限内仍成立。超过宽限的首版按接收时刻可见。内容变化的修订按接收时刻可见，取该时刻与热端前一版可获取时刻的较晚值。实时冷库写入直接使用热端给出的 `ts_available`。测试覆盖首版写盘失败后在宽限内到达的修订，以及服务重启后超过宽限才到达的修订。热端版本链以本进程已收到的版本为准，宽限内快速重启时仍可能将修订判为首版。
+- 图表、启动订阅和断线恢复取得的 REST 历史统一走只补缺的写入路径。单个写入线程在落盘前复查清单，任何已存版本都会使该柱跳过回填。补入的柱以柱结束作为 `ts_available`。因此冷库会忽略 REST 对已存柱的更正，保留已经发布的实时版本。
+- 恢复快照构建器的模块级 logger，标记价、资金费率或持仓量接口失败时记录 warning，K 线快照仍可创建和读取。冷库提交失败也只记 warning，实时回调和图表分页继续，失败的历史请求可再次提交。
+- 回放目录在规范化后以 `os.path.samefile` 检查已存在目录的身份相等，以 `casefold` 后的路径检查祖先和子目录关系。无法取得目录身份时，以 `casefold` 后的路径比较相等性。launchd 检查范围仍为默认服务标签。
+- 热端合成的 `NO_TRADES` 零量柱仅供热端使用。冷库归档由交易所确认的收盘柱，包括交易所推送的零量柱。新增回归测试在 `11f211d` 即通过，生产代码沿用原有的来源区分。
+
+#### 审查修复验证
+
+指定的 `tests/perception tests/workbench_api tests/feed tests/packs tests/cli tests/replay` 测试共 511 项通过，13 项失败，1 项设置错误，默认排除 1 项在线测试。排除以下 14 项沙箱受阻测试后重跑，511 项通过，15 项排除。
+
+| 文件 | 被沙箱限制的用例 |
+| --- | --- |
+| `tests/packs/test_bybit_stream.py` | `test_subscribe_ack_then_kline_and_orderbook`、`test_flat_zero_volume_bar_is_no_trades`、`test_rejected_subscription_raises_feed_transport_error`、`test_closed_connection_surfaces_transport_error`、`test_application_ping_and_pong_keep_connection_alive`、`test_tickers_subscription_is_shared_across_timeframes` 均无法绑定回环端口 |
+| `tests/workbench_api/test_collaboration_api.py` | `test_host_dispatch_ignores_ambient_http_proxy` 无法绑定回环端口 |
+| `tests/cli/test_cli.py` | `test_up_dual_keeps_fast_path_when_dsh_fails`、`test_up_dual_keeps_fast_path_when_dsh_binary_missing` 无法绑定回环端口 |
+| `tests/cli/test_dsh_host.py`、`tests/cli/test_graceful_shutdown.py` | `test_host_starts_probes_and_stops_with_redacted_log`、`test_sigterm_shuts_down_gracefully` 无法绑定回环端口 |
+| `tests/cli/test_usage_scan_service.py` | `test_usage_scan_fails_closed_when_service_endpoint_is_unreachable` 失败，`test_usage_scan_writes_through_running_service` 在设置阶段出错，均无法绑定回环端口 |
+| `tests/cli/test_talaria_desk_profile.py` | `test_real_dump_config_matches_permission_snapshot` 无法写入用户目录下的 DSH profile |

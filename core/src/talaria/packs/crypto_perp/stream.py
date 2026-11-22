@@ -24,7 +24,12 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from talaria.foundation.bars import CompactBar, classify_flat_bar
 from talaria.foundation.errors import FeedTransportError
-from talaria.foundation.feed import DerivativeTickEvent, KlineEvent, OrderBookEvent
+from talaria.foundation.feed import (
+    DerivativeTickEvent,
+    KlineEvent,
+    OrderBookEvent,
+    ReceivedKlineEvent,
+)
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.types import PrecisionTier
 
@@ -179,6 +184,7 @@ class BybitPublicStream:
         assert ws is not None
         try:
             async for raw in ws:
+                received_ts = self._now_ms()
                 self._last_message_at = time.monotonic()
                 try:
                     payload = json.loads(raw)
@@ -195,7 +201,7 @@ class BybitPublicStream:
                     if op == "ping":
                         await ws.send(json.dumps({"op": "pong"}))
                     continue
-                for event in self._parse(payload):
+                for event in self._parse(payload, received_ts):
                     await self._events.put(event)
             if not self._closed:
                 # 正常关闭握手时迭代会直接结束，同样视为断流。
@@ -267,7 +273,7 @@ class BybitPublicStream:
     # ------------------------------------------------------------- 解析
 
     def _parse(
-        self, payload: dict[str, object]
+        self, payload: dict[str, object], received_ts: int,
     ) -> list[KlineEvent | OrderBookEvent | DerivativeTickEvent]:
         topic = payload.get("topic")
         if not isinstance(topic, str):
@@ -276,10 +282,10 @@ class BybitPublicStream:
         if isinstance(data, list):
             events: list[KlineEvent | OrderBookEvent | DerivativeTickEvent] = []
             for item in data:
-                events.extend(self._parse_item(topic, item, payload))
+                events.extend(self._parse_item(topic, item, payload, received_ts))
             return events
         if isinstance(data, dict):
-            return self._parse_item(topic, data, payload)
+            return self._parse_item(topic, data, payload, received_ts)
         return []
 
     def _parse_item(
@@ -287,21 +293,24 @@ class BybitPublicStream:
         topic: str,
         data: object,
         envelope: dict[str, object],
+        received_ts: int,
     ) -> list[KlineEvent | OrderBookEvent | DerivativeTickEvent]:
         if not isinstance(data, dict):
             return []
         if topic.startswith("kline."):
-            return self._parse_kline(data)
+            return self._parse_kline(topic, data, received_ts)
         if topic.startswith("orderbook."):
             return self._parse_book(data, envelope)
         if topic.startswith("tickers."):
             return self._parse_tickers(data, envelope)
         return []
 
-    def _parse_kline(self, data: dict[str, object]) -> list[KlineEvent]:
+    def _parse_kline(
+        self, topic: str, data: dict[str, object], received_ts: int,
+    ) -> list[KlineEvent]:
         interval = data.get("interval")
-        symbol = data.get("symbol")
-        if not isinstance(interval, str) or not isinstance(symbol, str):
+        _, _, symbol = topic.rpartition(".")
+        if not isinstance(interval, str):
             return []
         timeframe = TIMEFRAME_BY_INTERVAL.get(interval)
         instrument_id = self._instrument_by_symbol.get(symbol)
@@ -319,7 +328,7 @@ class BybitPublicStream:
             volume = _decimal(data["volume"])
             turnover = _decimal(data["turnover"])
         except (KeyError, TypeError, ValueError):
-            logger.warning("忽略字段不全的 Bybit K 线：%s", data.get("symbol"))
+            logger.warning("忽略字段不全的 Bybit K 线：%s", symbol)
             return []
         status = classify_flat_bar(
             open=open_, high=high, low=low, close=close, volume=volume
@@ -334,17 +343,17 @@ class BybitPublicStream:
             volume=volume,
             turnover=turnover,
             status=status,
-            # 传输层记录接收时刻，supervisor 按首个收盘或修订确定可获取时刻。
-            ts_available=self._now_ms() if confirmed else end,
+            ts_available=end,
             precision=PrecisionTier.SECOND_VERIFIED,
         )
         return [
-            KlineEvent(
+            ReceivedKlineEvent(
                 instrument_id=instrument_id,
                 timeframe=timeframe,
                 bar=bar,
                 confirmed=confirmed,
                 revision=0,
+                ts_ingested=received_ts,
             )
         ]
 
