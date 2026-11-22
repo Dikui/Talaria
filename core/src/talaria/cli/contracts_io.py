@@ -48,7 +48,7 @@ from talaria.foundation.annotations import (
     CreateAlertDraftInput,
     WriteAgentOverlayInput,
 )
-from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.foundation.bars import BarStatus, BarsQuery, BarsResponse, CompactBar, RangeBar
 from talaria.foundation.drawings import (
     ChartView,
     ChartViewWindow,
@@ -182,6 +182,9 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "temporal_stamp": TemporalStamp,
     "instrument_spec": InstrumentSpec,
     "compact_bar": CompactBar,
+    "bars_query": BarsQuery,
+    "range_bar": RangeBar,
+    "bars_response": BarsResponse,
     "kline_event": KlineEvent,
     "order_book_event": OrderBookEvent,
     "derivative_tick_event": DerivativeTickEvent,

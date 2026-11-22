@@ -18,6 +18,7 @@ from talaria.workbench_api.routes import (
     alerts,
     analysis,
     annotations,
+    bars,
     collaboration,
     desk_ws,
     drawings,
@@ -34,6 +35,8 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 ERROR_STATUS: dict[str, int] = {
     "UNAUTHORIZED": 401,
     "VALIDATION_ERROR": 422,
+    "BARS_RANGE_TOO_LARGE": 400,
+    "BARS_BACKFILL_TIMEOUT": 504,
     "NOT_FOUND": 404,
     "INSTRUMENT_NOT_FOUND": 404,
     "SNAPSHOT_NOT_FOUND": 404,
@@ -121,6 +124,7 @@ def create_app(
 
     app.include_router(health.router)
     app.include_router(analysis.router)
+    app.include_router(bars.router)
     app.include_router(drawings.router)
     app.include_router(watchlist.router)
     app.include_router(annotations.router)

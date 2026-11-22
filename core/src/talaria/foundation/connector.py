@@ -28,6 +28,10 @@ class RawBar:
     ts_committed: int
     precision: PrecisionTier = PrecisionTier.SECOND_VERIFIED
     revision: int = 0
+    # 仅热缓冲需要这些状态，冷库与原始归档只保存确认的历史柱。
+    confirmed: bool = True
+    history_only: bool = False
+    synthetic: bool = False
 
     def to_compact(self, *, status: BarStatus = BarStatus.NORMAL) -> CompactBar:
         if status is BarStatus.FEED_GAP:

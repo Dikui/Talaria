@@ -15,7 +15,7 @@ from typing import Protocol
 
 from talaria.foundation.bars import BarStatus
 from talaria.foundation.connector import RawBar
-from talaria.foundation.feed import FeedEvent, KlineEvent
+from talaria.foundation.feed import FeedEvent, KlineEvent, ReceivedKlineEvent
 from talaria.foundation.market import InstrumentSpec
 
 DEFAULT_MAX_BARS_PER_SERIES = 5_000
@@ -43,10 +43,7 @@ class HotStreamBuffer:
         self._symbols = {spec.instrument_id: spec.symbol for spec in instruments}
         self._now_ms = now_ms
         self._max_bars = max_bars_per_series
-        self._series: dict[
-            tuple[str, str], dict[int, dict[tuple[int, int], RawBar]]
-        ] = {}
-        self._confirmed: dict[tuple[str, str], set[int]] = {}
+        self._series: dict[tuple[str, str], dict[int, dict[int, RawBar]]] = {}
         self._lock = threading.Lock()
 
     def ingest(self, event: FeedEvent) -> None:
@@ -66,6 +63,7 @@ class HotStreamBuffer:
         if symbol is None:
             return
         now = self._now_ms()
+        received = event.ts_ingested if isinstance(event, ReceivedKlineEvent) else now
         raw = RawBar(
             symbol=symbol,
             timeframe=event.timeframe,
@@ -77,38 +75,50 @@ class HotStreamBuffer:
             volume=bar.volume,  # type: ignore[arg-type]
             turnover=bar.turnover,  # type: ignore[arg-type]
             ts_available=bar.ts_available,
-            ts_ingested=now,
-            ts_committed=now,
+            ts_ingested=received,
+            ts_committed=max(now, received),
             precision=bar.precision,
             revision=event.revision,
+            confirmed=event.confirmed,
+            history_only=isinstance(event, ReceivedKlineEvent) and event.history_only,
+            synthetic=isinstance(event, ReceivedKlineEvent) and event.synthetic,
         )
         key = (event.instrument_id, event.timeframe)
         with self._lock:
             series = self._series.setdefault(key, {})
-            confirmed = self._confirmed.setdefault(key, set())
-            if raw.ts_event in confirmed:
-                if not event.confirmed:
-                    return
-                raw = replace(raw, ts_available=max(raw.ts_available, now))
             versions = series.setdefault(raw.ts_event, {})
-            if event.confirmed:
-                confirmed.add(raw.ts_event)
-                versions.pop((raw.ts_available, -1), None)
-            # 收盘前同一可获取时刻的推送只需保留最后一版。
-            version_key = (raw.ts_available, raw.revision if event.confirmed else -1)
-            previous = versions.get(version_key)
-            if previous is None or raw.revision >= previous.revision:
-                versions[version_key] = raw
+            versions.setdefault(raw.revision, raw)
             while len(series) > self._max_bars:
-                oldest = min(series)
-                series.pop(oldest)
-                confirmed.discard(oldest)
+                series.pop(min(series))
 
     def recent_bars(self, *, instrument_id: str, timeframe: str) -> list[RawBar]:
+        """快照中，已收盘时间槽的下一次修订从实际接收后才可见。"""
+        versions = self.revisions(instrument_id=instrument_id, timeframe=timeframe)
+        selected: dict[tuple[int, int, int], RawBar] = {}
+        confirmed: set[int] = set()
+        for bar in versions:
+            if bar.ts_event in confirmed:
+                if not bar.confirmed:
+                    continue
+                bar = replace(bar, ts_available=max(bar.ts_available, bar.ts_committed))
+            key = (bar.ts_event, bar.ts_available, -1)
+            if bar.confirmed:
+                confirmed.add(bar.ts_event)
+                selected.pop(key, None)
+                key = (bar.ts_event, bar.ts_available, bar.revision)
+            selected[key] = bar
+        return [selected[key] for key in sorted(selected)]
+
+    def revisions(
+        self, *, instrument_id: str, timeframe: str, start_ts: int = 0, end_ts: int | None = None,
+    ) -> list[RawBar]:
+        """按事件时间与修订排序读取热缓冲中的完整发布版本。"""
         with self._lock:
             series = self._series.get((instrument_id, timeframe), {})
+            timestamps = (start_ts,) if start_ts == end_ts else sorted(series)
             return [
                 series[timestamp][version]
-                for timestamp in sorted(series)
-                for version in sorted(series[timestamp])
+                for timestamp in timestamps
+                if start_ts <= timestamp and (end_ts is None or timestamp <= end_ts)
+                for version in sorted(series.get(timestamp, {}))
             ]

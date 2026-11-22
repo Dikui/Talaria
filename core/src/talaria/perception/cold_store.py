@@ -599,6 +599,18 @@ class ColdReader:
         start_ts: int | None = None,
         end_ts: int | None = None,
     ) -> list[RawBar]:
+        revisions = self.read_revisions(instrument, timeframe, start_ts=start_ts, end_ts=end_ts)
+        return latest_visible_bars(revisions, as_of=as_of)
+
+    def read_revisions(
+        self,
+        instrument: InstrumentSpec,
+        timeframe: str,
+        *,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> list[RawBar]:
+        """从同一版清单读取范围内的全部修订。"""
         if not self._db_path.is_file():
             return []
         for attempt in range(2):
@@ -617,7 +629,7 @@ class ColdReader:
                         f"generation 文件缺失：{generation.parquet_path}"
                     ) from exc
             else:
-                return latest_visible_bars(decoded, as_of=as_of)
+                return decoded
         raise AssertionError("清单读取重试结束")
 
 
@@ -698,6 +710,12 @@ class ColdStore:
         return self._reader.read_bars(
             instrument, timeframe, as_of=as_of, start_ts=start_ts, end_ts=end_ts,
         )
+
+    def read_revisions(
+        self, instrument: InstrumentSpec, timeframe: str, *, start_ts: int, end_ts: int,
+    ) -> list[RawBar]:
+        self._ensure_open()
+        return self._reader.read_revisions(instrument, timeframe, start_ts=start_ts, end_ts=end_ts)
 
     def compact(self, instruments: Sequence[InstrumentSpec], *, now_ms: int | None = None) -> None:
         """合并同月、同标的规格的文件，保留每一行。"""

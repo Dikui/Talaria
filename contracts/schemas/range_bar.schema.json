@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "PrecisionTier": {
+      "description": "时点可取信的程度。",
+      "enum": [
+        "SECOND_VERIFIED",
+        "SESSION_BOUND",
+        "DATE_CONSERVATIVE"
+      ],
+      "title": "PrecisionTier",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "按范围查询返回的一根 K 线，时点均为 UTC 毫秒。",
+  "properties": {
+    "close": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Close",
+      "type": "string"
+    },
+    "confirmed": {
+      "description": "已确认收盘。进行中和合成柱为 false。",
+      "title": "Confirmed",
+      "type": "boolean"
+    },
+    "high": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "High",
+      "type": "string"
+    },
+    "low": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Low",
+      "type": "string"
+    },
+    "open": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Open",
+      "type": "string"
+    },
+    "precision": {
+      "$ref": "#/$defs/PrecisionTier"
+    },
+    "revision": {
+      "minimum": 0,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "ts_available": {
+      "title": "Ts Available",
+      "type": "integer"
+    },
+    "ts_event": {
+      "title": "Ts Event",
+      "type": "integer"
+    },
+    "turnover": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Turnover",
+      "type": "string"
+    },
+    "volume": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Volume",
+      "type": "string"
+    }
+  },
+  "required": [
+    "ts_event",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "turnover",
+    "ts_available",
+    "precision",
+    "confirmed",
+    "revision"
+  ],
+  "title": "RangeBar",
+  "type": "object"
+}

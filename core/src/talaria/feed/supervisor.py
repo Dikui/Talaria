@@ -15,7 +15,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
 from talaria.foundation.bars import BarStatus, CompactBar, classify_flat_bar
@@ -64,6 +64,7 @@ class _BarVersion:
     confirmed: bool
     revision: int
     source_confirmed: bool
+    received_ts: int
 
 
 @dataclass(slots=True)
@@ -109,7 +110,7 @@ class FeedSupervisor(MarketEventFeed):
         now_ms: Callable[[], int] | None = None,
         stale_after_ms: int = DEFAULT_STALE_AFTER_MS,
         on_subscribe: Callable[[InstrumentSpec, str, int], None] | None = None,
-        on_bar_close: Callable[[InstrumentSpec, str, CompactBar, int], None] | None = None,
+        on_bar_close: Callable[[InstrumentSpec, str, CompactBar, int, int], None] | None = None,
         on_recovered_bar: Callable[[InstrumentSpec, RawBar], None] | None = None,
         tick_interval_seconds: float = TICK_INTERVAL_SECONDS,
         backoff_initial_seconds: float = BACKOFF_INITIAL_SECONDS,
@@ -249,6 +250,9 @@ class FeedSupervisor(MarketEventFeed):
             key = self._key_for_symbol(bar.symbol, bar.timeframe)
             if key is None:
                 continue
+            record = self._series[key].get(bar.ts_event)
+            if record is not None and record.source_confirmed:
+                continue
             status = classify_flat_bar(
                 open=bar.open,
                 high=bar.high,
@@ -261,7 +265,8 @@ class FeedSupervisor(MarketEventFeed):
                 received_ts=bar.ts_ingested, recovered=True,
             )
             if self._on_recovered_bar is not None:
-                self._on_recovered_bar(self._instruments[key[0]], bar)
+                revision = self._series[key][bar.ts_event].revision
+                self._on_recovered_bar(self._instruments[key[0]], replace(bar, revision=revision))
 
         for channel in self._channels.values():
             self._fill_outage_windows(channel, now)
@@ -376,41 +381,50 @@ class FeedSupervisor(MarketEventFeed):
     ) -> None:
         series = self._series.setdefault(key, {})
         record = series.get(bar.timestamp)
+        received = now if received_ts is None else received_ts
         # 交易所也可能确认零量柱，合成柱通过来源标记区分。
-        source_confirmed = source and confirmed and bar.status is not BarStatus.FEED_GAP
-        if source_confirmed:
-            received = now if received_ts is None else received_ts
+        source_confirmed = source and confirmed and not recovered and bar.status is not BarStatus.FEED_GAP
+        if recovered or source_confirmed:
             close_ts = bar.timestamp + timeframe_ms(key[1])
-            if record is not None and record.source_confirmed:
+            if recovered:
+                available = close_ts
+            elif record is not None and record.source_confirmed:
                 previous = record.bar.ts_available
                 unchanged = bar.model_copy(update={"ts_available": previous}) == record.bar
                 available = previous if unchanged else max(previous, received)
             else:
-                available = close_ts if recovered or received <= close_ts + BAR_CLOSE_GRACE_MS else received
+                available = close_ts if received <= close_ts + BAR_CLOSE_GRACE_MS else received
             bar = bar.model_copy(update={"ts_available": available})
-            if not recovered and self._on_bar_close is not None:
-                # 重发可补一次失败的写入，沿用已知版本的可获取时刻。
-                self._on_bar_close(self._instruments[key[0]], key[1], bar, received)
+        same_version = False
         if record is not None:
             if record.source_confirmed and not confirmed:
                 return  # 已收盘的柱不能退回进行中
             same_kind = record.confirmed == confirmed and record.source_confirmed == source_confirmed
-            if same_kind and record.bar == bar:
-                return
+            same_version = same_kind and record.bar == bar
         revision = 0 if record is None else record.revision + 1
-        series[bar.timestamp] = _BarVersion(
-            bar=bar, confirmed=confirmed, revision=revision, source_confirmed=source_confirmed,
-        )
-        self._mark_activity(key[0], now, timeframe=key[1], event_ts=now)
-        self._emit(
-            KlineEvent(
+        if same_version:
+            assert record is not None
+            revision = record.revision
+            received = record.received_ts
+        if not same_version:
+            series[bar.timestamp] = _BarVersion(
+                bar=bar, confirmed=confirmed, revision=revision, source_confirmed=source_confirmed,
+                received_ts=received,
+            )
+            self._mark_activity(key[0], now, timeframe=key[1], event_ts=now)
+            self._emit(ReceivedKlineEvent(
                 instrument_id=key[0],
                 timeframe=key[1],
                 bar=bar,
                 confirmed=confirmed,
                 revision=revision,
-            )
-        )
+                ts_ingested=received,
+                history_only=recovered,
+                synthetic=not source,
+            ))
+        if source_confirmed and self._on_bar_close is not None:
+            # 热端先接收发布，重发仍可补一次失败的写入。
+            self._on_bar_close(self._instruments[key[0]], key[1], bar, received, revision)
 
     def _fill_missing(
         self,

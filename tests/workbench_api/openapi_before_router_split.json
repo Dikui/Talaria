@@ -1172,6 +1172,35 @@
         "title": "BarStatus",
         "type": "string"
       },
+      "BarsResponse": {
+        "additionalProperties": false,
+        "description": "指定标的与周期的 K 线，按事件时间升序排列。",
+        "properties": {
+          "bars": {
+            "items": {
+              "$ref": "#/components/schemas/RangeBar"
+            },
+            "maxItems": 10000,
+            "title": "Bars",
+            "type": "array"
+          },
+          "instrument_id": {
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "timeframe": {
+            "title": "Timeframe",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instrument_id",
+          "timeframe",
+          "bars"
+        ],
+        "title": "BarsResponse",
+        "type": "object"
+      },
       "BriefingConsultRequest": {
         "additionalProperties": false,
         "description": "把简报带入右栏对话时可选的自定义问题。",
@@ -3663,6 +3692,78 @@
         "title": "QuoteSource",
         "type": "string"
       },
+      "RangeBar": {
+        "additionalProperties": false,
+        "description": "按范围查询返回的一根 K 线，时点均为 UTC 毫秒。",
+        "properties": {
+          "close": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Close",
+            "type": "string"
+          },
+          "confirmed": {
+            "description": "已确认收盘。进行中和合成柱为 false。",
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "high": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "High",
+            "type": "string"
+          },
+          "low": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Low",
+            "type": "string"
+          },
+          "open": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Open",
+            "type": "string"
+          },
+          "precision": {
+            "$ref": "#/components/schemas/PrecisionTier"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "ts_available": {
+            "title": "Ts Available",
+            "type": "integer"
+          },
+          "ts_event": {
+            "title": "Ts Event",
+            "type": "integer"
+          },
+          "turnover": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Turnover",
+            "type": "string"
+          },
+          "volume": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Volume",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ts_event",
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume",
+          "turnover",
+          "ts_available",
+          "precision",
+          "confirmed",
+          "revision"
+        ],
+        "title": "RangeBar",
+        "type": "object"
+      },
       "ScannerBriefing": {
         "additionalProperties": false,
         "description": "持久化的一条简报；``snapshot_id`` 必须与触发它的扫描冻结快照一致。",
@@ -5472,6 +5573,140 @@
           }
         },
         "summary": "Dismiss Annotation"
+      }
+    },
+    "/api/bars": {
+      "get": {
+        "operationId": "get_range_bars_api_bars_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "instrument",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Instrument",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeframe",
+            "required": true,
+            "schema": {
+              "title": "Timeframe",
+              "type": "string"
+            }
+          },
+          {
+            "description": "事件时间下界（含）",
+            "in": "query",
+            "name": "start",
+            "required": true,
+            "schema": {
+              "description": "事件时间下界（含）",
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "title": "Start",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "事件时间上界（含），省略时取服务当前时间。每次最多查询 10,000 根。",
+            "in": "query",
+            "name": "end",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "事件时间上界（含），省略时取服务当前时间。每次最多查询 10,000 根。",
+              "title": "End"
+            }
+          },
+          {
+            "description": "可获取时间上界（含）",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "可获取时间上界（含）",
+              "title": "As Of"
+            }
+          },
+          {
+            "description": "包含进行中的柱，无可见真实柱时可返回合成柱。",
+            "in": "query",
+            "name": "include_open",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "包含进行中的柱，无可见真实柱时可返回合成柱。",
+              "title": "Include Open",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BarsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "K 线范围超过单次请求上限"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "等待历史回填超时，可以重试"
+          }
+        },
+        "summary": "Get Range Bars"
       }
     },
     "/api/chart-view": {
