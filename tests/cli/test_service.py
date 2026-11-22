@@ -266,7 +266,7 @@ def test_status_reports_running_service_and_features(tmp_path):
         write_service_descriptor(
             service_descriptor_path(data_dir),
             base_url="http://127.0.0.1:8765",
-            token="secret-token",
+            token="test-token",
             pid=os.getpid(),
             features=load_service_config(data_dir).features,
         )
