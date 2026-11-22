@@ -21,7 +21,7 @@ from talaria.packs import get_market_pack
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.backfill import BackfillPolicy
 from talaria.perception.cold_publisher import ColdPublisher
-from talaria.perception.cold_store import ColdStore
+from talaria.perception.cold_store import ColdReader, ColdStore
 from talaria.perception.compaction import compact_series
 from talaria.perception.hot_buffer import HotStreamBuffer
 from talaria.perception.key_level_registry import KeyLevelRegistry
@@ -42,6 +42,7 @@ from talaria.workbench_api.scanner_service import ScannerService
 from talaria.workbench_api.service import WorkbenchService
 from talaria.workbench_api.settings import AppSettings
 from talaria.workbench_api.state_store import StateWriterQueue
+from talaria.workbench_api.strategy_stream import StrategyStream
 from talaria.workbench_api.subscriptions import RealtimeSubscriptionScheduler
 from talaria.workbench_api.usage_service import UsageService
 from talaria.workbench_api.watchlist import WatchlistService
@@ -64,6 +65,7 @@ class Runtime:
     watchlist: WatchlistService
     supervisor: FeedSupervisor | None
     subscription_scheduler: RealtimeSubscriptionScheduler | None
+    strategy_stream: StrategyStream | None
     cold_store: ColdStore | None
     cold_publisher: ColdPublisher | None
     snapshot_store: SnapshotStore
@@ -161,6 +163,12 @@ async def build_runtime(
             if key_level_tasks:
                 await asyncio.gather(*key_level_tasks)
 
+        strategy_stream: StrategyStream | None = None
+
+        def published(key: tuple[str, str], start: int, end: int) -> None:
+            if strategy_stream is not None:
+                strategy_stream.changed(key, start, end)
+
         policy = BackfillPolicy(target_bars=settings.backfill_bars, max_pages=settings.max_pages)
         supervisor: FeedSupervisor | None = None
         cold_store: ColdStore | None = None
@@ -178,6 +186,7 @@ async def build_runtime(
                     has_channel=lambda instrument_id, timeframe: (
                         supervisor is not None and supervisor.has_channel(instrument_id, timeframe)
                     ),
+                    on_publish=lambda key, start, end: loop.call_soon_threadsafe(published, key, start, end),
                     on_history_complete=lambda instrument_id, timeframe: loop.call_soon_threadsafe(
                         history_completed, instrument_id, timeframe
                     ),
@@ -229,9 +238,6 @@ async def build_runtime(
             feed_mode=stream.feed_mode if stream is not None else None,
             key_levels=key_levels,
         )
-        if supervisor is not None and hot_buffer is not None:
-            resources.callback(supervisor.add_listener(hot_buffer.ingest))
-
         state_writer = StateWriterQueue(settings.data_dir, now_ms=settings.now_ms)
         resources.push_async_callback(state_writer.close)
         await state_writer.start()
@@ -267,11 +273,28 @@ async def build_runtime(
             state_writer=state_writer, drawings=drawings, now_ms=settings.now_ms
         )
         indicator_defaults = IndicatorDefaultsService(state_writer)
+        alerts: AlertService | None = None
+
+        def subscription_denied(owner: tuple[str, str, tuple[str, str]]) -> None:
+            if owner[0] == "alert" and alerts is not None:
+                alerts.engine.suspend_channel(owner[2])
+            desk.publish_subscription_error(owner)
+
         scheduler = (
-            RealtimeSubscriptionScheduler(supervisor, quota=settings.realtime_quota)
+            RealtimeSubscriptionScheduler(
+                supervisor, quota=settings.realtime_quota, on_degraded=subscription_denied,
+                on_alert_quota=desk.publish_alert_quota,
+            )
             if supervisor is not None
             else None
         )
+        if supervisor is not None and hot_buffer is not None and scheduler is not None:
+            strategy_stream = StrategyStream(
+                scheduler=scheduler, hot_buffer=hot_buffer, reader=ColdReader(settings.data_dir),
+                instruments=instruments, now_ms=settings.now_ms,
+            )
+            resources.callback(strategy_stream.close)
+            resources.callback(supervisor.add_listener(strategy_stream.ingest))
 
         async def rebalance_watchlist() -> None:
             with suppress(TalariaError):
@@ -307,7 +330,6 @@ async def build_runtime(
                 cutoff_ts=now,
             )
 
-        alerts: AlertService | None = None
         if features.alerts:
             alerts = AlertService(
                 state_writer=state_writer,
@@ -334,9 +356,7 @@ async def build_runtime(
             supervisor=supervisor,
             scheduler=scheduler,
             now_ms=settings.now_ms,
-            alerted_instruments=(
-                alerts.active_instrument_ids if alerts is not None else (lambda: ())
-            ),
+            active_alerts=alerts.active_realtime_alerts if alerts is not None else None,
         )
         scanner: ScannerService | None = None
         if features.scanner:
@@ -406,6 +426,7 @@ async def build_runtime(
             watchlist=watchlist,
             supervisor=supervisor,
             subscription_scheduler=scheduler,
+            strategy_stream=strategy_stream,
             cold_store=cold_store,
             cold_publisher=cold_publisher,
             snapshot_store=snapshot_store,

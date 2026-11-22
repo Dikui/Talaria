@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -41,6 +41,7 @@ from talaria.workbench_api.state_store import StateStore, StateWriterQueue
 from talaria.workbench_api.subscriptions import (
     WATCHLIST_TIMEFRAME,
     RealtimeSubscriptionScheduler,
+    SubscriptionKey,
     SubscriptionView,
 )
 
@@ -82,7 +83,7 @@ class WatchlistService:
         supervisor: FeedSupervisor | None,
         scheduler: RealtimeSubscriptionScheduler | None,
         now_ms: Callable[[], int],
-        alerted_instruments: Callable[[], Sequence[str]] | None = None,
+        active_alerts: Callable[[], Mapping[str, SubscriptionKey]] | None = None,
         raw_store: RawStore | None = None,
     ) -> None:
         self._state_writer = state_writer
@@ -92,7 +93,7 @@ class WatchlistService:
         self._supervisor = supervisor
         self._scheduler = scheduler
         self._now_ms = now_ms
-        self._alerted_instruments = alerted_instruments
+        self._active_alerts = active_alerts
         self._quote_cache: dict[str, tuple[int, _Quote]] = {}
         self._subscription_lock = asyncio.Lock()
 
@@ -135,10 +136,8 @@ class WatchlistService:
                 chart_instruments=frozenset(),
             )
         else:
-            alerted = (
-                self._alerted_instruments() if self._alerted_instruments is not None else ()
-            )
-            view = self._scheduler.reconcile(ordered, alerted=alerted)
+            alerts = self._active_alerts() if self._active_alerts is not None else None
+            view = self._scheduler.reconcile(ordered, alerts=alerts)
 
         statuses: dict[str, list[FeedHealthStatus]] = {}
         if self._supervisor is not None:

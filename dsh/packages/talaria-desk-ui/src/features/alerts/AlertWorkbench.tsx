@@ -22,7 +22,7 @@ export function AlertWorkbench({
   instrumentId, timeframe, instruments, theme, onLocate, link, formSeed, onClose,
 }: AlertWorkbenchProps) {
   const controller = useAlerts();
-  const { alert } = useMarketStream(instrumentId, timeframe);
+  const { alert, deniedAlerts } = useMarketStream(instrumentId, timeframe);
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
   const [drawingError, setDrawingError] = useState(false);
 
@@ -57,6 +57,7 @@ export function AlertWorkbench({
       {drawingError && <p role="status">无法读取可用于预警的画线。</p>}
       <AlertPanel
         controller={controller}
+        deniedAlerts={deniedAlerts}
         instruments={instruments}
         drawings={drawings}
         currentInstrument={instrumentId}

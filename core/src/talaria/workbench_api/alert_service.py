@@ -132,6 +132,15 @@ class AlertService:
     def active_instrument_ids(self) -> tuple[str, ...]:
         return self._engine.active_instrument_ids()
 
+    def active_realtime_alerts(self) -> dict[str, tuple[str, str]]:
+        return {
+            alert.alert_id: (alert.instrument_id, alert.timeframe)
+            for alert in self._engine.list_alerts()
+            if alert.status is AlertStatus.ARMED or (
+                alert.status is AlertStatus.COOLDOWN and alert.condition.kind is AlertConditionKind.LEVEL_EVENT
+            )
+        }
+
     def active_key_level_pairs(self) -> set[tuple[str, str]]:
         return {
             (alert.instrument_id, alert.timeframe)
@@ -145,14 +154,13 @@ class AlertService:
 
         changed = self._engine.handle_event(event)
         if changed:
-            self._schedule(self._persist_alerts(changed))
+            self._schedule(self._persist_alerts_and_notify_change(changed))
 
     async def tick(self) -> None:
         changed = self._engine.tick()
         await self.refresh_overlays()
         if changed:
-            await self._persist_alerts(changed)
-            await self._notify_change()
+            await self._persist_alerts_and_notify_change(changed)
 
     async def flush(self) -> None:
         while self._pending:
@@ -355,6 +363,10 @@ class AlertService:
         await self._state_writer.run(
             lambda store: [store.alerts.write(alert) for alert in alerts]
         )
+
+    async def _persist_alerts_and_notify_change(self, alerts: Sequence[AlertRecord]) -> None:
+        await self._persist_alerts(alerts)
+        await self._notify_change()
 
     async def _notify_change(self) -> None:
         if self._on_change is None:

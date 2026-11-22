@@ -26,12 +26,20 @@ from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdReader
 from talaria.perception.indicator_defaults import read_indicator_defaults
 from talaria.perception.raw_store import latest_visible_bars
+from talaria.sdk._subscription import StrategyBarEvent, SubscriptionRejectedError, subscribe
 from talaria.service_endpoint import DATA_DIR_HEADER, NOW_MS_HEADER, data_dir_id, read_service_endpoint
 
 if TYPE_CHECKING:
     from pandas import DataFrame
 
-__all__ = ["BarsResult", "bars", "indicator_defaults"]
+__all__ = [
+    "BarsResult",
+    "StrategyBarEvent",
+    "SubscriptionRejectedError",
+    "bars",
+    "indicator_defaults",
+    "subscribe",
+]
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MICROSECOND = timedelta(microseconds=1)

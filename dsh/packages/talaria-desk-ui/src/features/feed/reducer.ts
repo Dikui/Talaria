@@ -31,6 +31,8 @@ export interface FeedState {
   levels: KeyLevelSet | null;
   alert: AlertTriggerRecord | null;
   scanner: ScannerTrigger | null;
+  deniedAlerts: string[];
+  chartQuotaDenied: boolean;
   error: string | null;
 }
 
@@ -44,6 +46,8 @@ export const initialFeedState: FeedState = {
   levels: null,
   alert: null,
   scanner: null,
+  deniedAlerts: [],
+  chartQuotaDenied: false,
   error: null,
 };
 
@@ -67,14 +71,17 @@ function applyHealth(
   ) {
     return state;
   }
-  return { ...state, health };
+  return { ...state, health, chartQuotaDenied: false };
 }
 
 function applyMessage(state: FeedState, message: DeskMessage): FeedState {
   switch (message.type) {
+    case "alert_quota":
+      return { ...state, deniedAlerts: message.denied_alerts };
     case "hello": {
       return {
         ...state,
+        deniedAlerts: message.denied_alerts ?? [],
         hello: {
           feed_mode: message.feed_mode,
           server_ts: message.server_ts,
@@ -115,6 +122,9 @@ function applyMessage(state: FeedState, message: DeskMessage): FeedState {
     case "health":
       return applyHealth(state, message.data);
     case "error":
+      if (message.code === "SUBSCRIPTION_QUOTA" && message.owner === "chart") {
+        return { ...state, health: null, chartQuotaDenied: true };
+      }
       return { ...state, error: message.message };
   }
 }
@@ -131,6 +141,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
     case "reset":
       return {
         ...state,
+        chartQuotaDenied: false,
         bars: [],
         book: null,
         derivatives: null,

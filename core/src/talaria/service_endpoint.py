@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -91,7 +92,7 @@ def read_descriptor_payload(path: Path) -> dict[str, object] | None:
     return payload
 
 
-def read_service_endpoint(data_dir: str | Path) -> str | None:
+def _read_active_descriptor(data_dir: str | Path) -> tuple[str, dict[str, object]] | None:
     holder = probe_lock(data_dir)
     if holder is None or holder.role != ROLE_SERVICE or holder.pid is None:
         return None
@@ -103,6 +104,28 @@ def read_service_endpoint(data_dir: str | Path) -> str | None:
         pid = payload.get("pid")
         if type(pid) is not int or pid <= 0 or pid != holder.pid:
             return None
-        return normalize_base_url(payload.get("base_url"), path)
+        return normalize_base_url(payload.get("base_url"), path), payload
     except ServiceDescriptorError:
         return None
+
+
+def read_service_endpoint(data_dir: str | Path) -> str | None:
+    descriptor = _read_active_descriptor(data_dir)
+    return None if descriptor is None else descriptor[0]
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceConnection:
+    base_url: str
+    token: str
+
+
+def read_service_connection(data_dir: str | Path) -> ServiceConnection | None:
+    descriptor = _read_active_descriptor(data_dir)
+    if descriptor is None:
+        return None
+    base_url, payload = descriptor
+    token = payload.get("token")
+    if not isinstance(token, str) or not token:
+        return None
+    return ServiceConnection(base_url, token)
