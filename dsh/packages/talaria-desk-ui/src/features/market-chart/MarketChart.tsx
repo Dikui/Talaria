@@ -89,6 +89,29 @@ function indicatorCreate(
   };
 }
 
+function fitIndicatorPanes(chart: Chart, chartHeight: number) {
+  const subPaneIds = new Set(
+    chart.getIndicators()
+      .filter((indicator) =>
+        indicator.id.startsWith(INDICATOR_ID_PREFIX) && indicator.paneId !== CANDLE_PANE_ID,
+      )
+      .map((indicator) => indicator.paneId),
+  );
+  const count = subPaneIds.size;
+  if (count === 0) return;
+
+  const preferredHeight = count >= 4 ? 88 : count >= 3 ? 104 : 132;
+  const axisHeight = chart.getSize("x_axis_pane")?.height ?? 0;
+  const plotHeight = chartHeight - axisHeight - count * chart.getStyles().separator.size;
+  // 编辑器展开时画布至少 480px，优先给主图留出 320px。
+  const candleHeight = Math.min(320, Math.floor(plotHeight * 0.75));
+  const heightPerPane = Math.floor((plotHeight - candleHeight) / count);
+  const subHeight = Math.max(1, Math.min(preferredHeight, heightPerPane));
+  for (const id of subPaneIds) {
+    chart.setPaneOptions({ id, height: subHeight, minHeight: Math.min(30, subHeight) });
+  }
+}
+
 export interface OlderPage {
   bars: CompactBar[];
   hasMoreForward: boolean;
@@ -280,7 +303,13 @@ export function MarketChart({
     };
     chart.setDataLoader(dataLoader);
 
+    let chartHeight = element.clientHeight;
     const observer = new ResizeObserver(() => {
+      const height = element.clientHeight;
+      if (height !== chartHeight) {
+        fitIndicatorPanes(chart, height);
+        chartHeight = height;
+      }
       chart.resize();
       cursorRef.current?.refresh();
     });
@@ -359,21 +388,7 @@ export function MarketChart({
         chart.overrideIndicator({ ...config, paneId: existing[0].paneId });
       }
     }
-    const subPaneIds = new Set(
-      chart
-        .getIndicators()
-        .filter(
-          (indicator) =>
-            indicator.id.startsWith(INDICATOR_ID_PREFIX) &&
-            indicator.paneId !== CANDLE_PANE_ID,
-        )
-        .map((indicator) => indicator.paneId),
-    );
-    // 副图多于两个时压缩高度，保证主图仍有可读区域。
-    const subHeight = subPaneIds.size >= 4 ? 88 : subPaneIds.size >= 3 ? 104 : 132;
-    for (const paneId of subPaneIds) {
-      chart.setPaneOptions({ id: paneId, height: subHeight });
-    }
+    fitIndicatorPanes(chart, element.clientHeight);
   }, [indicatorSeries, rulePreview, theme]);
 
   return (

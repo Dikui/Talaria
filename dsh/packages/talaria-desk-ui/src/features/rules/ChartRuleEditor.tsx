@@ -167,7 +167,7 @@ export function ChartRuleEditor({
           }}>重试预览</button>
         )}
       </div>
-      <div id={panelId} hidden={!expanded}>
+      <div className="rule-editor-content" id={panelId} hidden={!expanded}>
         <div className="rule-editor-body">
           <RuleEditorForm timing={timing} expression={expression}
             defaults={defaults} drawings={availableDrawings} levels={availableLevels} pricePrecision={pricePrecision}
