@@ -16,6 +16,12 @@ from pathlib import Path
 import pytest
 
 from talaria.cli.main import main, validate_loopback_host
+from talaria.workbench_api.service_config import FeatureToggles
+from talaria.workbench_api.service_descriptor import (
+    read_service_descriptor,
+    service_descriptor_path,
+    write_service_descriptor,
+)
 
 pytestmark = pytest.mark.small
 
@@ -59,6 +65,33 @@ def test_unknown_market_pack_lists_choices(arguments, capsys) -> None:
 @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "::1"])
 def test_loopback_hosts_are_accepted(host: str) -> None:
     assert validate_loopback_host(host) == host
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize(
+    ("host", "url_host", "canonical_host", "canonical_url_host"),
+    [
+        ("127.0.0.2", "127.0.0.2", "127.0.0.2", "127.0.0.2"),
+        ("0:0:0:0:0:0:0:1", "[0:0:0:0:0:0:0:1]", "::1", "[::1]"),
+    ],
+)
+def test_up_loopback_host_can_be_published_in_service_descriptor(
+    tmp_path, host, url_host, canonical_host, canonical_url_host
+):
+    # platform/01: CLI 绑定地址和磁盘接口描述采用相同的回环范围与规范化。
+    assert validate_loopback_host(host) == canonical_host
+    path = service_descriptor_path(tmp_path)
+    write_service_descriptor(
+        path,
+        base_url=f"http://{url_host}:8765/",
+        token="test-token",
+        pid=os.getpid(),
+        features=FeatureToggles(),
+    )
+    descriptor = read_service_descriptor(tmp_path)
+    assert descriptor is not None
+    assert descriptor.base_url == f"http://{canonical_url_host}:8765"
+    assert json.loads(path.read_text())["base_url"] == descriptor.base_url
 
 
 def test_contract_check_has_zero_drift(capsys) -> None:

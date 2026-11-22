@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import tempfile
@@ -14,7 +15,6 @@ from talaria.workbench_api.service_config import FEATURE_NAMES, FeatureToggles
 
 DESCRIPTOR_NAME = "service-descriptor.json"
 DESCRIPTOR_VERSION = 1
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class ServiceDescriptorError(ValueError):
@@ -33,6 +33,24 @@ def service_descriptor_path(data_dir: str | Path) -> Path:
     return Path(data_dir).resolve() / "runtime" / DESCRIPTOR_NAME
 
 
+def validate_loopback_host(host: str, *, allow_localhost: bool = False) -> str:
+    """校验并规范化回环 IP，描述文件兼容旧的 localhost 地址。"""
+    if allow_localhost and host == "localhost":
+        return host
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValueError(f"host 必须是回环 IP 地址：{host}") from exc
+    if not address.is_loopback:
+        raise ValueError(f"只允许绑定回环地址，拒绝：{host}")
+    # 回环地址不需要 IPv6 作用域，去掉后可直接用于绑定和 URL。
+    return address.compressed.partition("%")[0]
+
+
+def loopback_base_url(host: str, port: int) -> str:
+    return f"http://{f'[{host}]' if ':' in host else host}:{port}"
+
+
 def write_service_descriptor(
     path: str | Path,
     *,
@@ -44,7 +62,7 @@ def write_service_descriptor(
     """原子写入 0600 描述文件，仅本机命令可读。"""
 
     destination = Path(path)
-    _validate_base_url(base_url, destination)
+    base_url = _normalize_base_url(base_url, destination)
     if not token:
         raise ServiceDescriptorError(f"服务接口描述 {destination} 缺少 token")
     if pid <= 0:
@@ -87,7 +105,7 @@ def read_service_descriptor(data_dir: str | Path) -> ServiceDescriptor | None:
     raw_features = payload.get("features")
     if not isinstance(base_url, str):
         raise ServiceDescriptorError(f"服务接口描述 {path} 缺少 base_url")
-    _validate_base_url(base_url, path)
+    base_url = _normalize_base_url(base_url, path)
     if not isinstance(token, str) or not token:
         raise ServiceDescriptorError(f"服务接口描述 {path} 缺少 token")
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
@@ -104,7 +122,7 @@ def read_service_descriptor(data_dir: str | Path) -> ServiceDescriptor | None:
             )
         values[name] = value
     return ServiceDescriptor(
-        base_url=base_url.rstrip("/"),
+        base_url=base_url,
         token=token,
         pid=pid,
         features=FeatureToggles(**values),
@@ -115,25 +133,26 @@ def remove_service_descriptor(path: str | Path) -> None:
     Path(path).unlink(missing_ok=True)
 
 
-def _validate_base_url(base_url: str, path: Path) -> None:
-    parsed = urlsplit(base_url)
+def _normalize_base_url(base_url: str, path: Path) -> str:
     try:
+        parsed = urlsplit(base_url)
         port = parsed.port
+        host = validate_loopback_host(parsed.hostname or "", allow_localhost=True)
+        if (
+            parsed.scheme == "http"
+            and port is not None and port > 0
+            and parsed.username is None
+            and parsed.password is None
+            and parsed.path in ("", "/")
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            return loopback_base_url(host, port)
     except ValueError:
-        port = None
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in LOOPBACK_HOSTS
-        or port is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in ("", "/")
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ServiceDescriptorError(
-            f"服务接口描述 {path} 的 base_url 必须是无路径的本机 http 地址，收到 {base_url!r}"
-        )
+        pass
+    raise ServiceDescriptorError(
+        f"服务接口描述 {path} 的 base_url 必须是无路径的本机 http 地址，收到 {base_url!r}"
+    )
 
 
 def _atomic_write(path: Path, text: str, mode: int) -> None:

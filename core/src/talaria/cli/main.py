@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import os
 import secrets
@@ -56,9 +55,11 @@ from talaria.workbench_api.service_config import (
 )
 from talaria.workbench_api.service_descriptor import (
     ServiceDescriptorError,
+    loopback_base_url,
     read_service_descriptor,
     remove_service_descriptor,
     service_descriptor_path,
+    validate_loopback_host,
     write_service_descriptor,
 )
 from talaria.workbench_api.service_lock import (
@@ -81,17 +82,6 @@ DEFAULT_DSH_PROFILE = "talaria-desk"
 
 def repo_dist_dir() -> Path:
     return repo_root() / "dsh" / "packages" / "talaria-desk-ui" / "dist"
-
-
-def validate_loopback_host(host: str) -> str:
-    """只允许回环地址；``--solo`` 不对外暴露端口。"""
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError as exc:
-        raise ValueError(f"host 必须是回环 IP 地址：{host}") from exc
-    if not address.is_loopback:
-        raise ValueError(f"--solo 只允许绑定回环地址，拒绝：{host}")
-    return host
 
 
 def _cmd_contract_check(args: argparse.Namespace) -> int:
@@ -425,7 +415,7 @@ def _run_up(
                 file=sys.stderr,
             )
         else:
-            base_url = f"http://{f'[{host}]' if ':' in host else host}:{args.port}"
+            base_url = loopback_base_url(host, args.port)
             try:
                 write_service_descriptor(
                     descriptor_path,
