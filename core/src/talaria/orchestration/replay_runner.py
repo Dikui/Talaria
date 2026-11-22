@@ -33,6 +33,7 @@ class CurrencyResult(ContractModel):
 class ReplayResult(RunCompletion):
     scheme: str
     scheme_path: Path
+    fill_plugin: str
     start: int
     end: int
     directory: Path
@@ -41,10 +42,20 @@ class ReplayResult(RunCompletion):
     by_currency: dict[str, CurrencyResult] | None = None
 
 
+class FillComparison(ContractModel):
+    """同一方案与区间中逐笔插件减 1m 插件的账本差值。"""
+
+    l1_run_id: str
+    bar_run_id: str
+    trade_count_delta: int | None = None
+    by_currency_delta: dict[str, CurrencyResult] | None = None
+
+
 class ReplayReport(ContractModel):
     strategy_scope: Literal["deterministic_only"] = "deterministic_only"
     pnl_basis: Literal["booked"] = "booked"
     runs: list[ReplayResult]
+    fill_comparisons: list[FillComparison]
 
 
 @dataclass
@@ -139,10 +150,30 @@ class _ReplayJob:
                     completion.error = f"{error}。写入完成状态失败：{status_error}"
         return ReplayResult(
             scheme=self.config.scheme.scheme, scheme_path=self.scheme_path,
+            fill_plugin=self.config.scheme.slots.selection(Slot.FILL).reference,
             start=self.params.start, end=self.params.end,
             **completion.model_dump(), directory=run.directory, empty_sample=empty_sample,
             trade_count=trades, by_currency=by_currency,
         )
+
+
+def _compare_fills(l1: ReplayResult, bar: ReplayResult) -> FillComparison:
+    comparison = FillComparison(l1_run_id=l1.run_id, bar_run_id=bar.run_id)
+    if l1.trade_count is None or bar.trade_count is None:
+        return comparison
+    l1_amounts, bar_amounts = l1.by_currency, bar.by_currency
+    comparison.trade_count_delta = l1.trade_count - bar.trade_count
+    comparison.by_currency_delta = {
+        currency: CurrencyResult(**{
+            metric: decimal_from_finite_fraction(
+                Fraction(getattr(l1_amounts.get(currency), metric, 0))
+                - Fraction(getattr(bar_amounts.get(currency), metric, 0)),
+            )
+            for metric in CurrencyResult.model_fields
+        })
+        for currency in sorted(l1_amounts.keys() | bar_amounts.keys())
+    }
+    return comparison
 
 
 def run_replays(
@@ -157,6 +188,8 @@ def run_replays(
     data_dir = data_dir.expanduser().resolve()
     indicator_defaults = sdk.indicator_defaults(data_dir=data_dir)
     jobs = []
+    comparison_pairs = []
+    tick_instruments = set()
     scheme_configs: dict[Path, RunConfig] = {}
     code_versions: dict[Path, FilePluginCode] = {}
     overrides = [{"start": start, "end": end} for start, end in windows] or [{}]
@@ -182,7 +215,22 @@ def run_replays(
             })
             scheme = config.scheme.model_copy(update={"slots": slots})
             jobs.append(_ReplayJob(path, config.model_copy(update={"scheme": scheme}), params))
-    snapshot = capture_replay_snapshot(data_dir, (job.params for job in jobs))
+            fill = slots.selection(Slot.FILL)
+            if fill.reference == "l1_trade_sim":
+                tick_instruments.add(params.instrument)
+                comparison_pairs.append((len(jobs) - 1, len(jobs)))
+                baseline_params = {key: value for key, value in fill.params.items() if key != "quote_max_age_ms"}
+                baseline_slots = slots.model_copy(update={
+                    "fill": PluginSelection(plugin="bar_sim_1m", params=baseline_params),
+                })
+                baseline = scheme.model_copy(update={"slots": baseline_slots})
+                jobs.append(_ReplayJob(path, config.model_copy(update={"scheme": baseline}), params))
+    snapshot = capture_replay_snapshot(
+        data_dir, (job.params for job in jobs), tick_instruments=tick_instruments,
+    )
     jobs = [replace(job, config=job.config.model_copy(update={"cold_snapshot": snapshot})) for job in jobs]
     with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
-        return ReplayReport(runs=list(pool.map(_ReplayJob.run, jobs)))
+        results = list(pool.map(_ReplayJob.run, jobs))
+    return ReplayReport(
+        runs=results, fill_comparisons=[_compare_fills(results[l1], results[bar]) for l1, bar in comparison_pairs],
+    )

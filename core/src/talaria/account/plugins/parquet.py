@@ -1,6 +1,6 @@
 """用组件运行时的确认时点离线回放已发布的 Parquet 柱。"""
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass, replace
 from functools import partial
 from heapq import merge
@@ -42,19 +42,30 @@ class ReplayParams(ContractModel):
         return self
 
 
-def capture_replay_snapshot(data_dir: Path, windows: Iterable[ReplayParams]) -> ColdSnapshot:
+def capture_replay_snapshot(
+    data_dir: Path, windows: Iterable[ReplayParams], *, tick_instruments: Collection[str] = (),
+) -> ColdSnapshot:
     instruments: dict[str, int] = {}
     for params in windows:
         instruments[params.instrument] = max(instruments.get(params.instrument, 0), params.end)
     pack = get_market_pack(DEFAULT_PACK)
     return ColdReader(data_dir).capture_snapshot(
-        (pack.instrument(instrument), end) for instrument, end in instruments.items()
+        ((pack.instrument(instrument), end) for instrument, end in instruments.items()),
+        tick_instruments=tick_instruments,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class ReplayMarkAvailability(MarketEvent):
     """供审批和结算使用的已到达标记价，强平随成交时间线推进。"""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReplayTickWindow(MarketEvent):
+    """没有确认柱的撮合时间窗，两个事件时间边界均包含。"""
+
+    start: int
+    end: int
 
 
 class ParquetReplay:
@@ -66,7 +77,7 @@ class ParquetReplay:
         self._reader.check_snapshot_files()
         self._mark_age = max((config.mark_max_age_ms for config in context.account_risk.values()), default=900_000)
 
-    def events(self, *, execution: bool = False) -> Iterator[MarketEvent]:
+    def events(self, *, execution: bool = False, tick_windows: bool = False) -> Iterator[MarketEvent]:
         params = self._params
         strategy = self._bars(params.timeframe, strategy=True)
         if not execution:
@@ -98,7 +109,7 @@ class ParquetReplay:
                 ))
             if projected:
                 estimates.append(replace(event, derivative_points=tuple(projected)))
-        execution, late_settlements = self._execution_events(bars, marks, settlements)
+        execution, late_settlements = self._execution_events(bars, marks, settlements, tick_windows=tick_windows)
         yield from merge(visible_marks, execution, late_settlements, estimates, signals, key=lambda event: event.as_of)
 
     def end_event(self) -> MarketEvent:
@@ -107,7 +118,7 @@ class ParquetReplay:
 
     def _execution_events(
         self, bars: list[MarketEvent], marks: list[tuple[int, DerivativePoint]],
-        settlements: list[DerivativePoint],
+        settlements: list[DerivativePoint], *, tick_windows: bool,
     ) -> tuple[list[MarketEvent], list[MarketEvent]]:
         """迟到确认会推迟后续撮合，策略信号仍按各自的可获取时间交付。"""
         marks.sort(key=lambda item: (item[1].observation_time, item[1].revision, item[0]))
@@ -116,9 +127,12 @@ class ParquetReplay:
         late = []
         mark_index = settlement_index = 0
         ready = self._params.start
-        for event in sorted(bars, key=lambda item: item.bar.ts_event):
-            opening = event.bar.ts_event
-            close = opening + timeframe_ms("1m")
+        for event in self._execution_windows(bars, tick_windows=tick_windows):
+            if isinstance(event, ReplayTickWindow):
+                opening, close = event.start, event.as_of
+            else:
+                opening = event.bar.ts_event
+                close = opening + timeframe_ms("1m")
             while mark_index < len(marks) and marks[mark_index][1].observation_time <= opening:
                 arrived, point = marks[mark_index]
                 ready = max(ready, arrived)
@@ -148,6 +162,26 @@ class ParquetReplay:
             for point in sorted(late, key=lambda point: (point.ts_available, point.ts_event, point.revision))
         ]
         return execution, arrivals
+
+    def _execution_windows(self, bars: list[MarketEvent], *, tick_windows: bool) -> Iterator[MarketEvent]:
+        minute = timeframe_ms("1m")
+
+        def gap(start: int, stop: int) -> Iterator[ReplayTickWindow]:
+            for opening in range(start, stop, minute):
+                close = min(opening + minute, stop)
+                yield ReplayTickWindow(
+                    min(close, self._params.end), self._params.instrument, "1m", None, start=opening, end=close - 1,
+                )
+
+        through = self._params.start
+        for event in sorted(bars, key=lambda item: item.bar.ts_event):
+            opening = event.bar.ts_event
+            if tick_windows:
+                yield from gap(through, opening)
+            yield event
+            through = opening + minute
+        if tick_windows:
+            yield from gap(through, self._params.end + 1)
 
     def _bars(self, timeframe: str, *, strategy: bool) -> Iterator[MarketEvent]:
         params = self._params

@@ -35,8 +35,9 @@ from talaria.account.ledger import LedgerWriter, open_ledger
 from talaria.account.ownership import AccountOwnership, hold_sub_accounts
 from talaria.account.parameters import validate_parameters
 from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
+from talaria.account.plugins.l1_trade_sim import L1TradeSim, l1_trade_sim
 from talaria.account.plugins.parquet import (
-    ParquetReplay, ReplayMarkAvailability, ReplayParams, capture_replay_snapshot, parquet_replay,
+    ParquetReplay, ReplayMarkAvailability, ReplayParams, ReplayTickWindow, capture_replay_snapshot, parquet_replay,
 )
 from talaria.account.plugins.r_unit import RUnitSizer, r_unit
 from talaria.account.plugins.seven_step import SevenStepRisk, seven_step
@@ -182,6 +183,7 @@ def default_registry() -> PluginRegistry:
     registry.register("r_unit", r_unit)
     registry.register("seven_step", seven_step)
     registry.register("bar_sim_1m", bar_sim_1m)
+    registry.register("l1_trade_sim", l1_trade_sim)
     return registry
 
 
@@ -319,7 +321,7 @@ class AccountProcess:
 
         def read_events() -> Iterator[MarketEvent]:
             if execution_replay:
-                return data.events(execution=True)
+                return data.events(execution=True, tick_windows=isinstance(plugins.fill, L1TradeSim))
             return data.events()
 
         markets = (
@@ -349,6 +351,8 @@ class AccountProcess:
                 execution_bar = None
             elif execution_replay and execution_bar is not None:
                 execution_through = execution_bar.ts_event + timeframe_ms(market.timeframe)
+            elif isinstance(market, ReplayTickWindow):
+                execution_through = market.end
             fill_market = replace(
                 market, bar=execution_bar.model_copy() if execution_bar is not None else None, ctx=None, source=None,
                 derivative_points=tuple(point.model_copy() for point in visible),
@@ -419,7 +423,9 @@ class AccountProcess:
         if market.timeframe not in SUPPORTED_TIMEFRAMES:
             raise AccountProcessError(f"数据入口使用了未知周期 {market.timeframe}")
         bar = market.bar
-        if bar is None and market.source is None and market.ctx is None and market.derivative_points:
+        if bar is None and market.source is None and market.ctx is None and (
+            market.derivative_points or isinstance(market, ReplayTickWindow)
+        ):
             return now, None
         if not isinstance(bar, RangeBar):
             raise AccountProcessError("MarketEvent 须携带 RangeBar 或独立衍生品观测")
@@ -581,7 +587,9 @@ def _prepare_new_backtest(config: RunConfig) -> tuple[RunConfig, _FilePlugins]:
             params = ReplayParams.model_validate(selection.params)
         except ValueError as exc:
             raise SchemeError(f"data 插槽插件 parquet_replay：{exc}") from exc
-        config = config.model_copy(update={"cold_snapshot": capture_replay_snapshot(config.data_dir, (params,))})
+        tick_instruments = (params.instrument,) if config.scheme.slots.selection(Slot.FILL).reference == "l1_trade_sim" else ()
+        snapshot = capture_replay_snapshot(config.data_dir, (params,), tick_instruments=tick_instruments)
+        config = config.model_copy(update={"cold_snapshot": snapshot})
     files = _prepare_files(config, "backtest")
     return config.model_copy(update={"file_plugins": {slot: code for slot, (code, _, _) in files.items()}}), files
 

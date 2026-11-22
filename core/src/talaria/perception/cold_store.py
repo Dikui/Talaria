@@ -32,7 +32,7 @@ from decimal import Decimal, localcontext
 from enum import StrEnum
 from itertools import groupby, pairwise
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Collection, Iterable, Sequence
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -64,6 +64,7 @@ MANIFEST_DB = Path("data") / "data_manifest.sqlite"
 RETENTION_MS = 24 * 60 * 60 * 1000
 RETAINED_MANIFESTS = 3
 TICK_BATCH_ROWS = 64_000
+_TICK_REPLAY_PAGE_MS = 5 * 60_000
 _TICK_DECIMALS = {
     TickKind.TRADES: ("price", "size"),
     TickKind.QUOTES: ("bid_price", "bid_size", "ask_price", "ask_size"),
@@ -198,10 +199,11 @@ class ColdManifest:
 
 @dataclass(frozen=True, slots=True)
 class ColdSnapshot:
-    """同一读事务固定的 K 线和衍生品清单。"""
+    """同一读事务固定的回放清单。"""
 
     bars: ColdManifest
     derivatives: ColdManifest
+    ticks: ColdManifest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -946,27 +948,43 @@ class ColdReader:
         self._db_path = self._data_dir / MANIFEST_DB
         self._snapshot = snapshot
         self._pinned_series: dict[tuple[str, str, str], list[ColdGeneration]] = {}
+        self._verified_ticks: dict[ColdGeneration, Path] = {}
+        self._trade_page: tuple[InstrumentSpec, int, list[Trade | Quote]] | None = None
         if snapshot is not None:
-            for generation in (*snapshot.bars.generations, *snapshot.derivatives.generations):
-                key = generation.venue, generation.symbol, generation.timeframe
-                self._pinned_series.setdefault(key, []).append(generation)
+            for manifest in (snapshot.bars, snapshot.derivatives, snapshot.ticks):
+                if manifest is not None:
+                    for generation in manifest.generations:
+                        key = generation.venue, generation.symbol, generation.timeframe
+                        self._pinned_series.setdefault(key, []).append(generation)
 
-    def capture_snapshot(self, instruments: Iterable[tuple[InstrumentSpec, int]]) -> ColdSnapshot:
+    def capture_snapshot(
+        self, instruments: Iterable[tuple[InstrumentSpec, int]], *, tick_instruments: Collection[str] = (),
+    ) -> ColdSnapshot:
         """固定标的截至指定事件时间的文件，保留跨周期预热和历史衍生品所需的数据。"""
         if not self._db_path.is_file():
             empty = ColdManifest(0, ())
-            return ColdSnapshot(empty, empty)
+            return ColdSnapshot(empty, empty, empty if tick_instruments else None)
         with closing(sqlite3.connect(f"{self._db_path.as_uri()}?mode=ro", uri=True)) as db:
             db.execute("BEGIN")
             version = _manifest_version(db)
             bars = []
             derivatives = []
+            ticks = []
             for instrument, end in instruments:
                 for timeframe in SUPPORTED_TIMEFRAMES:
                     bars.extend(_select_generations(db, instrument, timeframe, end_ts=end))
                 for kind in DerivativeKind:
                     derivatives.extend(_select_generations(db, instrument, kind.value, end_ts=end))
-        return ColdSnapshot(ColdManifest(version, tuple(bars)), ColdManifest(version, tuple(derivatives)))
+                if instrument.instrument_id in tick_instruments:
+                    for kind in TickKind:
+                        # 成交 ID 的另一来源可能存在于事件时间上界之外。
+                        ticks.extend(_select_generations(
+                            db, instrument, kind.value, end_ts=end if kind is TickKind.QUOTES else None,
+                        ))
+        return ColdSnapshot(
+            ColdManifest(version, tuple(bars)), ColdManifest(version, tuple(derivatives)),
+            ColdManifest(version, tuple(ticks)) if tick_instruments else None,
+        )
 
     def check_snapshot_files(self) -> None:
         if self._snapshot is None:
@@ -1059,17 +1077,23 @@ class ColdReader:
     def read_tick_revisions(
         self, instrument: InstrumentSpec, kind: TickKind, *,
         start_ts: int | None = None, end_ts: int | None = None,
-        event_times: set[int] | None = None,
+        event_times: set[int] | None = None, as_of: int | None = None,
     ) -> list[Trade | Quote]:
-        expression = ds.field("ts_event").isin(event_times) if event_times is not None else None
+        cutoff = ds.field("ts_available") <= as_of if as_of is not None else None
+        events = ds.field("ts_event").isin(event_times) if event_times is not None else None
+        expression = events
+        if cutoff is not None:
+            expression = cutoff if events is None else events & cutoff
 
-        def read(path: Path, *, start_ts: int | None, end_ts: int | None) -> list[Trade | Quote]:
-            return _read_tick_parquet(
-                path, instrument.instrument_id, kind, start_ts=start_ts, end_ts=end_ts,
-                expression=expression,
-            )
+        def read(generations: Sequence[ColdGeneration]) -> list[Trade | Quote]:
+            return [
+                row for generation in generations for row in _read_tick_parquet(
+                    self._verify_tick_file(generation), instrument.instrument_id, kind,
+                    start_ts=start_ts, end_ts=end_ts, expression=expression,
+                )
+            ]
 
-        _, rows = self._read_manifest(
+        _, rows = self._read_generations(
             instrument, kind.value, read, start_ts=start_ts, end_ts=end_ts,
         )
         return rows
@@ -1095,7 +1119,7 @@ class ColdReader:
             upper = end_ts if end_ts is not None else (1 << 63) - 1
             for generation in generations:
                 if generation.last_ts >= lower and generation.first_ts <= upper:
-                    path = _verify_generation_file(self._data_dir, generation)
+                    path = self._verify_tick_file(generation)
                     paths[generation] = path
                     rows.extend(_read_tick_parquet(
                         path, instrument.instrument_id, TickKind.TRADES, start_ts=start_ts, end_ts=end_ts,
@@ -1110,19 +1134,45 @@ class ColdReader:
                 ts = ds.field("ts_event")
                 expression = _trade_id_filter(ids) & ((ts < lower) | (ts > upper))
                 for generation in outside:
-                    path = paths.get(generation) or _verify_generation_file(self._data_dir, generation)
+                    path = paths.get(generation) or self._verify_tick_file(generation)
                     rows.extend(_read_matching_trades(path, instrument.instrument_id, expression))
             return rows
 
         _, rows = self._read_generations(instrument, TickKind.TRADES.value, read, start_ts=None, end_ts=None)
         return rows
 
+    def _verify_tick_file(self, generation: ColdGeneration) -> Path:
+        if self._snapshot is None:
+            return _verify_generation_file(self._data_dir, generation)
+        # 回放只读取不可变的固定文件，同一运行校验每个文件一次。
+        path = self._verified_ticks.get(generation)
+        if path is None:
+            path = self._verified_ticks[generation] = _verify_generation_file(self._data_dir, generation)
+        return path
+
+    def _replay_trade_range(self, instrument: InstrumentSpec, start: int, end: int) -> list[Trade | Quote]:
+        page_start = start // _TICK_REPLAY_PAGE_MS * _TICK_REPLAY_PAGE_MS
+        page_end = min(page_start + _TICK_REPLAY_PAGE_MS - 1, (1 << 63) - 1)
+        if end > page_end:
+            return self._trade_range_revisions(instrument, start, end)
+        if self._trade_page is None or self._trade_page[:2] != (instrument, page_start):
+            self._trade_page = instrument, page_start, self._trade_range_revisions(instrument, page_start, page_end)
+        rows = self._trade_page[2]
+        ids = {row.trade_id for row in rows if start <= row.ts_event <= end}
+        return [row for row in rows if row.trade_id in ids]
+
     def read_ticks(
         self, instrument: InstrumentSpec, kind: TickKind, *,
         start_ts: int | None = None, end_ts: int | None = None, as_of: int | None = None,
     ) -> list[Trade | Quote]:
         if kind is TickKind.TRADES:
-            rows = self._trade_range_revisions(instrument, start_ts, end_ts)
+            if (
+                self._snapshot is not None and start_ts is not None and end_ts is not None
+                and 0 <= end_ts - start_ts < _TICK_REPLAY_PAGE_MS
+            ):
+                rows = self._replay_trade_range(instrument, start_ts, end_ts)
+            else:
+                rows = self._trade_range_revisions(instrument, start_ts, end_ts)
             # 推定时间只补实测没有覆盖的成交。先按来源选定，再截断可获取时间。
             measured = {row.trade_id for row in rows if isinstance(row, Trade) and row.availability == "measured"}
             rows = [
@@ -1167,7 +1217,14 @@ class ColdReader:
     ) -> tuple[ColdManifest, list[T]]:
         if self._snapshot is not None:
             key = instrument.venue, instrument.symbol, series
-            pinned = self._snapshot.bars if series in SUPPORTED_TIMEFRAMES else self._snapshot.derivatives
+            if series in SUPPORTED_TIMEFRAMES:
+                pinned = self._snapshot.bars
+            elif series in (TickKind.TRADES, TickKind.QUOTES):
+                pinned = self._snapshot.ticks
+                if pinned is None:
+                    raise ColdStoreIntegrityError("回放清单缺少逐笔与盘口文件清单")
+            else:
+                pinned = self._snapshot.derivatives
             generations = tuple(
                 item for item in self._pinned_series.get(key, ())
                 if (start_ts is None or item.last_ts >= start_ts) and (end_ts is None or item.first_ts <= end_ts)
