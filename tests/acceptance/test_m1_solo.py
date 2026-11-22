@@ -6,8 +6,8 @@
 关键位触及与画线穿越，断流/恢复，扫描器产出一张异动卡片与 SCANNER_FOCUS。
 阶段 C（无 replay 再重启）：按 snapshot_id 读回逐字节一致的快照与预警记录。
 
-测试不依赖网络、真实模型或墙钟时间：``AppSettings.now_ms`` 固定为 NOW_MS，
-回放脚本由 fixture 末根 K 线推导，扫描器手动触发，等待全部用轮询。
+阶段 A 的时钟固定在快照截止时刻，回放从挂好预警后的下一分钟开始。
+阶段 B、C 的时钟固定在回放末柱收盘时刻，扫描器手动触发。
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from talaria.workbench_api.settings import AppSettings
 pytestmark = pytest.mark.medium
 
 TOKEN = "m1-acceptance-token"
-NOW_MS = 1_795_022_974_103
+SNAPSHOT_CUTOFF_MS = 1_795_022_974_103
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 INSTRUMENT = "BTC-USDT-PERP"
 TIMEFRAME = "1m"
@@ -74,6 +74,8 @@ def _settings(
     dist_dir: Path,
     fixture_dir: Path,
     replay_events: Path | None = None,
+    *,
+    now_ms: int,
 ) -> AppSettings:
     return AppSettings(
         data_dir=data_dir,
@@ -82,7 +84,7 @@ def _settings(
         replay_events=replay_events,
         replay_speed=4.0,
         token=TOKEN,
-        now_ms=lambda: NOW_MS,
+        now_ms=lambda: now_ms,
     )
 
 
@@ -134,11 +136,11 @@ def _bar_event(
     }
 
 
-def _write_replay(path: Path, *, level_price: Decimal, last_fixture_ts: int) -> dict:
+def _write_replay(path: Path, *, level_price: Decimal, snapshot_cutoff_ts: int) -> dict:
     """写一段确定性回放：24 根平静柱 → 触及关键位 → 穿越画线 → 放量 →
     断流 → 跳过一分钟的恢复柱（制造 FEED_GAP）。"""
 
-    start = last_fixture_ts + 60_000
+    start = (snapshot_cutoff_ts // 60_000 + 1) * 60_000
     calm = level_price - Decimal("200")
     events: list[dict] = [{"offset_ms": 0, "type": "heartbeat"}]
     bars: list[dict] = []
@@ -255,7 +257,9 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
     )
 
     # ------------------------------------------------------------------ 阶段 A
-    with TestClient(create_app(_settings(data_dir, dist_dir, fixture_dir))) as client:
+    with TestClient(
+        create_app(_settings(data_dir, dist_dir, fixture_dir, now_ms=SNAPSHOT_CUTOFF_MS))
+    ) as client:
         health = client.get("/api/health").json()
         assert health["feed_mode"] == "fixture"
         collaboration = client.get("/api/collaboration").json()
@@ -292,7 +296,7 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
             json={
                 "instrument_id": INSTRUMENT,
                 "timeframes": [TIMEFRAME, "5m"],
-                "cutoff_ts": NOW_MS,
+                "cutoff_ts": SNAPSHOT_CUTOFF_MS,
             },
             headers=AUTH,
         )
@@ -300,7 +304,7 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
         meta_a = snapshot_resp.json()
         snapshot_id = meta_a["snapshot_id"]
         assert meta_a["instrument_id"] == INSTRUMENT
-        assert meta_a["cutoff_ts"] == NOW_MS
+        assert meta_a["cutoff_ts"] == SNAPSHOT_CUTOFF_MS
         assert meta_a["bar_counts"]["1m"] == 905
         assert meta_a["bar_counts"]["5m"] == 400
 
@@ -392,7 +396,7 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
                 "instrument_id": INSTRUMENT,
                 "kind": "HORIZONTAL_LINE",
                 "visible_timeframes": [TIMEFRAME, "5m"],
-                "points": [{"ts": NOW_MS, "price": _decimal(drawing_price)}],
+                "points": [{"ts": SNAPSHOT_CUTOFF_MS, "price": _decimal(drawing_price)}],
                 "text": "验收阻力线",
             },
             headers=AUTH,
@@ -460,11 +464,13 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
     replay = _write_replay(
         replay_path,
         level_price=level_price,
-        last_fixture_ts=int(page_a["bars"][-1]["timestamp"]),
+        snapshot_cutoff_ts=meta_a["cutoff_ts"],
     )
+    assert max(level_alert["created_ts"], overlay_alert["created_ts"]) <= replay["start"]
+    replay_end_ms = replay["recovery_ts"] + 60_000
 
     with TestClient(
-        create_app(_settings(data_dir, dist_dir, fixture_dir, replay_path))
+        create_app(_settings(data_dir, dist_dir, fixture_dir, replay_path, now_ms=replay_end_ms))
     ) as client:
         assert client.get("/api/health").json()["feed_mode"] == "replay"
         loaded = client.get("/api/alerts").json()["alerts"]
@@ -473,13 +479,13 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
             overlay_alert["alert_id"],
         }
 
-        # 重启后先冻结一次快照，关键位缓存才有内容；同时验证同一 level_id 仍在。
+        # 重启时预热的版本晚于触及柱。按阶段 A 的截止时刻补冻，供历史回放选版。
         rebuild_resp = client.post(
             "/api/snapshots",
             json={
                 "instrument_id": INSTRUMENT,
                 "timeframes": [TIMEFRAME],
-                "cutoff_ts": NOW_MS,
+                "cutoff_ts": meta_a["cutoff_ts"],
             },
             headers=AUTH,
         )
@@ -525,8 +531,9 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
                 if item["alert_id"] == overlay_alert["alert_id"]
             )
             assert level_trigger["condition_kind"] == "LEVEL_EVENT"
-            assert level_trigger["observed"] is not None
+            assert Decimal(level_trigger["observed"]) == level_price
             assert overlay_trigger["condition_kind"] == "OVERLAY_CROSS"
+            assert Decimal(overlay_trigger["threshold"]) == drawing_price
             assert level_trigger["snapshot_id"] and overlay_trigger["snapshot_id"]
             assert client.get(
                 f"/api/snapshots/{level_trigger['snapshot_id']}"
@@ -620,7 +627,9 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
             }
 
     # ------------------------------------------------------------------ 阶段 C
-    with TestClient(create_app(_settings(data_dir, dist_dir, fixture_dir))) as client:
+    with TestClient(
+        create_app(_settings(data_dir, dist_dir, fixture_dir, now_ms=replay_end_ms))
+    ) as client:
         watchlist_c = client.get("/api/watchlist").json()
         names = {group["name"] for group in watchlist_c["groups"]}
         assert "M1 验收" in names
