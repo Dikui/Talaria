@@ -28,11 +28,11 @@ from talaria.account.contracts import (
     TradingState,
 )
 from talaria.account.execution import AccountProcessError, ExecutionGate
-from talaria.account.ledger import open_ledger
+from talaria.account.ledger import LedgerWriter, open_ledger
 from talaria.account.ownership import AccountOwnership, hold_sub_accounts
 from talaria.account.parameters import validate_parameters
 from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
-from talaria.account.plugins.parquet import ParquetReplay, parquet_replay
+from talaria.account.plugins.parquet import ParquetReplay, ReplayMarkAvailability, parquet_replay
 from talaria.account.plugins.r_unit import RUnitSizer, r_unit
 from talaria.account.plugins.seven_step import SevenStepRisk, seven_step
 from talaria.account.risk_config import AccountRiskConfig
@@ -218,7 +218,10 @@ class AccountProcess:
 
         def record(events: Sequence[ExecutionEvent]) -> None:
             with guard():
-                ledger.record(events)
+                if default_fill and isinstance(ledger, LedgerWriter):
+                    ledger.record(events, allow_late_events=True)
+                else:
+                    ledger.record(events)
 
         plugins = self._plugins
         accounts = self.scheme.sub_accounts
@@ -231,13 +234,16 @@ class AccountProcess:
         gate = ExecutionGate(
             accounts, plugins.sizing, plugins.risk, plugins.fill,
             balances=ledger.balances, valuation=valuation, record=record,
+            allow_late_events=default_fill,
         )
         self._initialize_risk_accounts(ledger, gate, default_risk=default_risk or default_fill)
         now = 0
         data = plugins.data
+        execution_replay = default_fill and isinstance(data, ParquetReplay)
+        execution_through = 0
 
         def read_events() -> Iterator[MarketEvent]:
-            if default_fill and isinstance(data, ParquetReplay):
+            if execution_replay:
                 return data.events(execution=True)
             return data.events()
 
@@ -263,12 +269,24 @@ class AccountProcess:
             visible = tuple(
                 point for point in market.derivative_points if point.visible_at(now)
             )
+            execution_bar = market.bar
+            if execution_replay and ctx is not None:
+                execution_bar = None
+            elif execution_replay and execution_bar is not None:
+                execution_through = execution_bar.ts_event + timeframe_ms(market.timeframe)
             fill_market = replace(
-                market, bar=market.bar.model_copy() if market.bar is not None else None, ctx=None, source=None,
+                market, bar=execution_bar.model_copy() if execution_bar is not None else None, ctx=None, source=None,
                 derivative_points=tuple(point.model_copy() for point in visible),
             )
             if isinstance(plugins.fill, BarSim1m):
-                for points in plugins.fill.market_steps(fill_market, valuation, balances=ledger.balances):
+                pricing_only = execution_replay and isinstance(market, ReplayMarkAvailability)
+                if pricing_only:
+                    gate.observe_marks_for_approval(now, visible)
+                for points in plugins.fill.market_steps(
+                    fill_market, valuation, balances=ledger.balances,
+                    execution_through=execution_through if execution_replay else None,
+                    pricing_only=pricing_only,
+                ):
                     gate.poll_events(now, points=points)
             else:
                 plugins.fill.on_market(fill_market, valuation)
@@ -291,6 +309,11 @@ class AccountProcess:
                 finally:
                     for rejection in rejected:
                         gate.record_host_event(rejection)
+        if execution_replay:
+            end = data.end_event()
+            self._clock.advance(end.as_of)
+            for points in plugins.fill.market_steps(end, valuation, balances=ledger.balances):
+                gate.poll_events(end.as_of, points=points)
 
     def _initialize_risk_accounts(
         self, ledger: AccountLedger, gate: ExecutionGate, *, default_risk: bool,

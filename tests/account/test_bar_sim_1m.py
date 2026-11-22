@@ -69,7 +69,7 @@ def test_latency_wall_excludes_ohlc_from_a_bar_that_straddles_arrival(tmp_path):
     assert fill.submit_plan(approved(decision=MINUTE + 5_000)).accepted
     assert step(fill, market(MINUTE)) == []
     [entry] = [event for event in step(fill, market(2 * MINUTE)) if event.kind == "ENTRY_FILLED"]
-    assert (entry.ts_event, entry.price, entry.reason) == (3 * MINUTE, D(100), "MAKER")
+    assert (entry.ts_event, entry.price, entry.reason) == (2 * MINUTE + 1, D(100), "MAKER")
 
 
 @pytest.mark.parametrize(("order", "opening", "lowest", "kind", "reason", "price", "fee"), [
@@ -148,20 +148,21 @@ def test_partial_entry_and_add_on_share_barriers_and_first_fill_deadline(tmp_pat
     assert (entry.plan_id, entry.position.round_id, entry.position.quantity, entry.position.phase) == (
         "add", "r", D(2), "ACTIVE_PROTECTED",
     )
-    [trade] = [e for e in step(fill, market(5 * MINUTE)) if e.kind == "EXIT_FILLED"]
+    assert not [e for e in step(fill, market(5 * MINUTE)) if e.kind == "EXIT_FILLED"]
+    [trade] = [e for e in step(fill, market(6 * MINUTE, volume="20")) if e.kind == "EXIT_FILLED"]
     assert (trade.reason, trade.price, trade.quantity, trade.position.phase) == (
         "MAX_HOLDING_TIME", D("104.9"), D(2), "CLOSED",
     )
     assert [p.amount for p in trade.postings if p.account == "POSITION_COST"] == [D("-201")]
 
 
-def test_trailing_stop_ratchets_after_confirmation_and_never_retreats(tmp_path):
+def test_trailing_stop_ratchets_and_never_retreats(tmp_path):
     fill = engine(tmp_path)
     assert fill.submit_plan(approved(qty="1", targets=("150",), trailing_stop={
         "activation_pct": "0.1", "distance_pct": "0.05",
     })).accepted
     step(fill, market(2 * MINUTE))
-    events = step(fill, market(3 * MINUTE, high="120", low="100", close="117"))
+    events = step(fill, market(3 * MINUTE, open="115", high="120", low="115", close="117"))
     [adjustment] = events
     assert (adjustment.kind, adjustment.position.stop) == ("BARRIER_TIGHTENED", D(114))
     assert step(fill, market(4 * MINUTE, open="117", high="119", low="115", close="116")) == []
@@ -284,15 +285,15 @@ slots:
     first, second = [read_journal(run_backtest(scheme, tmp_path).directory / "ledger.sqlite") for _ in range(2)]
     assert first == second
     [entry] = [e for e in first.events if e.kind == "ENTRY_FILLED"]
-    assert (entry.ts_event, entry.price) == (start + 3 * MINUTE, D(105))
+    assert (entry.ts_event, entry.price) == (start + 2 * MINUTE + 1, D(105))
     [liquidation] = [e for e in first.events if e.kind == "ROUND_LIQUIDATED"]
     [trade] = [e for e in first.events if e.kind == "EXIT_FILLED"]
     assert (liquidation.ts_event, liquidation.position.phase, trade.price) == (
-        liquidated_at, "LIQUIDATED", D(70),
+        liquidated_at, "LIQUIDATED", D("69.9"),
     )
     cashflows = [e for e in first.events if e.kind == "FUNDING_SETTLED"]
     assert [(e.ts_event, e.settlement_ts) for e in cashflows] == [
-        (known_at, settled_at), (corrected_at, settled_at),
+        (settled_at, settled_at), (settled_at, settled_at),
     ]
     postings = {row.event_id: row.postings for row in first.entries}
     assert [
@@ -360,7 +361,7 @@ slots:
 
     journal = read_journal(run_backtest(scheme, tmp_path).directory / "ledger.sqlite")
     assert [(event.ts_event, event.price) for event in journal.events if event.kind == "ENTRY_FILLED"] == [
-        (fill_at, D(102)),
+        (fill_at - MINUTE + 1, D(102)),
     ]
 
 
@@ -373,7 +374,7 @@ def test_time_barrier_enters_exiting_without_using_a_bar_closed_before_deadline(
     assert [(e.kind, e.position.phase) for e in events] == [("ROUND_EXITING", "EXITING")]
     assert step(fill, market(3 * MINUTE, available=deadline + 1)) == []
     [trade] = [e for e in step(fill, market(4 * MINUTE, close="110")) if e.kind == "EXIT_FILLED"]
-    assert (trade.reason, trade.price) == ("MAX_HOLDING_TIME", D("109.9"))
+    assert (trade.reason, trade.price) == ("MAX_HOLDING_TIME", D("104.9"))
 
 
 def test_marked_account_equity_triggers_cross_liquidation(tmp_path):
@@ -392,8 +393,8 @@ def test_marked_account_equity_triggers_cross_liquidation(tmp_path):
     tick = derivative("mark_price", now, "75")
     events = step(fill, MarketEvent(now, INSTRUMENT, "1m", None, derivative_points=(tick,)), valuation)
     [trade] = [e for e in events if e.kind == "EXIT_FILLED"]
-    assert (trade.price, trade.position.phase) == (D(75), "LIQUIDATED")
-    assert next(p.amount for p in trade.postings if p.account == "EXPENSE_LIQUIDATION_FEE") == D("0.75")
+    assert (trade.price, trade.position.phase) == (D("74.9"), "LIQUIDATED")
+    assert next(p.amount for p in trade.postings if p.account == "EXPENSE_LIQUIDATION_FEE") == D("0.749")
 
 
 def test_post_only_resting_short_can_fill_when_a_later_bar_gaps_through_the_limit(tmp_path):
@@ -403,7 +404,7 @@ def test_post_only_resting_short_can_fill_when_a_later_bar_gaps_through_the_limi
     )).accepted
     assert step(fill, market(2 * MINUTE, open="94", high="95", low="92", close="93")) == []
     [trade] = [e for e in step(fill, market(
-        3 * MINUTE, open="97", high="100", low="96", close="98",
+        3 * MINUTE, open="107", high="109", low="105", close="108",
     )) if e.kind == "ENTRY_FILLED"]
     assert (trade.reason, trade.price) == ("MAKER", D(95))
     [exit_fill] = [e for e in step(fill, market(
@@ -456,7 +457,7 @@ def open_through_gate(tmp_path, *, config=None):
 
     gate = ExecutionGate(
         ("one",), FixedSizing(), SevenStepRisk(CRYPTO_PERP_PACK, {"one": config}), fill,
-        balances=lambda _: balance, valuation=valuation, record=record,
+        balances=lambda _: balance, valuation=valuation, record=record, allow_late_events=True,
     )
 
     def drive(event):
@@ -475,7 +476,7 @@ def test_funding_drawdown_cancels_pending_entry_before_same_step_matching(tmp_pa
     gate, drive, recorded = open_through_gate(tmp_path, config=AccountRiskConfig(
         daily_soft_drawdown_pct="0.0001", daily_hard_drawdown_pct="0.0002",
     ))
-    point = derivative("funding_rate", 4 * MINUTE, "0.03", settled=True)
+    point = derivative("funding_rate", 3 * MINUTE, "0.03", settled=True)
     drive(market(3 * MINUTE, points=(point,)))
     assert [event.kind for event in recorded] == [
         "ENTRY_FILLED", "FUNDING_SETTLED", "TRADING_STATE_CHANGED", "PLAN_CANCELLED",
@@ -508,3 +509,380 @@ def test_manual_close_waits_when_latest_confirmation_reports_an_older_close(tmp_
     assert (status.quantity, status.phase) == (D(1), "EXITING")
     [trade] = [e for e in step(fill, market(3 * MINUTE, close="110")) if e.kind == "EXIT_FILLED"]
     assert (trade.reason, trade.price) == ("USER", D("109.9"))
+
+
+def test_limit_remainder_rests_after_a_partial_taker_fill(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved()).accepted
+    first = step(fill, market(2 * MINUTE, open="98", low="97"))
+    assert first[0].reason == "TAKER"
+    [trade] = [e for e in step(fill, market(3 * MINUTE, open="98", low="97")) if e.kind == "ENTRY_FILLED"]
+    assert (trade.reason, trade.price) == ("MAKER", D(98))
+    assert next(p.amount for p in trade.postings if p.account == "EXPENSE_EXECUTION_FEE") == D("0.0196")
+
+
+def test_liquidation_executes_at_an_adverse_price_with_taker_friction(tmp_path):
+    from talaria.account.risk_config import AccountRiskConfig
+
+    definition = default_registry().resolve(Slot.FILL, "bar_sim_1m", INTERFACE_VERSION, tmp_path)
+    context = PluginContext(
+        tmp_path, "backtest", 7, lambda: 0, {"one": AccountRiskConfig(margin_mode="ISOLATED")},
+    )
+    fill = definition.create(context, {"spread_pct": "0.02"})
+    valuation = CRYPTO_PERP_PACK.margin_valuation()
+    assert fill.submit_plan(approved(qty="1")).accepted
+    step(fill, market(2 * MINUTE), valuation)
+    at = 3 * MINUTE + 1
+    tick = derivative("mark_price", at, "70")
+    [trade] = [e for e in step(
+        fill, MarketEvent(at, INSTRUMENT, "1m", None, derivative_points=(tick,)), valuation,
+    ) if e.kind == "EXIT_FILLED"]
+    assert (trade.reason, trade.price) == ("MARGIN_LIQUIDATION", D("69.2"))
+
+
+@pytest.mark.parametrize(("lower", "opening", "highest", "lowest", "expected", "exit_reason", "exit_price"), [
+    ("95", "98", "125", "97", "98", "TAKE_PROFIT", "120"),
+    ("85", "88", "125", "87", "88", "STOP_LOSS", "87.9"),
+    ("95", "88", "94", "87", "100", "STOP_LOSS", "87.9"),
+])
+def test_resting_entry_uses_crossed_open_and_keeps_approved_limit_through_full_gap(
+    tmp_path, lower, opening, highest, lowest, expected, exit_reason, exit_price,
+):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(qty="1", low=lower)).accepted
+    assert not step(fill, market(2 * MINUTE, low="101"))
+    events = step(fill, market(3 * MINUTE, open=opening, high=highest, low=lowest, close=opening))
+    [entry, trade] = [e for e in events if e.kind in {"ENTRY_FILLED", "EXIT_FILLED"}]
+    assert (entry.price, entry.reason, entry.ts_event) == (D(expected), "MAKER", 3 * MINUTE)
+    assert (trade.reason, trade.price) == (exit_reason, D(exit_price))
+
+
+def test_penetrated_remainder_increases_the_loss_at_the_same_bar_stop(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved()).accepted
+    step(fill, market(2 * MINUTE))
+    events = step(fill, market(3 * MINUTE, low="89", high="125", volume="30"))
+    assert [(e.kind, e.quantity) for e in events if e.quantity] == [
+        ("ENTRY_FILLED", D(1)), ("EXIT_FILLED", D(2)),
+    ]
+    trade = next(e for e in events if e.kind == "EXIT_FILLED")
+    assert next(p.amount for p in trade.postings if p.account == "REALIZED_PNL") == D("20.2")
+
+
+def test_profit_crossed_at_the_open_precedes_the_later_intrabar_stop(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(qty="1")).accepted
+    step(fill, market(2 * MINUTE))
+    [trade] = [e for e in step(fill, market(
+        3 * MINUTE, open="125", high="126", low="85", close="100",
+    )) if e.kind == "EXIT_FILLED"]
+    assert (trade.reason, trade.price, trade.ts_event) == ("TAKE_PROFIT", D(125), 3 * MINUTE)
+
+
+def test_crossed_profit_precedes_holding_deadline(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(order="MARKET", qty="1", max_holding_ms=MINUTE)).accepted
+    step(fill, market(2 * MINUTE, open="98", low="97"))
+    [trade] = [e for e in step(
+        fill, market(3 * MINUTE, high="125"),
+    ) if e.kind == "EXIT_FILLED"]
+    assert (trade.reason, trade.price) == ("TAKE_PROFIT", D(120))
+
+
+def test_crossed_profit_still_executes_after_queued_partial_reduction(tmp_path):
+    fill = engine(tmp_path, volume_participation="1")
+    assert fill.submit_plan(approved()).accepted
+    step(fill, market(2 * MINUTE, available=3 * MINUTE + 1))
+    fill.intervene_position("r", "REDUCE_RATIO", D("0.5"), "USER")
+    events = step(fill, market(4 * MINUTE, high="125"))
+    assert [(e.reason, e.quantity) for e in events if e.kind == "EXIT_FILLED"] == [
+        ("USER", D(1)), ("TAKE_PROFIT", D(1)),
+    ]
+
+
+def test_trailing_stop_can_execute_in_its_activation_bar(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(qty="1", targets=("150",), trailing_stop={
+        "activation_pct": "0.1", "distance_pct": "0.05",
+    })).accepted
+    step(fill, market(2 * MINUTE))
+    events = step(fill, market(3 * MINUTE, high="120", low="100", close="117"))
+    [trade] = [e for e in events if e.kind == "EXIT_FILLED"]
+    assert (trade.reason, trade.price, trade.position.stop) == ("TRAILING_STOP", D("113.9"), D(114))
+
+
+def test_late_first_confirmation_can_stop_an_open_position(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(qty="1")).accepted
+    step(fill, market(2 * MINUTE))
+    step(fill, market(4 * MINUTE))
+    delayed = market(3 * MINUTE, open="85", low="84", available=5 * MINUTE + 1)
+    [trade] = [e for e in step(fill, delayed) if e.kind == "EXIT_FILLED"]
+    assert (trade.ts_event, trade.price) == (3 * MINUTE, D("84.9"))
+    assert not step(fill, delayed)
+
+
+@pytest.mark.parametrize(("exit_participation", "volume"), [(None, "10"), ("0.05", "20")])
+def test_stop_only_executes_up_to_bar_participation(tmp_path, exit_participation, volume):
+    fill = engine(tmp_path, exit_volume_participation=exit_participation)
+    assert fill.submit_plan(approved()).accepted
+    step(fill, market(2 * MINUTE, volume="20"))
+    [first] = [e for e in step(fill, market(3 * MINUTE, low="89", volume=volume)) if e.kind == "EXIT_FILLED"]
+    assert (first.quantity, first.position.quantity, first.position.phase) == (D(1), D(1), "EXITING")
+    [second] = [e for e in step(
+        fill, market(4 * MINUTE, open="105", close="109", volume=volume),
+    ) if e.kind == "EXIT_FILLED"]
+    assert (second.quantity, second.price, second.reason) == (D(1), D("104.9"), "STOP_LOSS")
+
+
+def test_open_fill_beats_intrabar_expiry_and_sets_holding_deadline(tmp_path):
+    fill = engine(tmp_path)
+    plan = approved(order="MARKET", qty="1", max_holding_ms=MINUTE)
+    plan = plan.model_copy(update={"candidate": plan.candidate.model_copy(update={
+        "valid_until": 2 * MINUTE + 1,
+    })})
+    assert fill.submit_plan(plan).accepted
+    [entry] = [e for e in step(fill, market(2 * MINUTE, open="98", low="97")) if e.kind == "ENTRY_FILLED"]
+    assert entry.ts_event == 2 * MINUTE
+    [trade] = [e for e in step(fill, market(3 * MINUTE, close="109")) if e.kind == "EXIT_FILLED"]
+    assert (trade.ts_event, trade.price, trade.reason) == (3 * MINUTE, D("104.9"), "MAX_HOLDING_TIME")
+
+
+@pytest.mark.parametrize(("low", "reason", "price", "at"), [
+    ("89", "STOP_LOSS", "89.9", 3 * MINUTE + 1),
+    ("98", "DRAWDOWN_LIMIT", "104.9", 4 * MINUTE),
+])
+def test_drawdown_close_uses_hard_stop_or_the_next_executable_open(tmp_path, low, reason, price, at):
+    from talaria.account.risk_config import AccountRiskConfig
+
+    _, drive, recorded = open_through_gate(tmp_path, config=AccountRiskConfig(
+        daily_soft_drawdown_pct="0.0001", daily_hard_drawdown_pct="0.0002",
+        liquidate_on_halt=True,
+    ))
+    point = derivative("funding_rate", 3 * MINUTE + 1, "0.03", settled=True)
+    drive(market(3 * MINUTE, low=low, close="109", points=(point,)))
+    drive(market(4 * MINUTE, close="108"))
+    [trade] = [e for e in recorded if e.kind == "EXIT_FILLED"]
+    assert (trade.reason, trade.price, trade.ts_event) == (reason, D(price), at)
+
+
+def test_every_mark_in_a_batch_is_checked_in_observation_order(tmp_path):
+    from talaria.account.risk_config import AccountRiskConfig
+
+    definition = default_registry().resolve(Slot.FILL, "bar_sim_1m", INTERFACE_VERSION, tmp_path)
+    context = PluginContext(
+        tmp_path, "backtest", 7, lambda: 0, {"one": AccountRiskConfig(margin_mode="ISOLATED")},
+    )
+    fill = definition.create(context, {})
+    valuation = CRYPTO_PERP_PACK.margin_valuation()
+    assert fill.submit_plan(approved(qty="1")).accepted
+    step(fill, market(2 * MINUTE), valuation)
+    at = 3 * MINUTE + 100
+    low = derivative("mark_price", at, "70", available=at + 10)
+    recovery = derivative("mark_price", at + 1, "105", available=at + 10)
+    event = MarketEvent(at + 10, INSTRUMENT, "1m", None, derivative_points=(recovery, low))
+    [trade] = [e for e in step(fill, event, valuation) if e.kind == "EXIT_FILLED"]
+    assert (trade.ts_event, trade.reason, trade.price) == (at, "MARGIN_LIQUIDATION", D("69.9"))
+
+
+def test_late_settlement_only_charges_the_position_held_at_settlement(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved()).accepted
+    at = 3 * MINUTE - 1
+    mark = derivative("mark_price", at, "100")
+    step(fill, market(2 * MINUTE, points=(mark,)))
+    step(fill, market(3 * MINUTE))
+    settlement = derivative("funding_rate", at, "0.01", available=4 * MINUTE + 1, settled=True)
+    [flow] = step(fill, MarketEvent(settlement.ts_available, INSTRUMENT, "1m", None, derivative_points=(settlement,)))
+    assert (flow.kind, flow.ts_event, flow.settlement_ts, flow.position.quantity) == (
+        "FUNDING_SETTLED", at, at, D(2),
+    )
+    assert next(p.amount for p in flow.postings if p.account == "CASH_AVAILABLE") == D(-1)
+
+
+def test_late_bar_fill_backfills_the_held_quantity_for_a_known_settlement(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(order="MARKET", qty="1")).accepted
+    at = 2 * MINUTE + 10
+    mark = derivative("mark_price", at, "100")
+    settlement = derivative("funding_rate", at, "0.01", settled=True)
+    assert step(fill, MarketEvent(at, INSTRUMENT, "1m", None, derivative_points=(settlement, mark))) == []
+    events = step(fill, market(2 * MINUTE, open="98", low="97"))
+    [flow] = [e for e in events if e.kind == "FUNDING_SETTLED"]
+    assert flow.ts_event == at
+    assert next(p.amount for p in flow.postings if p.account == "CASH_AVAILABLE") == D(-1)
+
+
+def test_settlement_uses_a_same_batch_mark_arriving_after_its_observation(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(qty="1")).accepted
+    step(fill, market(2 * MINUTE, points=(derivative("mark_price", 2 * MINUTE, "100"),)))
+    at = 3 * MINUTE + 10
+    settle = derivative("funding_rate", at, "0.01", available=at + 20, settled=True)
+    delayed_mark = derivative("mark_price", at, "110", available=at + 15)
+    future_mark = derivative("mark_price", at + 1, "120", available=at + 20)
+    event = MarketEvent(at + 20, INSTRUMENT, "1m", None, derivative_points=(settle, delayed_mark, future_mark))
+    [flow] = step(fill, event)
+    assert flow.kind == "FUNDING_SETTLED"
+    assert next(p.amount for p in flow.postings if p.account == "CASH_AVAILABLE") == D("-1.10")
+
+
+def test_unpriced_settlement_is_booked_once_after_its_mark_arrives(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(qty="1")).accepted
+    step(fill, market(2 * MINUTE))
+    at = 3 * MINUTE + 10
+    settle = derivative("funding_rate", at, "0.01", settled=True)
+    [warning] = step(fill, MarketEvent(at, INSTRUMENT, "1m", None, derivative_points=(settle,)))
+    assert (warning.kind, warning.settlement_ts) == ("FUNDING_UNPRICED", at)
+    mark = derivative("mark_price", at, "110", available=at + 100)
+    event = MarketEvent(at + 100, INSTRUMENT, "1m", None, derivative_points=(settle, mark))
+    [flow] = step(fill, event)
+    assert (flow.kind, flow.ts_event) == ("FUNDING_SETTLED", at)
+    assert next(p.amount for p in flow.postings if p.account == "CASH_AVAILABLE") == D("-1.10")
+    assert not step(fill, event)
+
+
+@pytest.mark.medium
+def test_replay_risk_uses_last_visible_funding_estimate_from_before_start(tmp_path, register_host_fixtures):
+    instrument = CRYPTO_PERP_PACK.instrument(INSTRUMENT)
+    start = 1_793_491_200_000
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(instrument, "1m", [
+            RawBar(
+                symbol=instrument.symbol, timeframe="1m", ts_event=start,
+                open=D(100), high=D(101), low=D(99), close=D(100), volume=D(10), turnover=D(1000),
+                ts_available=start + MINUTE, ts_ingested=start + MINUTE, ts_committed=start + MINUTE,
+            ),
+        ]))
+        mark = derivative("mark_price", start - 1, "100")
+        store.publish_derivatives(instrument, mark.kind, [mark])
+        estimate = derivative("funding_rate", start - 5, "0.1", settled=False)
+        future = derivative("funding_rate", start - 2, "0", settled=False, available=start + 2 * MINUTE)
+        store.publish_derivatives(instrument, estimate.kind, [estimate, future])
+    strategy = Path(__file__).parent / "fixtures" / "replay_strategy.py"
+    (tmp_path / strategy.name).write_text(strategy.read_text().replace(
+        "invalidation_stop=bar.close - 2, take_profit=[bar.close + 2]",
+        "invalidation_stop=bar.close - 2, take_profit=[bar.close + 20]",
+    ))
+    scheme = tmp_path / "sim.yaml"
+    scheme.write_text(f"""
+scheme: funding-warmup
+interface_version: {INTERFACE_VERSION}
+sub_accounts: [one]
+slots:
+  data:
+    plugin: parquet_replay
+    params: {{instrument: {INSTRUMENT}, timeframe: 1m, start: {start}, end: {start + MINUTE}}}
+  strategy: {{python: {strategy.name}, params: {{trigger_price: "100"}}}}
+  sizing: r_unit
+  risk: seven_step
+  fill: bar_sim_1m
+""")
+    register_host_fixtures(scheme, tmp_path)
+    journal = read_journal(run_backtest(scheme, tmp_path).directory / "ledger.sqlite")
+    assert [(e.kind, e.reason) for e in journal.events if e.kind != "ACCOUNT_FUNDED"] == [
+        ("CANDIDATE_REJECTED", "NET_REWARD_RISK_TOO_LOW"),
+    ]
+
+
+@pytest.mark.medium
+@pytest.mark.parametrize("late_mark", [False, True])
+def test_parquet_replay_executes_late_stop_before_a_newer_confirmed_profit(
+    tmp_path, register_host_fixtures, late_mark,
+):
+    instrument = CRYPTO_PERP_PACK.instrument(INSTRUMENT)
+    start = 1_793_491_200_000
+    end = start + 6 * MINUTE
+    rows = [
+        (0, 1, "100", "101", "99", "100"),
+        (2, 3, "110", "112", "100", "110"),
+        (3, 6, "85", "110", "80", "105"),
+        (4, 5, "110", "140", "100", "110"),
+    ]
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(instrument, "1m", [
+            RawBar(
+                symbol=instrument.symbol, timeframe="1m",
+                ts_event=start + slot * MINUTE, ts_available=start + available * MINUTE,
+                ts_ingested=start + available * MINUTE, ts_committed=start + available * MINUTE,
+                open=D(opening), high=D(high), low=D(low), close=D(close),
+                volume=D(100), turnover=D(10000),
+            )
+            for slot, available, opening, high, low, close in rows
+        ]))
+        if late_mark:
+            marks = [
+                derivative("mark_price", start + 1, "103", available=start + 2 * MINUTE),
+                derivative("mark_price", start + 20, "105"),
+            ]
+        else:
+            marks = [derivative("mark_price", start, "105")]
+        store.publish_derivatives(instrument, marks[0].kind, marks)
+    strategy = Path(__file__).parent / "fixtures" / "replay_strategy.py"
+    (tmp_path / strategy.name).write_text(strategy.read_text().replace(
+        "entry_high=bar.close + 2", "entry_high=bar.close + 5",
+    ).replace("invalidation_stop=bar.close - 2, take_profit=[bar.close + 2]",
+              "invalidation_stop=bar.close - 10, take_profit=[bar.close + 35]"))
+    scheme = tmp_path / "sim.yaml"
+    scheme.write_text(f"""
+scheme: late-stop
+interface_version: {INTERFACE_VERSION}
+sub_accounts: [one]
+slots:
+  data:
+    plugin: parquet_replay
+    params: {{instrument: {INSTRUMENT}, timeframe: 1m, start: {start}, end: {end}}}
+  strategy: {{python: {strategy.name}, params: {{trigger_price: "100"}}}}
+  sizing: r_unit
+  risk: seven_step
+  fill: bar_sim_1m
+""")
+    register_host_fixtures(scheme, tmp_path)
+    journal = read_journal(run_backtest(scheme, tmp_path).directory / "ledger.sqlite")
+    [trade] = [e for e in journal.events if e.kind == "EXIT_FILLED"]
+    assert (trade.reason, trade.price, trade.ts_event) == ("STOP_LOSS", D("84.9"), start + 3 * MINUTE)
+
+
+def test_mark_revision_does_not_erase_an_earlier_liquidation_observation(tmp_path):
+    from talaria.account.risk_config import AccountRiskConfig
+
+    definition = default_registry().resolve(Slot.FILL, "bar_sim_1m", INTERFACE_VERSION, tmp_path)
+    context = PluginContext(
+        tmp_path, "backtest", 7, lambda: 0, {"one": AccountRiskConfig(margin_mode="ISOLATED")},
+    )
+    fill = definition.create(context, {})
+    valuation = CRYPTO_PERP_PACK.margin_valuation()
+    assert fill.submit_plan(approved(qty="1")).accepted
+    step(fill, market(2 * MINUTE), valuation)
+    at = 3 * MINUTE + 100
+    mark = derivative("mark_price", at, "70", available=at + 10)
+    corrected = derivative("mark_price", at, "105", available=at + 20, revision=1)
+    event = MarketEvent(at + 20, INSTRUMENT, "1m", None, derivative_points=(corrected, mark))
+    [trade] = [e for e in step(fill, event, valuation) if e.kind == "EXIT_FILLED"]
+    assert (trade.ts_event, trade.price) == (at, D("69.9"))
+
+
+def test_late_confirmed_close_uses_a_stop_tightened_during_the_bar(tmp_path):
+    from talaria.account.contracts import BarrierChangeRequest
+
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(qty="1")).accepted
+    step(fill, market(2 * MINUTE))
+    at = 3 * MINUTE + 10
+    step(fill, MarketEvent(at, INSTRUMENT, "1m", None))
+    assert fill.tighten_barrier(BarrierChangeRequest(sub_account_id="one", round_id="r", stop="95")).accepted
+    events = step(fill, market(3 * MINUTE, low="92", close="94"))
+    [trade] = [e for e in events if e.kind == "EXIT_FILLED"]
+    assert (trade.reason, trade.price, trade.ts_event) == ("STOP_LOSS", D("93.9"), 4 * MINUTE)
+
+
+def test_holding_deadline_cancels_the_remainder_before_an_open_after_a_gap(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved(max_holding_ms=MINUTE)).accepted
+    step(fill, market(2 * MINUTE))
+    events = step(fill, market(4 * MINUTE, open="98", low="97", volume="20"))
+    assert [(e.kind, e.quantity, e.price) for e in events if e.quantity] == [
+        ("EXIT_FILLED", D(1), D("97.9")),
+    ]
+    assert any(e.kind == "PLAN_CANCELLED" and e.reason == "MAX_HOLDING_TIME" for e in events)

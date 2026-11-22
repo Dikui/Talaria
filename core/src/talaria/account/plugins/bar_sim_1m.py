@@ -32,6 +32,7 @@ _TERMINAL = {RoundPhase.CLOSED, RoundPhase.CANCELLED, RoundPhase.LIQUIDATED}
 _STATE_ORDER = (TradingState.ACTIVE, TradingState.REDUCING, TradingState.HALTED)
 _BASIS_CONTEXT = Context(prec=50, rounding=ROUND_HALF_EVEN)
 type BalanceReader = Callable[[str], Mapping[tuple[str, str], Decimal]]
+type MarkHistory = dict[str, list[tuple[int, DerivativePoint]]]
 
 
 def _divide(value: Fraction) -> Decimal:
@@ -50,11 +51,17 @@ class BarSimParams(ContractModel):
     spread_pct: Rate = Decimal("0.0002")
     maker_fee_pct: Rate = Decimal("0.0002")
     volume_participation: Positive = Field(default=Decimal("0.10"), le=1)
+    exit_volume_participation: Positive | None = Field(default=None, le=1)
     liquidation_fee_pct: Rate = Decimal(0)
 
-    @field_validator("spread_pct", "maker_fee_pct", "volume_participation", "liquidation_fee_pct", mode="before")
+    @field_validator(
+        "spread_pct", "maker_fee_pct", "volume_participation", "exit_volume_participation",
+        "liquidation_fee_pct", mode="before",
+    )
     @classmethod
-    def _decimal_string(cls, value: object) -> Decimal:
+    def _decimal_string(cls, value: object) -> Decimal | None:
+        if value is None:
+            return None
         if isinstance(value, Decimal):
             return value
         if isinstance(value, str):
@@ -71,6 +78,7 @@ class _Entry:
     ready_at: int
     remaining: Fraction
     resting: bool = False
+    last_fill_slot: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +86,25 @@ class _Reduction:
     quantity: Fraction
     requested_at: int
     reason: str
+
+
+@dataclass(slots=True)
+class _BarLiquidity:
+    entry: Fraction
+    exit: Fraction
+
+
+@dataclass(slots=True)
+class _FundingBooking:
+    price: Decimal | None
+    cash: Fraction = Fraction(0)
+
+
+@dataclass(slots=True)
+class _Settlement:
+    point: DerivativePoint
+    bookings: dict[str, _FundingBooking] = field(default_factory=dict)
+    unpriced: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -142,12 +169,42 @@ class PositionExecutor:
         )
 
     def set_stop(self, timestamp: int, stop: Decimal, *, trailing: bool) -> None:
-        self.stop, self.trailing = stop, trailing
-        self.stop_changes.append((timestamp, stop, trailing))
+        index = bisect_right(self.stop_changes, timestamp, key=lambda change: change[0])
+        self.stop_changes.insert(index, (timestamp, stop, trailing))
+        _, self.stop, self.trailing = self.stop_changes[-1]
 
     def stop_at(self, timestamp: int) -> tuple[Decimal, bool]:
         index = bisect_right(self.stop_changes, timestamp, key=lambda item: item[0])
         return self.stop_changes[index - 1][1:] if index else (self.barriers.stop, False)
+
+    def held_at(self, timestamp: int, *, before: bool = False) -> Fraction:
+        locate = bisect_left if before else bisect_right
+        index = locate(self.holdings, timestamp, key=lambda holding: holding[0])
+        return self.holdings[index - 1][1] if index else Fraction(0)
+
+    def exitable_at(self, timestamp: int) -> Fraction:
+        index = bisect_right(self.holdings, timestamp, key=lambda holding: holding[0])
+        if not index:
+            return Fraction(0)
+        # 迟到柱只处理当时已持有且此后尚未减掉的数量。
+        return min(quantity for _, quantity in self.holdings[index - 1:])
+
+    def record_fill(self, timestamp: int, change: Fraction) -> None:
+        index = bisect_right(self.holdings, timestamp, key=lambda holding: holding[0])
+        held = self.holdings[index - 1][1] if index else Fraction(0)
+        for i in range(index, len(self.holdings)):
+            at, quantity = self.holdings[i]
+            self.holdings[i] = (at, quantity + change)
+        self.holdings.insert(index, (timestamp, held + change))
+
+    def funding_retention(self, timestamp: int, held: Fraction) -> Fraction:
+        index = bisect_left(self.holdings, timestamp, key=lambda holding: holding[0])
+        retained = Fraction(1) if held else Fraction(0)
+        for _, after in self.holdings[index:]:
+            if held > after:
+                retained *= after / held
+            held = after
+        return retained
 
 
 class BarSim1m:
@@ -156,17 +213,23 @@ class BarSim1m:
         self._pack = get_market_pack(DEFAULT_PACK)
         self._configs: Mapping[str, AccountRiskConfig] = context.account_risk
         self._now = 0
+        self._execution_time: int | None = None
         self._rounds: dict[str, PositionExecutor] = {}
         self._live_rounds: dict[str, PositionExecutor] = {}
         self._plans: set[str] = set()
         self._states: dict[str | None, TradingState] = {}
         self._events: list[ExecutionEvent] = []
-        self._last_slots: dict[str, int] = {}
+        self._seen_slots: dict[str, set[int]] = {}
         self._last_prices: dict[str, tuple[int, Decimal]] = {}
+        self._last_liquidity: dict[str, _BarLiquidity] = {}
         self._amendments: set[str] = set()
-        self._marks: dict[str, list[tuple[int, DerivativePoint]]] = {}
-        self._funding: dict[tuple[str, int], DerivativePoint] = {}
+        self._marks: MarkHistory = {}
+        self._pricing_marks: MarkHistory = {}
+        self._funding: dict[str, dict[int, _Settlement]] = {}
+        self._last_funding_ts: dict[str, int] = {}
+        self._unpriced: dict[str, set[int]] = {}
         self._cash_delta: dict[str, Fraction] = {}
+        self._funding_rechecks: dict[str, int] = {}
 
     def _state(self, account: str) -> TradingState:
         return max(
@@ -221,9 +284,10 @@ class BarSim1m:
         self._plans.add(plan.plan_id)
         return PlanReceipt(accepted=True)
 
-    def _emit(self, executor: PositionExecutor, kind: str, **details) -> None:
+    def _emit(self, executor: PositionExecutor, kind: str, *, timestamp: int | None = None, **details) -> None:
         event = ExecutionEvent(
-            kind=kind, sub_account_id=executor.account, ts_event=self._now,
+            kind=kind, sub_account_id=executor.account,
+            ts_event=self._event_time if timestamp is None else timestamp,
             position=executor.status(), **details,
         )
         self._events.append(event)
@@ -304,13 +368,16 @@ class BarSim1m:
             step = Fraction(executor.instrument.qty_step)
             additional = held if ratio is None else floor(held * Fraction(ratio) / step) * step
             if additional:
-                reduction = _Reduction(prior + additional, self._now, reason)
+                reduction = _Reduction(prior + additional, self._event_time, reason)
                 executor.reduction = reduction
                 if reduction.quantity == executor.quantity:
                     self._begin_exit(executor, reason)
                 last = self._last_prices.get(executor.instrument.instrument_id)
-                if last is not None and last[0] == self._now:
-                    self._exit(executor, reduction.quantity, last[1], reason)
+                if (
+                    reason != "DRAWDOWN_LIMIT" and self._execution_time is None
+                    and last is not None and last[0] == self._now
+                ):
+                    self._fill_reduction(executor, self._last_liquidity[executor.instrument.instrument_id], last[1])
         elif action == "CLOSE_ALL":
             self._cancel_entries(executor, reason)
         executor.assert_reduced(before)
@@ -335,20 +402,29 @@ class BarSim1m:
         return decimal_exact(max(1, ticks) * tick)
 
     def _match_entry(
-        self, executor: PositionExecutor, entry: _Entry, bar: RangeBar,
+        self, executor: PositionExecutor, entry: _Entry, bar: RangeBar, *, at_open: bool,
     ) -> tuple[Decimal, str] | None:
         plan = entry.plan
         candidate = plan.candidate
         side = executor.side
         limit = candidate.entry_high if side == 1 else candidate.entry_low
+        order = candidate.order_type
+        if not at_open:
+            extreme = bar.low if side == 1 else bar.high
+            if entry.resting and side * (limit - extreme) > 0:
+                return limit, "MAKER"
+            return None
+        if entry.resting:
+            if side * (limit - bar.open) > 0:
+                price = bar.open if candidate.entry_low <= bar.open <= candidate.entry_high else limit
+                return price, "MAKER"
+            return None
         quote = Fraction(bar.open) * (1 + side * Fraction(self._params.spread_pct) / 2)
         marketable = side * (Fraction(limit) - quote) >= 0
-        order = candidate.order_type
-        if order == "POST_ONLY" and not entry.resting and marketable:
+        if order == "POST_ONLY" and marketable:
             self._end_entry(executor, plan.plan_id, "PLAN_REJECTED", "POST_ONLY_WOULD_TAKE")
             return None
-        at_market = not entry.resting and marketable and order == "LIMIT"
-        if order == "MARKET" or at_market:
+        if order == "MARKET" or order == "LIMIT" and marketable:
             price = self._taker_price(executor, bar.open, side)
             slip = Fraction(plan.allowed_slippage or 0)
             low, high = Fraction(candidate.entry_low) - slip, Fraction(candidate.entry_high) + slip
@@ -358,10 +434,17 @@ class BarSim1m:
                 self._end_entry(executor, plan.plan_id, "PLAN_REJECTED", "ENTRY_PRICE_OUTSIDE_APPROVAL")
                 return None
         entry.resting = True
-        extreme = bar.low if side == 1 else bar.high
-        if side * (limit - extreme) > 0 and (not at_market or side * (bar.open - extreme) > 0):
-            return limit, "MAKER"
         return None
+
+    @property
+    def _event_time(self) -> int:
+        return self._now if self._execution_time is None else self._execution_time
+
+    def _record_fill(self, executor: PositionExecutor, change: Fraction) -> None:
+        at = self._event_time
+        executor.record_fill(at, change)
+        if self._last_funding_ts.get(executor.instrument.instrument_id, -1) > at:
+            self._funding_rechecks[executor.round_id] = min(at, self._funding_rechecks.get(executor.round_id, at))
 
     def _fill_entry(
         self, executor: PositionExecutor, entry: _Entry, price: Decimal, liquidity: str, qty: Fraction,
@@ -374,10 +457,12 @@ class BarSim1m:
         executor.quantity += qty
         executor.cost += notional
         executor.margin_used += initial_margin
-        executor.holdings.append((self._now, executor.quantity))
-        if executor.opened_at is None:
-            executor.opened_at = self._now
+        self._record_fill(executor, qty)
+        if executor.opened_at is None or self._event_time < executor.opened_at:
+            executor.opened_at = self._event_time
         entry.remaining -= qty
+        if entry.plan.candidate.order_type == "LIMIT":
+            entry.resting = True
         complete = not entry.remaining
         if complete:
             del executor.entries[entry.plan.plan_id]
@@ -399,6 +484,19 @@ class BarSim1m:
             self._emit(executor, "ROUND_EXITING", reason=reason)
         self._cancel_entries(executor, reason)
 
+    def _enforce_holding_deadline(self, executor: PositionExecutor, through: int) -> bool:
+        if executor.phase == RoundPhase.EXITING or executor.opened_at is None or not executor.quantity:
+            return False
+        deadline = executor.opened_at + executor.barriers.max_holding_ms
+        if deadline > through:
+            return False
+        previous = self._execution_time
+        self._execution_time = deadline
+        executor.reduction = _Reduction(executor.quantity, deadline, "MAX_HOLDING_TIME")
+        self._begin_exit(executor, "MAX_HOLDING_TIME")
+        self._execution_time = previous
+        return True
+
     def _exit(
         self, executor: PositionExecutor, qty: Fraction, reference: Decimal, reason: str,
         *, maker: bool = False, liquidated: bool = False,
@@ -407,7 +505,7 @@ class BarSim1m:
         assert 0 < qty <= executor.quantity
         if qty == executor.quantity:
             self._begin_exit(executor, reason)
-        price = reference if maker or liquidated else self._taker_price(executor, reference, -executor.side)
+        price = reference if maker else self._taker_price(executor, reference, -executor.side)
         notional = qty * Fraction(price) * Fraction(executor.margin.contract_multiplier)
         cost = _allocate(executor.cost, qty, executor.quantity)
         released_margin = _allocate(executor.margin_used, qty, executor.quantity)
@@ -420,7 +518,7 @@ class BarSim1m:
         executor.quantity -= qty
         executor.cost -= cost
         executor.margin_used -= released_margin
-        executor.holdings.append((self._now, executor.quantity))
+        self._record_fill(executor, -qty)
         executor.reduction = None
         if not executor.quantity:
             executor.phase = RoundPhase.LIQUIDATED if liquidated else RoundPhase.CLOSED
@@ -433,48 +531,145 @@ class BarSim1m:
                 ("EXPENSE_LIQUIDATION_FEE", penalty), ("CASH_AVAILABLE", released_margin - fee - penalty),
             ),
         )
-        if liquidated:
+        if liquidated and not executor.quantity:
             self._emit(executor, "ROUND_LIQUIDATED", reason=reason)
         executor.assert_reduced(before)
 
-    def _bar_exit(self, executor: PositionExecutor, bar: RangeBar, *, intrabar_entry: bool = False) -> bool:
-        if not executor.quantity:
-            return False
-        side = executor.side
-        adverse, favorable = (bar.low, bar.high) if side == 1 else (bar.high, bar.low)
-        stop, trailing = executor.stop_at(bar.ts_event)
-        reduction = executor.reduction
-        reduced = False
-        if reduction is not None and reduction.requested_at <= bar.ts_event and side * (bar.open - stop) > 0:
-            self._exit(executor, reduction.quantity, bar.open, reduction.reason)
-            if not executor.quantity:
-                return True
-            reduction = None
-            reduced = True
-        if side * (adverse - stop) <= 0:
-            reference = bar.open if side * (bar.open - stop) < 0 else stop
-            reason = "TRAILING_STOP" if trailing else "STOP_LOSS"
-            self._exit(executor, executor.quantity, reference, reason)
-            return True
-        close = bar.ts_event + _MINUTE
-        close_stop, close_trailing = executor.stop_at(close)
-        if close_stop != stop and side * (bar.close - close_stop) <= 0:
-            reason = "TRAILING_STOP" if close_trailing else "STOP_LOSS"
-            self._exit(executor, executor.quantity, bar.close, reason)
-            return True
-        if reduction is not None and reduction.requested_at <= close:
-            self._exit(executor, reduction.quantity, bar.close, reduction.reason)
-            return True
-        target = min(executor.barriers.take_profit, key=lambda price: side * price)
-        # 挂单盘中成交时，收盘价才能证明有利行情在入场之后。
-        if intrabar_entry:
-            favorable = bar.close
-        if side * (favorable - target) > 0:
-            self._exit(executor, executor.quantity, target, "TAKE_PROFIT", maker=True)
-            return True
-        return reduced
+    def _exit_quantity(self, executor: PositionExecutor, liquidity: _BarLiquidity, quantity: Fraction) -> Fraction:
+        step = Fraction(executor.instrument.qty_step)
+        return floor(min(liquidity.exit, quantity) / step) * step
 
-    def _ratchet(self, executor: PositionExecutor, favorable: Decimal) -> None:
+    def _fill_reduction(self, executor: PositionExecutor, liquidity: _BarLiquidity, price: Decimal) -> bool:
+        request = executor.reduction
+        qty = self._exit_quantity(executor, liquidity, min(request.quantity, executor.exitable_at(self._event_time)))
+        if not qty:
+            return False
+        if request.quantity == executor.quantity:
+            self._begin_exit(executor, request.reason)
+        liquidity.exit -= qty
+        self._exit(executor, qty, price, request.reason)
+        if request.quantity > qty:
+            executor.reduction = _Reduction(request.quantity - qty, request.requested_at, request.reason)
+        return True
+
+    def _protect(
+        self, executor: PositionExecutor, liquidity: _BarLiquidity, reference: Decimal,
+        reason: str, *, maker: bool = False,
+    ) -> bool:
+        held = executor.exitable_at(self._event_time)
+        if not held:
+            return False
+        qty = self._exit_quantity(executor, liquidity, held)
+        if not maker and held == executor.quantity:
+            executor.reduction = _Reduction(held, self._event_time, reason)
+            self._begin_exit(executor, reason)
+        elif qty:
+            self._cancel_entries(executor, reason)
+        if qty:
+            liquidity.exit -= qty
+            request = executor.reduction
+            self._exit(executor, qty, reference, reason, maker=maker)
+            if request is not None and request.quantity > qty:
+                executor.reduction = _Reduction(request.quantity - qty, request.requested_at, request.reason)
+        return bool(qty) or not maker
+
+    def _match_entries(
+        self, executor: PositionExecutor, bar: RangeBar, liquidity: _BarLiquidity, *, at_open: bool,
+    ) -> Iterator[tuple[DerivativePoint, ...]]:
+        step = Fraction(executor.instrument.qty_step)
+        for entry in tuple(executor.entries.values()):
+            if (
+                entry.plan.plan_id not in executor.entries or bar.ts_event < entry.ready_at
+                or entry.last_fill_slot == bar.ts_event
+            ):
+                continue
+            expiry = entry.plan.candidate.valid_until
+            if expiry is not None and self._event_time > expiry:
+                continue
+            match = self._match_entry(executor, entry, bar, at_open=at_open)
+            if entry.plan.plan_id not in executor.entries:
+                yield ()
+            qty = floor(min(liquidity.entry, entry.remaining) / step) * step
+            if match is not None and qty >= Fraction(executor.instrument.min_qty):
+                self._fill_entry(executor, entry, *match, qty)
+                entry.last_fill_slot = bar.ts_event
+                liquidity.entry -= qty
+                yield ()
+
+    def _bar_actions(
+        self, bar: RangeBar, instrument: str, liquidity: _BarLiquidity,
+        stage: str, open_positions: set[str], protected: set[str],
+    ) -> Iterator[tuple[DerivativePoint, ...]]:
+        for executor in tuple(self._live_rounds.values()):
+            if executor.instrument.instrument_id != instrument or executor.round_id in protected:
+                continue
+            side = executor.side
+            adverse, favorable = (bar.low, bar.high) if side == 1 else (bar.high, bar.low)
+            stop, trailing = executor.stop_at(self._event_time)
+            stop_reason = "TRAILING_STOP" if trailing else "STOP_LOSS"
+            target = min(executor.barriers.take_profit, key=lambda price: side * price)
+            if stage in {"open", "adverse"} and self._enforce_holding_deadline(executor, self._event_time):
+                yield ()
+            if stage == "open":
+                yield from self._match_entries(executor, bar, liquidity, at_open=True)
+                if not executor.held_at(self._event_time):
+                    continue
+                open_positions.add(executor.round_id)
+                if side * (bar.open - stop) <= 0:
+                    self._protect(executor, liquidity, bar.open, stop_reason)
+                    protected.add(executor.round_id)
+                    yield ()
+                    continue
+                if side * (bar.open - target) > 0:
+                    if self._protect(executor, liquidity, bar.open, "TAKE_PROFIT", maker=True):
+                        yield ()
+                    if not executor.quantity:
+                        continue
+                request = executor.reduction
+                if request is not None and request.requested_at <= self._event_time:
+                    hard_stop_ahead = side * (adverse - stop) <= 0
+                    profit_ahead = side * (favorable - target) > 0
+                    wait_for_barriers = (
+                        request.reason in {"DRAWDOWN_LIMIT", "MAX_HOLDING_TIME"} and hard_stop_ahead
+                        or request.reason == "MAX_HOLDING_TIME" and profit_ahead
+                    )
+                    if not wait_for_barriers and self._fill_reduction(executor, liquidity, bar.open):
+                        yield ()
+            elif stage == "adverse":
+                yield from self._match_entries(executor, bar, liquidity, at_open=False)
+                if executor.held_at(self._event_time) and side * (adverse - stop) <= 0:
+                    self._protect(executor, liquidity, stop, stop_reason)
+                    protected.add(executor.round_id)
+                    yield ()
+            elif executor.held_at(self._event_time) and executor.quantity:
+                was_open = executor.round_id in open_positions
+                if stage == "favorable":
+                    price = favorable if was_open else bar.close
+                    if side * (price - target) > 0:
+                        if self._protect(executor, liquidity, target, "TAKE_PROFIT", maker=True):
+                            yield ()
+                    if executor.quantity and executor.phase != RoundPhase.EXITING:
+                        tightened = self._ratchet(executor, price)
+                        if tightened:
+                            yield ()
+                            if side * (adverse - tightened) <= 0:
+                                self._protect(executor, liquidity, tightened, "TRAILING_STOP")
+                                yield ()
+                if stage == "close" and executor.quantity:
+                    earlier_stop, _ = executor.stop_at(bar.ts_event + 2)
+                    if stop != earlier_stop and side * (bar.close - stop) <= 0:
+                        self._protect(executor, liquidity, bar.close, stop_reason)
+                        yield ()
+                        continue
+                    request = executor.reduction
+                    if (
+                        request is not None and bar.ts_event < request.requested_at <= self._event_time
+                        and request.reason not in {"DRAWDOWN_LIMIT", "MAX_HOLDING_TIME", "STOP_LOSS", "TRAILING_STOP"}
+                        and self._fill_reduction(executor, liquidity, bar.close)
+                    ):
+                        yield ()
+
+    def _ratchet(self, executor: PositionExecutor, favorable: Decimal) -> Decimal | None:
         spec = executor.barriers.trailing_stop
         if spec is None:
             return
@@ -490,57 +685,102 @@ class BarSim1m:
         stop = decimal_exact(ticks * tick)
         if side * (stop - executor.stop) > 0:
             before = executor.exposure()
-            executor.set_stop(self._now, stop, trailing=True)
+            executor.set_stop(self._event_time, stop, trailing=True)
             executor.assert_reduced(before)
             self._emit(executor, "BARRIER_TIGHTENED", reason="TRAILING_STOP")
+            return stop
+        return None
 
-    def _observe_mark(self, point: DerivativePoint) -> None:
-        history = self._marks.setdefault(point.instrument_id, [])
-        # 晚到的旧观测可以在当时参与估值，不能替换已经知道的更新观测。
-        at = max(point.ts_available, history[-1][0]) if history else point.ts_available
-        if history:
-            previous = history[-1][1]
-            if (point.observation_time, point.revision, point.ts_available) <= (
-                previous.observation_time, previous.revision, previous.ts_available,
+    @staticmethod
+    def _observe_mark(marks: MarkHistory, point: DerivativePoint) -> None:
+        history = marks.setdefault(point.instrument_id, [])
+        at = point.observation_time
+        index = bisect_left(history, at, key=lambda item: item[0])
+        if index < len(history) and history[index][0] == at:
+            previous = history[index][1]
+            if (point.revision, point.ts_available, point.ts_committed) > (
+                previous.revision, previous.ts_available, previous.ts_committed,
             ):
-                return
-        history.append((at, point))
+                history[index] = at, point
+        else:
+            history.insert(index, (at, point))
 
-    def _mark_at(self, instrument: str, at: int, max_age: int) -> Decimal | None:
-        history = self._marks.get(instrument, ())
+    @staticmethod
+    def _mark_at(marks: MarkHistory, instrument: str, at: int, max_age: int) -> Decimal | None:
+        history = marks.get(instrument, ())
         index = bisect_right(history, at, key=lambda item: item[0])
         if index:
-            point = history[index - 1][1]
-            if at - point.observation_time <= max_age:
+            timestamp, point = history[index - 1]
+            if at - timestamp <= max_age:
                 return point.value
         return None
 
-    def _settle_funding(self, point: DerivativePoint) -> Iterator[tuple[DerivativePoint, ...]]:
-        key = point.instrument_id, point.ts_event
-        previous = self._funding.get(key)
-        if previous is not None and point.revision <= previous.revision:
+    def _book_funding(
+        self, executor: PositionExecutor, settlement: _Settlement, reason: str | None = None,
+    ) -> Iterator[tuple[DerivativePoint, ...]]:
+        point = settlement.point
+        at = point.ts_event
+        held = executor.held_at(at, before=True)
+        booking = settlement.bookings.get(executor.round_id)
+        if not held and booking is None:
             return
-        self._funding[key] = point
-        rate = Fraction(point.value) - (Fraction(previous.value) if previous is not None else 0)
+        price = booking.price if booking is not None else None
+        if price is None:
+            price = self._mark_at(self._pricing_marks, point.instrument_id, at, executor.config.mark_max_age_ms)
+        if price is None:
+            if booking is None:
+                settlement.bookings[executor.round_id] = _FundingBooking(None)
+                settlement.unpriced.add(executor.round_id)
+                self._unpriced.setdefault(point.instrument_id, set()).add(at)
+                self._emit(executor, "FUNDING_UNPRICED", timestamp=at, settlement_ts=at,
+                           reason="MARK_PRICE_UNAVAILABLE")
+                yield ()
+            return
+        cash = -executor.side * held * Fraction(price) * Fraction(executor.margin.contract_multiplier) * Fraction(point.value)
+        delta = cash - (booking.cash if booking is not None else 0)
+        settlement.bookings[executor.round_id] = _FundingBooking(price, cash)
+        settlement.unpriced.discard(executor.round_id)
+        if not settlement.unpriced:
+            self._unpriced.get(point.instrument_id, set()).discard(at)
+        if booking is not None and booking.price is not None and not delta:
+            return
+        if executor.config.margin_mode == "ISOLATED" and executor.quantity:
+            retained = executor.funding_retention(at, held)
+            executor.isolated_carry += _allocate(delta, retained, Fraction(1))
+        self._emit(
+            executor, "FUNDING_SETTLED", timestamp=at, settlement_ts=at, reason=reason,
+            postings=executor.postings(("CASH_AVAILABLE", delta), ("FUNDING", -delta)),
+        )
+        yield ()
+
+    def _settle_funding(self, point: DerivativePoint) -> Iterator[tuple[DerivativePoint, ...]]:
+        history = self._funding.setdefault(point.instrument_id, {})
+        settlement = history.get(point.ts_event)
+        initial = settlement is None
+        if initial:
+            settlement = history[point.ts_event] = _Settlement(point)
+            self._last_funding_ts[point.instrument_id] = max(point.ts_event, self._last_funding_ts.get(point.instrument_id, 0))
+        elif point.revision > settlement.point.revision:
+            settlement.point = point
+        else:
+            return
         for executor in self._rounds.values():
-            if executor.instrument.instrument_id != point.instrument_id:
-                continue
-            index = bisect_left(executor.holdings, point.ts_event, key=lambda item: item[0])
-            if not index or not (held := executor.holdings[index - 1][1]):
-                continue
-            mark = self._mark_at(point.instrument_id, point.ts_event, executor.config.mark_max_age_ms)
-            if mark is None:
-                self._emit(executor, "FUNDING_UNPRICED", settlement_ts=point.ts_event, reason="MARK_PRICE_UNAVAILABLE")
-            else:
-                cash = -executor.side * held * Fraction(mark) * Fraction(executor.margin.contract_multiplier) * rate
-                if executor.config.margin_mode == "ISOLATED" and executor.quantity:
-                    executor.isolated_carry += _allocate(cash, min(held, executor.quantity), held)
-                self._emit(
-                    executor, "FUNDING_SETTLED", settlement_ts=point.ts_event,
-                    reason="FUNDING_RATE_REVISION" if previous is not None else None,
-                    postings=executor.postings(("CASH_AVAILABLE", cash), ("FUNDING", -cash)),
-                )
-            yield ()
+            if executor.instrument.instrument_id == point.instrument_id:
+                yield from self._book_funding(executor, settlement, None if initial else "FUNDING_RATE_REVISION")
+
+    def _retry_funding_prices(self, instrument: str) -> Iterator[tuple[DerivativePoint, ...]]:
+        for at in sorted(self._unpriced.get(instrument, ())):
+            settlement = self._funding[instrument][at]
+            for round_id in sorted(settlement.unpriced):
+                yield from self._book_funding(self._rounds[round_id], settlement)
+
+    def _reconcile_funding(self) -> Iterator[tuple[DerivativePoint, ...]]:
+        for round_id, fill_at in tuple(self._funding_rechecks.items()):
+            del self._funding_rechecks[round_id]
+            executor = self._rounds[round_id]
+            history = self._funding.get(executor.instrument.instrument_id, {})
+            for at in sorted(at for at in history if fill_at < at):
+                yield from self._book_funding(executor, history[at], "FUNDING_POSITION_CORRECTION")
 
     def _collateral(self, executor: PositionExecutor, balances: BalanceReader | None) -> Decimal:
         config = executor.config
@@ -556,15 +796,16 @@ class BarSim1m:
     def _liquidations(
         self, valuation: MarginValuation, balances: BalanceReader | None,
     ) -> Iterator[tuple[DerivativePoint, ...]]:
+        at = self._event_time
         accounts: dict[str, list[PositionExecutor]] = {}
         for executor in self._live_rounds.values():
-            if executor.quantity:
+            if executor.quantity and executor.held_at(at):
                 accounts.setdefault(executor.account, []).append(executor)
         for executors in accounts.values():
             config = executors[0].config
             marks = {
                 executor.round_id: self._mark_at(
-                    executor.instrument.instrument_id, self._now, config.mark_max_age_ms,
+                    self._marks, executor.instrument.instrument_id, at, config.mark_max_age_ms,
                 ) for executor in executors
             }
             marked = [executor for executor in executors if marks[executor.round_id] is not None]
@@ -577,7 +818,7 @@ class BarSim1m:
                         tuple(executor.margin_position() for executor in executors),
                     ),
                     {executor.instrument.instrument_id: marks[executor.round_id] for executor in executors},
-                    as_of=self._now,
+                    as_of=self._event_time,
                 )
                 breached = executors if estimate.equity <= estimate.maintenance_margin else ()
             else:
@@ -586,8 +827,9 @@ class BarSim1m:
                     if self._isolated_breached(executor, marks[executor.round_id], valuation)
                 ]
             for executor in breached:
-                if executor.quantity:
-                    self._exit(executor, executor.quantity, marks[executor.round_id], "MARGIN_LIQUIDATION", liquidated=True)
+                qty = executor.exitable_at(at)
+                if qty:
+                    self._exit(executor, qty, marks[executor.round_id], "MARGIN_LIQUIDATION", liquidated=True)
                     yield ()
 
     def _isolated_breached(self, executor: PositionExecutor, mark: Decimal, valuation: MarginValuation) -> bool:
@@ -596,12 +838,12 @@ class BarSim1m:
         if collateral < 0:
             estimate = valuation.cross_margin(
                 MarginPortfolio(collateral, executor.config.leverage, (position,)),
-                {position.instrument_id: mark}, as_of=self._now,
+                {position.instrument_id: mark}, as_of=self._event_time,
             )
             return estimate.equity <= estimate.maintenance_margin
         boundary = valuation.isolated_liquidation_price(
             position.instrument_id, position.direction, position.quantity, position.entry_price,
-            collateral, as_of=self._now,
+            collateral, as_of=self._event_time,
         )
         return executor.side * (mark - boundary) <= 0
 
@@ -609,80 +851,103 @@ class BarSim1m:
         for _ in self.market_steps(event, valuation):
             pass
 
-    def market_steps(
-        self, event: MarketEvent, valuation: MarginValuation | None, *, balances: BalanceReader | None = None,
-    ) -> Iterator[tuple[DerivativePoint, ...]]:
-        """宿主在每次让出后入账并检查熔断，再继续下一笔撮合。"""
-        if event.as_of < self._now:
-            raise ValueError("模拟成交时钟不得倒退")
-        self._now = event.as_of
-        points = tuple(point for point in event.derivative_points if point.visible_at(self._now))
-        observations = sorted(latest_visible_derivatives(points), key=lambda point: point.ts_available)
-        for point in observations:
-            if point.kind is DerivativeKind.MARK_PRICE and point.value > 0:
-                self._observe_mark(point)
-        yield tuple(observations)
-        for point in observations:
-            if point.is_funding_settlement:
-                yield from self._settle_funding(point)
-        if valuation is not None:
-            yield from self._liquidations(valuation, balances)
-        for executor in tuple(self._live_rounds.values()):
-            for plan_id, entry in tuple(executor.entries.items()):
-                expiry = entry.plan.candidate.valid_until
-                if expiry is not None and self._now > expiry:
-                    self._end_entry(executor, plan_id, "PLAN_EXPIRED", "ENTRY_TIMEOUT")
-            if executor.quantity and executor.phase != RoundPhase.EXITING:
-                deadline = executor.opened_at + executor.barriers.max_holding_ms
-                if self._now >= deadline:
-                    executor.reduction = _Reduction(executor.quantity, deadline, "MAX_HOLDING_TIME")
-                    self._begin_exit(executor, "MAX_HOLDING_TIME")
+    def _confirmed_bar(self, event: MarketEvent) -> RangeBar | None:
         bar = event.bar
         if (
             event.timeframe != "1m" or bar is None or not bar.confirmed or bar.volume <= 0
             or not 0 < bar.low <= min(bar.open, bar.close) <= max(bar.open, bar.close) <= bar.high
-            or not max(bar.ts_event + _MINUTE, bar.ts_available) <= self._now
-            or bar.ts_event <= self._last_slots.get(event.instrument_id, -1)
+            or max(bar.ts_event + _MINUTE, bar.ts_available) > self._now
         ):
+            return None
+        seen = self._seen_slots.setdefault(event.instrument_id, set())
+        if bar.ts_event in seen:
+            return None
+        seen.add(bar.ts_event)
+        return bar
+
+    def _advance_barriers(self, through: int) -> None:
+        for executor in tuple(self._live_rounds.values()):
+            for plan_id, entry in tuple(executor.entries.items()):
+                expiry = entry.plan.candidate.valid_until
+                if expiry is not None and through > expiry:
+                    self._execution_time = expiry + 1
+                    self._end_entry(executor, plan_id, "PLAN_EXPIRED", "ENTRY_TIMEOUT")
+            self._enforce_holding_deadline(executor, through)
+
+    def market_steps(
+        self, event: MarketEvent, valuation: MarginValuation | None, *, balances: BalanceReader | None = None,
+        execution_through: int | None = None,
+        pricing_only: bool = False,
+    ) -> Iterator[tuple[DerivativePoint, ...]]:
+        """按事件时点推进成交，逐笔交回宿主入账并检查熔断。"""
+        if event.as_of < self._now:
+            raise ValueError("模拟成交时钟不得倒退")
+        self._now = event.as_of
+        points = [point for point in event.derivative_points if point.visible_at(self._now)]
+        priced = set()
+        for point in points:
+            if point.kind == DerivativeKind.MARK_PRICE and point.value > 0:
+                self._observe_mark(self._pricing_marks, point)
+                priced.add(point.instrument_id)
+        if pricing_only:
+            for instrument in sorted(priced):
+                yield from self._retry_funding_prices(instrument)
             yield ()
             return
-        self._last_slots[event.instrument_id] = bar.ts_event
-        self._last_prices[event.instrument_id] = bar.ts_event + _MINUTE, bar.close
-        budget = Fraction(bar.volume) * Fraction(self._params.volume_participation)
-        for executor in tuple(self._live_rounds.values()):
-            if executor.instrument.instrument_id != event.instrument_id or executor.phase in _TERMINAL:
-                continue
-            was_open = bool(executor.quantity)
-            if was_open and self._bar_exit(executor, bar):
-                yield ()
-                if valuation is not None:
-                    yield from self._liquidations(valuation, balances)
-                continue
-            step = Fraction(executor.instrument.qty_step)
-            intrabar_entry = False
-            for plan_id, entry in tuple(executor.entries.items()):
-                if plan_id not in executor.entries or bar.ts_event < entry.ready_at:
-                    continue
-                match = self._match_entry(executor, entry, bar)
-                qty = floor(min(budget, entry.remaining) / step) * step
-                if match is not None and qty >= Fraction(executor.instrument.min_qty):
-                    self._fill_entry(executor, entry, *match, qty)
-                    budget -= qty
-                    yield ()
+        bar = self._confirmed_bar(event)
+        observations = latest_visible_derivatives(
+            point for point in points if point.kind != DerivativeKind.MARK_PRICE and not point.is_funding_settlement
+        )
+        observations.extend(sorted(
+            (point for point in points if point.kind == DerivativeKind.MARK_PRICE or point.is_funding_settlement),
+            key=lambda point: (point.observation_time, point.ts_available, point.revision),
+        ))
+        timeline: list[tuple[int, str | DerivativePoint]] = [
+            (point.observation_time, point) for point in observations
+        ]
+        if bar is not None:
+            # OHLC 不含逐笔时点。盘中阶段用开盘后的有序时间槽表示。
+            timeline.extend((
+                (bar.ts_event, "open"),
+                (bar.ts_event + 1, "adverse"),
+                (bar.ts_event + 2, "favorable"),
+                (bar.ts_event + _MINUTE, "close"),
+            ))
+            volume = Fraction(bar.volume)
+            liquidity = _BarLiquidity(
+                volume * Fraction(self._params.volume_participation),
+                volume * Fraction(self._params.exit_volume_participation or self._params.volume_participation),
+            )
+        open_positions: set[str] = set()
+        protected: set[str] = set()
+        try:
+            for timestamp, item in sorted(timeline, key=lambda step: step[0]):
+                self._execution_time = timestamp
+                if isinstance(item, DerivativePoint):
+                    if item.kind == DerivativeKind.MARK_PRICE and item.value > 0:
+                        self._observe_mark(self._marks, item)
+                    yield (item,)
+                    if item.is_funding_settlement:
+                        yield from self._settle_funding(item)
+                    elif item.kind == DerivativeKind.MARK_PRICE:
+                        yield from self._retry_funding_prices(item.instrument_id)
                     if valuation is not None:
                         yield from self._liquidations(valuation, balances)
-                    if not was_open:
-                        intrabar_entry = match[1] == "MAKER"
-                    if not was_open and self._bar_exit(executor, bar, intrabar_entry=intrabar_entry):
-                        yield ()
-                        if valuation is not None:
-                            yield from self._liquidations(valuation, balances)
-                        break
-                    was_open = True
-            if executor.quantity and executor.phase != RoundPhase.EXITING:
-                favorable = bar.close if intrabar_entry else (bar.high if executor.side == 1 else bar.low)
-                self._ratchet(executor, favorable)
-        yield ()
+                else:
+                    yield from self._bar_actions(bar, event.instrument_id, liquidity, item, open_positions, protected)
+                    if valuation is not None:
+                        yield from self._liquidations(valuation, balances)
+                    if item == "close":
+                        last = self._last_prices.get(event.instrument_id)
+                        if last is None or timestamp > last[0]:
+                            self._last_prices[event.instrument_id] = timestamp, bar.close
+                            self._last_liquidity[event.instrument_id] = liquidity
+                yield from self._reconcile_funding()
+            self._advance_barriers(self._now if execution_through is None else execution_through)
+            self._execution_time = None
+            yield ()
+        finally:
+            self._execution_time = None
 
     def poll_events(self, up_to_ts: int) -> list[ExecutionEvent]:
         ready = [event for event in self._events if event.ts_event <= up_to_ts]
