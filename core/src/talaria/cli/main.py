@@ -30,12 +30,17 @@ from talaria.cli.contracts_io import (
 )
 from talaria.cli.dsh_host import (
     DEFAULT_DSH_PORT,
+    DESKTOP_APP_NAME,
+    DESKTOP_PROFILE,
     DshHost,
     DshHostError,
     DshHostInfo,
     bridge_descriptor_path,
+    build_install_bundle,
+    desktop_installed,
     dsh_entry_path,
-    read_dsh_entry,
+    dsh_profile_dir,
+    read_desktop_origin,
     reap_stale_dsh_groups,
     redact_dsh_token,
     remove_bridge_descriptor,
@@ -56,7 +61,6 @@ from talaria.cli.service import (
     install_service,
     open_data_dir,
     plist_path,
-    read_service_dsh_status,
     service_status,
     uninstall_service,
 )
@@ -434,7 +438,7 @@ def _run_up(
 
     def _collaboration_host() -> str | None:
         if dsh_host is None:
-            return None
+            return read_desktop_origin(data_dir)
         info = dsh_host.info()
         if info.state != "online":
             return None
@@ -442,11 +446,22 @@ def _run_up(
         # 否则拼接 /talaria/consult 会把路径塞进查询串。
         return info.base_url
 
-    app = create_app(
-        settings,
-        collaboration_status=dsh_host.status_payload if dsh_host else None,
-        collaboration_host=_collaboration_host,
+    def _desktop_collaboration_status() -> dict[str, object]:
+        origin = read_desktop_origin(data_dir)
+        return {
+            "mode": "solo",
+            "host": "online" if origin else "offline",
+            "url": origin,
+            "message": (
+                "DSH 桌面应用已连接。"
+                if origin else "DSH 桌面应用离线。请打开已安装 Talaria 插件的桌面应用。"
+            ),
+        }
+
+    collaboration_status = (
+        dsh_host.status_payload if dsh_host else _desktop_collaboration_status
     )
+    app = create_app(settings, collaboration_status, _collaboration_host)
     server = uvicorn.Server(
         uvicorn.Config(app, host=host, port=args.port, log_level="info")
     )
@@ -506,6 +521,11 @@ def _run_up(
                     f"同机命令在服务运行期间将无法经服务写入；描述路径：{descriptor_path}",
                     file=sys.stderr,
                 )
+
+            try:
+                prepare_bridge()
+            except DshHostError as exc:
+                print(f"警告：{exc}", file=sys.stderr)
 
             if dsh_host is not None:
                 if not shutdown_requested:
@@ -578,19 +598,15 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
     if not (plugin_dir / "package.json").is_file():
         print(f"插件包不存在：{plugin_dir}", file=sys.stderr)
         return 2
-    for tool_name in DSH_TOOL_SPECS:
-        canonical_tool = (
-            repo / "contracts" / "schemas" / "dsh-tools" / f"{tool_name}.tool.json"
-        )
-        if canonical_tool.is_file():
-            shutil.copyfile(canonical_tool, plugin_dir / f"{tool_name}.tool.json")
-    canonical_patch = repo / "dsh" / "profiles" / "talaria-desk.patch.yml"
-    if canonical_patch.is_file():
-        shutil.copyfile(canonical_patch, plugin_dir / "talaria-desk.patch.yml")
     try:
         dsh = resolve_dsh_bin(args.dsh_bin)
-    except DshHostError as exc:
+        profile_dir = dsh_profile_dir(args.dsh_profile)
+        data_dir = open_data_dir(args.data_dir)
+    except (DshHostError, ValueError, OSError) as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    if args.dsh_profile == DESKTOP_PROFILE and not (profile_dir / "package.json").is_file():
+        print("请先打开 DeepSeek Harness 桌面应用初始化 desktop Profile，退出后再安装。", file=sys.stderr)
         return 2
     pnpm = shutil.which("pnpm")
     if pnpm is None:
@@ -603,10 +619,7 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
     if build.returncode != 0:
         print("DSH 插件构建失败；请修复后重试。", file=sys.stderr)
         return build.returncode
-    profile_dir = Path(
-        os.environ.get("DSH_HOME", str(Path.home() / ".dsh"))
-    ) / "profiles" / args.dsh_profile
-    if not profile_dir.is_dir():
+    if not (profile_dir / "package.json").is_file():
         init = subprocess.run(
             [
                 dsh,
@@ -622,33 +635,25 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
         if init.returncode != 0:
             print(
                 f"初始化 DSH Profile 失败：{profile_dir}\n"
-                "请检查 dsh --version 是否为 0.2.2-rc.3。",
+                "请检查 dsh --version 是否为 0.2.2-rc.5。",
                 file=sys.stderr,
             )
             return 2
-    add = subprocess.run(
-        [
-            dsh,
-            "plugin",
-            "--profile",
-            args.dsh_profile,
-            "add",
-            f"file:{plugin_dir}",
-        ],
-        check=False,
-    )
-    if add.returncode != 0:
-        print(
-            "安装 @talaria/dsh-plugin 失败。可手动执行：\n"
-            f"  dsh plugin --profile {args.dsh_profile} add file:{plugin_dir}",
-            file=sys.stderr,
+    try:
+        bundle = build_install_bundle(
+            repo=repo, profile=args.dsh_profile, data_dir=data_dir, tool_names=DSH_TOOL_SPECS
         )
+        add = subprocess.run(
+            [dsh, "plugin", "--profile", args.dsh_profile, "add", f"file:{bundle}"],
+            check=False,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"无法安装 @talaria/dsh-plugin：{exc}", file=sys.stderr)
+        return 2
+    if add.returncode != 0:
+        print("安装 @talaria/dsh-plugin 失败，请检查 DSH 的安装诊断。", file=sys.stderr)
         return add.returncode
-    print(
-        f"已安装 Profile：{profile_dir}\n"
-        f"启动：talaria up --dsh-profile {args.dsh_profile}",
-        file=sys.stderr,
-    )
+    print(f"已安装 Profile：{profile_dir}", file=sys.stderr)
     return 0
 
 
@@ -788,8 +793,6 @@ def _cmd_service(args: argparse.Namespace) -> int:
                 pack=args.pack,
                 program=program,
                 launch_agents_dir=launch_agents_dir,
-                solo=args.solo,
-                dsh_bin=args.dsh_bin,
                 log_dir=args.log_dir,
                 label=label,
             )
@@ -894,16 +897,21 @@ def _cmd_open(args: argparse.Namespace) -> int:
         )
         return 2
 
-    dsh = read_service_dsh_status(descriptor.base_url, data_dir)
-    url = None
-    if dsh.state == "online" and dsh.pid is not None:
-        url = read_dsh_entry(data_dir, daemon_pid=descriptor.pid, pid=dsh.pid)
-    if url is None:
-        detail = "入口文件缺失、损坏或已过期" if dsh.state == "online" else dsh.detail
-        print(f"{dsh.summary}。打开兜底页面。{detail}", file=sys.stderr)
-        url = f"{descriptor.base_url}/desk"
-    if args.print_url:
-        print(redact_dsh_token(url))
+    if desktop_installed():
+        if args.print_action:
+            print(f'open -a "{DESKTOP_APP_NAME}"')
+            return 0
+        try:
+            if subprocess.run(["open", "-a", DESKTOP_APP_NAME], check=False).returncode == 0:
+                return 0
+        except OSError:
+            pass
+        print("无法打开 DeepSeek Harness 桌面应用，打开兜底页面。", file=sys.stderr)
+    else:
+        print("未安装 DeepSeek Harness 桌面应用，打开兜底页面。", file=sys.stderr)
+    url = f"{descriptor.base_url}/desk"
+    if args.print_action:
+        print(f"open {url}")
         return 0
     try:
         if webbrowser.open(url):
@@ -989,22 +997,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="数据目录（默认取 $TALARIA_DATA_DIR、已安装作业或 ./.talaria）",
     )
     open_cmd.add_argument(
-        "--print", dest="print_url", action="store_true", help="只打印脱敏地址"
+        "--print", dest="print_action", action="store_true", help="只打印将执行的打开操作"
     )
     open_cmd.set_defaults(func=_cmd_open)
 
     install = subparsers.add_parser(
         "dsh-install", help="构建并安装 @talaria/dsh-plugin 到 DSH Profile"
     )
-    install.add_argument(
-        "--dsh-bin",
-        default=os.environ.get("TALARIA_DSH_BIN"),
-        help="DSH 可执行文件路径",
-    )
+    install.add_argument("--dsh-bin", help="DSH 可执行文件路径")
     install.add_argument(
         "--dsh-profile",
-        default=DEFAULT_DSH_PROFILE,
-        help=f"DSH Profile 名称（默认 {DEFAULT_DSH_PROFILE}）",
+        default=DESKTOP_PROFILE,
+        help=f"DSH Profile 名称（默认 {DESKTOP_PROFILE}）",
+    )
+    install.add_argument(
+        "--data-dir", help="数据目录（与 talaria open 的解析顺序相同）"
     )
     install.set_defaults(func=_cmd_dsh_install)
 
@@ -1145,10 +1152,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="talaria 可执行文件绝对路径（默认取当前 Python 同目录的 talaria）",
     )
     service_install.add_argument(
-        "--solo", action="store_true", help="只安装常驻服务，不启动 DSH 宿主"
-    )
-    service_install.add_argument(
-        "--dsh-bin", help="DSH 可执行文件（默认取 TALARIA_DSH_BIN 或从 PATH 查找）"
+        "--solo", action="store_true", help=argparse.SUPPRESS
     )
     service_install.add_argument(
         "--launch-agents-dir",

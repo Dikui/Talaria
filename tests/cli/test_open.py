@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 import os
 import plistlib
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
+from talaria.cli import dsh_host
 from talaria.cli import main as cli
 from talaria.workbench_api.service_config import FeatureToggles
 from talaria.workbench_api.service_descriptor import (
@@ -20,72 +19,62 @@ from talaria.workbench_api.service_lock import ServiceLock
 pytestmark = [pytest.mark.small, pytest.mark.spec]
 
 BASE_URL = "http://127.0.0.1:8765"
-DSH_URL = "http://127.0.0.1:8766/?token=example"
+DESKTOP_ACTION = "open -a \"DeepSeek Harness\""
 
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
-    # platform/03: keep the real data-directory lock and description, fake only HTTP.
-    def unexpected_browser(url):
-        pytest.fail("应使用 --print 或注入浏览器")
+    # platform/04: the service lock and descriptor are real, desktop operations are faked.
+    def unexpected_open(*args, **kwargs):
+        pytest.fail("应使用 --print 或注入启动命令")
 
-    monkeypatch.setattr("webbrowser.open", unexpected_browser)
+    monkeypatch.setattr("webbrowser.open", unexpected_open)
+    monkeypatch.setattr("subprocess.run", unexpected_open)
+    monkeypatch.setattr(dsh_host, "DESKTOP_APP", tmp_path / "DeepSeek Harness.app", raising=False)
     write_service_descriptor(
         service_descriptor_path(tmp_path), base_url=BASE_URL, token="bridge",
         pid=os.getpid(), features=FeatureToggles(),
     )
-    status = {"host": "online", "pid": 123, "log_path": "/tmp/dsh.log", "detail": ""}
-
-    def get(url, **kwargs):
-        assert url == f"{BASE_URL}/api/collaboration"
-        return httpx.Response(200, request=httpx.Request("GET", url), json=status)
-
-    monkeypatch.setattr(httpx, "get", get)
-    entry = tmp_path / "runtime/dsh-entry.json"
-    entry.write_text(json.dumps({"url": DSH_URL, "daemon_pid": os.getpid(), "pid": 123}))
-    return status, entry
 
 
-@pytest.mark.parametrize("scenario", ["online", "offline", "starting", "disabled", "stale", "stopped"])
-def test_open_prints_target_for_current_service_state(tmp_path, service, capsys, scenario):
-    status, entry = service
+@pytest.mark.parametrize("scenario", ["installed", "missing", "stopped"])
+def test_open_prints_action_for_service_and_desktop_state(tmp_path, service, capsys, scenario):
     args = ["open", "--data-dir", str(tmp_path), "--print"]
     if scenario == "stopped":
-        assert cli.main(args) != 0
+        assert cli.main(args) == 2
         output = capsys.readouterr()
         assert not output.out
         assert "talaria service install" in output.err
         assert "talaria up" in output.err
         return
 
-    if scenario == "stale":
-        status["pid"] = 456
-    else:
-        status["host"] = scenario
-    status["detail"] = f"诊断 {DSH_URL}"
+    if scenario == "installed":
+        dsh_host.DESKTOP_APP.mkdir()
     with ServiceLock(tmp_path):
         assert cli.main(args) == 0
-
     output = capsys.readouterr()
-    assert "example" not in output.out + output.err
-    if scenario == "online":
-        assert output.out.strip() == "http://127.0.0.1:8766/?token=***"
-        assert output.err == ""
+    if scenario == "installed":
+        assert output == (f"{DESKTOP_ACTION}\n", "")
     else:
-        assert output.out.strip() == f"{BASE_URL}/desk"
-        assert "DSH" in output.err
-        assert status["log_path"] in output.err
-    assert entry.is_file()
+        assert f"{BASE_URL}/desk" in output.out
+        assert "兜底页面" in output.err
 
 
-def test_open_passes_original_entry_only_to_browser(tmp_path, service, monkeypatch, capsys):
+@pytest.mark.parametrize("installed", [True, False])
+def test_open_dispatches_desktop_action_or_fallback(tmp_path, service, monkeypatch, installed):
     opened = []
-    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+    if installed:
+        dsh_host.DESKTOP_APP.mkdir()
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda command, **kwargs: opened.append(command) or SimpleNamespace(returncode=0),
+        )
+    else:
+        monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
     monkeypatch.setenv("TALARIA_DATA_DIR", str(tmp_path))
     with ServiceLock(tmp_path):
         assert cli.main(["open"]) == 0
-    assert opened == [DSH_URL]
-    assert capsys.readouterr() == ("", "")
+    assert opened == ([["open", "-a", "DeepSeek Harness"]] if installed else [f"{BASE_URL}/desk"])
 
 
 @pytest.mark.regression
@@ -94,6 +83,7 @@ def test_open_waits_up_to_ten_seconds_for_starting_service(
     tmp_path, service, monkeypatch, capsys, publish_after
 ):
     # platform/03: keep the actual service lock and simulate the passage of time.
+    dsh_host.DESKTOP_APP.mkdir()
     path = service_descriptor_path(tmp_path)
     contents = path.read_bytes()
     path.unlink()
@@ -118,12 +108,13 @@ def test_open_waits_up_to_ten_seconds_for_starting_service(
     else:
         assert publish_after <= elapsed < 10
         assert result == 0
-        assert output == ("http://127.0.0.1:8766/?token=***\n", "")
+        assert output == (f"{DESKTOP_ACTION}\n", "")
 
 
 def test_open_uses_installed_data_dir_from_another_working_directory(
     tmp_path, service, monkeypatch, capsys
 ):
+    dsh_host.DESKTOP_APP.mkdir()
     home = tmp_path / "home"
     launch_agents = home / "Library/LaunchAgents"
     launch_agents.mkdir(parents=True)
@@ -135,13 +126,4 @@ def test_open_uses_installed_data_dir_from_another_working_directory(
     monkeypatch.chdir(home)
     with ServiceLock(tmp_path):
         assert cli.main(["open", "--print"]) == 0
-    assert capsys.readouterr().out.strip() == "http://127.0.0.1:8766/?token=***"
-
-
-def test_service_status_reports_dsh_pid_and_log(tmp_path, service, capsys):
-    with ServiceLock(tmp_path):
-        assert cli.main([
-            "service", "status", "--data-dir", str(tmp_path),
-            "--launch-agents-dir", str(tmp_path / "LaunchAgents"),
-        ]) == 0
-    assert "DSH 协同宿主：online，pid=123，日志：/tmp/dsh.log" in capsys.readouterr().out
+    assert capsys.readouterr().out.strip() == DESKTOP_ACTION

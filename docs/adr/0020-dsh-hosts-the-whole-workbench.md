@@ -21,7 +21,7 @@ status: accepted
 
 ## Consequences
 
-- DSH 成为日常入口，宿主必须随服务常驻。沿用现有做法：服务以子进程方式启停 DSH 宿主（`cli/dsh_host.py`）；launchd 只管服务。DSH Web 的入口 URL 带随机 token，需要提供一个打开入口的命令（如 `talaria open`），取不到 DSH 时打开兜底页面。
+- **已由 [ADR-0021](./0021-dsh-desktop-app-as-host.md) 修订。** DSH 成为日常入口，宿主必须随服务常驻。沿用现有做法：服务以子进程方式启停 DSH 宿主（`cli/dsh_host.py`）；launchd 只管服务。DSH Web 的入口 URL 带随机 token，需要提供一个打开入口的命令（如 `talaria open`），取不到 DSH 时打开兜底页面。
 - 每个功能组件必须同时能挂在 DSH 面板和独立路由上，因此组件只从 props 和自己的 hooks 取状态，不读 `ctx`。标的、周期与十字光标的联动继续用 `BroadcastChannel`，在 DSH 面板之间、DSH 与兜底页面之间都有效。
 - DSH 布局状态刷新后重置（`ui-layout` 已知限制）。当前选中的面板、标的和周期由 Talaria 自己存在浏览器本地，刷新后恢复。
 - 多窗口靠多开 DSH Web 标签页实现；PWA 安装只对兜底页面有意义，不再作为验收项。

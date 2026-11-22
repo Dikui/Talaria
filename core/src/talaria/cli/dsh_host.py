@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import io
 import json
 import logging
 import os
@@ -15,6 +18,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
@@ -24,12 +28,17 @@ from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 from urllib.parse import urlsplit
 
 from talaria.workbench_api.service_descriptor import validate_loopback_host
 
 DEFAULT_DSH_PORT = 8766
+DESKTOP_PROFILE = "desktop"
+DESKTOP_APP = Path("/Applications/DeepSeek Harness.app")
+DESKTOP_APP_NAME = "DeepSeek Harness"
+DESKTOP_DSH_BIN = DESKTOP_APP / "Contents/Resources/runtime/cli/bin/dsh"
+PLUGIN_NAME = "@talaria/dsh-plugin"
 
 _URL_PATTERN = re.compile(r"https?://[^\s]+")
 _ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -105,24 +114,108 @@ def _state_message(info: DshHostInfo) -> str:
 
 def resolve_dsh_bin(explicit: str | None) -> str:
     """解析 DSH 可执行文件，缺失时给出可执行的中文安装提示。"""
-    candidate = explicit or os.environ.get("TALARIA_DSH_BIN") or "dsh"
+    candidate = explicit or os.environ.get("TALARIA_DSH_BIN")
+    if not candidate:
+        candidate = shutil.which("dsh") or str(DESKTOP_DSH_BIN)
     if os.path.sep in candidate:
         path = Path(candidate).expanduser()
         if path.is_file() and os.access(path, os.X_OK):
-            return str(path)
+            return str(path.absolute())
         raise DshHostError(
             f"DSH 可执行文件不存在或不可执行：{path}\n"
-            "请安装 DeepSeek Harness 0.2.2-rc.3 或用 --dsh-bin 指定 dsh 路径；"
+            "请安装 DeepSeek Harness 0.2.2-rc.5 或用 --dsh-bin 指定 dsh 路径；"
             "单机模式可用 talaria up --solo。"
         )
     found = shutil.which(candidate)
     if found is None:
         raise DshHostError(
             f"未找到 DSH 可执行文件：{candidate}\n"
-            "请先安装 DeepSeek Harness（dsh --version 应为 0.2.2-rc.3），"
+            "请先安装 DeepSeek Harness（dsh --version 应为 0.2.2-rc.5），"
             "或用 --dsh-bin 指定路径；单机模式可用 talaria up --solo。"
         )
-    return found
+    return str(Path(found).absolute())
+
+
+def dsh_profile_dir(profile: str) -> Path:
+    if profile in {"", ".", "..", "node_modules"} or "/" in profile or "\\" in profile:
+        raise ValueError(f"无效的 DSH Profile 名称：{profile!r}")
+    home = Path(os.environ.get("DSH_HOME") or "~/.dsh").expanduser().absolute()
+    return home / "profiles" / profile
+
+
+def desktop_installed() -> bool:
+    return DESKTOP_APP.is_dir()
+
+
+def desktop_running() -> bool:
+    executable = DESKTOP_APP / "Contents/MacOS" / DESKTOP_APP_NAME
+    # The bundled CLI also runs this executable, with --expose-internals and a JS entry.
+    try:
+        result = subprocess.run(
+            ["/usr/bin/pgrep", "-f", f"^{re.escape(str(executable))}( -psn_[0-9_]+)?$"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def desktop_plugin_installed() -> bool:
+    profile = dsh_profile_dir(DESKTOP_PROFILE)
+    if not (profile / "node_modules" / PLUGIN_NAME / "package.json").is_file():
+        return False
+    try:
+        manifest = json.loads((profile / "package.json").read_text(encoding="utf-8"))
+        bundles = manifest["dsh"]["profile"]["bundles"]
+        return isinstance(bundles, list) and PLUGIN_NAME in bundles
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def build_install_bundle(
+    *, repo: Path, profile: str, data_dir: Path, tool_names: Iterable[str]
+) -> Path:
+    """为目标 Profile 打包 DSH 配置及已构建的插件。"""
+    source = repo / "dsh/packages/talaria-dsh-plugin"
+    manifest = json.loads((source / "package.json").read_text(encoding="utf-8"))
+    patch_name = "cordis.patch.yml"
+    patch = (source / patch_name).read_text(encoding="utf-8").rstrip()
+    credential = json.dumps(str(bridge_descriptor_path(data_dir)), ensure_ascii=False)
+    patch += f"\n      config:\n        credentialFile: {credential}\n"
+    if profile == DESKTOP_PROFILE:
+        patch += "        desktop: true\n"
+    if profile == "talaria-desk":
+        restrictions = repo / "dsh/profiles/talaria-desk.patch.yml"
+        patch = restrictions.read_text(encoding="utf-8") + "\n" + patch
+
+    # A content-addressed file: tarball lets pnpm reuse an unchanged build and
+    # pick up updates to code or config even when the package version is the same.
+    manifest.pop("devDependencies", None)
+    manifest.pop("scripts", None)
+    runtime_files = ("index.js", "bridge.js", "guard.js", "client/index.js")
+    tool_schema_dir = repo / "contracts/schemas/dsh-tools"
+    entries = {
+        "package.json": json.dumps(manifest).encode(),
+        patch_name: patch.encode(),
+        **{name: (source / name).read_bytes() for name in runtime_files},
+        **{f"{name}.tool.json": (tool_schema_dir / f"{name}.tool.json").read_bytes()
+           for name in tool_names},
+    }
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for name, payload in entries.items():
+            info = tarfile.TarInfo(f"package/{name}")
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    bundle = gzip.compress(buffer.getvalue(), mtime=0)
+    digest = hashlib.sha256(bundle).hexdigest()[:16]
+    directory = dsh_profile_dir(profile) / "talaria"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    path = directory / f"talaria-dsh-plugin-{digest}.tgz"
+    if not path.is_file():
+        _write_private_file(path, bundle)
+    return path
 
 
 def bridge_descriptor_path(data_dir: Path) -> Path:
@@ -133,19 +226,23 @@ def dsh_entry_path(data_dir: Path) -> Path:
     return data_dir / "runtime" / _ENTRY_NAME
 
 
-def read_dsh_entry(data_dir: Path, *, daemon_pid: int, pid: int) -> str | None:
+def read_desktop_origin(data_dir: Path) -> str | None:
+    path = data_dir / "runtime" / "dsh-desktop.json"
     try:
-        entry = json.loads(dsh_entry_path(data_dir).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        origin, pid = payload["base_url"], payload["pid"]
+        if type(pid) is not int or pid <= 0 or not isinstance(origin, str):
+            return None
+        parsed = urlsplit(origin)
+        if not is_local_dsh_url(origin) or (
+            parsed.scheme != "http" or parsed.port is None
+            or origin != f"{parsed.scheme}://{parsed.netloc}"
+        ):
+            return None
+        os.kill(pid, 0)
+        return origin
+    except (OSError, ValueError, OverflowError, TypeError, KeyError):
         return None
-    if (
-        not isinstance(entry, dict)
-        or entry.get("daemon_pid") != daemon_pid
-        or entry.get("pid") != pid
-    ):
-        return None
-    url = entry.get("url")
-    return url if isinstance(url, str) and is_local_dsh_url(url) else None
 
 
 def write_bridge_descriptor(
@@ -170,11 +267,14 @@ def write_bridge_descriptor(
 def _write_private_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     path.parent.chmod(0o700)
+    _write_private_file(path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode())
+
+
+def _write_private_file(path: Path, payload: bytes) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)

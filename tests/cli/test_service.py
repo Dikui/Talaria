@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from talaria.cli import dsh_host
 from talaria.cli import service as service_module
 from talaria.cli.main import main
 from talaria.cli.service import (
@@ -71,7 +72,6 @@ def test_launchd_plist_renders_expected_snapshot():
         stdout_path=DATA_DIR / "logs" / "service.out.log",
         stderr_path=DATA_DIR / "logs" / "service.err.log",
         working_directory=DATA_DIR,
-        environment_variables={"DSH_HOME": "/Users/me/.dsh"},
     )
 
     assert text == """<?xml version="1.0" encoding="UTF-8"?>
@@ -107,11 +107,6 @@ def test_launchd_plist_renders_expected_snapshot():
   <integer>10</integer>
   <key>WorkingDirectory</key>
   <string>/Users/me/Talaria</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>DSH_HOME</key>
-    <string>/Users/me/.dsh</string>
-  </dict>
   <key>StandardOutPath</key>
   <string>/Users/me/Talaria/logs/service.out.log</string>
   <key>StandardErrorPath</key>
@@ -135,25 +130,13 @@ def test_launchd_plist_escapes_xml_special_characters():
 
 
 @pytest.mark.spec
-@pytest.mark.parametrize("source", ["explicit", "environment", "path", "solo", "missing"])
-def test_install_writes_config_plist_logs_and_bootstraps(tmp_path, monkeypatch, source):
-    # platform/03: launchd gets the install-time DSH settings and an absolute executable.
+def test_install_writes_config_plist_logs_and_bootstraps(tmp_path, monkeypatch):
+    # platform/04: a resident service can use any free port and needs no DSH environment.
     data_dir = tmp_path / "data"
     launch_agents = tmp_path / "LaunchAgents"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    dsh = bin_dir / "dsh"
-    if source not in {"solo", "missing"}:
-        dsh.touch(mode=0o755)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("PATH", str(bin_dir))
-    monkeypatch.delenv("TALARIA_DSH_BIN", raising=False)
-    monkeypatch.delenv("DSH_HOME", raising=False)
-    if source == "explicit":
-        monkeypatch.setenv("TALARIA_DSH_BIN", "unavailable")
-        monkeypatch.setenv("DSH_HOME", "profile & data")
-    elif source == "environment":
-        monkeypatch.setenv("TALARIA_DSH_BIN", "bin/dsh")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("TALARIA_DSH_BIN", "unavailable")
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "unused-dsh-home"))
     runner = FakeRunner(
         {
             "bootout": _completed(["bootout"], 3, "", "Boot-out failed: 3: No such process"),
@@ -161,9 +144,9 @@ def test_install_writes_config_plist_logs_and_bootstraps(tmp_path, monkeypatch, 
         }
     )
 
-    args = dict(
+    result = install_service(
         data_dir=data_dir,
-        port=8765,
+        port=8766,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
         launch_agents_dir=launch_agents,
@@ -171,33 +154,12 @@ def test_install_writes_config_plist_logs_and_bootstraps(tmp_path, monkeypatch, 
         runner=runner,
         uid=501,
     )
-    if source == "missing":
-        with pytest.raises(ServiceInstallError, match="--solo"):
-            install_service(**args)
-        assert not launch_agents.exists()
-        assert runner.calls == []
-        return
-
-    result = install_service(
-        **args,
-        solo=source == "solo",
-        dsh_bin="bin/dsh" if source == "explicit" else None,
-    )
     job = plistlib.loads(result.plist_path.read_bytes())
-    expected_arguments = [
-        "/opt/talaria/bin/talaria", "up", "--host", "127.0.0.1", "--port", "8765",
-        "--data-dir", str(data_dir), "--pack", "crypto_perp",
+    assert job["ProgramArguments"] == [
+        "/opt/talaria/bin/talaria", "up", "--solo", "--host", "127.0.0.1",
+        "--port", "8766", "--data-dir", str(data_dir), "--pack", "crypto_perp",
     ]
-    if source == "solo":
-        expected_arguments += ["--solo"]
-    else:
-        expected_arguments += ["--dsh-bin", str(dsh)]
-    assert job["ProgramArguments"] == expected_arguments
-    dsh_home = tmp_path / "profile & data" if source == "explicit" else Path.home() / ".dsh"
-    expected_environment = {"DSH_HOME": str(dsh_home)}
-    if source != "solo":
-        expected_environment["PATH"] = str(bin_dir)
-    assert job["EnvironmentVariables"] == expected_environment
+    assert "EnvironmentVariables" not in job
 
     assert result.plist_path == launch_agents / f"{DEFAULT_SERVICE_LABEL}.plist"
     assert result.config_path == data_dir / "service.json"
@@ -228,7 +190,6 @@ def test_install_keeps_existing_feature_config(tmp_path):
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
-        solo=True,
         launch_agents_dir=tmp_path / "LaunchAgents",
         runner=runner,
         uid=501,
@@ -248,8 +209,7 @@ def test_install_reports_bootstrap_failure(tmp_path):
             port=8765,
             pack="crypto_perp",
             program="/opt/talaria/bin/talaria",
-            solo=True,
-            launch_agents_dir=tmp_path / "LaunchAgents",
+                launch_agents_dir=tmp_path / "LaunchAgents",
             runner=runner,
             uid=501,
         )
@@ -265,7 +225,6 @@ def test_uninstall_boots_out_and_removes_plist_idempotently(tmp_path):
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
-        solo=True,
         launch_agents_dir=tmp_path / "LaunchAgents",
         runner=runner,
         uid=501,
@@ -314,7 +273,6 @@ def test_uninstall_cli_preserves_plist_on_bootout_failure(
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
-        solo=True,
         launch_agents_dir=launch_agents,
         runner=FakeRunner(),
     )
@@ -349,7 +307,6 @@ def test_status_reports_running_service_and_features(tmp_path, monkeypatch):
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
-        solo=True,
         launch_agents_dir=launch_agents,
         runner=FakeRunner(),
         uid=501,
@@ -425,7 +382,6 @@ def test_status_reports_not_loaded_when_launchctl_print_fails(tmp_path):
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
-        solo=True,
         launch_agents_dir=launch_agents,
         runner=FakeRunner(),
         uid=501,
@@ -483,7 +439,6 @@ def test_status_cli_reports_matching_runtime_and_pending_changes(
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
-        solo=True,
         launch_agents_dir=launch_agents,
         runner=FakeRunner(),
     )
@@ -534,3 +489,36 @@ def test_up_rejects_invalid_service_config_before_starting(tmp_path, capsys):
     assert code == 2
     assert "service.json" in captured.err
     assert "JSON" in captured.err
+
+
+@pytest.mark.parametrize("installed,running,plugin", [
+    (False, False, False), (True, False, False), (True, True, True),
+])
+def test_service_status_reports_desktop_and_profile(
+    tmp_path, monkeypatch, capsys, installed, running, plugin
+):
+    app = tmp_path / "DeepSeek Harness.app"
+    if installed:
+        app.mkdir()
+    monkeypatch.setattr(dsh_host, "DESKTOP_APP", app, raising=False)
+    monkeypatch.setenv("DSH_HOME", str(tmp_path))
+    if plugin:
+        profile = tmp_path / "profiles/desktop"
+        package = profile / "node_modules/@talaria/dsh-plugin/package.json"
+        package.parent.mkdir(parents=True)
+        package.write_text('{"name":"@talaria/dsh-plugin"}')
+        (profile / "package.json").write_text(
+            '{"dsh":{"profile":{"bundles":["@talaria/dsh-plugin"]}}}'
+        )
+
+    def pgrep(command, **kwargs):
+        assert installed
+        assert command[:2] == ["/usr/bin/pgrep", "-f"]
+        return _completed(command, 0 if running else 1)
+
+    monkeypatch.setattr(subprocess, "run", pgrep)
+    assert main(["service", "status", "--launch-agents-dir", str(tmp_path)]) == 0
+    output = capsys.readouterr().out
+    assert f"DSH 桌面应用：{'已安装' if installed else '未安装'}" in output
+    assert f"，{'运行中' if running else '未运行'}" in output
+    assert f"Talaria 插件（desktop）：{'已安装' if plugin else '未安装'}" in output

@@ -1,6 +1,4 @@
-# talaria-desk Profile：只读分析副驾驶。
-# 安装：talaria dsh-install；启动：talaria up。
-# 1) 移除 danger-full-access；2) 默认只读沙箱；3) 自定义只读 agent preset。
+# 仅用于 talaria-desk profile 的限制性覆盖。
 
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
@@ -25,60 +23,3 @@
   name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
     default: talaria-desk
-
-- insert:
-    - id: preset-talaria-desk
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: talaria-desk
-        order: 10
-        name: Talaria 分析副驾驶
-        description: 只读看盘、快照查询、受门控的智能体标注与预警草案；不提供下单、激活预警或绕过人工确认的执行能力。
-        plugins:
-          - id: persona
-            name: '@deepseek-ai/dsh-persona'
-            config:
-              prefix: |-
-                你是 Talaria 分析工作台的协同副驾驶，服务于人工看盘与复盘。
-                你的职责是解释行情、核对快照与指标，不替用户下单、转账或执行任何交易动作。
-                任何行情读取都必须先调用 get_snapshot 创建确定性快照，并绑定返回的 snapshot_id；
-                不得自行编造价格、指标或快照编号。你可以用 write_agent_overlay 提交带证据的虚线标注，或
-                用 create_alert 提交预警草案；两者都必须由人工在界面上采纳或确认。不要尝试激活预警、
-                修改人工画线或绕过门控。遇到权限边界时向用户说明，而不是绕行。
-              complete: true
-              includeRuntimeContext: false
-          - id: time-context
-            name: '@deepseek-ai/dsh-time-context'
-          - id: tool-fs
-            name: '@deepseek-ai/dsh-tool-fs'
-            config:
-              read: true
-              readImage: true
-              write: false
-              edit: false
-              applyPatch: false
-          - id: tool-fs-search
-            name: '@deepseek-ai/dsh-tool-fs-search'
-            config:
-              sampleOverCapGlobResults: true
-          - id: tool-todo
-            name: '@deepseek-ai/dsh-tool-todo'
-            config:
-              allowParallelInProgress: true
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
-          - id: tool-ask-user
-            name: '@deepseek-ai/dsh-tool-ask-user'
-          - id: compaction
-            name: cordis:group
-            group: true
-            isolate:
-              compaction: true
-            config:
-              - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
-              - id: command-compact
-                name: '@deepseek-ai/dsh-command-compact'
-
-    - id: talaria-desk-plugin
-      name: '@talaria/dsh-plugin'

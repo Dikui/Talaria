@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createLinkRelay } from "../../../talaria-dsh-plugin/client/linkRelay";
 import { cacheRelaySelection, cachedRelayReply, createLink, type LinkMessage } from "../../src/workbench/link";
-import { LINK_READY } from "../../src/workbench/transport";
+import { connectEmbeddedRelay, LINK_CONNECT, LINK_READY } from "../../src/workbench/transport";
 
 // The plugin imports the desk package entry point, which also registers chart templates.
 vi.mock("klinecharts", () => ({ registerIndicator: vi.fn() }));
@@ -362,5 +362,28 @@ it("invalidates drawing candidates and chart layers only for the instrument in t
     expect(ignoredRefresh).not.toHaveBeenCalled();
   } finally {
     for (const link of [source, chart, alerts, other]) link.close();
+  }
+});
+
+// platform/04: Electron's custom-protocol renderer may send no HTTP referrer.
+it("connects the rc.5 desktop parent to the relay without a referrer", () => {
+  const parent = {};
+  const window = Object.assign(new EventTarget(), { parent });
+  vi.stubGlobal("window", window);
+  vi.stubGlobal("document", { referrer: "" });
+  const port = { postMessage: vi.fn(), close: vi.fn() };
+  try {
+    connectEmbeddedRelay();
+    const connect = (origin: string, source = parent) => window.dispatchEvent(Object.assign(
+      new Event("message"), { origin, source, data: LINK_CONNECT, ports: [port] },
+    ));
+    connect("https://remote.example");
+    connect("dsh-app://app", {});
+    expect(port.postMessage).not.toHaveBeenCalled();
+    connect("dsh-app://app");
+    expect(port.postMessage).toHaveBeenCalledWith(LINK_READY);
+  } finally {
+    window.dispatchEvent(new Event("pagehide"));
+    vi.unstubAllGlobals();
   }
 });

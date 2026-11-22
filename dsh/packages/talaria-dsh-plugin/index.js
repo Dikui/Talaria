@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 import {
   AGENT_ANNOTATION_OUTPUT_SCHEMA,
@@ -37,12 +39,13 @@ const toolSchemas = Object.fromEntries(
 )
 
 export const name = '@talaria/dsh-plugin'
-export const inject = ['tools', 'sessions', 'webServer']
+export const inject = ['tools', 'sessions', 'webServer', 'agentPresets', 'agentDefaultModel', 'agents', 'connection']
 
 const CONSULT_PATH = '/talaria/consult'
 const CONSULT_SESSION_PREFIX = 'talaria-consult-'
 const BRIEFING_PATH = '/talaria/briefing'
 const BRIEFING_SESSION_PREFIX = 'talaria-briefing-'
+const DESK_PRESET = 'talaria-desk'
 
 function outputOf(tool) {
   if (tool === 'get_snapshot') return [SNAPSHOT_OUTPUT_SCHEMA, renderSnapshot]
@@ -96,6 +99,28 @@ function sessionEvents(session) {
 
 function sessionIdOf(session) {
   return session?.id ?? session?.header?.id ?? undefined
+}
+
+function advertiseDesktop(ctx, credentialFile) {
+  const directory = dirname(credentialFile)
+  const path = join(directory, 'dsh-desktop.json')
+  const instance = randomUUID()
+  const temporary = join(directory, `.dsh-desktop-${instance}.tmp`)
+  const payload = JSON.stringify({ base_url: ctx.webServer.getOrigin(), pid: process.pid, instance })
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  try {
+    writeFileSync(temporary, payload, { mode: 0o600, flag: 'wx' })
+    renameSync(temporary, path)
+  } finally {
+    rmSync(temporary, { force: true })
+  }
+  return () => {
+    try {
+      if (readFileSync(path, 'utf8') === payload) rmSync(path, { force: true })
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+  }
 }
 
 function latestTurn(events) {
@@ -168,7 +193,7 @@ function lastAssistantText(events) {
 }
 
 /**
- * talaria-desk Profile 的宿主插件：
+ * Talaria 的 DSH 宿主插件：
  * - 注册五个只读工具，全部经回环 HTTP + Bearer 调用 Python 守护进程；
  * - 挂载单调执行守卫，拦截非白名单工具与 fork 历史写操作重放；
  * - 提供 /talaria/consult：异步运行一轮模型，把文本与 Token 用量回报给守护进程。
@@ -197,10 +222,22 @@ export function apply(ctx, config = {}) {
 
   const getSession = (exec) =>
     exec.agent?.session ?? (exec.agent ? ctx.sessions.get(exec.agent.id) : undefined)
-  ctx.tools.guard(createDeskGuard({ getSession }))
+  const guard = createDeskGuard({ getSession })
+  ctx.tools.guard((exec) => {
+    const session = getSession(exec)
+    const id = sessionIdOf(session) ?? exec.agent?.id
+    if (id?.startsWith(CONSULT_SESSION_PREFIX) || id?.startsWith(BRIEFING_SESSION_PREFIX)
+      || (session && ctx.agentPresets?.presetForSession(session) === DESK_PRESET)) {
+      return guard(exec)
+    }
+    return undefined
+  })
 
   const consultations = new Map()
   const briefings = new Map()
+  const setupAgent = async (agentCtx) => {
+    await ctx.agentPresets?.mount(agentCtx, DESK_PRESET)
+  }
 
   function modelSelection() {
     if (config.provider && config.model) {
@@ -259,8 +296,9 @@ export function apply(ctx, config = {}) {
     try {
       handle = await agents.create({
         sessionId,
+        meta: { agentPreset: DESK_PRESET },
         agentOptions: selection,
-        setup: () => {},
+        setup: setupAgent,
       })
       const baselineTurn = latestTurn(sessionEvents(handle.agent.session))
       await handle.agent.followup({
@@ -367,8 +405,9 @@ export function apply(ctx, config = {}) {
     try {
       handle = await agents.create({
         sessionId,
+        meta: { agentPreset: DESK_PRESET },
         agentOptions: selection,
-        setup: () => {},
+        setup: setupAgent,
       })
       const baselineTurn = latestTurn(sessionEvents(handle.agent.session))
       await handle.agent.followup({
@@ -449,6 +488,10 @@ export function apply(ctx, config = {}) {
       sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', message: '仅支持 POST。' })
       return
     }
+    if (request.headers?.['content-type'] !== 'application/json') {
+      sendJson(response, 415, { code: 'INVALID_CONTENT_TYPE', message: '需要 application/json。' })
+      return
+    }
     let body
     try {
       body = await readJsonBody(request)
@@ -483,6 +526,10 @@ export function apply(ctx, config = {}) {
   async function handleBriefing(request, response) {
     if (request.method !== 'POST') {
       sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', message: '仅支持 POST。' })
+      return
+    }
+    if (request.headers?.['content-type'] !== 'application/json') {
+      sendJson(response, 415, { code: 'INVALID_CONTENT_TYPE', message: '需要 application/json。' })
       return
     }
     let body
@@ -520,28 +567,23 @@ export function apply(ctx, config = {}) {
     ctx.webServer.register({
       kind: 'exact',
       path: '/talaria/bootstrap',
-      handler(_request, response) {
-        const credentialFile = process.env.TALARIA_DSH_BRIDGE
+      handler(request, response) {
+        const rejection = ctx.connection.requestRejection(request)
+        if (rejection !== undefined) {
+          sendJson(response, rejection, { code: 'FORBIDDEN', message: '需要 DSH 会话。' })
+          return
+        }
+        if (request.method !== 'GET') {
+          sendJson(response, 405, { code: 'METHOD_NOT_ALLOWED', message: '仅支持 GET。' })
+          return
+        }
         try {
-          const descriptor = JSON.parse(readFileSync(credentialFile, 'utf8'))
-          response.writeHead(200, {
-            'content-type': 'application/json; charset=utf-8',
-            'cache-control': 'no-store',
-          })
-          response.end(
-            JSON.stringify({
-              base_url: descriptor.base_url,
-              token: descriptor.token,
-            }),
-          )
+          sendJson(response, 200, bridge.credential())
         } catch (error) {
-          response.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
-          response.end(
-            JSON.stringify({
-              code: 'TALARIA_BOOTSTRAP_UNAVAILABLE',
-              message: `无法读取 Talaria 桥接凭据：${error.message}`,
-            }),
-          )
+          sendJson(response, 503, {
+            code: 'TALARIA_BOOTSTRAP_UNAVAILABLE',
+            message: error.message,
+          })
         }
       },
     }),
@@ -574,4 +616,14 @@ export function apply(ctx, config = {}) {
       },
     }),
   )
+
+  if (config.desktop && config.credentialFile) {
+    ctx.effect(() => {
+      try {
+        return advertiseDesktop(ctx, config.credentialFile)
+      } catch (error) {
+        console.warn(`[talaria] 无法发布桌面协同宿主地址：${error.message}`)
+      }
+    })
+  }
 }

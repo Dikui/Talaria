@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,6 +39,7 @@ function fakeResponse() {
 function fakeRequest(body) {
   const request = Readable.from([Buffer.from(JSON.stringify(body))])
   request.method = 'POST'
+  request.headers = { 'content-type': 'application/json' }
   return request
 }
 
@@ -342,4 +343,82 @@ test('briefing endpoint runs one agent turn and submits text with turn usage', a
     rmSync(dir, { recursive: true, force: true })
     await new Promise((resolve) => server.close(resolve))
   }
+})
+
+// platform/04: rc.5 reads the current preset from the session projection.
+test('only Talaria consultations, briefings and preset sessions have a read-only guard', () => {
+  let guard
+  const ctx = {
+    tools: { register() {}, guard(check) { guard = check } },
+    sessions: { get: () => undefined },
+    agentPresets: { presetForSession: (session) => session.selectedPreset },
+    webServer: { register: () => () => {} },
+    effect(fn) { fn() },
+  }
+  apply(ctx)
+  for (const session of [
+    { id: 'talaria-consult-one' },
+    { id: 'talaria-briefing-one' },
+    { id: 'normal', selectedPreset: 'talaria-desk' },
+  ]) {
+    assert.match(guard({ agent: { session }, name: 'write' }), /权限边界/)
+    assert.equal(guard({ agent: { session }, name: 'get_snapshot' }), undefined)
+  }
+  const session = { id: 'normal', selectedPreset: 'code' }
+  assert.equal(guard({ agent: { session }, name: 'write' }), undefined)
+  assert.equal(guard({ name: 'write' }), undefined)
+})
+
+test('bootstrap reloads the installed credential path and reports missing credentials', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'talaria-desktop-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const credentialFile = join(directory, 'dsh-bridge.json')
+  const routes = new Map()
+  let rejection
+  apply({
+    tools: { register() {}, guard() {} },
+    sessions: { get: () => undefined },
+    webServer: { register(route) { routes.set(route.path, route); return () => {} } },
+    connection: { requestRejection: () => rejection },
+    effect(fn) { fn() },
+  }, { credentialFile })
+  const bootstrap = routes.get('/talaria/bootstrap').handler
+  const read = () => {
+    const response = fakeResponse()
+    bootstrap({ method: 'GET' }, response)
+    return response
+  }
+  const credentials = { base_url: 'http://127.0.0.1:8765', token: 'first' }
+  assert.equal(read().status, 503)
+  writeFileSync(credentialFile, JSON.stringify(credentials))
+  assert.deepEqual(read().json(), credentials)
+  writeFileSync(credentialFile, JSON.stringify({ ...credentials, token: 'other' }))
+  assert.equal(read().json().token, 'other')
+  rejection = 401
+  assert.equal(read().status, 401)
+  assert.equal(read().json().token, undefined)
+  rejection = undefined
+  rmSync(credentialFile)
+  assert.equal(read().status, 503)
+})
+
+test('desktop plugin publishes the bound collaboration origin even before Talaria starts', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'talaria-desktop-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const credentialFile = join(directory, 'runtime', 'dsh-bridge.json')
+  const descriptor = join(directory, 'runtime', 'dsh-desktop.json')
+  const disposers = []
+  const origin = 'http://127.0.0.1:32190'
+  apply({
+    tools: { register() {}, guard() {} },
+    sessions: { get: () => undefined },
+    webServer: { getOrigin: () => origin, register: () => () => {} },
+    effect(fn) { disposers.push(fn()) },
+  }, { credentialFile, desktop: true })
+  const payload = JSON.parse(readFileSync(descriptor, 'utf8'))
+  assert.equal(payload.base_url, origin)
+  assert.equal(payload.pid, process.pid)
+  assert.equal(statSync(descriptor).mode & 0o777, 0o600)
+  disposers.reverse().forEach(dispose => dispose?.())
+  assert.throws(() => readFileSync(descriptor), { code: 'ENOENT' })
 })

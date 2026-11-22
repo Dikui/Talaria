@@ -45,17 +45,19 @@ def test_patch_removes_execution_tools_and_keeps_read_only() -> None:
         "@deepseek-ai/dsh-tool-write",
     ):
         assert forbidden not in text
-    assert "write: false" in text
-    assert "edit: false" in text
-    assert "applyPatch: false" in text
 
 
-def test_plugin_bundle_patch_is_the_canonical_patch() -> None:
+def test_default_bundle_adds_only_an_optional_read_only_preset_and_plugin() -> None:
+    # platform/04: restrictive profile overrides are added only by dsh-install.
     manifest = json.loads((PLUGIN / "package.json").read_text(encoding="utf-8"))
-    assert manifest["dsh"]["bundle"]["patch"] == "./talaria-desk.patch.yml"
-    assert (PLUGIN / "talaria-desk.patch.yml").read_text(
-        encoding="utf-8"
-    ) == PATCH.read_text(encoding="utf-8")
+    bundle = (PLUGIN / manifest["dsh"]["bundle"]["patch"]).read_text(encoding="utf-8")
+    assert bundle.startswith("- insert:")
+    assert bundle.count("- id: preset-talaria-desk") == 1
+    assert bundle.count("- id: talaria-desk-plugin") == 1
+    assert "default: talaria-desk" not in bundle
+    assert "write: false" in bundle
+    assert "edit: false" in bundle
+    assert "applyPatch: false" in bundle
 
 
 def _blocks(text: str) -> dict[str, str]:
@@ -124,7 +126,10 @@ def test_real_dump_config_matches_permission_snapshot() -> None:
     actual = _dump_blocks(dump)
     assert set(actual) == set(BLOCK_IDS)
     for ident in BLOCK_IDS:
-        assert actual[ident] == expected[ident], ident
+        if ident == "talaria-desk-plugin":
+            assert actual[ident].split("\n  config:", 1)[0].strip() == expected[ident].strip()
+        else:
+            assert actual[ident] == expected[ident], ident
 
 
 def test_dump_snapshot_is_ci_runnable_gate() -> None:

@@ -12,7 +12,7 @@ function registerWithRollback(registrations) {
   return dispose
 }
 
-/** Slot registrations follow DSH's plugin manager and built-in right-sidebar guide. */
+/** In rc.5, sidebar.panellist rows start pinned. The host owns their More menu. */
 export function registerPanels(ctx, labels, views) {
   const panels = Object.keys(labels)
   const inject = (name, registrations) => ctx.slots.inject(name, () => registerWithRollback(registrations))

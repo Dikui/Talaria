@@ -14,6 +14,8 @@ import { panelId, registerPanels } from "./registerPanels.mjs";
 const STYLE_ID = "talaria-desk-plugin-styles";
 const DOCK_KEY = "talaria-dsh-docked-panel";
 const DOCK_PANELS = ["alerts", "scanner", "levels"] as const;
+const SERVICE_OFFLINE = "Talaria 常驻服务离线。请运行 talaria service install 或 talaria up。";
+const CONNECTION_REFRESH_MS = 3_000;
 type DockPanel = (typeof DOCK_PANELS)[number];
 type Connection = { baseUrl: string; relay: ReturnType<typeof createLinkRelay> };
 
@@ -22,7 +24,7 @@ interface Observable<Value> {
   subscribe(listener: () => void): () => void;
 }
 
-// Public client contracts from ui-layout, ui-sidebar and ui-sidebar-right in DSH 0.2.2-rc.3.
+// Public client contracts from ui-layout, ui-sidebar and ui-sidebar-right in DSH 0.2.2-rc.5.
 interface SlotContext {
   effect(callback: () => () => void): void;
   slots: {
@@ -65,23 +67,31 @@ function createConnection() {
   let pending: Promise<Connection> | undefined;
   let active: Connection | undefined;
 
-  function get() {
-    pending ??= fetch("/talaria/bootstrap", { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`连接凭据读取失败（HTTP ${response.status}）`);
-        const { base_url: baseUrl, token } = await response.json();
-        if (typeof baseUrl !== "string" || !baseUrl || typeof token !== "string" || !token) {
-          throw new Error("连接凭据缺少服务地址或令牌");
-        }
-        controller.signal.throwIfAborted();
-        configureApi({ baseUrl, token });
+  async function refresh(): Promise<Connection> {
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(CONNECTION_REFRESH_MS)]);
+    try {
+      const response = await fetch("/talaria/bootstrap", { signal, cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const { base_url: baseUrl, token } = await response.json();
+      if (typeof baseUrl !== "string" || !baseUrl || typeof token !== "string" || !token) {
+        throw new Error("连接凭据缺少服务地址或令牌");
+      }
+      const health = await fetch(new URL("/api/health", baseUrl), { signal, cache: "no-store" });
+      if (!health.ok) throw new Error(`HTTP ${health.status}`);
+      signal.throwIfAborted();
+      configureApi({ baseUrl, token });
+      if (active?.baseUrl !== baseUrl) {
+        active?.relay.close();
         active = { baseUrl, relay: createLinkRelay(baseUrl) };
-        return active;
-      })
-      .catch((error: unknown) => {
-        pending = undefined;
-        throw error;
-      });
+      }
+      return active;
+    } catch (error) {
+      throw new Error(SERVICE_OFFLINE, { cause: error });
+    }
+  }
+
+  function get() {
+    pending ??= refresh().finally(() => { pending = undefined; });
     return pending;
   }
 
@@ -115,12 +125,28 @@ function Surface({
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    connection.get().then((result) => {
-      if (!cancelled) setValue(result);
-    }).catch((reason: unknown) => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : "无法连接常驻服务");
-    });
-    return () => { cancelled = true; };
+    let timer = 0;
+    async function refresh() {
+      try {
+        const result = await connection.get();
+        if (!cancelled) {
+          setValue(result);
+          setError(undefined);
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setValue(undefined);
+          setError(reason instanceof Error ? reason.message : SERVICE_OFFLINE);
+        }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(refresh, CONNECTION_REFRESH_MS);
+      }
+    }
+    void refresh();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [connection, attempt]);
 
   return (
@@ -284,16 +310,17 @@ export function apply(ctx: SlotContext): void {
     },
   });
 
-  // Preserve the consultation chart's one-time opening when a Session seat is available.
+  // Open the chart automatically in the first Talaria consultation only.
   ctx.effect(() => {
     let opened = false;
     let frame = 0;
     function schedule() {
       cancelAnimationFrame(frame);
-      if (opened || ctx.sidebarRight.mounted.getSnapshot() === undefined) return;
+      const session = ctx.sidebarRight.mounted.getSnapshot();
+      if (opened || !session?.startsWith("talaria-consult-")) return;
       let attempts = 0;
       function openTab() {
-        if (ctx.sidebarRight.mounted.getSnapshot() === undefined) return;
+        if (ctx.sidebarRight.mounted.getSnapshot() !== session) return;
         try {
           ctx.sidebarRight.openTab("talaria-desk");
           opened = true;

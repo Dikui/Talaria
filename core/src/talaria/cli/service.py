@@ -8,19 +8,16 @@ import os
 import plistlib
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from xml.parsers.expat import ExpatError
 from xml.sax.saxutils import escape
 
-import httpx
-
 from talaria.cli.dsh_host import (
-    DEFAULT_DSH_PORT,
-    DshHostError,
-    redact_dsh_token,
-    resolve_dsh_bin,
+    desktop_installed,
+    desktop_plugin_installed,
+    desktop_running,
 )
 from talaria.workbench_api.service_config import (
     FeatureToggles,
@@ -46,7 +43,7 @@ LaunchctlRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 
 class ServiceInstallError(RuntimeError):
-    """DSH 配置或 launchd 注册失败。"""
+    """launchd 注册失败。"""
 
 
 class ServiceUninstallError(RuntimeError):
@@ -71,16 +68,16 @@ class ServiceUninstallResult:
 
 @dataclass(frozen=True, slots=True)
 class ServiceDshStatus:
-    state: str
-    pid: int | None
-    log_path: str
-    detail: str
+    installed: bool
+    running: bool
+    plugin_installed: bool
 
     @property
     def summary(self) -> str:
-        state = "未启用" if self.state == "disabled" else self.state
-        pid = self.pid if self.pid is not None else "—"
-        return f"DSH 协同宿主：{state}，pid={pid}，日志：{self.log_path}"
+        installed = "已安装" if self.installed else "未安装"
+        running = "运行中" if self.running else "未运行"
+        plugin = "已安装" if self.plugin_installed else "未安装"
+        return f"DSH 桌面应用：{installed}，{running}，Talaria 插件（desktop）：{plugin}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,34 +110,6 @@ def open_data_dir(data_dir: str | None) -> Path:
     return Path(selected or DEFAULT_DATA_DIR).expanduser().resolve()
 
 
-def read_service_dsh_status(base_url: str | None, data_dir: Path) -> ServiceDshStatus:
-    log_dir = redact_dsh_token(str(data_dir / SERVICE_LOG_SUBDIR))
-    if base_url is None:
-        return ServiceDshStatus("offline", None, log_dir, "服务接口不可用")
-    try:
-        response = httpx.get(
-            f"{base_url}/api/collaboration", timeout=2.0, trust_env=False
-        )
-        response.raise_for_status()
-        payload = json.loads(response.content)
-        if isinstance(payload, dict) and payload.get("host") in (
-            "online", "starting", "offline", "disabled"
-        ):
-            state = payload["host"]
-            pid = payload.get("pid")
-            log_path = payload.get("log_path") or log_dir
-            detail = payload.get("detail") or ""
-            return ServiceDshStatus(
-                state,
-                pid if type(pid) is int and pid > 0 else None,
-                redact_dsh_token(str(log_path)),
-                redact_dsh_token(str(detail)),
-            )
-    except (httpx.HTTPError, ValueError):
-        pass
-    return ServiceDshStatus("offline", None, log_dir, "无法读取 DSH 状态")
-
-
 def render_launchd_plist(
     *,
     label: str,
@@ -149,7 +118,6 @@ def render_launchd_plist(
     stdout_path: str | Path,
     stderr_path: str | Path,
     working_directory: str | Path | None = None,
-    environment_variables: Mapping[str, str] | None = None,
     process_type: str = "Interactive",
     throttle_interval: int = 10,
 ) -> str:
@@ -165,17 +133,6 @@ def render_launchd_plist(
     arguments = "\n".join(
         f"    <string>{escape(str(argument))}</string>" for argument in program_arguments
     )
-    environment = ""
-    if environment_variables:
-        entries = "\n".join(
-            f"    <key>{escape(key)}</key>\n    <string>{escape(value)}</string>"
-            for key, value in environment_variables.items()
-        )
-        environment = f"""  <key>EnvironmentVariables</key>
-  <dict>
-{entries}
-  </dict>
-"""
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -199,7 +156,7 @@ def render_launchd_plist(
   <integer>{throttle_interval}</integer>
   <key>WorkingDirectory</key>
   <string>{escape(str(workdir))}</string>
-{environment}  <key>StandardOutPath</key>
+  <key>StandardOutPath</key>
   <string>{escape(str(stdout_path))}</string>
   <key>StandardErrorPath</key>
   <string>{escape(str(stderr_path))}</string>
@@ -215,8 +172,6 @@ def install_service(
     pack: str,
     program: str,
     launch_agents_dir: str | Path,
-    solo: bool = False,
-    dsh_bin: str | None = None,
     log_dir: str | Path | None = None,
     label: str = DEFAULT_SERVICE_LABEL,
     runner: LaunchctlRunner | None = None,
@@ -227,29 +182,6 @@ def install_service(
         raise ValueError(f"端口必须在 1..65535 之间：{port}")
     if not Path(program).is_absolute():
         raise ValueError(f"launchd 的 program 必须是绝对路径：{program}")
-
-    dsh_home = Path(os.environ.get("DSH_HOME") or "~/.dsh").expanduser().absolute()
-    environment = {"DSH_HOME": str(dsh_home)}
-    if solo:
-        host_arguments = ["--solo"]
-    else:
-        if port == DEFAULT_DSH_PORT:
-            raise ValueError(f"服务端口 {port} 已用于 DSH，请更换 --port 或使用 --solo。")
-        try:
-            executable = Path(resolve_dsh_bin(dsh_bin)).absolute()
-        except DshHostError as exc:
-            raise ServiceInstallError(
-                f"{exc}\n只安装常驻服务可用 talaria service install --solo。"
-            ) from exc
-        host_arguments = ["--dsh-bin", str(executable)]
-        # npm 安装的 dsh 通过 /usr/bin/env node 启动。
-        search_path = [
-            str(Path(directory).absolute())
-            for directory in os.environ.get("PATH", os.defpath).split(os.pathsep)
-        ]
-        if str(executable.parent) not in search_path:
-            search_path.append(str(executable.parent))
-        environment["PATH"] = os.pathsep.join(search_path)
 
     config_path = write_default_service_config(resolved_data_dir)
     features = load_service_config(resolved_data_dir).features
@@ -266,6 +198,7 @@ def install_service(
     arguments = [
         program,
         "up",
+        "--solo",
         "--host",
         "127.0.0.1",
         "--port",
@@ -274,7 +207,6 @@ def install_service(
         str(resolved_data_dir),
         "--pack",
         pack,
-        *host_arguments,
     ]
     text = render_launchd_plist(
         label=label,
@@ -283,7 +215,6 @@ def install_service(
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         working_directory=resolved_data_dir,
-        environment_variables=environment,
     )
     target = plist_path(launch_agents_dir, label)
     _atomic_write(target, text, 0o644)
@@ -398,6 +329,7 @@ def service_status(
             raise
         detail = _merge_detail(detail, str(exc))
 
+    installed_desktop = desktop_installed()
     return ServiceStatus(
         plist_path=target,
         config_path=service_config_path(resolved_data_dir),
@@ -411,7 +343,9 @@ def service_status(
         lock_holder=holder,
         endpoint=endpoint,
         detail=detail,
-        dsh=read_service_dsh_status(endpoint, resolved_data_dir),
+        dsh=ServiceDshStatus(
+            installed_desktop, installed_desktop and desktop_running(), desktop_plugin_installed()
+        ),
     )
 
 
