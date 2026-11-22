@@ -420,3 +420,51 @@ plugin = SlotPlugin(Slot.DATA, (1,), EarlyData, ReplayParams)
     journal = read_journal(path)
     assert [event.kind for event in journal.events] == ["DATA_REJECTED"]
     assert journal.entries == ()
+
+
+@pytest.mark.parametrize("has_marks", [True, False])
+def test_scheme_runs_default_sizing_and_risk_with_point_in_time_marks(replay, has_marks):
+    from dataclasses import replace
+
+    from talaria.account.host import default_registry, run_backtest
+    from talaria.account.ledger import read_journal
+    from talaria.account.plugins.parquet import ParquetReplay, ReplayParams
+    from talaria.account.scheme import Slot, SlotPlugin
+    from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
+
+    class ReplayWithMarks(ParquetReplay):
+        """向现有 Parquet 行情入口注入标记价，独立于衍生品冷库。"""
+
+        def events(self):
+            for event in super().events():
+                ts = event.as_of if has_marks else event.as_of + 1
+                point = DerivativePoint(
+                    instrument_id=event.instrument_id, kind=DerivativeKind.MARK_PRICE, value="11",
+                    ts_event=ts, ts_available=ts, ts_ingested=ts, ts_committed=ts,
+                )
+                yield replace(event, derivative_points=(point,))
+
+    scheme, data_dir = replay
+    scheme.write_text(scheme.read_text().replace(
+        "plugin: parquet_replay", "plugin: replay_with_marks",
+    ).replace(
+        "sizing: replay_plugins.py:sizing", "sizing: r_unit",
+    ).replace(
+        "risk: replay_plugins.py:risk", "risk: seven_step",
+    ) + 'account_risk:\n  example: {initial_capital: "5000"}\n')
+    strategy = scheme.with_name("replay_strategy.py")
+    strategy.write_text(strategy.read_text().replace("take_profit=[bar.close + 2]", "take_profit=[bar.close + 10]"))
+    registry = default_registry()
+    registry.register("replay_with_marks", SlotPlugin(Slot.DATA, (1,), ReplayWithMarks, ReplayParams))
+
+    first = run_backtest(scheme, data_dir, registry=registry)
+    second = run_backtest(first.directory / "run-config.json", None, registry=registry, replay=True)
+    journal = read_journal(first.directory / "ledger.sqlite")
+    assert journal == read_journal(second.directory / "ledger.sqlite")
+    assert journal.entries[0].postings[0].amount == Decimal(5000)
+    funded, decision = journal.events
+    assert funded.kind == "ACCOUNT_FUNDED"
+    if has_marks:
+        assert (decision.kind, decision.quantity) == ("ENTRY_FILLED", Decimal("6.209"))
+    else:
+        assert (decision.kind, decision.reason) == ("CANDIDATE_REJECTED", "MARGIN_VALUATION_UNAVAILABLE")
