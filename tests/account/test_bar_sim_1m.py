@@ -3,6 +3,7 @@
 from contextlib import closing
 from decimal import Decimal as D
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -213,7 +214,9 @@ def derivative(kind, ts, value, *, available=None, settled=None, revision=0):
 
 
 @pytest.mark.medium
-def test_offline_replay_books_mark_liquidation_and_late_funding_reproducibly(tmp_path, monkeypatch):
+def test_offline_replay_books_mark_liquidation_and_late_funding_reproducibly(
+    tmp_path, monkeypatch, register_host_fixtures,
+):
     from talaria import sdk
 
     def network(*args, **kwargs):
@@ -277,6 +280,7 @@ slots:
   risk: seven_step
   fill: {{plugin: bar_sim_1m, params: {{decision_latency_ms: 5, maker_fee_pct: "0.0002"}}}}
 """)
+    register_host_fixtures(scheme, tmp_path)
     first, second = [read_journal(run_backtest(scheme, tmp_path).directory / "ledger.sqlite") for _ in range(2)]
     assert first == second
     [entry] = [e for e in first.events if e.kind == "ENTRY_FILLED"]
@@ -299,6 +303,65 @@ slots:
         -entry.quantity * D(101) * D("0.00001"),
     ]
     assert all(sum(p.amount for p in entry.postings) == 0 for entry in first.entries)
+
+
+@pytest.mark.medium
+@pytest.mark.regression
+@pytest.mark.skipif(sys.platform != "darwin", reason="生产策略隔离使用 macOS")
+def test_isolated_strategy_signal_fills_on_a_later_1m_bar(tmp_path, without_seatbelt):
+    # trading/03 × trading/06：5m 信号触发策略，后续 1m 柱用于撮合。
+    from talaria.account.strategy_code import StrategyCodeRegistry
+
+    instrument = CRYPTO_PERP_PACK.instrument(INSTRUMENT)
+    start = 1_793_491_200_000
+    signal_at = start + 5 * MINUTE
+    fill_at = signal_at + 2 * MINUTE
+
+    def raw_bar(timeframe, ts, available, *, opening=100, high=100, low=100, close=100):
+        return RawBar(
+            symbol=instrument.symbol, timeframe=timeframe, ts_event=ts,
+            open=D(opening), high=D(high), low=D(low), close=D(close), volume=D(100), turnover=D(10000),
+            ts_available=available, ts_ingested=available, ts_committed=available,
+        )
+
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(instrument, "5m", [raw_bar("5m", start, signal_at)]))
+        store.publish(ColdBatch(instrument, "1m", [
+            raw_bar("1m", signal_at - MINUTE, signal_at),
+            raw_bar("1m", fill_at - MINUTE, fill_at, opening=104, high=105, low=101, close=104),
+        ]))
+        marks = [derivative("mark_price", signal_at, "100"), derivative("mark_price", fill_at, "104")]
+        store.publish_derivatives(instrument, marks[0].kind, marks)
+
+    fixture = Path(__file__).parent / "fixtures" / "replay_strategy.py"
+    strategy = tmp_path / fixture.name
+    strategy.write_text(fixture.read_text().replace(
+        "        bar = ctx.bars()[-1]",
+        f'        assert ctx.timeframe == "5m" and ctx.now == {signal_at}\n'
+        f'        assert [bar.ts_event for bar in ctx.bars("1m")] == [{signal_at - MINUTE}]\n'
+        '        assert [point.value for point in ctx.derivatives("mark_price")] == [Decimal("100")]\n'
+        "        bar = ctx.bars()[-1]",
+    ).replace("take_profit=[bar.close + 2]", "take_profit=[bar.close + 20]"))
+    StrategyCodeRegistry(tmp_path).register(strategy, "agent")
+    scheme = tmp_path / "sim.yaml"
+    scheme.write_text(f"""\
+scheme: isolated-bar-sim
+interface_version: {INTERFACE_VERSION}
+sub_accounts: [one]
+slots:
+  data:
+    plugin: parquet_replay
+    params: {{instrument: {INSTRUMENT}, timeframe: 5m, start: {start}, end: {fill_at}}}
+  strategy: {{python: {strategy.name}, params: {{trigger_price: "100"}}}}
+  sizing: r_unit
+  risk: seven_step
+  fill: bar_sim_1m
+""")
+
+    journal = read_journal(run_backtest(scheme, tmp_path).directory / "ledger.sqlite")
+    assert [(event.ts_event, event.price) for event in journal.events if event.kind == "ENTRY_FILLED"] == [
+        (fill_at, D(102)),
+    ]
 
 
 def test_time_barrier_enters_exiting_without_using_a_bar_closed_before_deadline(tmp_path):

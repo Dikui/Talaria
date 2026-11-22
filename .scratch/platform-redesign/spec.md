@@ -103,6 +103,7 @@ foundation（契约、算子、关键位引擎）、packs/feed/replay（行情�
 - **快照**：保留，用于固定 agent 会诊和预警触发时的证据；日常取数不再需要先建快照。HTTP 接口新增按时间范围取数，DSH 工具与 SDK 共用同一套契约。
 - 2026-11-22 的两轮持续写入及合并实测共执行 153 次 SDK 查询。13 次少柱，均标记为 `tail_completed=False`，重柱和文件读取错误均为 0。慢读者在 24 小时和 3 代更新条件均满足后遇到旧文件已回收，重读清单一次即返回完整结果。保留现有回收规则。两次清单换代可让 SDK 丢弃服务已返回的未落盘柱，详见 [data-access/09](../data-access/issues/09-preserve-sdk-tail-during-manifest-churn.md)。
 - 2026-11-22 实测千万行的 Arrow IPC 和 JSON 分别为 1.21 GB 和 2.29 GB，本机 HTTP 匿名套接字传输中位数分别为 1.22 秒和 2.13 秒，解析为各自原生结构分别为 0.076 秒和 8.92 秒。现有范围接口每次最多 10,000 根，保留 JSON，大批量本机历史沿用 SDK 直读 Parquet。若后续有百万行级 HTTP 导出需求，先用 TCP 回环复测，再决定是否提供 Arrow IPC 流。完整结果见 [data-access/05](../data-access/issues/05-measure-tail-consistency-and-arrow.md#实现记录2026-11-22)。
+- data-access/07 按生产 Parquet 布局落盘了一个合成 UTC 日，BTCUSDT 逐笔与买一卖一各 64,000 条。逐笔 2,498,132 字节（含 16 字节成交 UUID；去掉该列为 1,353,374 字节），买一卖一 1,571,294 字节。UUID 用于同毫秒成交区分及归档补缺。首个真实完整实时日的容量待用 `talaria cold-size --day YYYY-MM-DD --data-dir <目录>` 采集。命令统计当前清单引用的 Parquet 体积。实测步骤见 [data-access/07](../data-access/issues/07-trades-and-bbo-storage.md#实现记录2026-11-22)。
 
 ### D4 指标、信号、策略的统一组件模型（2026-11-20）
 
