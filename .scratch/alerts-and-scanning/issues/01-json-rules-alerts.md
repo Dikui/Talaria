@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0019；`docs/architecture.md` §5.2、§5.3。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] JSON 规则 Schema（带版本号），只能引用已注册算子；显式声明求值时机：收盘求值或事件驱动（ADR-0019）；导出 JSON Schema 与 TypeScript 类型。
 - [ ] 事件驱动规则只能拿当前事件的值比较常量、画线、关键位或已收盘的组件输出；引用进行中柱算出的指标时校验失败。
