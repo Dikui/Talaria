@@ -17,6 +17,21 @@
       "description": "可获取时间上界（含）",
       "title": "As Of"
     },
+    "available_since": {
+      "anyOf": [
+        {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "策略重同步用。按可获取时间下界（含）返回全部已确认修订，仅为该时刻附近及之后的范围补历史。",
+      "title": "Available Since"
+    },
     "end": {
       "anyOf": [
         {
@@ -42,6 +57,21 @@
       "minLength": 1,
       "title": "Instrument",
       "type": "string"
+    },
+    "resync_from": {
+      "anyOf": [
+        {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "策略重同步。核对范围中已有的历史柱，要求从此事件时间起连续覆盖，返回范围内全部可见确认修订。",
+      "title": "Resync From"
     },
     "start": {
       "description": "事件时间下界（含）",

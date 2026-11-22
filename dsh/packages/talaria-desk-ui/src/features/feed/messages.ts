@@ -15,7 +15,8 @@ import type {
  * 这里只做结构校验，业务字段由契约类型保证（服务端由同一份 JSON Schema 生成）。
  */
 export type DeskMessage =
-  | { type: "hello"; feed_mode: string; server_ts: number; live: boolean }
+  | { type: "hello"; feed_mode: string; server_ts: number; live: boolean; denied_alerts?: string[] }
+  | { type: "alert_quota"; denied_alerts: string[] }
   | { type: "bar"; data: KlineEvent }
   | { type: "book"; data: OrderBookEvent }
   | { type: "health"; data: FeedHealthEvent }
@@ -23,7 +24,7 @@ export type DeskMessage =
   | { type: "levels"; data: KeyLevelSet }
   | { type: "alert"; data: AlertTriggerRecord }
   | { type: "scanner"; data: ScannerTrigger }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string; owner?: string; instrument_id?: string; timeframe?: string };
 
 type RawRecord = Record<string, unknown>;
 
@@ -51,7 +52,11 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
   if (record === null) {
     return null;
   }
+  const denied = Array.isArray(record.denied_alerts) && record.denied_alerts.every(id => typeof id === "string")
+    ? record.denied_alerts as string[] : null;
   switch (record.type) {
+    case "alert_quota":
+      return denied === null ? null : { type: "alert_quota", denied_alerts: denied };
     case "hello":
       return {
         type: "hello",
@@ -60,6 +65,7 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
         server_ts:
           typeof record.server_ts === "number" ? record.server_ts : 0,
         live: record.live === true,
+        ...(denied !== null && { denied_alerts: denied }),
       };
     case "bar":
       return hasInstrumentId(record.data)
@@ -109,6 +115,9 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
     case "error":
       return {
         type: "error",
+        ...(typeof record.owner === "string" && { owner: record.owner }),
+        ...(typeof record.instrument_id === "string" && { instrument_id: record.instrument_id }),
+        ...(typeof record.timeframe === "string" && { timeframe: record.timeframe }),
         code: typeof record.code === "string" ? record.code : "INTERNAL",
         message:
           typeof record.message === "string" ? record.message : "未知错误",

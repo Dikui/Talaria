@@ -28,6 +28,23 @@ class HotBarProvider(Protocol):
         """返回该通道最近柱的修订（按事件时间升序）。"""
 
 
+class HotSlot:
+    """可固定一个时间槽，后台读者在线程中复制版本；被热缓冲淘汰仍能完成本次读。"""
+
+    def __init__(self) -> None:
+        self._versions: dict[int, RawBar] = {}
+        self._lock = threading.Lock()
+
+    def add(self, bar: RawBar) -> None:
+        with self._lock:
+            self._versions.setdefault(bar.revision, bar)
+
+    def revisions(self) -> list[RawBar]:
+        with self._lock:
+            bars = list(self._versions.values())
+        return sorted(bars, key=lambda bar: bar.revision)
+
+
 class HotStreamBuffer:
     """单进程内存环；线程安全，监听器与快照线程可并发调用。"""
 
@@ -43,10 +60,10 @@ class HotStreamBuffer:
         self._symbols = {spec.instrument_id: spec.symbol for spec in instruments}
         self._now_ms = now_ms
         self._max_bars = max_bars_per_series
-        self._series: dict[tuple[str, str], dict[int, dict[int, RawBar]]] = {}
+        self._series: dict[tuple[str, str], dict[int, HotSlot]] = {}
         self._lock = threading.Lock()
 
-    def ingest(self, event: FeedEvent) -> None:
+    def ingest(self, event: FeedEvent) -> RawBar | None:
         """订阅回调；只消化已闭合或进行中的普通柱，FEED_GAP 交由紧凑化重建。"""
 
         if not isinstance(event, KlineEvent):
@@ -86,10 +103,13 @@ class HotStreamBuffer:
         key = (event.instrument_id, event.timeframe)
         with self._lock:
             series = self._series.setdefault(key, {})
-            versions = series.setdefault(raw.ts_event, {})
-            versions.setdefault(raw.revision, raw)
+            # 保留最近收到更新的时间槽，迟到修订也能接续上一版。
+            slot = series.pop(raw.ts_event, None) or HotSlot()
+            slot.add(raw)
+            series[raw.ts_event] = slot
             while len(series) > self._max_bars:
-                series.pop(min(series))
+                series.pop(next(iter(series)))
+        return raw
 
     def recent_bars(self, *, instrument_id: str, timeframe: str) -> list[RawBar]:
         """快照中，已收盘时间槽的下一次修订从实际接收后才可见。"""
@@ -109,16 +129,21 @@ class HotStreamBuffer:
             selected[key] = bar
         return [selected[key] for key in sorted(selected)]
 
+    def slot(self, key: tuple[str, str], ts: int) -> HotSlot | None:
+        with self._lock:
+            return self._series.get(key, {}).get(ts)
+
     def revisions(
         self, *, instrument_id: str, timeframe: str, start_ts: int = 0, end_ts: int | None = None,
     ) -> list[RawBar]:
         """按事件时间与修订排序读取热缓冲中的完整发布版本。"""
+        key = (instrument_id, timeframe)
+        if start_ts == end_ts:
+            slot = self.slot(key, start_ts)
+            return [] if slot is None else slot.revisions()
         with self._lock:
-            series = self._series.get((instrument_id, timeframe), {})
-            timestamps = (start_ts,) if start_ts == end_ts else sorted(series)
-            return [
-                series[timestamp][version]
-                for timestamp in timestamps
-                if start_ts <= timestamp and (end_ts is None or timestamp <= end_ts)
-                for version in sorted(series.get(timestamp, {}))
-            ]
+            series = self._series.get(key, {}).copy()
+        return [
+            bar for ts in sorted(series) if start_ts <= ts and (end_ts is None or ts <= end_ts)
+            for bar in series[ts].revisions()
+        ]

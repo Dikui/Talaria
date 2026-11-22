@@ -17,6 +17,7 @@ from talaria.foundation.derivatives import DerivativeKind, RawDerivativePoint
 from talaria.foundation.errors import FeedUnavailableError
 from talaria.foundation.timeframes import timeframe_ms
 from talaria.foundation.types import PrecisionTier
+from talaria.packs.crypto_perp._proxy import is_loopback_url
 
 DEFAULT_BASE_URL = "https://api.bybit.com"
 MAX_LIMIT = 1000
@@ -58,13 +59,11 @@ class BybitLinearConnector:
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        # 不继承环境代理：避免意外的 HTTP(S)_PROXY/NO_PROXY 影响本地或 API 流量；
-        # 需要代理的部署可显式注入已配置的 httpx.Client。
         self._client = client or httpx.Client(
             base_url=self._base_url,
             timeout=httpx.Timeout(timeout),
             headers={"User-Agent": "talaria/0.0.2"},
-            trust_env=False,
+            trust_env=not is_loopback_url(self._base_url),
         )
         self._owns_client = client is None
         self._retries = max(0, retries)

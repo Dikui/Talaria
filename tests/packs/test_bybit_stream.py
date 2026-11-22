@@ -43,6 +43,61 @@ def make_stream(url: str, **kwargs: object) -> BybitPublicStream:
     )
 
 
+@pytest.mark.regression
+@pytest.mark.parametrize(
+    ("url", "proxy_var", "no_proxy", "destination"),
+    [
+        pytest.param(
+            "wss://stream.bybit.com/v5/public/linear", "HTTPS_PROXY", None, "proxy.example",
+            id="https-proxy",
+        ),
+        pytest.param(
+            "ws://stream.bybit.com", "HTTP_PROXY", None, "proxy.example", id="http-proxy"
+        ),
+        pytest.param(
+            "wss://stream.bybit.com", "HTTPS_PROXY", "stream.bybit.com", "stream.bybit.com",
+            id="no-proxy",
+        ),
+        pytest.param(
+            "ws://127.0.0.1", "HTTP_PROXY", None, "127.0.0.1", id="ipv4-loopback"
+        ),
+        pytest.param(
+            "ws://localhost", "HTTP_PROXY", None, "localhost", id="localhost"
+        ),
+        pytest.param(
+            "ws://[::1]", "HTTP_PROXY", None, "::1", id="ipv6-loopback"
+        ),
+    ],
+)
+def test_bybit_websocket_routes_connections_using_proxy_environment(
+    monkeypatch, url, proxy_var, no_proxy, destination
+) -> None:
+    # platform/04: stop at the event loop's TCP connection for both direct and proxy paths.
+    proxy_variables = (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "WS_PROXY", "WSS_PROXY", "SOCKS_PROXY",
+    )
+    for name in proxy_variables:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.delenv("REQUEST_METHOD", raising=False)
+    monkeypatch.setenv(proxy_var, "http://proxy.example:8080")
+    if no_proxy is not None:
+        monkeypatch.setenv("NO_PROXY", no_proxy)
+
+    async def scenario() -> None:
+        async def connect(_factory, host, port, **kwargs):
+            assert host == destination
+            raise ConnectionRefusedError("test TCP connection")
+
+        monkeypatch.setattr(asyncio.get_running_loop(), "create_connection", connect)
+        stream = make_stream(url)
+        with pytest.raises(FeedTransportError, match="test TCP connection"):
+            await stream.connect()
+
+    asyncio.run(scenario())
+
+
 def kline_payload(
     *,
     symbol: str = "BTCUSDT",
@@ -156,6 +211,70 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
         assert tick.open_interest == Decimal("12345.6")
 
     asyncio.run(Harness(handler).run(scenario))
+
+
+@pytest.mark.regression
+def test_tickers_merge_deltas_per_instrument_and_skip_empty_readings(monkeypatch, caplog) -> None:
+    # platform/04: a fake WebSocket sends Bybit V5 ticker frames without binding a port.
+    def delta(topic_symbol: str, offset: int, **fields: str) -> dict:
+        return {
+            "topic": f"tickers.{topic_symbol}", "type": "delta", "ts": BASE + offset, "data": fields,
+        }
+
+    messages = [
+        tickers_payload(),
+        delta("ETHUSDT", 600, symbol="ETHUSDT", lastPrice="102"),
+        delta("BTCUSDT", 700, lastPrice="102"),
+        delta("BTCUSDT", 800, fundingRate="0"),
+        delta("BTCUSDT", 900, openInterest="12346.7"),
+        {
+            "topic": "tickers.BTCUSDT", "type": "snapshot", "ts": BASE + 1000,
+            "data": {"symbol": "BTCUSDT", "markPrice": "103"},
+        },
+        delta("BTCUSDT", 1100, lastPrice="104"),
+    ]
+
+    async def scenario() -> list[DerivativeTickEvent]:
+        requests: asyncio.Queue[str] = asyncio.Queue()
+
+        async def frames():
+            for _ in range(2):
+                await requests.get()
+                yield json.dumps({"success": True, "op": "subscribe"})
+            for message in messages:
+                yield json.dumps(message)
+
+        ws = MagicMock(send=AsyncMock(side_effect=requests.put), close=AsyncMock())
+        ws.__aiter__.side_effect = frames
+        monkeypatch.setattr("talaria.packs.crypto_perp.stream.ws_connect", AsyncMock(return_value=ws))
+        stream = make_stream("ws://unused", ping_interval_seconds=None)
+        await stream.connect()
+        events = []
+        try:
+            await stream.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+            await stream.subscribe(instrument_id="ETH-USDT-PERP", timeframe="1m")
+            with pytest.raises(FeedTransportError, match="连接已断开"):
+                while True:
+                    event = await asyncio.wait_for(stream.recv(), timeout=1)
+                    assert isinstance(event, DerivativeTickEvent)
+                    events.append(event)
+        finally:
+            await stream.close()
+        return events
+
+    events = asyncio.run(scenario())
+    assert [(event.instrument_id, event.ts_event - BASE) for event in events] == [
+        (INSTRUMENT, offset) for offset in (500, 700, 800, 900, 1000, 1100)
+    ]
+    assert events[1].mark_price == Decimal("101.5")
+    assert events[1].funding_rate == Decimal("0.0001")
+    assert events[3].funding_rate == Decimal("0")
+    assert events[3].open_interest == Decimal("12346.7")
+    assert events[3].next_funding_ts == BASE + 8 * 3_600_000
+    latest = events[-1]
+    assert latest.mark_price == Decimal("103")
+    assert (latest.funding_rate, latest.open_interest, latest.next_funding_ts) == (None, None, None)
+    assert not caplog.records
 
 
 @pytest.mark.regression

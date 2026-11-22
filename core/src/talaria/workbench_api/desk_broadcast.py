@@ -51,6 +51,22 @@ class DeskBroadcast:
     def publish_alert(self, trigger: AlertTriggerRecord) -> None:
         self._broadcast({"type": "alert", "data": trigger.model_dump(mode="json")})
 
+    def publish_alert_quota(self, denied_alerts: list[str]) -> None:
+        self._broadcast({"type": "alert_quota", "denied_alerts": denied_alerts})
+
+    def publish_subscription_error(self, owner: tuple[str, str, DeskKey]) -> None:
+        kind, owner_id, (instrument_id, timeframe) = owner
+        label = f"预警 {owner_id}" if kind == "alert" else "自选"
+        self._broadcast({
+            "type": "error",
+            "code": "SUBSCRIPTION_QUOTA",
+            "message": f"{label}实时订阅配额不足：{instrument_id} {timeframe}",
+            "instrument_id": instrument_id,
+            "timeframe": timeframe,
+            "owner": kind,
+            "owner_id": owner_id,
+        })
+
     def publish_scanner(self, trigger: ScannerTrigger) -> None:
         self._broadcast({"type": "scanner", "data": trigger.model_dump(mode="json")})
 

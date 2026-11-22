@@ -254,7 +254,7 @@ def test_alert_tier_gets_quota_before_ordinary_watchlist() -> None:
     supervisor = _FakeSupervisor()
     scheduler = RealtimeSubscriptionScheduler(supervisor, quota=1)
 
-    view = scheduler.reconcile([ETH, BONK], alerted=[BONK])
+    view = scheduler.reconcile([ETH, BONK], alerts={"pending": (BONK, "1m")})
 
     assert BONK in view.selected
     assert view.degraded[ETH] is DegradationReason.QUOTA

@@ -106,8 +106,26 @@ export function useMarketStream(
         sentRef.current = { socket, ...current };
       };
 
+      let quotaRetry: number | undefined;
       socket.onmessage = (event) => {
+        if (disposed || socketRef.current !== socket) return;
         const message = parseDeskMessage(String(event.data));
+        if (message?.type === "error" && message.owner === "chart" && message.code === "SUBSCRIPTION_QUOTA") {
+          const { instrumentId, timeframe } = currentRef.current;
+          if (instrumentId !== message.instrument_id || timeframe !== message.timeframe) return;
+          window.clearTimeout(quotaRetry);
+          quotaRetry = window.setTimeout(() => {
+            if (!disposed && socketRef.current === socket && socket.readyState === WebSocket.OPEN &&
+                instrumentId === currentRef.current.instrumentId && timeframe === currentRef.current.timeframe) {
+              socket.send(subscribePayload(instrumentId, timeframe));
+            }
+          }, 1000);
+        }
+        if (message?.type === "health") {
+          if (message.data.instrument_id !== currentRef.current.instrumentId ||
+              message.data.timeframe !== currentRef.current.timeframe) return;
+          window.clearTimeout(quotaRetry);
+        }
         if (message !== null) {
           dispatch({ type: "message", message });
         }
@@ -118,6 +136,7 @@ export function useMarketStream(
       };
 
       socket.onclose = () => {
+        window.clearTimeout(quotaRetry);
         dispatch({ type: "closed" });
         if (socketRef.current === socket) {
           socketRef.current = null;

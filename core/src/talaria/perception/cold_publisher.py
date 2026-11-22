@@ -12,12 +12,13 @@ from itertools import groupby
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
+from talaria.foundation.errors import FeedUnavailableError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.timeframes import timeframe_ms
 from talaria.perception.backfill import BackfillPolicy
-from talaria.perception.bar_range import unpublished_revisions
+from talaria.perception.bar_range import range_visible_bars, unpublished_revisions
 from talaria.perception.cold_store import ColdBatch, ColdStore, partition_month
-from talaria.perception.hot_buffer import HotStreamBuffer
+from talaria.perception.hot_buffer import HotSlot, HotStreamBuffer
 
 logger = logging.getLogger(__name__)
 COMPACTION_INTERVAL_SECONDS = 15 * 60
@@ -36,6 +37,7 @@ class ColdPublisher:
         now_ms: Callable[[], int],
         hot_buffer: HotStreamBuffer | None = None,
         has_channel: Callable[[str, str], bool] | None = None,
+        on_publish: Callable[[tuple[str, str], int, int], None] | None = None,
         on_history_complete: Callable[[str, str], None] | None = None,
     ) -> None:
         self._store = store
@@ -45,6 +47,7 @@ class ColdPublisher:
         self._now_ms = now_ms
         self._hot_buffer = hot_buffer
         self._has_channel = has_channel
+        self._on_publish = on_publish
         self._on_history_complete = on_history_complete
         self._writes = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-writer")
         self._history = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-history")
@@ -68,26 +71,24 @@ class ColdPublisher:
             ts_ingested=received_ts, ts_committed=received_ts, precision=bar.precision,
             revision=revision,
         )
-        prior = [] if self._hot_buffer is None else self._hot_buffer.revisions(
-            instrument_id=instrument.instrument_id, timeframe=timeframe,
-            start_ts=raw.ts_event, end_ts=raw.ts_event,
-        )
         try:
-            self._writes.submit(self._publish_close, instrument, raw, prior)
+            slot = self._hot_buffer.slot((instrument.instrument_id, timeframe), raw.ts_event) if self._hot_buffer else None
+            self._writes.submit(self._publish_close, instrument, raw, slot)
         except Exception as exc:
             logger.warning("冷库发布任务提交失败（%s %s）：%s", instrument.instrument_id, timeframe, exc)
 
-    def _publish_close(self, instrument: InstrumentSpec, raw: RawBar, prior: Sequence[RawBar]) -> None:
+    def _publish_close(self, instrument: InstrumentSpec, raw: RawBar, slot: HotSlot | None) -> None:
         try:
             cold = self._store.read_revisions(
                 instrument, raw.timeframe, start_ts=raw.ts_event, end_ts=raw.ts_event,
             )
             # 重发可以补一次失败的写入，仍使用原先占用的编号。
+            prior = slot.revisions() if slot is not None else []
             earlier = [bar for bar in prior if bar.revision < raw.revision]
             version = unpublished_revisions(cold, [*earlier, raw]).get(raw.revision)
             if version is not None:
                 bar = replace(version, ts_committed=max(self._now_ms(), raw.ts_ingested))
-                self._store.publish(ColdBatch(instrument, raw.timeframe, [bar]))
+                self._publish(instrument, raw.timeframe, [bar])
         except Exception as exc:
             logger.warning("冷库发布失败（%s %s）：%s", instrument.instrument_id, raw.timeframe, exc)
 
@@ -223,6 +224,87 @@ class ColdPublisher:
                         ))
                         covered.add(bar.ts_event)
                 if rows:
-                    self._store.publish(ColdBatch(instrument, timeframe, rows))
+                    self._publish(instrument, timeframe, rows)
         except Exception as exc:
             logger.warning("冷库发布失败（%s %s）：%s", instrument.instrument_id, timeframe, exc)
+
+    def _publish(self, instrument: InstrumentSpec, timeframe: str, rows: Sequence[RawBar]) -> None:
+        self._store.publish(ColdBatch(instrument, timeframe, rows))
+        if self._on_publish is not None:
+            self._on_publish((instrument.instrument_id, timeframe), rows[0].ts_event, rows[-1].ts_event)
+
+    def refresh_history(
+        self, instrument: InstrumentSpec, timeframe: str, expected: dict[int, RawBar | None],
+    ) -> Future[None]:
+        """重同步既核对已有槽的交易所修订，也补断线期间应已收盘的槽。"""
+        return self._history.submit(self._refresh_history, instrument, timeframe, expected)
+
+    def _refresh_history(
+        self, instrument: InstrumentSpec, timeframe: str, expected: dict[int, RawBar | None],
+    ) -> None:
+        if self._connector is None:
+            raise FeedUnavailableError("历史来源不可用，请重试")
+        interval = timeframe_ms(timeframe)
+        slots = sorted(expected)
+        # 只查询实际需要的连续区间，每页至多 page_limit 个时间槽。
+        for _, group in groupby(enumerate(slots), key=lambda item: item[1] - item[0] * interval):
+            run = [ts for _, ts in group]
+            for offset in range(0, len(run), self._policy.page_limit):
+                page = run[offset:offset + self._policy.page_limit]
+                try:
+                    fetched = self._connector.fetch_bars(
+                        symbol=instrument.symbol, timeframe=timeframe, end_ts=page[-1], limit=len(page),
+                    )
+                except Exception as exc:
+                    raise FeedUnavailableError("交易所范围重取失败，请重试") from exc
+                received_ts = self._now_ms()
+                rows = {bar.ts_event: bar for bar in fetched if bar.confirmed and not bar.synthetic}
+                if not rows.keys() >= set(page):
+                    raise FeedUnavailableError("交易所范围重取缺少已确认柱，请重试")
+                try:
+                    self._writes.submit(
+                        self._publish_refresh, instrument, timeframe, [rows[ts] for ts in page], expected, received_ts,
+                    ).result()
+                except Exception as exc:
+                    raise FeedUnavailableError("重同步修订发布失败，请重试") from exc
+
+    def _publish_refresh(
+        self, instrument: InstrumentSpec, timeframe: str,
+        page: Sequence[RawBar], expected: dict[int, RawBar | None], received_ts: int,
+    ) -> None:
+        start, end = page[0].ts_event, page[-1].ts_event
+        cold = self._store.read_revisions(instrument, timeframe, start_ts=start, end_ts=end)
+        hot = [] if self._hot_buffer is None else self._hot_buffer.revisions(
+            instrument_id=instrument.instrument_id, timeframe=timeframe, start_ts=start, end_ts=end,
+        )
+        now = self._now_ms()
+        current = {bar.ts_event: bar for bar in range_visible_bars(cold, hot, as_of=now, include_open=True)}
+        archived = {ts: list(group) for ts, group in groupby(
+            sorted(cold, key=lambda b: b.ts_event), key=lambda b: b.ts_event,
+        )}
+        versions = {ts: list(group) for ts, group in groupby(hot, key=lambda b: b.ts_event)}
+        active = self._has_channel is None or self._has_channel(instrument.instrument_id, timeframe)
+        changed = []
+        for bar in page:
+            ts = bar.ts_event
+            latest = current.get(ts)
+            if latest is not None and not latest.confirmed:
+                if active and not latest.synthetic:
+                    continue  # 当前实时预览受保护，由调用方检查确认覆盖。
+                latest = None
+            # REST 请求期间已收到新的确认，保留较新的实际观察。
+            before = expected[ts]
+            if latest is not None and (before is None or latest.revision != before.revision):
+                continue
+            prior = versions.get(ts, [])
+            revision = prior[-1].revision + 1 if prior else 0
+            candidate = replace(
+                bar, revision=revision, ts_available=ts + timeframe_ms(timeframe),
+                ts_ingested=received_ts, ts_committed=max(received_ts, now),
+            )
+            pending = unpublished_revisions(archived.get(ts, []), [*prior, candidate])
+            if revision in pending:
+                # 同一批次落下先前写盘失败的热版本，保留修订编号锚点。
+                changed.extend(replace(row, ts_committed=max(now, row.ts_ingested)) for row in pending.values())
+        for _, month in groupby(changed, key=lambda b: partition_month(b.ts_event)):
+            self._publish(instrument, timeframe, list(month))

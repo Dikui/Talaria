@@ -41,10 +41,13 @@ from talaria.cli.dsh_host import (
     desktop_installed,
     dsh_entry_path,
     dsh_profile_dir,
+    install_talaria_patch,
+    profile_has_talaria_patch,
     read_desktop_origin,
     reap_stale_dsh_groups,
     redact_dsh_token,
     remove_bridge_descriptor,
+    remove_talaria_patch,
     resolve_dsh_bin,
     write_bridge_descriptor,
 )
@@ -204,6 +207,7 @@ def _usage_scan_via_http(
     from talaria.workbench_api.usage_scan import scan_session_traces
 
     url = f"{descriptor.base_url}/api/collaboration/usage"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def record(report: UsageReport) -> bool:
         request = urllib.request.Request(
@@ -216,7 +220,7 @@ def _usage_scan_via_http(
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with opener.open(request, timeout=5) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (OSError, ValueError) as exc:
             raise _UsageScanServiceError(
@@ -592,6 +596,13 @@ def _print_ready(
     print(f"功能开关：{describe_features(features)}", file=sys.stderr)
 
 
+def _electron_managed(result: subprocess.CompletedProcess[str]) -> bool:
+    message = "is managed exclusively by the Electron application"
+    return result.returncode != 0 and any(
+        message in output for output in (result.stderr or "", result.stdout or "")
+    )
+
+
 def _cmd_dsh_install(args: argparse.Namespace) -> int:
     """可重复地把仓库内插件安装到指定的 DSH Profile。"""
     repo = repo_root()
@@ -599,15 +610,24 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
     if not (plugin_dir / "package.json").is_file():
         print(f"插件包不存在：{plugin_dir}", file=sys.stderr)
         return 2
+    profile = args.dsh_profile
+    desktop = profile.lower() == DESKTOP_PROFILE
+    if desktop:
+        profile = DESKTOP_PROFILE
     try:
-        dsh = resolve_dsh_bin(args.dsh_bin)
-        profile_dir = dsh_profile_dir(args.dsh_profile)
+        profile_dir = dsh_profile_dir(profile)
+        if desktop and not profile_dir.is_dir():
+            print(
+                "请先打开 DeepSeek Harness 桌面应用初始化 desktop Profile，退出后再安装。",
+                file=sys.stderr,
+            )
+            return 2
         data_dir = open_data_dir(args.data_dir)
+        dsh = None
+        if not desktop and not profile_has_talaria_patch(profile_dir):
+            dsh = resolve_dsh_bin(args.dsh_bin)
     except (DshHostError, ValueError, OSError) as exc:
         print(str(exc), file=sys.stderr)
-        return 2
-    if args.dsh_profile == DESKTOP_PROFILE and not (profile_dir / "package.json").is_file():
-        print("请先打开 DeepSeek Harness 桌面应用初始化 desktop Profile，退出后再安装。", file=sys.stderr)
         return 2
     pnpm = shutil.which("pnpm")
     if pnpm is None:
@@ -620,41 +640,67 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
     if build.returncode != 0:
         print("DSH 插件构建失败；请修复后重试。", file=sys.stderr)
         return build.returncode
-    if not (profile_dir / "package.json").is_file():
-        init = subprocess.run(
-            [
-                dsh,
-                "--profile",
-                args.dsh_profile,
-                "--from-default-profile",
-                "web",
-                "--dump-config",
-            ],
-            stdout=subprocess.DEVNULL,
-            check=False,
-        )
-        if init.returncode != 0:
-            print(
-                f"初始化 DSH Profile 失败：{profile_dir}\n"
-                "请检查 dsh --version 是否为 0.2.2-rc.5。",
-                file=sys.stderr,
-            )
-            return 2
     try:
-        bundle = build_install_bundle(
-            repo=repo, profile=args.dsh_profile, data_dir=data_dir, tool_names=DSH_TOOL_SPECS
-        )
-        add = subprocess.run(
-            [dsh, "plugin", "--profile", args.dsh_profile, "add", f"file:{bundle}"],
-            check=False,
-        )
+        if dsh is not None and not (profile_dir / "package.json").is_file():
+            init = subprocess.run(
+                [dsh, "--profile", profile, "--from-default-profile", "web", "--dump-config"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if _electron_managed(init):
+                dsh = None
+            else:
+                if init.stderr:
+                    print(init.stderr, end="", file=sys.stderr)
+                if init.returncode != 0:
+                    print(
+                        f"初始化 DSH Profile 失败：{profile_dir}\n"
+                        "请检查 dsh --version 是否为 0.2.2-rc.5。",
+                        file=sys.stderr,
+                    )
+                    return 2
+        if dsh is not None:
+            bundle = build_install_bundle(
+                repo=repo, profile=profile, data_dir=data_dir, tool_names=DSH_TOOL_SPECS
+            )
+            add = subprocess.run(
+                [dsh, "plugin", "--profile", profile, "add", f"file:{bundle}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if _electron_managed(add):
+                dsh = None
+            else:
+                if add.stdout:
+                    print(add.stdout, end="")
+                if add.stderr:
+                    print(add.stderr, end="", file=sys.stderr)
+                if add.returncode != 0:
+                    print("安装 @talaria/dsh-plugin 失败，请检查 DSH 的安装诊断。", file=sys.stderr)
+                    return add.returncode
+        if dsh is None:
+            install_talaria_patch(profile_dir, plugin_dir, data_dir)
     except (OSError, ValueError) as exc:
         print(f"无法安装 @talaria/dsh-plugin：{exc}", file=sys.stderr)
         return 2
-    if add.returncode != 0:
-        print("安装 @talaria/dsh-plugin 失败，请检查 DSH 的安装诊断。", file=sys.stderr)
-        return add.returncode
     print(f"已安装 Profile：{profile_dir}", file=sys.stderr)
+    return 0
+
+
+def _cmd_dsh_uninstall(args: argparse.Namespace) -> int:
+    profile = args.dsh_profile
+    if profile.lower() == DESKTOP_PROFILE:
+        profile = DESKTOP_PROFILE
+    try:
+        profile_dir = dsh_profile_dir(profile)
+        removed = remove_talaria_patch(profile_dir)
+    except (OSError, ValueError) as exc:
+        print(f"无法移除 Talaria 用户补丁：{exc}", file=sys.stderr)
+        return 2
+    message = "已移除 Talaria 用户补丁" if removed else "未发现 Talaria 用户补丁"
+    print(f"{message}：{profile_dir}", file=sys.stderr)
     return 0
 
 
@@ -860,6 +906,7 @@ def _print_service_status(status: ServiceStatus) -> None:
         state = status.state or ("已加载" if status.loaded else "未知")
         pid_hint = f"，pid={status.pid}" if status.pid is not None else ""
         print(f"状态：已安装，launchd={state}{pid_hint}")
+    print(f"代理（plist）：{'，'.join(status.proxy_endpoints) or '未配置'}")
     if status.detail:
         print(f"详情：{status.detail}")
     holder = status.lock_holder
@@ -1006,7 +1053,7 @@ def build_parser() -> argparse.ArgumentParser:
     install = subparsers.add_parser(
         "dsh-install", help="构建并安装 @talaria/dsh-plugin 到 DSH Profile"
     )
-    install.add_argument("--dsh-bin", help="DSH 可执行文件路径")
+    install.add_argument("--dsh-bin", help="用于 CLI 安装的 DSH 可执行文件路径")
     install.add_argument(
         "--dsh-profile",
         default=DESKTOP_PROFILE,
@@ -1016,6 +1063,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-dir", help="数据目录（与 talaria open 的解析顺序相同）"
     )
     install.set_defaults(func=_cmd_dsh_install)
+
+    uninstall = subparsers.add_parser("dsh-uninstall", help="移除 DSH Profile 中的 Talaria 用户补丁")
+    uninstall.add_argument(
+        "--dsh-profile",
+        default=DESKTOP_PROFILE,
+        help=f"DSH Profile 名称（默认 {DESKTOP_PROFILE}）",
+    )
+    uninstall.set_defaults(func=_cmd_dsh_uninstall)
 
     check = subparsers.add_parser(
         "contract-check", help="检查契约生成物是否零漂移"
