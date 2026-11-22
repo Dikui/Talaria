@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter
 
+from talaria.account.contracts import MarketEvent
 from talaria.account.execution import AccountProcessError
 from talaria.account.scheme import Mode, SchemeError, Slot, SlotPlugin
 from talaria.account.strategy_ipc import HOST_MESSAGE_LIMIT, WORKER_MESSAGE_LIMIT, StrategyPipe
@@ -243,8 +244,8 @@ class IsolatedStrategy:
             self._budget.worker.kill()
             raise AccountProcessError("策略行情核验取数超时") from exc
 
-    def market_events(self, data):
-        events = self._budget.io_result(lambda: iter(data.events()))
+    def market_events(self, read_events: Callable[[], Iterator[MarketEvent]]) -> Iterator[MarketEvent]:
+        events = self._budget.io_result(lambda: iter(read_events()))
         end = object()
         while (market := self._budget.io_result(lambda: next(events, end))) is not end:
             yield market

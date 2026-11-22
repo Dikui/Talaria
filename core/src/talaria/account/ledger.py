@@ -134,15 +134,15 @@ class LedgerWriter:
     def balances(self, sub_account_id: str) -> Mapping[tuple[str, str], Decimal]:
         return MappingProxyType(self._balances[sub_account_id].copy())
 
-    def record(self, events: Sequence[ExecutionEvent]) -> None:
+    def record(self, events: Sequence[ExecutionEvent], *, allow_late_events: bool = False) -> None:
         if not events:
             return
         next_balances: dict[str, dict[tuple[str, str], Decimal]] = {}
         last_ts = self._last_ts
         for event in events:
-            if event.ts_event < last_ts:
+            if not allow_late_events and event.ts_event < last_ts:
                 raise LedgerError("账本事件发生时间不得倒退")
-            last_ts = event.ts_event
+            last_ts = max(last_ts, event.ts_event)
             if event.sub_account_id not in self._balances:
                 raise LedgerError(f"账本不承载子账户 {event.sub_account_id}")
             if not event.postings:

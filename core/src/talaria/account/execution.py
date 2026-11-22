@@ -79,6 +79,7 @@ class ExecutionGate:
         *, balances: Callable[[str], Mapping[tuple[str, str], Decimal]],
         valuation: MarginValuation | None = None,
         record: Callable[[Sequence[ExecutionEvent]], None] | None = None,
+        allow_late_events: bool = False,
     ) -> None:
         self._sizing = sizing
         self._risk = risk
@@ -86,6 +87,7 @@ class ExecutionGate:
         self._balances = balances
         self._valuation = valuation
         self._record = record
+        self._allow_late_events = allow_late_events
         self._states = dict.fromkeys(sub_accounts, TradingState.ACTIVE)
         self._approvals = {account: RLock() for account in sub_accounts}
         self._submit_lock = RLock()
@@ -102,6 +104,7 @@ class ExecutionGate:
         self._last_execution_ts = -1
         self._market_as_of = 0
         self._marks: dict[str, DerivativePoint] = {}
+        self._approval_marks: dict[str, DerivativePoint] = {}
         self._funding_rates: dict[str, DerivativePoint] = {}
         self._audit: dict[str, list[ExecutionEvent]] = {account: [] for account in sub_accounts}
         self._drawdown_transition = getattr(risk, "drawdown_transition", None)
@@ -124,9 +127,9 @@ class ExecutionGate:
 
     def account_state(self, sub_account_id: str) -> AccountState:
         with self._approval_lock(sub_account_id):
-            return self._account_state(sub_account_id)
+            return self._account_state(sub_account_id, for_approval=True)
 
-    def _account_state(self, sub_account_id: str) -> AccountState:
+    def _account_state(self, sub_account_id: str, *, for_approval: bool = False) -> AccountState:
         rounds = {
             key: position for key, position in self._positions.copy().items()
             if position.sub_account_id == sub_account_id and position.quantity > 0
@@ -152,12 +155,13 @@ class ExecutionGate:
                 candidate.instrument_id, candidate.direction,
                 decimal_from_finite_fraction(remaining), decimal_from_finite_fraction(entry),
             ), position.stop if position is not None else candidate.invalidation_stop, max_entry_price))
+        marks = self._approval_marks if for_approval else self._marks
         return AccountState(
             sub_account_id, MappingProxyType(dict(self._balances(sub_account_id))), MappingProxyType(rounds),
             self._states[sub_account_id], max(self._market_as_of, self._last_execution_ts),
             tuple(exposures), tuple(reservations),
             MappingProxyType({key: self._barriers[key] for key in rounds if key in self._barriers}),
-            MappingProxyType({key: point.model_copy() for key, point in self._marks.items()}),
+            MappingProxyType({key: point.model_copy() for key, point in marks.items()}),
             MappingProxyType({key: point.model_copy() for key, point in self._funding_rates.items()}),
         )
 
@@ -188,7 +192,7 @@ class ExecutionGate:
             return decision
 
     def _submit_candidate(self, candidate: EntryCandidate) -> PlanReceipt | RejectedPlanRecord:
-        state = self._account_state(candidate.sub_account_id)
+        state = self._account_state(candidate.sub_account_id, for_approval=True)
         if state.trading_state != TradingState.ACTIVE:
             return RejectedPlanRecord(reason="TRADING_STATE_BLOCKED")
         if candidate.ts_decision > state.as_of:
@@ -241,8 +245,13 @@ class ExecutionGate:
         return receipt
 
     def change_barrier(self, request: BarrierChangeRequest) -> BarrierReceipt | RejectedPlanRecord:
-        with self._approval_lock(request.sub_account_id):
-            state = self._account_state(request.sub_account_id)
+        self._approval_lock(request.sub_account_id)
+        with self._all_accounts():
+            # 先入账旧止损下已发生的成交，再用修改回执更新当前止损。
+            now = max(self._market_as_of, self._last_execution_ts)
+            while pending := self._fill.poll_events(now):
+                self._process_batch(now, (), pending)
+            state = self._account_state(request.sub_account_id, for_approval=True)
             decision = self._change_barrier(request, state)
             if isinstance(decision, RejectedPlanRecord) or not decision.accepted:
                 self._audit[request.sub_account_id].append(ExecutionEvent(
@@ -380,11 +389,17 @@ class ExecutionGate:
         with self._all_accounts():
             self._process_batch(as_of, points, ())
 
+    def observe_marks_for_approval(self, as_of: int, points: Sequence[DerivativePoint]) -> None:
+        with self._all_accounts():
+            for point in points:
+                if point.kind == DerivativeKind.MARK_PRICE and point.value > 0 and point.visible_at(as_of):
+                    self._update_observation(self._approval_marks, point)
+
     @staticmethod
     def _update_observation(observations: dict[str, DerivativePoint], point: DerivativePoint) -> None:
         previous = observations.get(point.instrument_id)
-        if previous is None or (point.observation_time, point.ts_available, point.ts_committed) >= (
-            previous.observation_time, previous.ts_available, previous.ts_committed,
+        if previous is None or (point.observation_time, point.revision, point.ts_available, point.ts_committed) >= (
+            previous.observation_time, previous.revision, previous.ts_available, previous.ts_committed,
         ):
             observations[point.instrument_id] = point.model_copy()
 
@@ -448,6 +463,7 @@ class ExecutionGate:
                 self._advance_time(timestamp)
                 if event.kind == DerivativeKind.MARK_PRICE and event.value > 0:
                     self._update_observation(self._marks, event)
+                    self._update_observation(self._approval_marks, event)
                 elif event.kind == DerivativeKind.FUNDING_RATE:
                     self._update_observation(self._funding_rates, event)
             else:
@@ -488,7 +504,7 @@ class ExecutionGate:
     def _write_event(self, event: ExecutionEvent) -> None:
         if self._record is not None:
             self._record([event])
-        self._last_execution_ts = event.ts_event
+        self._last_execution_ts = max(self._last_execution_ts, event.ts_event)
 
     def _record_rejection(
         self, timestamp: int, reason: str, account: str | None = None, plan_id: str | None = None,
@@ -505,7 +521,8 @@ class ExecutionGate:
     def _check_event(self, event: ExecutionEvent, now: int) -> _FillUpdate | None:
         if not isinstance(event, ExecutionEvent):
             raise AccountProcessError("成交插件须返回 ExecutionEvent")
-        if not max(self._market_as_of, self._last_execution_ts) <= event.ts_event <= now:
+        earliest = 0 if self._allow_late_events else max(self._market_as_of, self._last_execution_ts)
+        if not earliest <= event.ts_event <= now:
             raise AccountProcessError("成交事件时点超前或倒退")
         if event.sub_account_id not in self._states:
             raise AccountProcessError(f"成交事件引用未知子账户 {event.sub_account_id}")
