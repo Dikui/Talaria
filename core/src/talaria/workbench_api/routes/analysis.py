@@ -56,16 +56,7 @@ def instruments(request: Request) -> list[InstrumentSpec]:
 async def create_snapshot(
     payload: SnapshotRequest, request: Request
 ) -> SnapshotMeta:
-    runtime = get_runtime(request)
-    workbench = runtime.workbench
-    meta = workbench.create_snapshot(payload)
-    for timeframe in meta.timeframes:
-        level_set = workbench.get_key_levels(
-            meta.snapshot_id, timeframe=timeframe
-        )
-        key: tuple[str, str] = (meta.instrument_id, timeframe)
-        runtime.desk.publish_levels(key, level_set)
-    return meta
+    return get_runtime(request).workbench.create_snapshot(payload)
 
 
 @router.get("/api/snapshots/{snapshot_id}", response_model=SnapshotMeta)

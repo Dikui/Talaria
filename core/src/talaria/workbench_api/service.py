@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from bisect import bisect_right
 from decimal import Decimal
 from pathlib import Path
@@ -57,6 +59,8 @@ from talaria.foundation.snapshot import (
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.perception.cold_publisher import ColdPublisher
+from talaria.perception.cold_store import ColdReader
+from talaria.perception.key_level_registry import KeyLevelRegistry
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import (
     SnapshotRecord,
@@ -64,6 +68,8 @@ from talaria.perception.snapshot_store import (
     read_derivative_points,
     read_snapshot_bars,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class WorkbenchService:
@@ -75,6 +81,7 @@ class WorkbenchService:
         data_dir: Path,
         snapshot_store: SnapshotStore,
         builder: SnapshotBuilder,
+        key_levels: KeyLevelRegistry,
         feed_mode: str | None = None,
         cold_publisher: ColdPublisher | None = None,
     ) -> None:
@@ -85,6 +92,8 @@ class WorkbenchService:
         self._builder = builder
         self._feed_mode = feed_mode
         self._cold_publisher = cold_publisher
+        self._key_levels = key_levels
+        self._background_freeze = asyncio.Lock()
 
     @property
     def feed_mode(self) -> str:
@@ -98,6 +107,12 @@ class WorkbenchService:
         return self._pack.instruments()
 
     def create_snapshot(self, request: SnapshotRequest) -> SnapshotMeta:
+        meta, versions = self._prepare_snapshot(request)
+        for version in versions:
+            self._key_levels.register(version)
+        return meta
+
+    def _prepare_snapshot(self, request: SnapshotRequest) -> tuple[SnapshotMeta, list[KeyLevelSet]]:
         if request.mode is SnapshotMode.OBSERVED_REPLAY:
             raise FeatureNotImplementedError(
                 "OBSERVED_REPLAY 快照将在 M3 提供；当前仅支持 HISTORICAL_PIT"
@@ -110,7 +125,45 @@ class WorkbenchService:
             if timeframe not in SUPPORTED_TIMEFRAMES:
                 raise InvalidRequestError(f"不支持的周期：{timeframe}")
         normalized = request.model_copy(update={"timeframes": timeframes})
-        return self._builder.build(instrument=instrument, request=normalized)
+        meta = self._builder.build(instrument=instrument, request=normalized)
+        return meta, self._snapshot_key_levels(meta)
+
+    def _snapshot_key_levels(self, meta: SnapshotMeta) -> list[KeyLevelSet]:
+        return [
+            self.get_key_levels(meta.snapshot_id, timeframe=timeframe)
+            for timeframe in meta.timeframes
+        ]
+
+    async def freeze_key_levels(self, instrument_id: str, timeframe: str, *, cutoff_ts: int) -> None:
+        request = SnapshotRequest(
+            instrument_id=instrument_id, timeframes=[timeframe], cutoff_ts=cutoff_ts,
+        )
+        async with self._background_freeze:
+            _, versions = await asyncio.to_thread(self._prepare_snapshot, request)
+            for version in versions:
+                self._key_levels.register(version)
+
+    async def warm_key_levels(
+        self, pairs: set[tuple[str, str]], *, cutoff_ts: int
+    ) -> set[tuple[str, str]]:
+        pending = set()
+        reader = ColdReader(self._data_dir)
+        for instrument_id, timeframe in sorted(pairs):
+            instrument = self._pack.instrument(instrument_id)
+            if instrument is None:
+                continue
+            try:
+                if self._cold_publisher is not None:
+                    bars = await asyncio.to_thread(
+                        reader.read_bars, instrument, timeframe, as_of=cutoff_ts, end_ts=cutoff_ts,
+                    )
+                    if not bars:
+                        pending.add((instrument_id, timeframe))
+                        continue
+                await self.freeze_key_levels(instrument_id, timeframe, cutoff_ts=cutoff_ts)
+            except Exception:
+                logger.exception("预热关键位失败：%s %s", instrument_id, timeframe)
+        return pending
 
     def get_snapshot(self, snapshot_id: str) -> SnapshotMeta:
         record = self._snapshot_store.get(snapshot_id)

@@ -36,6 +36,7 @@ class ColdPublisher:
         now_ms: Callable[[], int],
         hot_buffer: HotStreamBuffer | None = None,
         has_channel: Callable[[str, str], bool] | None = None,
+        on_history_complete: Callable[[str, str], None] | None = None,
     ) -> None:
         self._store = store
         self._instruments = instruments
@@ -44,6 +45,7 @@ class ColdPublisher:
         self._now_ms = now_ms
         self._hot_buffer = hot_buffer
         self._has_channel = has_channel
+        self._on_history_complete = on_history_complete
         self._writes = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-writer")
         self._history = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-history")
         self._pending_history: dict[tuple[str, str, int, int, frozenset[int], int | None], Future[None]] = {}
@@ -182,6 +184,8 @@ class ColdPublisher:
         finally:
             with self._history_lock:
                 self._pending_history.pop(key, None)
+            if self._on_history_complete is not None:
+                self._on_history_complete(instrument.instrument_id, timeframe)
 
     def _publish_history(
         self, instrument: InstrumentSpec, timeframe: str, candidates: Sequence[RawBar],

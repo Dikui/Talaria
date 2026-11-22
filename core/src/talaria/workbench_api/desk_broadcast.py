@@ -31,7 +31,6 @@ def levels_payload(level_set: KeyLevelSet) -> dict[str, object]:
 class DeskBroadcast:
     def __init__(self) -> None:
         self.chart_subscribers: dict[DeskKey, int] = {}
-        self._level_sets: dict[DeskKey, KeyLevelSet] = {}
         self._clients: dict[DeskQueue, set[DeskKey]] = {}
 
     def attach(self, filters: set[DeskKey]) -> DeskQueue:
@@ -42,11 +41,8 @@ class DeskBroadcast:
     def detach(self, queue: DeskQueue) -> None:
         self._clients.pop(queue, None)
 
-    def levels_for(self, key: DeskKey) -> KeyLevelSet | None:
-        return self._level_sets.get(key)
-
-    def publish_levels(self, key: DeskKey, level_set: KeyLevelSet) -> None:
-        self._level_sets[key] = level_set
+    def project_levels(self, level_set: KeyLevelSet) -> None:
+        key = (level_set.instrument_id, level_set.timeframe)
         payload = levels_payload(level_set)
         for queue, filters in self._clients.items():
             if key in filters:

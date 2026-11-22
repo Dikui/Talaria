@@ -128,8 +128,19 @@ def test_unknown_snapshot_returns_404(client) -> None:
     assert response.json()["code"] == "SNAPSHOT_NOT_FOUND"
 
 
-def test_key_levels_ws_projection_replays_cached_set(client) -> None:
+@pytest.mark.spec
+def test_key_levels_ws_projection_replays_latest_cutoff(client) -> None:
+    # analysis/01：后冻结的历史快照不覆盖图表的最新版本。
     meta = _snapshot(client)
+    older = client.post(
+        "/api/snapshots",
+        json={
+            "instrument_id": INSTRUMENT, "timeframes": ["1m"],
+            "cutoff_ts": meta["cutoff_ts"] - 60_000,
+        },
+        headers=AUTH,
+    )
+    assert older.status_code == 200, older.text
     with client.websocket_connect("/ws/desk") as websocket:
         hello = websocket.receive_json()
         assert hello["type"] == "hello"
@@ -155,6 +166,32 @@ def test_key_levels_ws_projection_broadcasts_new_snapshot(client) -> None:
         while message["type"] != "levels":
             message = websocket.receive_json()
         assert message["data"]["snapshot_id"] == meta["snapshot_id"]
+
+
+def test_future_cutoff_is_readable_but_never_projected_to_the_chart(client) -> None:
+    current = _snapshot(client)
+    subscription = {"op": "subscribe", "instrument_id": INSTRUMENT, "timeframe": "1m"}
+    with client.websocket_connect("/ws/desk") as websocket:
+        assert websocket.receive_json()["type"] == "hello"
+        websocket.send_json(subscription)
+        assert websocket.receive_json()["data"]["snapshot_id"] == current["snapshot_id"]
+
+        future = client.post(
+            "/api/snapshots",
+            json={"instrument_id": INSTRUMENT, "timeframes": ["1m"], "cutoff_ts": NOW_MS + 1},
+            headers=AUTH,
+        )
+        assert future.status_code == 200, future.text
+        assert _levels(client, future.json()["snapshot_id"])["cutoff_ts"] == NOW_MS + 1
+
+        replacement = _snapshot(client)
+        message = websocket.receive_json()
+        assert message["data"]["snapshot_id"] == replacement["snapshot_id"]
+
+    with client.websocket_connect("/ws/desk") as websocket:
+        assert websocket.receive_json()["type"] == "hello"
+        websocket.send_json(subscription)
+        assert websocket.receive_json()["data"]["snapshot_id"] == replacement["snapshot_id"]
 
 
 def test_ignored_key_levels_persist_across_restart(

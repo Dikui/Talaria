@@ -153,9 +153,9 @@ async def desk_socket(websocket: WebSocket) -> None:
                         )
                         if current is not None:
                             enqueue(queue, _ws_payload(current))
-                cached = runtime.desk.levels_for(key)
-                if cached is not None:
-                    enqueue(queue, levels_payload(cached))
+                latest = runtime.key_levels.latest(key)
+                if latest is not None:
+                    enqueue(queue, levels_payload(latest))
             elif op == "unsubscribe":
                 if key not in subscriptions:
                     continue

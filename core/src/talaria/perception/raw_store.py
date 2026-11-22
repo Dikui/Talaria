@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Iterable, Iterator
 from decimal import Decimal
 from pathlib import Path
@@ -81,6 +82,7 @@ class RawStore:
 
     def __init__(self, data_dir: Path | str, *, raw_archive_id: str) -> None:
         self._raw_dir = Path(data_dir) / "data" / "raw" / raw_archive_id
+        self._lock = threading.Lock()
 
     def path_for(self, symbol: str, timeframe: str) -> Path:
         return self._raw_dir / symbol / f"{timeframe}.jsonl"
@@ -91,7 +93,7 @@ class RawStore:
             return 0
         path = self.path_for(symbol, timeframe)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
+        with self._lock, path.open("a", encoding="utf-8") as handle:
             for bar in materialized:
                 handle.write(
                     json.dumps(bar_record(bar), ensure_ascii=False, sort_keys=True) + "\n"
@@ -111,7 +113,7 @@ class RawStore:
         path = self.path_for(symbol, timeframe)
         if not path.is_file():
             return
-        with path.open(encoding="utf-8") as handle:
+        with self._lock, path.open(encoding="utf-8") as handle:
             for line in handle:
                 if line.strip():
                     yield bar_from_record(json.loads(line))
