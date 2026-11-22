@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §6.4；`docs/research/fill-simulation-and-tick-data.md`。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 与 03 共用 `PositionExecutor` 与屏障逻辑，只替换撮合判定。
 - [ ] 读取逐笔与报价时带 `as_of`，不看到决策时刻之后才可见的数据。
