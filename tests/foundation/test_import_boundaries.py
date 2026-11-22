@@ -25,6 +25,7 @@ FORBIDDEN_IMPORTS = (
     "talaria.packs",
     "talaria.cli",
     "talaria.sdk",
+    "talaria.components",
 )
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from talaria.foundation.bars import BarStatus, CompactBar, classify_flat_bar
+from talaria.foundation.bars import BarStatus, CompactBar, RangeBar, classify_flat_bar
 from talaria.foundation.connector import RawBar
 from talaria.foundation.timeframes import timeframe_ms
 
@@ -21,7 +21,7 @@ MAX_GAP_FILL = 1000
 
 
 def compact_series(
-    bars: Sequence[RawBar],
+    bars: Sequence[RawBar | RangeBar],
     *,
     timeframe: str,
     cutoff_ts: int,
@@ -30,7 +30,7 @@ def compact_series(
     eligible = [bar for bar in bars if bar.ts_available <= cutoff_ts]
 
     # 同一 timestamp 以后摄入者为准（输入顺序近似摄入顺序）。
-    deduped: dict[int, RawBar] = {}
+    deduped: dict[int, RawBar | RangeBar] = {}
     for bar in eligible:
         deduped[bar.ts_event] = bar
     ordered = [deduped[key] for key in sorted(deduped)]
@@ -64,6 +64,10 @@ def compact_series(
             close=bar.close,
             volume=bar.volume,
         )
-        compact.append(bar.to_compact(status=status))
+        compact.append(CompactBar(
+            timestamp=bar.ts_event, open=bar.open, high=bar.high, low=bar.low,
+            close=bar.close, volume=bar.volume, turnover=bar.turnover, status=status,
+            ts_available=bar.ts_available, precision=bar.precision,
+        ))
         previous_ts = bar.ts_event
     return compact

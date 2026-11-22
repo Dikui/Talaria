@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from bisect import bisect_right
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -51,6 +50,7 @@ from talaria.foundation.operators import (
     compute_series,
     spec_from_params,
 )
+from talaria.foundation.operators.inputs import derivative_samples
 from talaria.foundation.snapshot import (
     ChartPage,
     SnapshotMeta,
@@ -490,29 +490,10 @@ class WorkbenchService:
         """把结算/OI 点按 ``ts_available`` 向前取值，逐根对齐到 K 线。"""
         record = self._snapshot_record(snapshot_id, timeframe)
         series = self._derivative_series(record, timeframe)
-        funding = series[DerivativeKind.FUNDING_RATE].points
-        oi = series[DerivativeKind.OPEN_INTEREST].points
-        funding_times = [point.ts_available for point in funding]
-        oi_times = [point.ts_available for point in oi]
-        samples: list[DerivativeSample] = []
-        for bar in bars:
-            funding_index = bisect_right(funding_times, bar.timestamp) - 1
-            oi_index = bisect_right(oi_times, bar.timestamp) - 1
-            funding_point = funding[funding_index] if funding_index >= 0 else None
-            oi_point = oi[oi_index] if oi_index >= 0 else None
-            samples.append(
-                DerivativeSample(
-                    funding_rate=(
-                        None if funding_point is None else funding_point.value
-                    ),
-                    funding_ts=(
-                        None if funding_point is None else funding_point.ts_event
-                    ),
-                    open_interest=None if oi_point is None else oi_point.value,
-                    oi_ts=None if oi_point is None else oi_point.ts_event,
-                )
-            )
-        return samples
+        return derivative_samples(
+            bars, series[DerivativeKind.FUNDING_RATE].points,
+            series[DerivativeKind.OPEN_INTEREST].points,
+        )
 
     def _funding_interval_hours(self, instrument_id: str) -> int | None:
         try:
