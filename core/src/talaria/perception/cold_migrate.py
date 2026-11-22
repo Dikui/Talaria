@@ -1,12 +1,13 @@
 """一次性冷库迁移：旧字符串 generation → 按列 decimal128(18, s)。
 
 迁移只改数值表示与清单指向：旧 Parquet 文件保留在原地可回退。所有新文件先
-写入并校验，最后在一个 ``BEGIN IMMEDIATE`` 事务里删除旧清单行、插入新行并
-改写指向旧 generation 的游标；任一步失败都不会留下半迁移的清单。
+写入并校验，最后在一个 ``BEGIN IMMEDIATE`` 事务里更新清单和游标。
+原始 JSONL 由原内容哈希继续引用，失败会回滚清单事务。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import uuid
@@ -19,6 +20,7 @@ from talaria.foundation.connector import RawBar
 from talaria.foundation.errors import ColdStoreError, ColdStoreIntegrityError
 from talaria.foundation.market import InstrumentSpec, MarketPack
 from talaria.perception.cold_store import (
+    ARCHIVE_SUBDIR,
     COLD_SUBDIR,
     MANIFEST_DB,
     _GENERATION_COLUMNS,
@@ -31,6 +33,7 @@ from talaria.perception.cold_store import (
     _sha256_file,
     _validate_bars,
     _write_cold_parquet,
+    cold_column_scales,
 )
 from talaria.perception.sqlite import (
     checkpoint_and_close,
@@ -38,6 +41,7 @@ from talaria.perception.sqlite import (
     open_writer_connection,
     release_writer,
 )
+from talaria.workbench_api.service_lock import ServiceLock
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,10 +64,6 @@ class _Migration:
     new_generation_id: str
     new_path: Path
     new_sha256: str
-    new_first_ts: int
-    new_last_ts: int
-    new_bars: int
-    new_committed_ts: int
 
 
 def _instrument_index(pack: MarketPack) -> dict[tuple[str, str], InstrumentSpec]:
@@ -74,6 +74,46 @@ def _instrument_index(pack: MarketPack) -> dict[tuple[str, str], InstrumentSpec]
             raise ColdStoreError(f"市场包内标的重复：{instrument.venue}/{instrument.symbol}")
         index[key] = instrument
     return index
+
+
+def _load_source_specs(
+    path: Path, instruments: dict[tuple[str, str], InstrumentSpec]
+) -> dict[str, InstrumentSpec]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ColdStoreError(f"无法读取来源规格 {path}：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise ColdStoreError(f"来源规格应为 JSON 对象：{path}")
+
+    fields = {"tick_size", "qty_step", "price_precision", "qty_precision"}
+    specs: dict[str, InstrumentSpec] = {}
+    for partition, overrides in payload.items():
+        parts = partition.split("/")
+        if len(parts) != 4 or not all(parts):
+            raise ColdStoreError(f"来源规格键应为 venue/symbol/timeframe/generation_id：{partition}")
+        venue, symbol, _, _ = parts
+        instrument = instruments.get((venue, symbol))
+        if instrument is None:
+            raise ColdStoreError(f"来源规格标的不在市场包内：{venue}/{symbol}")
+        if not isinstance(overrides, dict) or overrides.keys() != fields:
+            raise ColdStoreError(f"来源规格 {partition} 需要字段 {', '.join(sorted(fields))}")
+        if not (
+            isinstance(overrides["tick_size"], str)
+            and isinstance(overrides["qty_step"], str)
+            and type(overrides["price_precision"]) is int
+            and type(overrides["qty_precision"]) is int
+        ):
+            raise ColdStoreError(f"来源规格 {partition} 的步长需为十进制字符串，精度需为整数")
+        try:
+            spec = InstrumentSpec.model_validate(instrument.model_dump() | overrides)
+        except ValueError as exc:
+            raise ColdStoreError(f"来源规格 {partition} 无效：{exc}") from exc
+        if spec.tick_size <= 0 or spec.qty_step <= 0:
+            raise ColdStoreError(f"来源规格 {partition} 的步长必须为正数")
+        cold_column_scales(spec)
+        specs[partition] = spec
+    return specs
 
 
 def _path_under_data_dir(data_dir: Path, relative: Path) -> Path:
@@ -151,6 +191,11 @@ def _prepare_migration(
     if _cold_parquet_is_decimal128(path):
         return None, False
 
+    content_sha256 = _safe_path_part(str(row[3]), "content_sha256")
+    archive = _path_under_data_dir(data_dir, ARCHIVE_SUBDIR / f"{content_sha256}.jsonl")
+    if not archive.is_file() or _sha256_file(archive) != content_sha256:
+        raise ColdStoreIntegrityError(f"原始归档缺失或哈希不符：{archive}")
+
     bars = _read_cold_parquet(path)
     if not bars:
         raise ColdStoreIntegrityError(f"legacy generation 没有数据：{parquet_path}")
@@ -181,24 +226,33 @@ def _prepare_migration(
             new_generation_id=new_generation_id,
             new_path=final,
             new_sha256=new_sha256,
-            new_first_ts=bars[0].ts_event,
-            new_last_ts=bars[-1].ts_event,
-            new_bars=len(bars),
-            new_committed_ts=max(bar.ts_committed for bar in bars),
         ),
         written,
     )
 
 
-def migrate_cold_store(data_dir: Path | str, *, pack: MarketPack) -> ColdMigrationReport:
-    """把清单中的旧字符串 generation 全部迁移到 decimal128；幂等、失败不切清单。"""
+def migrate_cold_store(
+    data_dir: Path | str,
+    *,
+    pack: MarketPack,
+    source_specs: Path | None = None,
+) -> ColdMigrationReport:
+    """迁移旧字符串 generation，可按分区和旧 generation ID 指定来源规格。"""
 
     root = Path(data_dir)
+    with ServiceLock(root, role="cold-migrate"):
+        return _migrate_locked(root, pack=pack, source_specs=source_specs)
+
+
+def _migrate_locked(
+    root: Path, *, pack: MarketPack, source_specs: Path | None
+) -> ColdMigrationReport:
     db_path = root / MANIFEST_DB
     if not db_path.is_file():
         return ColdMigrationReport(0, 0, 0, 0, False)
 
     instruments = _instrument_index(pack)
+    historical_specs = _load_source_specs(source_specs, instruments) if source_specs else {}
     claim_writer(db_path)
     connection: sqlite3.Connection | None = None
     try:
@@ -231,9 +285,10 @@ def migrate_cold_store(data_dir: Path | str, *, pack: MarketPack) -> ColdMigrati
                     f"冷库清单中的标的不在市场包内：{venue}/{symbol}"
                 )
             timeframe = _safe_path_part(timeframe, "timeframe")
+            source = historical_specs.get(f"{venue}/{symbol}/{timeframe}/{row[0]}", instrument)
             migration, written = _prepare_migration(
                 root,
-                instrument=instrument,
+                instrument=source,
                 timeframe=timeframe,
                 row=row[:8],
             )
@@ -252,37 +307,20 @@ def migrate_cold_store(data_dir: Path | str, *, pack: MarketPack) -> ColdMigrati
         try:
             connection.execute("BEGIN IMMEDIATE")
             for migration in migrations:
+                # 保留原始归档哈希和清单顺序，时点读取的并列版本沿用原优先级。
                 connection.execute(
                     """
-                    DELETE FROM generations
+                    UPDATE generations SET generation_id = ?, parquet_path = ?, sha256 = ?
                     WHERE venue = ? AND symbol = ? AND timeframe = ? AND generation_id = ?
                     """,
                     (
+                        migration.new_generation_id,
+                        migration.new_path.relative_to(root).as_posix(),
+                        migration.new_sha256,
                         migration.venue,
                         migration.symbol,
                         migration.timeframe,
                         migration.old_generation_id,
-                    ),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO generations (
-                        generation_id, venue, symbol, timeframe, parquet_path,
-                        sha256, content_sha256, first_ts, last_ts, bars, committed_ts
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        migration.new_generation_id,
-                        migration.venue,
-                        migration.symbol,
-                        migration.timeframe,
-                        migration.new_path.relative_to(root).as_posix(),
-                        migration.new_sha256,
-                        migration.new_generation_id,
-                        migration.new_first_ts,
-                        migration.new_last_ts,
-                        migration.new_bars,
-                        migration.new_committed_ts,
                     ),
                 )
                 updated_cursors += connection.execute(
@@ -312,6 +350,8 @@ def migrate_cold_store(data_dir: Path | str, *, pack: MarketPack) -> ColdMigrati
             manifest_switched=True,
         )
     finally:
-        if connection is not None:
-            checkpoint_and_close(connection)
-        release_writer(db_path)
+        try:
+            if connection is not None:
+                checkpoint_and_close(connection)
+        finally:
+            release_writer(db_path)

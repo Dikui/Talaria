@@ -1,16 +1,15 @@
-"""原始标准化 K 线落盘：JSONL 追加、fsync、按 timestamp 去重。
+"""原始标准化 K 线落盘：JSONL 追加、fsync、保留历史修订。
 
 路径为 ``<data_dir>/data/raw/<archive_id>/<SYMBOL>/<timeframe>.jsonl``。
-去重语义是「last-ingested wins」：后追加的同 timestamp 记录覆盖先前的。
 """
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable, Iterator
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterable
 
 from talaria.foundation.connector import RawBar
 from talaria.foundation.types import PrecisionTier
@@ -55,6 +54,28 @@ def bar_from_record(record: dict[str, object]) -> RawBar:
     )
 
 
+def latest_visible_bars(
+    bars: Iterable[RawBar], *, as_of: int | None = None
+) -> list[RawBar]:
+    """先按可获取时间截断，再取每个事件的最高修订（ADR-0018）。
+
+    同一修订按可获取和摄取时间取更晚者，完全相同时后出现者胜。
+    """
+
+    chosen: dict[int, RawBar] = {}
+    for bar in bars:
+        if as_of is not None and bar.ts_available > as_of:
+            continue
+        current = chosen.get(bar.ts_event)
+        if current is None or (bar.revision, bar.ts_available, bar.ts_ingested) >= (
+            current.revision,
+            current.ts_available,
+            current.ts_ingested,
+        ):
+            chosen[bar.ts_event] = bar
+    return [chosen[ts_event] for ts_event in sorted(chosen)]
+
+
 class RawStore:
     """按标的与周期追加原始柱，读取时去重并升序返回。"""
 
@@ -79,16 +100,18 @@ class RawStore:
             os.fsync(handle.fileno())
         return len(materialized)
 
-    def read(self, symbol: str, timeframe: str) -> list[RawBar]:
+    def read(
+        self, symbol: str, timeframe: str, *, as_of: int | None = None
+    ) -> list[RawBar]:
+        return latest_visible_bars(self.revisions(symbol, timeframe), as_of=as_of)
+
+    def revisions(self, symbol: str, timeframe: str) -> Iterator[RawBar]:
+        """按追加顺序提供原始柱的全部版本。"""
+
         path = self.path_for(symbol, timeframe)
         if not path.is_file():
-            return []
-        by_timestamp: dict[int, RawBar] = {}
+            return
         with path.open(encoding="utf-8") as handle:
             for line in handle:
-                if not line.strip():
-                    continue
-                record = json.loads(line)
-                bar = bar_from_record(record)
-                by_timestamp[bar.ts_event] = bar
-        return [by_timestamp[key] for key in sorted(by_timestamp)]
+                if line.strip():
+                    yield bar_from_record(json.loads(line))

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
@@ -32,14 +32,6 @@ from talaria.perception.snapshot_store import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _merge_bars(
-    archived: Sequence[RawBar], hot: Sequence[RawBar], *, cutoff_ts: int
-) -> list[RawBar]:
-    """按冷库统一读取语义合并：先按可见时点截断，再取每个事件的最高修订。"""
-
-    return latest_visible_bars([*archived, *hot], as_of=cutoff_ts)
 
 
 def _snapshot_entries(
@@ -106,7 +98,7 @@ class SnapshotBuilder:
                 cutoff_ts=cutoff,
                 policy=self._policy,
             )
-            archived = self._raw_store.read(instrument.symbol, timeframe)
+            archived = self._raw_store.revisions(instrument.symbol, timeframe)
             hot = (
                 self._hot_bars.recent_bars(
                     instrument_id=instrument.instrument_id, timeframe=timeframe
@@ -114,11 +106,12 @@ class SnapshotBuilder:
                 if self._hot_bars is not None
                 else ()
             )
-            raw_bars = _merge_bars(archived, hot, cutoff_ts=cutoff)
+            revisions = [*archived, *hot]
+            raw_bars = latest_visible_bars(revisions, as_of=cutoff)
             self._publish_cold(
                 instrument=instrument,
                 timeframe=timeframe,
-                raw_bars=raw_bars,
+                raw_bars=revisions,
                 cutoff_ts=cutoff,
             )
             compact = compact_series(raw_bars, timeframe=timeframe, cutoff_ts=cutoff)
@@ -287,7 +280,7 @@ class SnapshotBuilder:
         *,
         instrument: InstrumentSpec,
         timeframe: str,
-        raw_bars: Sequence[RawBar],
+        raw_bars: Iterable[RawBar],
         cutoff_ts: int,
     ) -> None:
         """尽力把快照可见柱增量写入冷库；冷库故障绝不阻塞快照主路径。"""
@@ -297,7 +290,10 @@ class SnapshotBuilder:
         publisher = self._cold_publishers.get((instrument.instrument_id, timeframe))
         if publisher is None:
             return
-        visible = [bar for bar in raw_bars if bar.ts_available <= cutoff_ts]
+        visible = sorted(
+            (bar for bar in raw_bars if bar.ts_available <= cutoff_ts),
+            key=lambda bar: (bar.ts_event, bar.revision),
+        )
         if not visible:
             return
         try:

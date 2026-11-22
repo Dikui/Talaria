@@ -35,11 +35,7 @@ def ensure_history(
     """确保本地至少缓存 ``target_bars`` 根可用柱，返回可用柱（升序）。"""
 
     def usable() -> list[RawBar]:
-        return [
-            bar
-            for bar in raw_store.read(symbol, timeframe)
-            if bar.ts_available <= cutoff_ts
-        ]
+        return raw_store.read(symbol, timeframe, as_of=cutoff_ts)
 
     existing = usable()
     pages = 0

@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -20,10 +23,12 @@ from talaria.foundation.connector import RawBar
 from talaria.foundation.errors import ColdStoreQualityError
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.perception.cold_store import (
+    ARCHIVE_SUBDIR,
     COLD_COLUMN_SCALES_METADATA,
     COLD_FORMAT_DECIMAL128,
     COLD_FORMAT_METADATA,
     COLD_INSTRUMENT_VERSION_METADATA,
+    MANIFEST_DB,
     ColdBatch,
     ColdStore,
     cold_column_scales,
@@ -119,6 +124,47 @@ def test_cold_parquet_uses_per_column_decimal128_and_records_metadata(
     read_back = store.read_bars(INSTRUMENT, TIMEFRAME)
     assert read_back == bars
     assert read_back[0].turnover == Decimal("809038.73")
+
+
+# data-access/01：幂等请求仍须满足本次发布传入的规格。
+@pytest.mark.regression
+def test_duplicate_batch_is_validated_against_requested_spec(store: ColdStore) -> None:
+    bars = [_bar(BASE, close="100.55")]
+    fine = INSTRUMENT.model_copy(
+        update={"tick_size": Decimal("0.01"), "price_precision": 2}
+    )
+    generation = store.publish(ColdBatch(instrument=fine, timeframe=TIMEFRAME, bars=bars))
+
+    with pytest.raises(ColdStoreQualityError, match="close.*scale=1"):
+        store.publish(_batch(bars))
+
+    assert store.generations(INSTRUMENT, TIMEFRAME) == [generation]
+
+
+# data-access/01：Parquet 补齐小数尾零后重发仍匹配原批次，归档保留输入字节。
+@pytest.mark.regression
+@pytest.mark.parametrize("previous_id_format", [False, True], ids=["current", "legacy"])
+def test_read_back_batch_can_be_republished(
+    store: ColdStore, tmp_path: Path, previous_id_format: bool
+) -> None:
+    bars = [_bar(BASE, volume="12.345", turnover="809038.73")]
+    original_archive = store.archive(_batch(bars))
+    first = store.publish(_batch(bars))
+    if previous_id_format:
+        # 模拟已有 decimal128 冷库以原始归档哈希标识 generation 的清单。
+        with closing(sqlite3.connect(tmp_path / MANIFEST_DB)) as connection, connection:
+            connection.execute("UPDATE generations SET generation_id = content_sha256")
+            connection.execute("UPDATE cursors SET generation_id = ?", (original_archive.sha256,))
+        first = store.generations(INSTRUMENT, TIMEFRAME)[0]
+    read_back = store.read_bars(INSTRUMENT, TIMEFRAME)
+    assert str(read_back[0].turnover) == "809038.7300"
+
+    assert store.publish(_batch(read_back)) == first
+    assert store.generations(INSTRUMENT, TIMEFRAME) == [first]
+    assert first.content_sha256 == original_archive.sha256
+    payload = (tmp_path / ARCHIVE_SUBDIR / f"{first.content_sha256}.jsonl").read_bytes()
+    assert hashlib.sha256(payload).hexdigest() == first.content_sha256
+    assert json.loads(payload)["turnover"] == "809038.73"
 
 
 @pytest.mark.parametrize(
