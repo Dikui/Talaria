@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
@@ -388,14 +389,14 @@ def _run_up(
     # uvicorn 0.54 在优雅关闭后会重新抛出捕获的 SIGTERM，使进程以 -15 退出。
     # solo 守护进程需要可预测的 0 退出码，因此把服务器放到工作线程、由主线程
     # 接收信号并翻转 should_exit；工作线程里的 uvicorn 不会安装信号处理器。
-    exit_code = 0
+    worker_error: BaseException | None = None
 
     def run_server() -> None:
-        nonlocal exit_code
+        nonlocal worker_error
         try:
             server.run()
-        except SystemExit as exc:  # 端口占用等启动失败
-            exit_code = int(exc.code or 0)
+        except BaseException as exc:
+            worker_error = exc
 
     def stop_server(signum: int, frame: object) -> None:
         server.should_exit = True
@@ -407,6 +408,7 @@ def _run_up(
     worker = threading.Thread(target=run_server, name="talaria-uvicorn", daemon=False)
     worker.start()
     host_started = False
+    startup_failed = False
     try:
         deadline = time.monotonic() + 20
         while (
@@ -416,62 +418,62 @@ def _run_up(
         ):
             time.sleep(0.05)
         if not server.started:
+            startup_failed = True
             print(
                 "Talaria 守护进程启动失败；请检查端口占用与日志。",
                 file=sys.stderr,
             )
-            return 2 if exit_code == 0 else exit_code
+        else:
+            base_url = f"http://{f'[{host}]' if ':' in host else host}:{args.port}"
+            try:
+                write_service_descriptor(
+                    descriptor_path,
+                    base_url=base_url,
+                    token=token,
+                    pid=os.getpid(),
+                    features=features,
+                )
+            except (OSError, ValueError) as exc:
+                # 描述缺失时 usage-scan 会拒绝直写（锁在服务手里），但看盘不受影响。
+                print(
+                    f"警告：无法发布服务写入接口：{exc}\n"
+                    f"同机命令在服务运行期间将无法经服务写入；描述路径：{descriptor_path}",
+                    file=sys.stderr,
+                )
 
-        base_url = f"http://{f'[{host}]' if ':' in host else host}:{args.port}"
-        try:
-            write_service_descriptor(
-                descriptor_path,
-                base_url=base_url,
-                token=token,
-                pid=os.getpid(),
-                features=features,
-            )
-        except (OSError, ValueError) as exc:
-            # 描述缺失时 usage-scan 会拒绝直写（锁在服务手里），但看盘不受影响。
-            print(
-                f"警告：无法发布服务写入接口：{exc}\n"
-                f"同机命令在服务运行期间将无法经服务写入；描述路径：{descriptor_path}",
-                file=sys.stderr,
-            )
-
-        if dsh_host is not None:
-            write_bridge_descriptor(
-                bridge_path,
-                base_url=base_url,
-                token=token,
-                daemon_pid=os.getpid(),
-            )
-            if dsh_start_error is None:
-                try:
-                    info = dsh_host.start()
-                    host_started = True
-                except DshHostError as exc:
-                    dsh_host.mark_unavailable(str(exc))
+            if dsh_host is not None:
+                write_bridge_descriptor(
+                    bridge_path,
+                    base_url=base_url,
+                    token=token,
+                    daemon_pid=os.getpid(),
+                )
+                if dsh_start_error is None:
+                    try:
+                        info = dsh_host.start()
+                        host_started = True
+                    except DshHostError as exc:
+                        dsh_host.mark_unavailable(str(exc))
+                        print(
+                            f"警告：{exc}\n"
+                            "Talaria 守护进程继续提供图表快通道；"
+                            "可修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
+                            file=sys.stderr,
+                        )
+                        info = dsh_host.info()
+                else:
+                    dsh_host.mark_unavailable(dsh_start_error)
                     print(
-                        f"警告：{exc}\n"
+                        f"警告：{dsh_start_error}\n"
                         "Talaria 守护进程继续提供图表快通道；"
-                        "可修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
+                        "修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
                         file=sys.stderr,
                     )
                     info = dsh_host.info()
-            else:
-                dsh_host.mark_unavailable(dsh_start_error)
-                print(
-                    f"警告：{dsh_start_error}\n"
-                    "Talaria 守护进程继续提供图表快通道；"
-                    "修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
-                    file=sys.stderr,
-                )
-                info = dsh_host.info()
-            _print_ready(host, args.port, info, bridge_path, features)
+                _print_ready(host, args.port, info, bridge_path, features)
 
-        while worker.is_alive():
-            worker.join(timeout=0.2)
+            while worker.is_alive():
+                worker.join(timeout=0.2)
     except KeyboardInterrupt:  # pragma: no cover - 主线程信号由 stop_server 接管
         server.should_exit = True
     finally:
@@ -486,7 +488,17 @@ def _run_up(
             worker.join()
             for sig, handler in previous_handlers.items():
                 signal.signal(sig, handler)
-    return exit_code
+    if isinstance(worker_error, SystemExit):  # 端口占用等启动失败
+        code = worker_error.code
+        if isinstance(code, int) and code != 0:
+            return code
+        if code is not None and not isinstance(code, int):
+            print(code, file=sys.stderr)
+            return 1
+    elif worker_error is not None:
+        traceback.print_exception(worker_error)
+        return 1
+    return 2 if startup_failed else 0
 
 
 def _report_host_offline(info: DshHostInfo) -> None:

@@ -138,3 +138,23 @@ def test_up_keeps_lock_until_timed_out_worker_finishes(tmp_path, monkeypatch) ->
     assert len(observed_holders) == 1
     assert observed_holders[0] is not None
     assert probe_lock(tmp_path) is None
+
+
+@pytest.mark.regression
+def test_up_returns_nonzero_when_a_started_worker_crashes(tmp_path, monkeypatch, capsys):
+    # platform/01: 模拟 Uvicorn 启动后抛出异常，使 launchd 看见失败退出。
+    class CrashingServer:
+        started = False
+
+        def __init__(self, config):
+            pass
+
+        def run(self):
+            self.started = True
+            raise RuntimeError("worker crashed")
+
+    monkeypatch.setattr(cli.uvicorn, "Server", CrashingServer)
+
+    assert cli.main(["up", "--solo", "--data-dir", str(tmp_path)]) == 1
+    assert "RuntimeError: worker crashed" in capsys.readouterr().err
+    assert probe_lock(tmp_path) is None
