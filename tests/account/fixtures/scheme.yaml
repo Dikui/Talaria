@@ -1,0 +1,17 @@
+scheme: replay-example
+interface_version: 1
+sub_accounts: [example]
+seed: 17
+slots:
+  data:
+    plugin: parquet_replay
+    params:
+      instrument: BTC-USDT-PERP
+      timeframe: 1m
+      start: 1793491200000
+      end: 1793491380000
+  strategy: {python: replay_strategy.py, params: {trigger_price: "11"}}
+  sizing: replay_plugins.py:sizing
+  risk: replay_plugins.py:risk
+  fill: replay_plugins.py:fill
+  tools: []

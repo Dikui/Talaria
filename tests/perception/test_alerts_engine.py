@@ -563,7 +563,7 @@ def test_composite_rule_can_trigger_on_first_confirmed_cross_after_warmup() -> N
         from talaria.foundation.derivatives import DerivativePoint
 
         engine.seed_derivatives([DerivativePoint(
-            instrument_id=INSTRUMENT, kind="funding_rate", value=rate, ts_event=ts,
+            instrument_id=INSTRUMENT, kind="funding_rate", settled=True, value=rate, ts_event=ts,
             ts_ingested=ts, ts_committed=ts, ts_available=ts,
         )])
     engine.handle_event(_kline(BASE_TS + MINUTE, "111", confirmed=False))
@@ -688,6 +688,35 @@ def test_predicted_funding_updates_do_not_create_settlement_observations():
                                                 ts_event=ts, ts_ingested=ts))
         engine.handle_event(_kline(ts, "100"))
     assert alert.trigger_count == 0
+
+
+@pytest.mark.regression
+def test_snapshot_backfill_is_observed_on_the_next_feed_event():
+    # alerts-and-scanning/01 × data-access/08：冻结第一条预警的证据会发布一笔历史结算。
+    from talaria.foundation.derivatives import DerivativePoint
+
+    def settlement(ts, rate):
+        return DerivativePoint(instrument_id=INSTRUMENT, kind="funding_rate", value=rate, settled=True,
+                               ts_event=ts, ts_available=ts, ts_ingested=ts, ts_committed=ts)
+
+    archive = [settlement(BASE_TS, "-0.001")]
+    price = _rule_alert(_compare(dict(source="bar", field="close"), "100"))
+    funding = _rule_alert(_compare(dict(source="derivative", kind="funding_rate"), "0"))
+    price.alert_id, funding.alert_id = "a_price", "b_funding"
+
+    def freeze(alert, cutoff):
+        if alert.alert_id == price.alert_id:
+            archive.append(settlement(BASE_TS + MINUTE, "0.001"))
+        return "snap"
+
+    engine = AlertEngine(now_ms=Clock(BASE_TS), read_archived_derivatives=lambda *_: archive,
+                         freeze_snapshot=freeze)
+    engine.load([price, funding])
+    engine.handle_event(_kline(BASE_TS, "90"))
+    engine.handle_event(_kline(BASE_TS + MINUTE, "105"))
+    assert (price.trigger_count, funding.trigger_count) == (1, 0)
+    engine.handle_event(_kline(BASE_TS + 2 * MINUTE, "105"))
+    assert funding.trigger_count == 1
 
 
 @pytest.mark.parametrize("reference", ["drawing_price", "level_price"])

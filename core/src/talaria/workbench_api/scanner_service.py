@@ -25,6 +25,7 @@ from talaria.foundation.scanner.contracts import (
     ScannerTrigger,
     ScannerTriggerRoute,
 )
+from talaria.perception.rule_derivatives import ArchiveReader
 from talaria.perception.scanner.engine import KIND_ORDER, RuleLevelsAt, ScannerConfig, ScannerEngine
 from talaria.perception.scanner.routing import TriggerRoutingPolicy
 from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService, pin_rule_indicator_params
@@ -58,6 +59,7 @@ class ScannerService:
         routing: TriggerRoutingPolicy | None = None,
         focus_name: str = SCANNER_FOCUS_NAME,
         rule_levels_at: RuleLevelsAt | None = None,
+        read_archived_derivatives: ArchiveReader | None = None,
     ) -> None:
         self._state_writer = state_writer
         self._indicator_defaults = IndicatorDefaultsService(state_writer)
@@ -72,6 +74,7 @@ class ScannerService:
             config=config,
             freeze_snapshot=freeze_snapshot,
             rule_levels_at=rule_levels_at,
+            read_archived_derivatives=read_archived_derivatives,
         )
         self._history: deque[ScannerTrigger] = deque(maxlen=HISTORY_LIMIT)
         self._lock = asyncio.Lock()

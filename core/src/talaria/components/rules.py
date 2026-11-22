@@ -82,11 +82,15 @@ class _Evaluation:
                 DerivativeKind.OPEN_INTEREST: OI_TIMEFRAME_BY_TIMEFRAME[ctx.timeframe],
             }[operand.kind]
             cutoff = ctx.now
-            if previous and self.bar is not None:
-                cutoff = self.bar.timestamp
+            if previous:
+                prior = self._previous_bar()
+                if prior is None:
+                    return None
+                cutoff, = ctx._bar_evaluation_times(ctx.timeframe, [prior])
             return next((
-                point.value for point in reversed(ctx.derivatives(operand.kind))
-                if point.timeframe == target and point.ts_available <= cutoff
+                point.value for point in reversed(ctx.derivatives(operand.kind, as_of=cutoff))
+                if point.timeframe in (target, None)
+                and (operand.kind is not DerivativeKind.FUNDING_RATE or point.is_funding_settlement)
             ), None)
         if isinstance(operand, RuleLevelPrice):
             level = self._visible_level(operand)
@@ -111,6 +115,7 @@ class _Evaluation:
         points = ctx.indicator(
             operand.name, version=operand.version,
             _history_limit=ctx._indicator_history_limit or DEFAULT_RULE_HISTORY,
+            _include_ticks=True,
             **operand.params.model_dump(exclude_none=True),
         )
         if previous:

@@ -17,6 +17,8 @@ from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
     DerivativeKind,
     DerivativePoint,
+    derivative_identity,
+    latest_visible_derivatives,
 )
 from talaria.foundation.drawings import DrawingRecord
 from talaria.foundation.feed import FeedEvent, KlineEvent
@@ -58,7 +60,9 @@ def _read_closed_bars(
         (bar for bar in rows if bar.confirmed and start <= bar.ts_event <= end),
         as_of=as_of,
     )
-    return sdk.BarsResult(tuple(visible), tail_completed=getattr(rows, "tail_completed", True))
+    return sdk.BarsResult(
+        tuple(bar.model_copy() for bar in visible), tail_completed=getattr(rows, "tail_completed", True),
+    )
 
 
 @dataclass(slots=True)
@@ -97,6 +101,7 @@ class Ctx:
     drawing: Callable[[str], DrawingRecord | None] | None = field(default=None, kw_only=True)
     levels: Mapping[str, KeyLevel] = field(default_factory=dict, kw_only=True)
     rule_state: RuleState = field(default_factory=RuleState, kw_only=True, compare=False)
+    _data_dir: str | Path | None = field(default=None, repr=False, compare=False, kw_only=True)
     _bar_ts: int | None = field(default=None, repr=False, compare=False, kw_only=True)
     _discovery_tail_completed: bool = field(default=True, repr=False, compare=False, kw_only=True)
     _indicator_defaults: Mapping[IndicatorName, IndicatorParams] = field(
@@ -108,8 +113,14 @@ class Ctx:
     _derivatives_by_kind: dict[DerivativeKind, tuple[DerivativePoint, ...]] = field(
         default_factory=dict, init=False, repr=False, compare=False,
     )
+    _read_derivative_revisions: Callable[[DerivativeKind], Sequence[DerivativePoint]] | None = field(
+        default=None, repr=False, compare=False, kw_only=True,
+    )
 
     _confirmed_compact: Sequence[CompactBar] | None = field(
+        default=None, repr=False, compare=False, kw_only=True,
+    )
+    _first_confirmed_at: Callable[[int], int | None] | None = field(
         default=None, repr=False, compare=False, kw_only=True,
     )
     _indicator_history_limit: int | None = field(default=None, repr=False, compare=False, kw_only=True)
@@ -156,37 +167,99 @@ class Ctx:
         bars = self._closed_bars(requested)
         return bars[-1:] if timeframe_ms(requested) > timeframe_ms(self.timeframe) else bars[:]
 
-    def derivatives(self, kind: DerivativeKind | str) -> tuple[DerivativePoint, ...]:
+    def derivatives(self, kind: DerivativeKind | str, *, as_of: int | None = None) -> tuple[DerivativePoint, ...]:
         """按事件时间返回可获取的衍生品点，含每个序列窗口前最近一点。"""
-        prior: dict[str | None, DerivativePoint] = {}
+        kind = DerivativeKind(kind)
+        cutoff = self.now if as_of is None else min(as_of, self.now)
+        if cutoff < self.now and self._read_derivatives is not None:
+            # 外部读取器可能仅返回截止时刻的最高版本。
+            rows = self._read_derivatives(self.instrument, kind, start=0, end=cutoff, as_of=cutoff)
+        else:
+            rows = self._derivative_revisions(kind)
+        prior: dict[tuple[str | None, bool], DerivativePoint] = {}
         in_window = []
-        for point in self._visible_derivatives(DerivativeKind(kind)):
+        for point in latest_visible_derivatives(rows, as_of=cutoff):
+            if point.instrument_id != self.instrument or point.kind is not kind or point.ts_event < 0:
+                continue
             if point.ts_event < self.start:
-                prior[point.timeframe] = point
+                prior[point.timeframe, point.is_funding_settlement] = point
             else:
                 in_window.append(point)
         return (*sorted(prior.values(), key=_DERIVATIVE_EVENT_ORDER), *in_window)
 
-    def _visible_derivatives(self, kind: DerivativeKind) -> tuple[DerivativePoint, ...]:
-        if self._read_derivatives is None:
-            return ()
+    def _derivative_revisions(self, kind: DerivativeKind) -> tuple[DerivativePoint, ...]:
         if kind not in self._derivatives_by_kind:
-            rows = self._read_derivatives(
-                self.instrument, kind, start=0, end=self.now, as_of=self.now,
+            if self._read_derivative_revisions is not None:
+                rows = self._read_derivative_revisions(kind)
+            elif self._read_derivatives is None:
+                rows = sdk._archived_derivative_revisions(
+                    self.instrument, kind, end=self.now, data_dir=self._data_dir,
+                )
+            else:
+                rows = self._read_derivatives(self.instrument, kind, start=0, end=self.now, as_of=self.now)
+            self._derivatives_by_kind[kind] = tuple(
+                point for point in rows
+                if point.instrument_id == self.instrument and point.kind is kind
+                and 0 <= point.ts_event <= self.now and point.ts_available <= self.now
             )
-            self._derivatives_by_kind[kind] = tuple(sorted(
-                (
-                    point for point in rows
-                    if point.instrument_id == self.instrument and point.kind is kind
-                    and 0 <= point.ts_event <= self.now and point.ts_available <= self.now
-                ),
-                key=_DERIVATIVE_EVENT_ORDER,
-            ))
         return self._derivatives_by_kind[kind]
+
+    def _indicator_derivatives(
+        self, kind: DerivativeKind, timeframe: str | None, earliest_cutoff: int, *, include_ticks: bool,
+    ) -> list[DerivativePoint]:
+        def matches(point: DerivativePoint) -> bool:
+            return (point.timeframe == timeframe or (include_ticks and point.timeframe is None)) and (
+                kind is not DerivativeKind.FUNDING_RATE or point.is_funding_settlement
+            )
+
+        points = [point for point in self._derivative_revisions(kind) if matches(point)]
+        read = self._read_derivatives
+        if read is not None:
+            # sdk.derivatives 等读取器每次只返回最高可见修订，按需回查被遮住的版本。
+            for latest in latest_visible_derivatives(points):
+                identity = derivative_identity(latest)
+                point = latest
+                while point.revision > 0 and point.ts_available > earliest_cutoff:
+                    cutoff = point.ts_available - 1
+                    earlier = latest_visible_derivatives(
+                        (prior for prior in read(
+                            self.instrument, kind, start=point.ts_event, end=point.ts_event, as_of=cutoff,
+                        ) if derivative_identity(prior) == identity),
+                        as_of=cutoff,
+                    )
+                    if not earlier:
+                        break
+                    point = earlier[0]
+                    points.append(point)
+        return points
+
+    def _bar_evaluation_times(self, timeframe: str, bars: Sequence[CompactBar]) -> list[int]:
+        interval = timeframe_ms(timeframe)
+        if timeframe == self.timeframe and self._confirmed_compact is not None:
+            times = []
+            for bar in bars:
+                first = self._first_confirmed_at(bar.timestamp) if self._first_confirmed_at else None
+                times.append(max(bar.timestamp + interval, bar.ts_available if first is None else first))
+            return times
+        closed = self._closed_bars(timeframe)
+        rows = {row.ts_event: row for row in closed}
+        tail_completed = closed.tail_completed
+        times = []
+        for bar in bars:
+            row = rows.get(bar.timestamp)
+            if row is None:
+                times.append(bar.ts_available)
+                continue
+            cutoff, _, complete = _first_confirmation(self._read_bars, self.instrument, timeframe, row, interval)
+            tail_completed &= complete
+            times.append(cutoff)
+        if closed.tail_completed and not tail_completed:
+            self._bars_by_timeframe[timeframe] = sdk.BarsResult(tuple(closed), tail_completed=False)
+        return times
 
     def indicator(
         self, name: str, *, timeframe: str | None = None, version: str = "1",
-        _history_limit: int | None = None, **params: object,
+        _history_limit: int | None = None, _include_ticks: bool = False, **params: object,
     ) -> Series:
         """计算已注册算子的 Decimal 序列，跨大周期只返回最后一个点。"""
         operator = OPERATORS.get(name, version=version)
@@ -212,17 +285,15 @@ class Ctx:
                 DerivativeKind.OPEN_INTEREST: OI_TIMEFRAME_BY_TIMEFRAME[requested],
                 DerivativeKind.MARK_PRICE: requested,
             }
+            evaluations = self._bar_evaluation_times(requested, bars)
+            earliest = min(evaluations, default=self.now)
             inputs = {
-                kind: tuple(
-                    point for point in self._visible_derivatives(kind)
-                    if point.timeframe == timeframes[kind]
-                )
+                kind: self._indicator_derivatives(kind, timeframes[kind], earliest, include_ticks=_include_ticks)
                 for kind in operator.derivative_inputs
             }
             samples = derivative_samples(
-                bars, inputs.get(DerivativeKind.FUNDING_RATE, ()),
-                inputs.get(DerivativeKind.OPEN_INTEREST, ()),
-                mark_price=inputs.get(DerivativeKind.MARK_PRICE, ()),
+                bars, inputs.get(DerivativeKind.FUNDING_RATE, ()), inputs.get(DerivativeKind.OPEN_INTEREST, ()),
+                mark_price=inputs.get(DerivativeKind.MARK_PRICE, ()), as_of=evaluations,
             )
         points = operator.compute(bars, params, derivatives=samples)
         if timeframe_ms(requested) > timeframe_ms(self.timeframe):
@@ -242,9 +313,28 @@ class Evaluation[T]:
     tail_completed: bool = True
 
 
-def _confirmation_times(
+def _first_confirmation(
+    read: BarReader, instrument: str, timeframe: str, bar: RangeBar, interval: int,
+) -> tuple[int, RangeBar, bool]:
+    slot = bar.ts_event
+    close = slot + interval
+    tail_completed = True
+    while bar.ts_available > close:
+        # 读取器只返回最高可见修订。退到它可见前，找出首次确认时点。
+        earlier = _read_closed_bars(
+            read, instrument, timeframe, start=slot, end=slot, as_of=bar.ts_available - 1,
+        )
+        tail_completed &= earlier.tail_completed
+        if not earlier:
+            break
+        bar = earlier[0]
+    return max(close, bar.ts_available), bar, tail_completed
+
+
+def confirmed_bars(
     read: BarReader, instrument: str, timeframe: str, *, start: int, end: int,
-) -> list[tuple[int, int, bool, RangeBar]]:
+) -> list[tuple[int, RangeBar, bool]]:
+    """返回各柱首次确认可用的时点、该版本的行情和补尾状态。"""
     interval = timeframe_ms(timeframe)
     latest = _read_closed_bars(
         read, instrument, timeframe, start=start,
@@ -252,20 +342,9 @@ def _confirmation_times(
     )
     times = []
     for bar in latest:
-        slot = bar.ts_event
-        close = slot + interval
-        tail_completed = latest.tail_completed
-        while bar.ts_available > close:
-            # 读取器只返回最高可见修订。退到它可见前，找出首次确认时点。
-            earlier = _read_closed_bars(
-                read, instrument, timeframe, start=slot, end=slot, as_of=bar.ts_available - 1,
-            )
-            tail_completed &= earlier.tail_completed
-            if not earlier:
-                break
-            bar = earlier[0]
-        times.append((max(close, bar.ts_available), slot, tail_completed, bar))
-    return sorted(times, key=lambda item: item[:2])
+        cutoff, first, complete = _first_confirmation(read, instrument, timeframe, bar, interval)
+        times.append((cutoff, first, complete and latest.tail_completed))
+    return sorted(times, key=lambda step: (step[0], step[1].ts_event))
 
 
 def run_history[T](
@@ -288,17 +367,18 @@ def run_history[T](
     每根柱首次确认可见时求值，同一时刻按开盘槽排序。
     `history_start` 可向前扩展取数窗口用于预热。
     `drawing_at(id, as_of)` 按可见时点取画线，`levels_at(instrument, timeframe, close)` 按收盘时刻取关键位。
-    `data_dir` 为默认 K 线读取器和工作台指标默认值所用的数据目录。
+    `data_dir` 为默认行情读取器和工作台指标默认值所用的数据目录。
     """
     history_start = start if history_start is None else history_start
     if not 0 <= history_start <= start <= end:
         raise ValueError("须满足 0 <= history_start <= start <= end")
     if read_bars is None:
         read_bars = partial(sdk.bars, data_dir=data_dir)
-    confirmations = _confirmation_times(read_bars, instrument, timeframe, start=start, end=end)
+    confirmations = confirmed_bars(read_bars, instrument, timeframe, start=start, end=end)
     defaults = sdk.indicator_defaults(data_dir=data_dir) if confirmations else {}
     state = RuleState()
-    for cutoff, slot, tail_completed, bar in confirmations:
+    for cutoff, bar, tail_completed in confirmations:
+        slot = bar.ts_event
         event = KlineEvent(instrument_id=instrument, timeframe=timeframe, confirmed=True, revision=bar.revision,
                            bar=compact_series([bar], timeframe=timeframe, cutoff_ts=cutoff)[0])
         levels = levels_at(instrument, timeframe, slot + timeframe_ms(timeframe)) if levels_at else ()
@@ -308,7 +388,7 @@ def run_history[T](
 
         ctx = Ctx(
             instrument, timeframe, history_start, cutoff,
-            _read_bars=read_bars, _read_derivatives=read_derivatives, _bar_ts=slot,
+            _read_bars=read_bars, _read_derivatives=read_derivatives, _data_dir=data_dir, _bar_ts=slot,
             _discovery_tail_completed=tail_completed, _indicator_defaults=defaults,
             event=event, drawing=drawing, levels={level.level_id: level for level in levels}, rule_state=state,
         )

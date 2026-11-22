@@ -393,8 +393,11 @@ class _NetOddsEngine:
             self._closes.pop(0)
         if sample.funding_ts is None or sample.funding_rate is None:
             return {"value": None}
-        if not self._settlements or self._settlements[-1][0] != sample.funding_ts:
-            self._settlements.append((sample.funding_ts, sample.funding_rate))
+        settlement = (sample.funding_ts, sample.funding_rate)
+        if self._settlements and self._settlements[-1][0] == sample.funding_ts:
+            self._settlements[-1] = settlement
+        else:
+            self._settlements.append(settlement)
         if len(self._closes) < self._period + 1 or len(self._true_ranges) < self._period:
             return {"value": None}
         atr = sum(self._true_ranges) / Decimal(self._period)

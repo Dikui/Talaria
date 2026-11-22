@@ -36,6 +36,7 @@ from talaria.foundation.rules import (
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.alerts import AlertEngine
 from talaria.perception.alerts.engine import KeyLevelProvider
+from talaria.perception.rule_derivatives import ArchiveReader
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService, pin_rule_indicator_params
 from talaria.workbench_api.state_store import StateStore, StateWriterQueue
@@ -62,6 +63,7 @@ class AlertService:
         instruments: Sequence[InstrumentSpec],
         now_ms: Callable[[], int],
         bar_history: Callable[[str, str], Sequence[Any]] | None = None,
+        read_archived_derivatives: ArchiveReader | None = None,
         session_history: Callable[[str, str], Awaitable[Sequence[CompactBar]]] | None = None,
         key_level_provider: KeyLevelProvider | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
@@ -85,6 +87,7 @@ class AlertService:
         self._engine = AlertEngine(
             now_ms=now_ms,
             history_provider=bar_history,
+            read_archived_derivatives=read_archived_derivatives,
             key_level_provider=key_level_provider,
             freeze_snapshot=freeze_snapshot,
             on_trigger=self._handle_trigger,

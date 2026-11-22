@@ -33,6 +33,9 @@ class ConfirmedHistory:
         return next((ts for ts in reversed(self._slots)
                      if ts + self.interval <= as_of and any(k[1] <= as_of for k in self._versions[ts])), None)
 
+    def first_confirmed_at(self, slot: int) -> int | None:
+        return min((available for _, available in self._versions.get(slot, ())), default=None)
+
     def visible(self, as_of: int, *, through: int | None = None) -> list[CompactBar]:
         end = as_of - self.interval
         if through is not None:

@@ -30,6 +30,7 @@ from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
     DerivativeKind,
     DerivativePoint,
+    latest_visible_derivatives,
 )
 from talaria.foundation.feed import (
     DerivativeTickEvent,
@@ -47,7 +48,7 @@ from talaria.foundation.scanner.contracts import (
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.perception.confirmed_history import ConfirmedHistory
-from talaria.perception.rule_derivatives import RuleDerivatives
+from talaria.perception.rule_derivatives import ArchiveReader, RevisionSeries, RuleDerivatives
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +226,7 @@ class ScannerEngine:
         freeze_snapshot: FreezeSnapshot,
         key_levels_provider: KeyLevelsProvider | None = None,
         rule_levels_at: RuleLevelsAt | None = None,
+        read_archived_derivatives: ArchiveReader | None = None,
     ) -> None:
         self._now_ms = now_ms
         self._config = config or ScannerConfig()
@@ -234,7 +236,7 @@ class ScannerEngine:
 
         self._bars: dict[tuple[str, str], ConfirmedHistory] = {}
         self._stale: set[str] = set()
-        self._derivatives = RuleDerivatives(self._config.max_bars * 4)
+        self._derivatives = RuleDerivatives(self._config.max_bars * 4, read_archived_derivatives)
 
         self._rule_hits: dict[tuple[str, str], tuple[int, int]] = {}
         self._last_trigger_at: dict[tuple[str, ScannerConditionKind], int] = {}
@@ -349,8 +351,9 @@ class ScannerEngine:
             if not visible or visible[-1].status is BarStatus.FEED_GAP:
                 continue
             bars = [bar for bar in visible if bar.status is not BarStatus.FEED_GAP][-self._config.max_bars:]
+            revisions = self._derivatives.observation(instrument_id, timestamp)
             if compiled is not None:
-                match = self._evaluate(instrument_id, ScannerConditionKind.RULE, timestamp, bars,
+                match = self._evaluate(instrument_id, ScannerConditionKind.RULE, timestamp, bars, revisions,
                                        rule=compiled, fingerprint=fingerprint, drawing=drawing)
                 if match is None:
                     continue
@@ -358,7 +361,7 @@ class ScannerEngine:
                 if not include_gate_hits:
                     continue
             for kind in KIND_ORDER:
-                trigger = self._evaluate(instrument_id, kind, timestamp, bars)
+                trigger = self._evaluate(instrument_id, kind, timestamp, bars, revisions)
                 if trigger is not None:
                     triggers.append(trigger)
         return triggers
@@ -399,6 +402,7 @@ class ScannerEngine:
         kind: ScannerConditionKind,
         now: int,
         bars: Sequence[CompactBar],
+        revisions: RevisionSeries,
         *,
         rule: CompiledRule | None = None,
         fingerprint: str = "",
@@ -418,17 +422,17 @@ class ScannerEngine:
             return None
 
         if rule is not None:
-            hit = self._rule_hit(instrument_id, bars[-1], rule, drawing)
+            hit = self._rule_hit(instrument_id, bars[-1], rule, drawing, revisions)
         elif kind is ScannerConditionKind.LIQUIDITY_ANOMALY:
             hit = self._liquidity_hit(instrument_id, bars)
         elif kind is ScannerConditionKind.VOLATILITY_EXPANSION:
             hit = self._volatility_hit(instrument_id, bars)
         elif kind is ScannerConditionKind.FUNDING_EXTREME:
-            hit = self._funding_hit(instrument_id, now)
+            hit = self._funding_hit(revisions, now)
         elif kind is ScannerConditionKind.OI_DIVERGENCE:
-            hit = self._oi_hit(instrument_id, bars, now)
+            hit = self._oi_hit(revisions, bars, now)
         else:
-            hit = self._key_level_hit(instrument_id, bars, now)
+            hit = self._key_level_hit(instrument_id, bars, now, revisions)
         if hit is None:
             return None
 
@@ -472,14 +476,11 @@ class ScannerEngine:
     def _rule_hit(
         self, instrument_id: str, current: CompactBar,
         rule: CompiledRule, drawing: Callable[[str], DrawingRecord | None] | None,
+        revisions: RevisionSeries,
     ) -> _Hit | None:
         timeframe = self.timeframe
         interval = timeframe_ms(timeframe)
         history = self._history(instrument_id, timeframe)
-        points = list(self._derivatives.points(instrument_id, self.timeframe))
-
-        def read_derivatives(instrument, kind, *, start, end, as_of):
-            return [point for point in points if point.kind is kind]
 
         level_nodes = [node for node in rule.rule.references() if isinstance(node, (RuleLevelEvent, RuleLevelPrice))]
         retest = any(isinstance(node, RuleLevelEvent) and node.event is AlertLevelEvent.RETEST for node in level_nodes)
@@ -497,12 +498,13 @@ class ScannerEngine:
                 else:
                     available = self._key_levels_provider(
                         instrument_id=instrument_id, timeframe=timeframe, bars=history.visible(close_ts, through=slot),
-                        cutoff_ts=close_ts, derivative_points=points,
+                        cutoff_ts=close_ts, derivative_points=self._key_level_derivatives(revisions, close_ts),
                     )
                 levels = {level.level_id: level for level in available}
             ctx = Ctx(
                 instrument_id, timeframe, 0, cutoff, drawing=drawing, levels=levels, rule_state=state,
-                _bar_ts=slot, _indicator_defaults={}, _confirmed_compact=closed, _read_derivatives=read_derivatives,
+                _bar_ts=slot, _indicator_defaults={}, _confirmed_compact=closed,
+                _first_confirmed_at=history.first_confirmed_at, _read_derivative_revisions=revisions,
             )
             return rule.observe(ctx)
 
@@ -632,18 +634,11 @@ class ScannerEngine:
             tags=["波动率", self._config.timeframe, f"×{ratio:.1f}"],
         )
 
-    def _funding_series(
-        self, instrument_id: str, now: int
-    ) -> list[tuple[int, Decimal]]:
-        points = {
-            p.ts_event: p.value for p in sorted(self._derivatives.seeded(instrument_id), key=lambda p: p.ts_available)
-            if p.kind is DerivativeKind.FUNDING_RATE and p.ts_available <= now
-        }
-        return sorted(points.items())
-
-    def _funding_hit(self, instrument_id: str, now: int) -> _Hit | None:
+    def _funding_hit(self, revisions: RevisionSeries, now: int) -> _Hit | None:
         config = self._config
-        points = self._funding_series(instrument_id, now)
+        points = [(p.ts_event, p.value) for p in latest_visible_derivatives(
+            (p for p in revisions(DerivativeKind.FUNDING_RATE) if p.is_funding_settlement), as_of=now,
+        )]
         if len(points) < config.funding_min_samples + 1:
             return None
         latest_ts, latest = points[-1]
@@ -682,28 +677,35 @@ class ScannerEngine:
             tags=["资金费率", f"{side}极值", self._config.timeframe],
         )
 
-    def _oi_series(
-        self, instrument_id: str, timeframe: str, now: int
-    ) -> list[tuple[int, Decimal]]:
-        points = {}
-        interval = timeframe_ms(timeframe)
-        for point in sorted(self._derivatives.ticks(instrument_id, self.timeframe), key=lambda p: (p.ts_event, p.ts_available)):
-            if point.kind is DerivativeKind.OPEN_INTEREST and point.timeframe == timeframe and point.ts_available <= now:
-                points[point.ts_event // interval * interval] = point.value
-        for point in sorted(self._derivatives.seeded(instrument_id), key=lambda p: p.ts_available):
-            if point.kind is DerivativeKind.OPEN_INTEREST and point.timeframe == timeframe and point.ts_available <= now:
-                points[point.ts_event] = point.value
-        return sorted(points.items())
+    def _visible_oi(self, revisions: RevisionSeries, now: int) -> list[DerivativePoint]:
+        timeframe = OI_TIMEFRAME_BY_TIMEFRAME[self.timeframe]
+        return latest_visible_derivatives(
+            (p for p in revisions(DerivativeKind.OPEN_INTEREST) if p.timeframe in (None, timeframe)), as_of=now,
+        )
+
+    def _key_level_derivatives(self, revisions: RevisionSeries, cutoff: int) -> list[DerivativePoint]:
+        # 内置关键位只用持仓量，自定义提供方仍可消费其余可见的衍生品序列。
+        points = self._visible_oi(revisions, cutoff)
+        if self._key_levels_provider is not compute_key_levels:
+            points.extend(latest_visible_derivatives(revisions(DerivativeKind.MARK_PRICE), as_of=cutoff))
+            points.extend(latest_visible_derivatives(
+                (p for p in revisions(DerivativeKind.FUNDING_RATE) if p.is_funding_settlement), as_of=cutoff,
+            ))
+        return points
 
     def _oi_hit(
         self,
-        instrument_id: str,
+        revisions: RevisionSeries,
         bars: Sequence[CompactBar],
         now: int,
     ) -> _Hit | None:
         config = self._config
         oi_timeframe = OI_TIMEFRAME_BY_TIMEFRAME.get(self._config.timeframe, "5m")
-        points = self._oi_series(instrument_id, oi_timeframe, now)
+        visible = self._visible_oi(revisions, now)
+        interval = timeframe_ms(oi_timeframe)
+        buckets = {p.ts_event // interval * interval: p.value for p in visible if p.timeframe is None}
+        buckets.update((p.ts_event, p.value) for p in visible if p.timeframe == oi_timeframe)
+        points = sorted(buckets.items())
         if len(points) < config.oi_min_samples:
             return None
         window = points[-(config.oi_lookback + 1) :]
@@ -768,6 +770,7 @@ class ScannerEngine:
         instrument_id: str,
         bars: Sequence[CompactBar],
         now: int,
+        revisions: RevisionSeries,
     ) -> _Hit | None:
         config = self._config
         if len(bars) < 3:
@@ -784,7 +787,7 @@ class ScannerEngine:
                         timeframe=self._config.timeframe,
                         bars=list(bars),
                         cutoff_ts=now,
-                        derivative_points=list(self._derivatives.points(instrument_id, self.timeframe)),
+                        derivative_points=self._key_level_derivatives(revisions, now),
                     )
                 )
             except Exception:

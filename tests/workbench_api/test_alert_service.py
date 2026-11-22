@@ -739,7 +739,8 @@ def test_migrated_intrabar_touch_replay_freezes_at_the_legacy_event(tmp_path: Pa
     asyncio.run(scenario())
 
 
-def test_alert_service_reads_actual_funding_settlements_without_scanner(tmp_path, fixture_dir):
+@pytest.mark.parametrize("cold_store", [True, False])
+def test_alert_service_reads_actual_funding_settlements_without_scanner(tmp_path, fixture_dir, cold_store):
     from talaria.foundation.snapshot import SnapshotRequest
     from talaria.workbench_api.runtime import build_runtime
     from talaria.workbench_api.service_config import FeatureToggles
@@ -748,7 +749,7 @@ def test_alert_service_reads_actual_funding_settlements_without_scanner(tmp_path
     async def scenario():
         runtime = await build_runtime(AppSettings(
             data_dir=tmp_path, dist_dir=tmp_path / "dist", fixture_dir=fixture_dir,
-            now_ms=lambda: NOW_MS, features=FeatureToggles(scanner=False)))
+            now_ms=lambda: NOW_MS, features=FeatureToggles(scanner=False, cold_store=cold_store)))
         try:
             service = runtime.require_alerts()
             runtime.workbench.create_snapshot(SnapshotRequest(instrument_id=INSTRUMENT,

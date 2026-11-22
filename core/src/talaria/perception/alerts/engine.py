@@ -17,7 +17,7 @@ from talaria.components.rules import DEFAULT_RULE_HISTORY, RuleObservation, even
 from talaria.foundation.alerts.contracts import AlertRecord, AlertStatus, AlertTriggerKind, AlertTriggerRecord
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.derivatives import DerivativePoint
-from talaria.perception.rule_derivatives import RuleDerivatives
+from talaria.perception.rule_derivatives import ArchiveReader, RuleDerivatives
 from talaria.foundation.drawings import DrawingKind, DrawingRecord
 from talaria.foundation.feed import (
     DerivativeTickEvent,
@@ -88,6 +88,7 @@ class AlertEngine:
         now_ms: Callable[[], int],
         overlay_geometry: Callable[[str], DrawingRecord | None] | None = None,
         history_provider: Callable[[str, str], Sequence[CompactBar]] | None = None,
+        read_archived_derivatives: ArchiveReader | None = None,
         key_level_provider: KeyLevelProvider | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
         on_trigger: Callable[[AlertTriggerRecord, AlertRecord], None] | None = None,
@@ -101,7 +102,7 @@ class AlertEngine:
         self._on_trigger = on_trigger
         self._bar_limit = max(bar_limit, 32)
         self._compiled: dict[str, CompiledRule] = {}
-        self._derivatives = RuleDerivatives(self._bar_limit)
+        self._derivatives = RuleDerivatives(self._bar_limit, read_archived_derivatives)
         self._alerts: dict[str, AlertRecord] = {}
         self._runtimes: dict[str, _Runtime] = {}
         self._windows: dict[tuple[str, str], ConfirmedHistory] = {}
@@ -237,12 +238,14 @@ class AlertEngine:
                 if version_key not in versions:
                     versions[version_key] = {lv.level_id: lv for lv in self._levels_at(ctx, level_ts)}
                 levels = versions[version_key]
-            pending.append((alert, ctx, levels))
+            observation = self._evaluate(alert, ctx, event, levels)
+            if observation is not None:
+                pending.append((alert, observation, ctx.now))
 
-        for alert, ctx, levels in pending:
-            if self._evaluate(alert, ctx, event, now, levels):
-                # 触发后的规则由回调持久化，避免同一事件写两次。
-                changed.pop(alert.alert_id, None)
+        # 冻结证据可能回填冷库，等该行情事件的所有规则读取完输入再执行。
+        for alert, observation, as_of in pending:
+            self._trigger(alert, observation, now, as_of)
+            changed.pop(alert.alert_id, None)
         return list(changed.values())
 
     def tick(self, now: int | None = None) -> list[AlertRecord]:
@@ -359,14 +362,14 @@ class AlertEngine:
         return changed
 
     def _evaluate(
-        self, alert: AlertRecord, ctx: Ctx, event: FeedEvent, now: int, levels: dict[str, KeyLevel]
-    ) -> bool:
+        self, alert: AlertRecord, ctx: Ctx, event: FeedEvent, levels: dict[str, KeyLevel]
+    ) -> RuleObservation | None:
         runtime = self._runtime_for(alert)
 
         if isinstance(event, KlineEvent):
             bar_key = (event.bar.timestamp, event.revision)
             if runtime.last_bar_key == bar_key:
-                return False
+                return None
 
         compiled = self._compiled[alert.alert_id]
         ctx = replace(ctx, drawing=self._drawing_for, levels=levels, rule_state=runtime.rule_state,
@@ -376,7 +379,7 @@ class AlertEngine:
         if observation is None:
             if compiled.rule.timing == "event" and inputs and not runtime.baseline_pending:
                 runtime.partial_inputs.add(inputs)
-            return False
+            return None
         if isinstance(event, KlineEvent):
             runtime.last_bar_key = (event.bar.timestamp, event.revision)
 
@@ -391,14 +394,13 @@ class AlertEngine:
         runtime.baseline_pending = False
         runtime.condition_true = observation.matched
         if not observation.matched or (previous is not False and not initial_cross):
-            return False
+            return None
         if observation.crossed_at is not None:
             if runtime.last_cross_ts == observation.crossed_at:
-                return False
+                return None
             runtime.last_cross_ts = observation.crossed_at
 
-        self._trigger(alert, observation, now, ctx.now)
-        return True
+        return observation
 
     def _context(self, alert: AlertRecord, event: FeedEvent, now: int) -> Ctx | None:
         key = (alert.instrument_id, alert.timeframe)
@@ -434,12 +436,11 @@ class AlertEngine:
                     else ()
                 )
 
-        def read_derivatives(instrument, kind, *, start, end, as_of):
-            return [p for p in self._derivatives.points(instrument, alert.timeframe) if p.kind is kind]
-
         return Ctx(
             *key, 0, cutoff, _bar_ts=bar_ts, _indicator_defaults={}, _confirmed_compact=bars,
-            _indicator_history_limit=self._bar_limit, _read_derivatives=read_derivatives, _session_prefix=prefix,
+            _first_confirmed_at=history.first_confirmed_at, _indicator_history_limit=self._bar_limit,
+            _read_derivative_revisions=self._derivatives.observation(alert.instrument_id, cutoff),
+            _session_prefix=prefix,
         )
 
     def _levels_at(self, ctx: Ctx, cutoff_ts: int) -> Sequence[KeyLevel]:

@@ -12,8 +12,8 @@ from talaria.feed.supervisor import FeedSupervisor
 from talaria.foundation.alerts import AlertRecord
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
-from talaria.foundation.derivatives import DerivativePoint
-from talaria.foundation.errors import FeatureDisabledError, TalariaError
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
+from talaria.foundation.errors import ColdStoreError, FeatureDisabledError, TalariaError
 from talaria.foundation.feed import FeedEvent, FeedTransport, KlineEvent
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotRequest
@@ -170,6 +170,10 @@ async def build_runtime(
             if strategy_stream is not None:
                 strategy_stream.changed(key, start, end)
 
+        def derivative_published(instrument: str, kind: DerivativeKind, start: int, end: int) -> None:
+            if strategy_stream is not None:
+                strategy_stream.derivative_changed(instrument, kind, start, end)
+
         policy = BackfillPolicy(target_bars=settings.backfill_bars, max_pages=settings.max_pages)
         supervisor: FeedSupervisor | None = None
         cold_store: ColdStore | None = None
@@ -184,10 +188,17 @@ async def build_runtime(
                 cold_publisher = ColdPublisher(
                     cold_store, instruments=instruments, connector=connector,
                     policy=policy, now_ms=settings.now_ms, hot_buffer=hot_buffer,
+                    funding_intervals_ms={
+                        spec.instrument_id: hours * 3_600_000
+                        for spec in instruments
+                        if (hours := pack.traits(spec.instrument_id).carry.funding_interval_hours) is not None
+                        and hours > 0
+                    },
                     has_channel=lambda instrument_id, timeframe: (
                         supervisor is not None and supervisor.has_channel(instrument_id, timeframe)
                     ),
                     on_publish=lambda key, start, end: loop.call_soon_threadsafe(published, key, start, end),
+                    on_derivative_publish=lambda *args: loop.call_soon_threadsafe(derivative_published, *args),
                     on_history_complete=lambda instrument_id, timeframe: loop.call_soon_threadsafe(
                         history_completed, instrument_id, timeframe
                     ),
@@ -216,15 +227,30 @@ async def build_runtime(
                 ),
             )
             resources.push_async_callback(supervisor.stop)
+            if cold_publisher is not None:
+                resources.callback(supervisor.add_listener(cold_publisher.ingest_derivatives))
+                derivative_flusher = asyncio.create_task(cold_publisher.flush_derivatives_periodically())
+                resources.push_async_callback(_stop_task, derivative_flusher)
 
         alerts: AlertService | None = None
         scanner: ScannerService | None = None
+        cold_reader = ColdReader(settings.data_dir)
+
+        def read_archived_derivatives(instrument: str, kind: DerivativeKind, cutoff: int) -> Sequence[DerivativePoint]:
+            try:
+                return cold_reader.read_derivative_revisions(instruments_by_id[instrument], kind, end_ts=cutoff)
+            except ColdStoreError as exc:
+                logger.warning("读取规则冷库衍生品失败（%s %s）：%s", instrument, kind, exc)
+                return ()
 
         def seed_derivatives(instrument_id: str, points: Sequence[DerivativePoint]) -> None:
             if alerts is not None:
                 alerts.engine.seed_derivatives(points)
             if scanner is not None:
                 scanner.seed_derivatives(instrument_id, points)
+
+        def snapshot_derivatives(instrument_id: str, points: Sequence[DerivativePoint]) -> None:
+            loop.call_soon_threadsafe(seed_derivatives, instrument_id, points)
 
         raw_store = RawStore(settings.data_dir, raw_archive_id=pack.raw_archive_id)
         builder = SnapshotBuilder(
@@ -235,9 +261,8 @@ async def build_runtime(
             policy=policy,
             now_ms=settings.now_ms,
             hot_bars=hot_buffer,
-            on_derivatives=lambda instrument_id, points: loop.call_soon_threadsafe(
-                seed_derivatives, instrument_id, points
-            ),
+            on_derivatives=snapshot_derivatives if cold_publisher is None else None,
+            cold_publisher=cold_publisher,
         )
         desk = DeskBroadcast()
         key_levels = KeyLevelRegistry(now_ms=settings.now_ms, on_latest=desk.project_levels)
@@ -302,7 +327,7 @@ async def build_runtime(
         )
         if supervisor is not None and hot_buffer is not None and scheduler is not None:
             strategy_stream = StrategyStream(
-                scheduler=scheduler, hot_buffer=hot_buffer, reader=ColdReader(settings.data_dir),
+                scheduler=scheduler, hot_buffer=hot_buffer, reader=cold_reader,
                 instruments=instruments, now_ms=settings.now_ms,
             )
             resources.callback(strategy_stream.close)
@@ -351,6 +376,7 @@ async def build_runtime(
                 instruments=instruments,
                 now_ms=settings.now_ms,
                 bar_history=bar_history if supervisor is not None else None,
+                read_archived_derivatives=read_archived_derivatives,
                 session_history=(
                     session_history
                     if supervisor is not None and settings.replay_events is None
@@ -380,6 +406,7 @@ async def build_runtime(
                 freeze_snapshot=freeze_snapshot,
                 publish=desk.publish_scanner,
                 rule_levels_at=key_levels.levels_at,
+                read_archived_derivatives=read_archived_derivatives,
                 on_change=rebalance_watchlist,
                 routing=TriggerRoutingPolicy(co_pilot=briefings, co_pilot_enabled=True),
             )

@@ -1,41 +1,45 @@
-"""工作台规则与扫描门禁的衍生品输入。费率序列只接收结算点。"""
+"""为一次规则或扫描观察提供冷库修订，补入尚未归档的实时和回填数据。"""
 
 from collections import deque
-from collections.abc import Iterable, Iterator
-from itertools import chain
+from collections.abc import Callable, Iterable, Sequence
+from functools import cache
 
-from talaria.foundation.derivatives import DerivativeKind, DerivativePoint, OI_TIMEFRAME_BY_TIMEFRAME
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint, derivative_identity
 from talaria.foundation.feed import DerivativeTickEvent
 from talaria.foundation.operators import MAX_PERIOD
 from talaria.foundation.timeframes import timeframe_ms
 
 
+ArchiveReader = Callable[[str, DerivativeKind, int], Sequence[DerivativePoint]]
+RevisionSeries = Callable[[DerivativeKind], Sequence[DerivativePoint]]
+
+
 class RuleDerivatives:
-    def __init__(self, limit: int):
+    def __init__(self, limit: int, read_archive: ArchiveReader | None = None):
         self._limit = limit
+        self._read_archive = read_archive
         self._series: dict[
-            tuple[str, DerivativeKind, str | None], dict[tuple[int, int], DerivativePoint]
+            tuple[str, DerivativeKind, str | None, bool], dict[tuple[int, int, int], DerivativePoint]
         ] = {}
-        self._ticks: dict[tuple[str, DerivativeKind], deque[DerivativeTickEvent]] = {}
-        self._oi_buckets: dict[str, dict[int, DerivativeTickEvent]] = {}
+        self._ticks: dict[tuple[str, DerivativeKind], deque[DerivativePoint]] = {}
+        self._oi_buckets: dict[str, dict[int, DerivativePoint]] = {}
 
     def seed(self, points: Iterable[DerivativePoint]) -> None:
         for point in points:
-            series = self._series.setdefault((point.instrument_id, point.kind, point.timeframe), {})
-            key = (point.ts_event, point.ts_available)
+            series_key = (point.instrument_id, point.kind, point.timeframe, point.is_funding_settlement)
+            series = self._series.setdefault(series_key, {})
+            key = (point.ts_event, point.revision, point.ts_available)
             previous = series.get(key)
-            if previous is None or point.ts_committed >= previous.ts_committed:
+            if previous is None or point.ts_ingested >= previous.ts_ingested:
                 series[key] = point
             if len(series) > 2 * MAX_PERIOD:
                 for stale in sorted(series)[:-MAX_PERIOD - 2]:
                     del series[stale]
 
     def handle_tick(self, tick: DerivativeTickEvent) -> None:
-        for kind in (DerivativeKind.MARK_PRICE, DerivativeKind.OPEN_INTEREST):
-            if getattr(tick, kind.value) is None:
-                continue
-            ticks = self._ticks.setdefault((tick.instrument_id, kind), deque(maxlen=self._limit))
-            if kind is DerivativeKind.OPEN_INTEREST and len(ticks) == self._limit:
+        for point in tick.points():
+            ticks = self._ticks.setdefault((tick.instrument_id, point.kind), deque(maxlen=self._limit))
+            if point.kind is DerivativeKind.OPEN_INTEREST and len(ticks) == self._limit:
                 old = ticks[0]
                 # 高频逐笔窗口之外，每个 5m 持仓量槽仍保留末次读数供门禁使用。
                 buckets = self._oi_buckets.setdefault(tick.instrument_id, {})
@@ -45,27 +49,21 @@ class RuleDerivatives:
                     buckets[slot] = old
                 if len(buckets) > self._limit:
                     del buckets[min(buckets)]
-            ticks.append(tick)
+            ticks.append(point)
 
-    def seeded(self, instrument: str) -> Iterator[DerivativePoint]:
-        for (symbol, _, _), series in self._series.items():
-            if symbol == instrument:
-                yield from series.values()
+    def observation(self, instrument: str, cutoff: int) -> RevisionSeries:
+        @cache
+        def revisions(kind: DerivativeKind) -> tuple[DerivativePoint, ...]:
+            archive = self._read_archive(instrument, kind, cutoff) if self._read_archive else ()
+            archived = {derivative_identity(point) for point in archive}
+            # 连接器给出的历史基线没有冷库修订号，不能覆盖已归档事件的可见时间。
+            points = []
+            for (symbol, category, _, _), series in self._series.items():
+                if symbol == instrument and category is kind:
+                    points.extend(point for point in series.values() if derivative_identity(point) not in archived)
+            if kind is DerivativeKind.OPEN_INTEREST:
+                points.extend(self._oi_buckets.get(instrument, {}).values())
+            points.extend(self._ticks.get((instrument, kind), ()))
+            return (*points, *archive)
 
-    def ticks(self, instrument: str, timeframe: str) -> Iterator[DerivativePoint]:
-        for kind, period in (
-            (DerivativeKind.MARK_PRICE, timeframe),
-            (DerivativeKind.OPEN_INTEREST, OI_TIMEFRAME_BY_TIMEFRAME[timeframe]),
-        ):
-            recent = self._ticks.get((instrument, kind), ())
-            older = self._oi_buckets.get(instrument, {}).values() if kind is DerivativeKind.OPEN_INTEREST else ()
-            for tick in chain(older, recent):
-                yield DerivativePoint(
-                    instrument_id=instrument, kind=kind, timeframe=period, value=getattr(tick, kind.value),
-                    ts_event=tick.ts_event, ts_available=max(tick.ts_event, tick.ts_ingested),
-                    ts_ingested=tick.ts_ingested, ts_committed=tick.ts_ingested,
-                )
-
-    def points(self, instrument: str, timeframe: str) -> Iterator[DerivativePoint]:
-        yield from self.seeded(instrument)
-        yield from self.ticks(instrument, timeframe)
+        return revisions
