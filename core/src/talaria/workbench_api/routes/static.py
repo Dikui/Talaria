@@ -23,21 +23,27 @@ _MISSING_DIST_HTML = """<!doctype html>
 </body></html>"""
 
 
-def _desk_response(index_path: Path, token: str) -> HTMLResponse:
+def _desk_response(index_path: Path, token: str | None = None) -> HTMLResponse:
     if not index_path.is_file():
         response = HTMLResponse(_MISSING_DIST_HTML, status_code=200)
     else:
         response = HTMLResponse(index_path.read_text(encoding="utf-8"))
-    # HttpOnly 关闭：同源 JS 需要读取后放进 Authorization，cookie 本身不参与鉴权。
-    response.set_cookie(
-        "talaria_token",
-        token,
-        httponly=False,
-        samesite="strict",
-        path="/",
-    )
+    if token is not None:
+        # HttpOnly 关闭：同源 JS 需要读取后放进 Authorization，cookie 本身不参与鉴权。
+        response.set_cookie(
+            "talaria_token",
+            token,
+            httponly=False,
+            samesite="strict",
+            path="/",
+        )
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@router.get("/desk/link", response_class=HTMLResponse, include_in_schema=False)
+def desk_link(request: Request) -> HTMLResponse:
+    return _desk_response(request.app.state.settings.dist_dir / "index.html")
 
 
 @router.get("/desk", response_class=HTMLResponse)

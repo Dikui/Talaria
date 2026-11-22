@@ -13,12 +13,13 @@ const POLL_MS = 5_000;
 const TOAST_MS = 8_000;
 const HISTORY_LIMIT = 50;
 export const ALERT_SOUND_KEY = "talaria-alert-sound";
+const notifiedTriggers = new Set<string>();
 
-function readSoundPreference(): boolean {
+function readSoundPreference(fallback = false): boolean {
   try {
     return window.localStorage.getItem(ALERT_SOUND_KEY) === "on";
   } catch {
-    return false;
+    return fallback;
   }
 }
 
@@ -175,18 +176,17 @@ export function useAlerts(): AlertsController {
           HISTORY_LIMIT,
         ),
       );
-      setToast(trigger);
       setUnread((count) => count + 1);
-      if (soundRef.current) {
-        playChime();
+      if (!notifiedTriggers.has(trigger.trigger_id)) {
+        notifiedTriggers.add(trigger.trigger_id);
+        setToast(trigger);
+        if (readSoundPreference(soundRef.current)) playChime();
+        if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+        toastTimer.current = window.setTimeout(() => {
+          setToast(null);
+          toastTimer.current = null;
+        }, TOAST_MS);
       }
-      if (toastTimer.current !== null) {
-        window.clearTimeout(toastTimer.current);
-      }
-      toastTimer.current = window.setTimeout(() => {
-        setToast(null);
-        toastTimer.current = null;
-      }, TOAST_MS);
       void refresh();
     },
     [refresh],

@@ -25,7 +25,9 @@ import {
   INDICATOR_COLORS,
 } from "../indicators/config";
 import type { Theme } from "../../lib/theme";
+import type { PanelLink } from "../../workbench/link";
 
+import { CANDLE_PANE_ID, observeLinkedCrosshair, observeLocalCrosshair } from "./crosshair";
 import { shouldDeliverLiveBar } from "./liveDelivery";
 
 type IndicatorRow = Record<string, number | null>;
@@ -33,8 +35,6 @@ type IndicatorRow = Record<string, number | null>;
 const OVERLAY_TEMPLATE = "talaria_overlay";
 const STUDY_TEMPLATE = "talaria_study";
 const INDICATOR_ID_PREFIX = "talaria-";
-/** KLineChart 主图（K 线）窗格的固定 id；主图指标必须显式挂到这里。 */
-const CANDLE_PANE_ID = "candle_pane";
 
 /**
  * 只为 KLineChart 注册一次模板；所有指标数学都在 Python。
@@ -119,6 +119,8 @@ interface MarketChartProps {
   overlay?: ReactNode;
   /** 图表实例挂载/销毁通知，供覆盖层做坐标投影。 */
   onChartReady?: (chart: Chart | null) => void;
+  locateTs?: number | null;
+  crosshairLink?: Pick<PanelLink, "getCrosshair" | "subscribeCrosshair" | "sendCrosshair">;
 }
 
 /**
@@ -145,6 +147,8 @@ export function MarketChart({
   onLoadError,
   overlay,
   onChartReady,
+  locateTs = null,
+  crosshairLink,
 }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -155,6 +159,7 @@ export function MarketChart({
   const barCallbackRef = useRef<((data: KLineData) => void) | null>(null);
   const pendingLiveRef = useRef<KlineEvent[]>([]);
   const deliveredRef = useRef<Map<number, number>>(new Map());
+  const cursorRef = useRef<ReturnType<typeof observeLinkedCrosshair> | null>(null);
   const onChartReadyRef = useRef(onChartReady);
   onChartReadyRef.current = onChartReady;
 
@@ -178,6 +183,7 @@ export function MarketChart({
       deliveredRef.current.set(event.bar.timestamp, event.revision);
       callback(point);
     }
+    cursorRef.current?.refresh();
   }, []);
 
   useEffect(() => {
@@ -230,6 +236,7 @@ export function MarketChart({
             forward: initialHasMoreForward,
             backward: false,
           });
+          cursorRef.current?.refresh();
           return;
         }
         if (type !== "forward") {
@@ -254,6 +261,7 @@ export function MarketChart({
             forward: page.hasMoreForward,
             backward: false,
           });
+          cursorRef.current?.refresh();
         } catch (error) {
           onLoadError(error);
           callback([], { forward: false, backward: false });
@@ -273,6 +281,7 @@ export function MarketChart({
 
     const observer = new ResizeObserver(() => {
       chart.resize();
+      cursorRef.current?.refresh();
     });
     observer.observe(element);
     chart.resize();
@@ -289,6 +298,29 @@ export function MarketChart({
     // 快照切换时父组件用 key 重建图表；这里只读挂载时的初始数据。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (locateTs !== null && chartRef.current?.getDataList().length) {
+      chartRef.current.scrollToTimestamp(locateTs);
+    }
+  }, [locateTs]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    const element = containerRef.current;
+    if (!chart || !element || !crosshairLink) return;
+    const cursor = observeLinkedCrosshair(chart, crosshairLink.getCrosshair);
+    cursorRef.current = cursor;
+    const stopRemote = crosshairLink.subscribeCrosshair(cursor.refresh);
+    const stopLocal = observeLocalCrosshair(chart, element, crosshairLink.sendCrosshair);
+    cursor.refresh();
+    return () => {
+      cursorRef.current = null;
+      stopLocal();
+      stopRemote();
+      cursor.close();
+    };
+  }, [crosshairLink]);
 
   useEffect(() => {
     chartRef.current?.setStyles(theme);

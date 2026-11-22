@@ -129,6 +129,23 @@ def test_desk_sets_readable_strict_cookie(client) -> None:
     assert response.cookies.get("talaria_token") == TOKEN
 
 
+# 平台 02 / ADR-0020：兜底页可独立建立写操作会话，联动 iframe 只加载前端。
+@pytest.mark.parametrize("panel", ["chart", "alerts", "scanner", "levels"])
+def test_desk_panel_deep_link_serves_app_and_sets_session(client, panel) -> None:
+    response = client.get(f"/desk/{panel}")
+    assert response.status_code == 200
+    assert "<title>Talaria</title>" in response.text
+    assert response.cookies.get("talaria_token") == TOKEN
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_desk_link_relay_serves_app_without_setting_session(client) -> None:
+    response = client.get("/desk/link")
+    assert response.status_code == 200
+    assert "<title>Talaria</title>" in response.text
+    assert "set-cookie" not in response.headers
+
+
 def test_desk_spa_fallback_only_covers_desk_paths(client) -> None:
     assert client.get("/desk/anything").status_code == 200
     assert client.get("/").status_code == 404

@@ -106,6 +106,17 @@ function readSessionToken(): string {
   return match ? decodeURIComponent(match[1]) : "";
 }
 
+/** Mount standalone API consumers only after the page has a writable session. */
+export async function initializeStandaloneApi(): Promise<void> {
+  let token = readSessionToken();
+  if (!token) {
+    const response = await fetch("/desk", { cache: "no-store" });
+    token = response.ok ? readSessionToken() : "";
+  }
+  if (!token) throw new Error("无法获取 Talaria 会话凭据，请刷新页面后重试。");
+  configureApi({});
+}
+
 async function parseError(response: Response): Promise<ApiError> {
   let body: Partial<ErrorResponse> | null = null;
   try {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type {
   AlertConditionKind,
   AlertDirection,
@@ -12,6 +13,7 @@ import type {
   KeyLevelKind,
 } from "@talaria/contracts";
 
+import type { Theme } from "../../lib/theme";
 import { KIND_LABELS } from "../drawings/tools";
 import { INDICATOR_LABELS } from "../indicators/config";
 import {
@@ -765,13 +767,15 @@ function AlertCard({ alert, drawings, now, controller, onEdit }: AlertCardProps)
 
 export interface AlertToastProps {
   trigger: AlertTriggerRecord;
+  theme: Theme;
   onLocate: (trigger: AlertTriggerRecord) => void;
   onDismiss: () => void;
 }
 
-export function AlertToast({ trigger, onLocate, onDismiss }: AlertToastProps) {
-  return (
-    <div className="alert-toast" role="status" data-testid="alert-toast">
+export function AlertToast({ trigger, theme, onLocate, onDismiss }: AlertToastProps) {
+  // DSH keeps inactive panels mounted. Their alerts still need a visible toast.
+  return createPortal(
+    <div className="talaria-desk alert-toast" data-theme={theme} role="status" data-testid="alert-toast">
       <button type="button" className="alert-toast-main" onClick={() => onLocate(trigger)}>
         <span className="alert-toast-title">预警触发</span>
         <span className="alert-toast-message">{triggerSummary(trigger)}</span>
@@ -783,6 +787,7 @@ export function AlertToast({ trigger, onLocate, onDismiss }: AlertToastProps) {
       <button type="button" className="alert-toast-close" aria-label="关闭预警通知" onClick={onDismiss}>
         ×
       </button>
-    </div>
+    </div>,
+    document.body,
   );
 }

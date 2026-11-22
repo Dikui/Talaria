@@ -23,8 +23,9 @@ export interface AnnotationsController {
 
 export function useAnnotations(options: {
   instrumentId: string;
+  onDrawingsChanged: (instrumentId: string) => void;
 }): AnnotationsController {
-  const { instrumentId } = options;
+  const { instrumentId, onDrawingsChanged } = options;
   const [annotations, setAnnotations] = useState<AgentAnnotationRecord[]>([]);
   const [sessions, setSessions] = useState<AnnotationSessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,6 +60,7 @@ export function useAnnotations(options: {
     async (annotationId: string) => {
       try {
         const result = await api.adoptAnnotation(annotationId);
+        if (result.annotation.adopted_drawing_id != null) onDrawingsChanged(result.annotation.instrument_id);
         await refresh();
         return result.annotation;
       } catch (caught) {
@@ -66,7 +68,7 @@ export function useAnnotations(options: {
         return null;
       }
     },
-    [refresh],
+    [onDrawingsChanged, refresh],
   );
 
   const dismiss = useCallback(
