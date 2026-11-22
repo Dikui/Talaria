@@ -16,7 +16,8 @@ def add_account_command(subparsers) -> None:
     run.add_argument("scheme", type=Path, help="交易方案 YAML，或使用 --replay 传入 run-config.json")
     run.add_argument("--mode", choices=("backtest", "paper"), required=True)
     run.add_argument("--data-dir", type=Path, help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）")
-    run.add_argument("--replay", action="store_true", help="使用已有回测产物中固定的交易方案和指标默认值")
+    run.add_argument("--replay", action="store_true", help="使用已有回测产物中固定的方案、指标默认值、冷库清单和代码哈希")
+    run.add_argument("--run-id", help=argparse.SUPPRESS)
     run.set_defaults(func=_run_account)
 
     register = commands.add_parser("strategy-register", help="由交易员确认 Python 文件插件的来源并登记代码快照哈希")
@@ -59,11 +60,11 @@ def _run_account(args: argparse.Namespace) -> int:
         data_dir = _data_dir()
     try:
         if args.mode == "paper":
-            if args.replay:
+            if args.replay or args.run_id is not None:
                 raise SchemeError("--replay 仅用于回测")
             with open_account_process(args.scheme, data_dir, mode="paper"):
                 raise SchemeError("模拟盘实时数据和账本接线由 trading/04 提供")
-        run = run_backtest(args.scheme, data_dir, replay=args.replay)
+        run = run_backtest(args.scheme, data_dir, replay=args.replay, run_id=args.run_id)
     except (OSError, sqlite3.Error, TalariaError, ValueError) as exc:
         print(f"账户进程失败：{exc}", file=sys.stderr)
         return 2

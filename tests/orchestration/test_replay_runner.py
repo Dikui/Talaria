@@ -11,6 +11,7 @@ import pytest
 from talaria.account.host import run_backtest
 from talaria.account.ledger import read_journal
 from talaria.account.ownership import hold_sub_accounts
+from talaria.account.scheme import SchemeError
 from talaria.account.strategy_code import StrategyCodeRegistry
 from talaria.cli.main import main
 from talaria.foundation.connector import RawBar
@@ -122,11 +123,11 @@ def test_batch_journals_match_independent_account_runs_with_paper_lock_held(mark
     # 3.287 手，103.1 入场、142 出场。结算在出场后入账，从盈利峰值扣 0.338561。
     assert first == {
         "net_pnl": "127.22905438", "fees": "0.29668462",
-        "funding": "-0.338561", "max_drawdown": "0.338561",
+        "funding": "-0.338561", "liquidation_fees": "0", "max_drawdown": "0.338561",
     }
     assert loss == {
         "net_pnl": "-60.5327346", "fees": "0.3707736",
-        "funding": "-0.338561", "max_drawdown": "60.5327346",
+        "funding": "-0.338561", "liquidation_fees": "0", "max_drawdown": "60.5327346",
     }
     assert all(Decimal(value) == 0 for value in idle.values())
 
@@ -175,7 +176,250 @@ def test_account_process_rechecks_strategy_source_after_batch_preflight(tmp_path
 
     monkeypatch.setattr("talaria.orchestration.replay_runner.subprocess.run", replace_strategy_then_launch)
     assert main(["replay", str(scheme), "--data-dir", str(data_dir)]) == 2
-    captured = capsys.readouterr()
-    assert str(scheme) in captured.err and "agent 来源" in captured.err
-    assert not captured.out
-    assert not (data_dir / "runs").exists()
+    row, = json.loads(capsys.readouterr().out)["runs"]
+    assert row["scheme_path"] == str(scheme) and "策略代码哈希" in row["error"]
+    assert row["status"] == "failed"
+    assert not (Path(row["directory"]) / "ledger.sqlite").exists()
+
+
+@pytest.mark.regression
+def test_batch_and_artifact_share_pinned_bars_and_derivatives(market, tmp_path, monkeypatch, capsys):
+    data_dir, windows = market
+    strategy = write_strategy(tmp_path / "scheme", data_dir)
+    strategy.write_text(strategy.read_text().replace(
+        "        bar = ctx.bars()[-1]", f"""        assert not ctx.derivatives("open_interest")
+        bar = ctx.bars()[-1]
+        assert bar.ts_event < {START + 5 * MINUTE}""",
+    ))
+    StrategyCodeRegistry(data_dir).register(strategy, "human")
+    scheme = write_scheme(strategy.with_name("valid.yaml"), "valid", 100)
+    launch = subprocess.run
+    first_launch = True
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    ts = START + 5 * MINUTE
+
+    # 常驻服务在两个实际账户子进程之间追加冷库发布。
+    def publish_between_jobs(*args, **kwargs):
+        nonlocal first_launch
+        result = launch(*args, **kwargs)
+        if first_launch:
+            first_launch = False
+            with closing(ColdStore(data_dir)) as store:
+                store.publish(ColdBatch(instrument, "1m", [RawBar(
+                    symbol=instrument.symbol, timeframe="1m", ts_event=ts,
+                    open=Decimal(110), high=Decimal(110), low=Decimal(110), close=Decimal(110),
+                    volume=Decimal(1), turnover=Decimal(110), ts_available=ts + MINUTE,
+                    ts_ingested=ts + MINUTE, ts_committed=ts + MINUTE,
+                )]))
+                store.publish_derivatives(instrument, DerivativeKind.OPEN_INTEREST, [DerivativePoint(
+                    instrument_id=instrument.instrument_id, kind="open_interest", value="1",
+                    ts_event=START, ts_available=START, ts_ingested=START, ts_committed=START,
+                )])
+        return result
+
+    monkeypatch.setattr("talaria.orchestration.replay_runner.subprocess.run", publish_between_jobs)
+    assert main(["replay", str(scheme), str(scheme), "--data-dir", str(data_dir)]) == 0
+    rows = json.loads(capsys.readouterr().out)["runs"]
+    first, second = [Path(row["directory"]) for row in rows]
+    artifact = first / "run-config.json"
+    recorded = json.loads(artifact.read_text())["cold_snapshot"]
+    assert recorded == json.loads((second / "run-config.json").read_text())["cold_snapshot"]
+    assert recorded["bars"]["version"] == recorded["derivatives"]["version"] > 0
+    assert len(recorded["bars"]["generations"]) == 1
+    assert len(recorded["derivatives"]["generations"]) == 2
+
+    retired = Path(recorded["bars"]["generations"][0]["parquet_path"])
+    with closing(ColdStore(data_dir)) as store:
+        store.compact([instrument], now_ms=START)
+        assert retired not in {generation.parquet_path for generation in store.generations(instrument, "1m")}
+    repeated = run_backtest(artifact, None, replay=True)
+    assert read_journal(first / "ledger.sqlite") == read_journal(second / "ledger.sqlite")
+    assert read_journal(first / "ledger.sqlite") == read_journal(repeated.directory / "ledger.sqlite")
+
+    # 模拟压实之后，原清单引用的文件已被回收。
+    missing = data_dir / retired
+    missing.unlink()
+    with pytest.raises(SchemeError, match="回放清单.*文件缺失") as error:
+        run_backtest(artifact, None, replay=True)
+    assert missing.name in str(error.value)
+
+
+@pytest.mark.regression
+def test_reregistered_strategy_cannot_replace_the_preflight_code(market, tmp_path, monkeypatch, capsys):
+    data_dir, _ = market
+    strategy = write_strategy(tmp_path / "scheme", data_dir)
+    registry = StrategyCodeRegistry(data_dir)
+    original = registry.register(strategy, "human").sha256
+    scheme = write_scheme(strategy.with_name("valid.yaml"), "valid", 100)
+    launch = subprocess.run
+
+    def reregister_then_launch(*args, **kwargs):
+        strategy.write_text(strategy.read_text() + "\n# new registered version\n")
+        assert registry.register(strategy, "human").sha256 != original
+        return launch(*args, **kwargs)
+
+    first = run_backtest(scheme, data_dir)
+    monkeypatch.setattr("talaria.orchestration.replay_runner.subprocess.run", reregister_then_launch)
+    assert main(["replay", str(scheme), "--data-dir", str(data_dir)]) == 2
+    row, = json.loads(capsys.readouterr().out)["runs"]
+    assert row["status"] == "failed" and "策略代码哈希" in row["error"]
+
+    artifact = first.directory / "run-config.json"
+    assert json.loads(artifact.read_text())["file_plugins"]["strategy"]["sha256"] == original
+    with pytest.raises(SchemeError, match="策略代码哈希"):
+        run_backtest(artifact, None, replay=True)
+
+
+@pytest.mark.regression
+def test_plugins_get_their_own_state_directory_before_assembly(market, tmp_path, capsys):
+    data_dir, _ = market
+    strategy = write_strategy(tmp_path / "scheme", data_dir)
+    strategy.write_text(strategy.read_text().replace(
+        "    return ReplayStrategy(**params)", """    with (_context.data_dir / "plugin-state.txt").open("x") as state:
+        assert _context.state_dir == _context.data_dir
+        state.write(_context.run_id)
+    return ReplayStrategy(**params)""",
+    ))
+    StrategyCodeRegistry(data_dir).register(strategy, "human")
+    scheme = write_scheme(strategy.with_name("valid.yaml"), "valid", 100)
+
+    assert main(["replay", str(scheme), str(scheme), "--workers", "2", "--data-dir", str(data_dir)]) == 0
+    for row in json.loads(capsys.readouterr().out)["runs"]:
+        directory = Path(row["directory"])
+        assert (directory / "state" / "plugin-state.txt").read_text() == row["run_id"]
+    assert not (data_dir / "plugin-state.txt").exists()
+
+
+@pytest.mark.regression
+def test_failed_account_run_marks_partial_ledger(market, tmp_path, capsys):
+    data_dir, _ = market
+    strategy = write_strategy(tmp_path / "scheme", data_dir)
+    strategy.write_text(strategy.read_text().replace(
+        "        bar = ctx.bars()[-1]", """        raise ValueError("示例策略中断")
+        bar = ctx.bars()[-1]""",
+    ))
+    StrategyCodeRegistry(data_dir).register(strategy, "human")
+    scheme = write_scheme(strategy.with_name("bad.yaml"), "bad", 100)
+
+    assert main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)]) == 2
+    assert "示例策略中断" in capsys.readouterr().err
+    run, = (data_dir / "runs").iterdir()
+    assert read_journal(run / "ledger.sqlite").entries
+    completion = json.loads((run / "run-status.json").read_text())
+    assert completion["run_id"] == run.name
+    assert completion["status"] == "failed"
+    assert "示例策略中断" in completion["error"]
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("crash", [False, True])
+def test_batch_reports_failure_and_preserves_success(market, tmp_path, capsys, crash):
+    data_dir, _ = market
+    good = write_strategy(tmp_path / "good", data_dir)
+    bad = write_strategy(tmp_path / "bad", data_dir)
+    failure = '__import__("os")._exit(7)' if crash else 'raise ValueError("示例策略中断")'
+    bad.write_text(bad.read_text().replace("        bar = ctx.bars()[-1]", "        " + failure))
+    StrategyCodeRegistry(data_dir).register(bad, "human")
+    schemes = [write_scheme(path.with_suffix(".yaml"), name, 100) for path, name in ((bad, "bad"), (good, "good"))]
+
+    assert main(["replay", *map(str, schemes), "--workers", "2", "--data-dir", str(data_dir)]) == 2
+    failed, succeeded = json.loads(capsys.readouterr().out)["runs"]
+    assert failed["status"] == "failed" and failed["by_currency"] is None and failed["trade_count"] is None
+    assert ("退出码 7" if crash else "示例策略中断") in failed["error"]
+    assert succeeded["status"] == "succeeded" and succeeded["error"] is None
+    assert succeeded["trade_count"] == 1 and succeeded["by_currency"]["USDT"]["net_pnl"] == "127.22905438"
+    for row in (failed, succeeded):
+        completion = json.loads((Path(row["directory"]) / "run-status.json").read_text())
+        assert {key: row[key] for key in ("run_id", "status", "error", "signal_bars")} == completion
+
+
+@pytest.mark.regression
+def test_child_stdout_is_not_used_to_find_the_run(market, tmp_path, monkeypatch, capsys):
+    data_dir, _ = market
+    strategy = write_strategy(tmp_path / "scheme", data_dir)
+    scheme = write_scheme(strategy.with_name("valid.yaml"), "valid", 100)
+    launch = subprocess.run
+    allocated = []
+
+    def append_stdout_after_child_exits(command, **kwargs):
+        dirs = sorted((data_dir / "runs").glob("*/run-config.json"))
+        allocated.extend(path.parent.name for path in dirs)
+        result = launch(command, **kwargs)
+        result.stdout = (result.stdout or "") + "最后一行是日志\n"
+        return result
+
+    monkeypatch.setattr("talaria.orchestration.replay_runner.subprocess.run", append_stdout_after_child_exits)
+    assert main(["replay", str(scheme), "--data-dir", str(data_dir)]) == 0
+    row, = json.loads(capsys.readouterr().out)["runs"]
+    assert row["status"] == "succeeded"
+    assert allocated == [row["run_id"]]
+
+
+@pytest.mark.regression
+def test_booked_costs_separate_execution_fees_funding_and_liquidation(tmp_path):
+    from talaria.account.contracts import ExecutionEvent, LedgerPosting
+    from talaria.account.ledger import open_ledger
+    from talaria.orchestration.replay_runner import summarize_ledger
+
+    path = tmp_path / "ledger.sqlite"
+    with open_ledger(path, "run", ("shared",)) as ledger:
+        ledger.record([ExecutionEvent(
+            kind="EXIT_FILLED", ts_event=START, sub_account_id="shared",
+            postings=tuple(LedgerPosting(account=account, currency="USDT", amount=amount)
+                           for account, amount in (
+                ("REALIZED_PNL", "-10"), ("EXPENSE_EXECUTION_FEE", "1"),
+                ("FUNDING", "-2"), ("EXPENSE_LIQUIDATION_FEE", "3"), ("CASH_AVAILABLE", "8"),
+            )),
+        )])
+    _, totals = summarize_ledger(path)
+    assert totals["USDT"].model_dump(mode="json") == {
+        "net_pnl": "8", "max_drawdown": "0", "fees": "1", "funding": "2", "liquidation_fees": "3",
+    }
+
+
+@pytest.mark.regression
+def test_batch_uses_one_snapshot_of_workbench_indicator_defaults(market, tmp_path, monkeypatch, capsys):
+    import sqlite3
+
+    from talaria import sdk
+    from talaria.perception.indicator_defaults import DEFAULTS_KEY
+    from talaria.perception.sqlite import COLLABORATION_STATE_DB
+
+    data_dir, _ = market
+    strategy = write_strategy(tmp_path / "scheme", data_dir)
+    schemes = [write_scheme(strategy.with_name(f"{name}.yaml"), name, 100) for name in ("first", "second")]
+    db_path = data_dir / COLLABORATION_STATE_DB
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        db.execute("INSERT INTO meta VALUES (?, ?)", (DEFAULTS_KEY, '{"SMA":{"period":1}}'))
+
+    read_defaults = sdk.indicator_defaults
+
+    def change_workbench_after_read(*args, **kwargs):
+        result = read_defaults(*args, **kwargs)
+        with closing(sqlite3.connect(db_path)) as db, db:
+            db.execute("UPDATE meta SET value = ? WHERE key = ?", ('{"SMA":{"period":5}}', DEFAULTS_KEY))
+        return result
+
+    monkeypatch.setattr(sdk, "indicator_defaults", change_workbench_after_read)
+    assert main(["replay", *map(str, schemes), "--data-dir", str(data_dir)]) == 0
+    rows = json.loads(capsys.readouterr().out)["runs"]
+    configs = [json.loads((Path(row["directory"]) / "run-config.json").read_text()) for row in rows]
+    assert [config["indicator_defaults"]["SMA"]["period"] for config in configs] == [1, 1]
+
+
+@pytest.mark.regression
+def test_report_distinguishes_empty_window_from_no_trades(market, tmp_path, capsys):
+    data_dir, _ = market
+    strategy = write_strategy(tmp_path / "scheme", data_dir)
+    scheme = write_scheme(strategy.with_name("valid.yaml"), "valid", 999)
+    args = ["replay", str(scheme), "--data-dir", str(data_dir),
+            "--range", str(START), str(START + 6 * MINUTE),
+            "--range", str(START + 10 * MINUTE), str(START + 15 * MINUTE)]
+    assert main(args) == 0
+    no_trades, empty = json.loads(capsys.readouterr().out)["runs"]
+    assert (no_trades["signal_bars"], no_trades["empty_sample"], no_trades["trade_count"]) == (5, False, 0)
+    assert no_trades["by_currency"]["USDT"]["net_pnl"] == "0"
+    assert (empty["status"], empty["signal_bars"], empty["empty_sample"]) == ("succeeded", 0, True)
+    assert empty["by_currency"] is None and empty["trade_count"] is None

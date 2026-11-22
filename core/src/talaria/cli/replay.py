@@ -33,4 +33,4 @@ def _replay(args: argparse.Namespace) -> int:
         print(f"回放失败：{exc}", file=sys.stderr)
         return 2
     print(report.model_dump_json(indent=2))
-    return 0
+    return 2 if any(run.status == "failed" for run in report.runs) else 0
