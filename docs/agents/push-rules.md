@@ -8,7 +8,7 @@ core/src/talaria/workbench_api/app.py  token = settings\.token or secrets\.token
 core/src/talaria/workbench_api/service_descriptor.py  token = payload\.get\("token"\)
 core/src/talaria/workbench_api/routes/analysis.py  (evidence_token =|anchor_token =)
 core/src/talaria/cli/main.py  token = secrets\.token_urlsafe\(32\)
-dsh/packages/talaria-desk-ui/src/lib/api.ts  (const token = (readSessionToken|apiToken)\(\);|apiToken = config\.token \?\? null;|const token = apiToken \?\? readSessionToken\(\);)
+dsh/packages/talaria-desk-ui/src/lib/api.ts  ((const|let) token = (readSessionToken|apiToken)\(\);|apiToken = config\.token \?\? null;|const token = apiToken \?\? readSessionToken\(\);|token = response\.ok \? readSessionToken\(\) : "";)
 dsh/packages/talaria-dsh-plugin/bridge.js  token: config\.token
 dsh/packages/talaria-dsh-plugin/client/index.tsx  token: payload\.token
 dsh/packages/talaria-dsh-plugin/index.js  token: (config|descriptor)\.token
