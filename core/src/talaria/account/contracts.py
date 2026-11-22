@@ -170,6 +170,9 @@ class LedgerPosting(_Value):
     amount: DecimalStr  # 借方为正，贷方为负。
 
 
+type FillTier = Literal["l1", "trade", "bar_1m", "mark"]
+
+
 class ExecutionEvent(_Value):
     """成交以 ENTRY_FILLED 或 EXIT_FILLED 回报数量、单价、回合及复式分录。
 
@@ -190,6 +193,7 @@ class ExecutionEvent(_Value):
     reason: str | None = None
     postings: tuple[LedgerPosting, ...] = ()
     settlement_ts: int | None = Field(default=None, ge=0)
+    fill_tier: FillTier | None = Field(default=None, exclude_if=lambda value: value is None)
     take_profit: tuple[DecimalStr, ...] = ()
     draft_id: str | None = None
     draft_version: int | None = None

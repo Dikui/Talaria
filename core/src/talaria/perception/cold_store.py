@@ -30,9 +30,10 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 from enum import StrEnum
+from heapq import heappop, heappush
 from itertools import groupby, pairwise
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Collection, Iterable, Iterator, Sequence
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -45,7 +46,7 @@ from talaria.foundation.derivatives import (
 from talaria.foundation.errors import ColdStoreError, ColdStoreIntegrityError, ColdStoreQualityError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.revisions import latest_visible_revisions
-from talaria.foundation.ticks import Quote, TickKind, Trade, tick_identity
+from talaria.foundation.ticks import Quote, TickKind, Trade, relative_tick_order_known, tick_identity, tick_order
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.foundation.types import PrecisionTier
 from talaria.perception.raw_store import bar_record
@@ -64,6 +65,7 @@ MANIFEST_DB = Path("data") / "data_manifest.sqlite"
 RETENTION_MS = 24 * 60 * 60 * 1000
 RETAINED_MANIFESTS = 3
 TICK_BATCH_ROWS = 64_000
+_TICK_REPLAY_PAGE_MS = 5 * 60_000
 _TICK_DECIMALS = {
     TickKind.TRADES: ("price", "size"),
     TickKind.QUOTES: ("bid_price", "bid_size", "ask_price", "ask_size"),
@@ -198,10 +200,11 @@ class ColdManifest:
 
 @dataclass(frozen=True, slots=True)
 class ColdSnapshot:
-    """同一读事务固定的 K 线和衍生品清单。"""
+    """同一读事务固定的回放清单。"""
 
     bars: ColdManifest
     derivatives: ColdManifest
+    ticks: ColdManifest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -707,42 +710,6 @@ def partition_day(ts_event: int) -> str:
     return datetime.fromtimestamp(ts_event // 1000, tz=UTC).date().isoformat()
 
 
-def _tick_order(row: Trade | Quote) -> tuple:
-    if isinstance(row, Trade):
-        trade_order = (
-            row.availability,
-            row.archive_day if row.archive_day is not None else -1,
-            row.archive_index if row.archive_index is not None else -1,
-            row.sequence if row.sequence is not None else -1,
-            (row.packet_id or row.trade_id).bytes,
-            row.packet_index if row.packet_index is not None else -1,
-            row.trade_id.bytes,
-        )
-        return row.ts_event, trade_order, row.revision, row.ts_ingested
-    quote_order = (
-        row.connection_id.bytes if row.connection_id is not None else b"",
-        row.update_id if row.update_id is not None else -1,
-    )
-    return row.ts_event, quote_order, row.revision, row.ts_ingested
-
-
-def _relative_tick_order_known(first: Trade | Quote, second: Trade | Quote) -> bool:
-    if isinstance(first, Quote) and isinstance(second, Quote):
-        return (first.connection_id is not None and first.connection_id == second.connection_id
-                and first.update_id is not None and second.update_id is not None
-                and first.update_id != second.update_id)
-    if not isinstance(first, Trade) or not isinstance(second, Trade) or first.availability != second.availability:
-        return False
-    if first.availability == "inferred":
-        return (first.archive_day is not None and second.archive_day is not None
-                and first.archive_index is not None and second.archive_index is not None
-                and (first.archive_day, first.archive_index) < (second.archive_day, second.archive_index))
-    if first.packet_id is not None and first.packet_id == second.packet_id:
-        return (first.packet_index is not None and second.packet_index is not None
-                and first.packet_index < second.packet_index)
-    return first.sequence is not None and second.sequence is not None and first.sequence < second.sequence
-
-
 def tick_column_scales(instrument: InstrumentSpec, kind: TickKind) -> dict[str, int]:
     return {
         column: instrument.price_precision if column.endswith("price") else instrument.qty_precision
@@ -781,7 +748,7 @@ def _validate_ticks(batch: TickBatch) -> None:
     previous = None
     for row in batch.rows:
         validate_tick(row, batch.instrument, batch.kind, scales)
-        order = _tick_order(row)
+        order = tick_order(row)
         if previous is not None and order < previous:
             raise ColdStoreQualityError("行情批次未按事件时间排序")
         previous = order
@@ -855,6 +822,20 @@ def _read_tick_parquet(
         else:
             rows.append(Quote(instrument_id=instrument_id, **values))
     return rows
+
+
+def _tick_arrival_ranges(path: Path, start: int, end: int) -> list[tuple[int, int]]:
+    with pq.ParquetFile(path) as parquet:
+        column = parquet.schema_arrow.get_field_index("ts_available")
+        ranges = []
+        for index in range(parquet.num_row_groups):
+            stats = parquet.metadata.row_group(index).column(column).statistics
+            if stats is None or not stats.has_min_max:
+                return [(start, end)]
+            first, last = max(start, stats.min), min(end, stats.max)
+            if first <= last:
+                ranges.append((first, last))
+    return ranges
 
 
 def _read_matching_trades(path: Path, instrument_id: str, expression: ds.Expression) -> list[Trade | Quote]:
@@ -946,27 +927,40 @@ class ColdReader:
         self._db_path = self._data_dir / MANIFEST_DB
         self._snapshot = snapshot
         self._pinned_series: dict[tuple[str, str, str], list[ColdGeneration]] = {}
+        self._verified_ticks: dict[ColdGeneration, Path] = {}
+        self._trade_page: tuple[InstrumentSpec, int, list[Trade | Quote]] | None = None
         if snapshot is not None:
-            for generation in (*snapshot.bars.generations, *snapshot.derivatives.generations):
-                key = generation.venue, generation.symbol, generation.timeframe
-                self._pinned_series.setdefault(key, []).append(generation)
+            for manifest in (snapshot.bars, snapshot.derivatives, snapshot.ticks):
+                if manifest is not None:
+                    for generation in manifest.generations:
+                        key = generation.venue, generation.symbol, generation.timeframe
+                        self._pinned_series.setdefault(key, []).append(generation)
 
-    def capture_snapshot(self, instruments: Iterable[tuple[InstrumentSpec, int]]) -> ColdSnapshot:
+    def capture_snapshot(
+        self, instruments: Iterable[tuple[InstrumentSpec, int]], *, tick_instruments: Collection[str] = (),
+    ) -> ColdSnapshot:
         """固定标的截至指定事件时间的文件，保留跨周期预热和历史衍生品所需的数据。"""
         if not self._db_path.is_file():
             empty = ColdManifest(0, ())
-            return ColdSnapshot(empty, empty)
+            return ColdSnapshot(empty, empty, empty if tick_instruments else None)
         with closing(sqlite3.connect(f"{self._db_path.as_uri()}?mode=ro", uri=True)) as db:
             db.execute("BEGIN")
             version = _manifest_version(db)
             bars = []
             derivatives = []
+            ticks = []
             for instrument, end in instruments:
                 for timeframe in SUPPORTED_TIMEFRAMES:
                     bars.extend(_select_generations(db, instrument, timeframe, end_ts=end))
                 for kind in DerivativeKind:
                     derivatives.extend(_select_generations(db, instrument, kind.value, end_ts=end))
-        return ColdSnapshot(ColdManifest(version, tuple(bars)), ColdManifest(version, tuple(derivatives)))
+                if instrument.instrument_id in tick_instruments:
+                    for kind in TickKind:
+                        ticks.extend(_select_generations(db, instrument, kind.value, end_ts=end))
+        return ColdSnapshot(
+            ColdManifest(version, tuple(bars)), ColdManifest(version, tuple(derivatives)),
+            ColdManifest(version, tuple(ticks)) if tick_instruments else None,
+        )
 
     def check_snapshot_files(self) -> None:
         if self._snapshot is None:
@@ -1059,20 +1053,69 @@ class ColdReader:
     def read_tick_revisions(
         self, instrument: InstrumentSpec, kind: TickKind, *,
         start_ts: int | None = None, end_ts: int | None = None,
-        event_times: set[int] | None = None,
+        event_times: set[int] | None = None, as_of: int | None = None,
     ) -> list[Trade | Quote]:
-        expression = ds.field("ts_event").isin(event_times) if event_times is not None else None
+        cutoff = ds.field("ts_available") <= as_of if as_of is not None else None
+        events = ds.field("ts_event").isin(event_times) if event_times is not None else None
+        expression = events
+        if cutoff is not None:
+            expression = cutoff if events is None else events & cutoff
 
-        def read(path: Path, *, start_ts: int | None, end_ts: int | None) -> list[Trade | Quote]:
-            return _read_tick_parquet(
-                path, instrument.instrument_id, kind, start_ts=start_ts, end_ts=end_ts,
-                expression=expression,
-            )
+        def read(generations: Sequence[ColdGeneration]) -> list[Trade | Quote]:
+            return [
+                row for generation in generations for row in _read_tick_parquet(
+                    self._verify_tick_file(generation), instrument.instrument_id, kind,
+                    start_ts=start_ts, end_ts=end_ts, expression=expression,
+                )
+            ]
 
-        _, rows = self._read_manifest(
+        _, rows = self._read_generations(
             instrument, kind.value, read, start_ts=start_ts, end_ts=end_ts,
         )
         return rows
+
+    def tick_arrivals(
+        self, instrument: InstrumentSpec, start: int, end: int,
+    ) -> Iterator[Trade | Quote]:
+        """按可获取时间读取有数据的页，包含事件时间落在页外的迟到记录。"""
+        if end < start:
+            return
+        pending = []
+        available = ds.field("ts_available")
+
+        def spans(generations: Sequence[ColdGeneration]) -> list[tuple[int, int, ColdGeneration]]:
+            return [
+                (first, last, generation)
+                for generation in generations
+                for first, last in _tick_arrival_ranges(
+                    _path_under_root(self._data_dir, generation.parquet_path), max(start, generation.first_ts), end,
+                )
+            ]
+
+        for kind in TickKind:
+            _, ranges = self._read_generations(instrument, kind.value, spans, start_ts=None, end_ts=end)
+            for first, last, generation in ranges:
+                pending.append((first, last, kind, len(pending), generation))
+        pending.sort(reverse=True)
+        active = []
+        while pending or active:
+            opening = max(start, pending[-1][0]) if not active else opening + _TICK_REPLAY_PAGE_MS
+            if opening > end:
+                break
+            close = min(end, opening + _TICK_REPLAY_PAGE_MS - 1)
+            while pending and pending[-1][0] <= close:
+                _, last, kind, index, generation = pending.pop()
+                heappush(active, (last, index, kind, generation))
+            expression = (available >= opening) & (available <= close)
+            generations = {(kind, generation) for _, _, kind, generation in active}
+            rows = [
+                row for kind, generation in generations for row in _read_tick_parquet(
+                    self._verify_tick_file(generation), instrument.instrument_id, kind, expression=expression,
+                )
+            ]
+            yield from sorted(rows, key=lambda row: row.ts_available)
+            while active and active[0][0] <= close:
+                heappop(active)
 
     def read_trade_revisions_by_id(self, instrument: InstrumentSpec, ids: set[bytes]) -> list[Trade]:
         expression = _trade_id_filter(ids)
@@ -1095,7 +1138,7 @@ class ColdReader:
             upper = end_ts if end_ts is not None else (1 << 63) - 1
             for generation in generations:
                 if generation.last_ts >= lower and generation.first_ts <= upper:
-                    path = _verify_generation_file(self._data_dir, generation)
+                    path = self._verify_tick_file(generation)
                     paths[generation] = path
                     rows.extend(_read_tick_parquet(
                         path, instrument.instrument_id, TickKind.TRADES, start_ts=start_ts, end_ts=end_ts,
@@ -1110,19 +1153,45 @@ class ColdReader:
                 ts = ds.field("ts_event")
                 expression = _trade_id_filter(ids) & ((ts < lower) | (ts > upper))
                 for generation in outside:
-                    path = paths.get(generation) or _verify_generation_file(self._data_dir, generation)
+                    path = paths.get(generation) or self._verify_tick_file(generation)
                     rows.extend(_read_matching_trades(path, instrument.instrument_id, expression))
             return rows
 
         _, rows = self._read_generations(instrument, TickKind.TRADES.value, read, start_ts=None, end_ts=None)
         return rows
 
+    def _verify_tick_file(self, generation: ColdGeneration) -> Path:
+        if self._snapshot is None:
+            return _verify_generation_file(self._data_dir, generation)
+        # 回放只读取不可变的固定文件，同一运行校验每个文件一次。
+        path = self._verified_ticks.get(generation)
+        if path is None:
+            path = self._verified_ticks[generation] = _verify_generation_file(self._data_dir, generation)
+        return path
+
+    def _replay_trade_range(self, instrument: InstrumentSpec, start: int, end: int) -> list[Trade | Quote]:
+        page_start = start // _TICK_REPLAY_PAGE_MS * _TICK_REPLAY_PAGE_MS
+        page_end = min(page_start + _TICK_REPLAY_PAGE_MS - 1, (1 << 63) - 1)
+        if end > page_end:
+            return self._trade_range_revisions(instrument, start, end)
+        if self._trade_page is None or self._trade_page[:2] != (instrument, page_start):
+            self._trade_page = instrument, page_start, self._trade_range_revisions(instrument, page_start, page_end)
+        rows = self._trade_page[2]
+        ids = {row.trade_id for row in rows if start <= row.ts_event <= end}
+        return [row for row in rows if row.trade_id in ids]
+
     def read_ticks(
         self, instrument: InstrumentSpec, kind: TickKind, *,
         start_ts: int | None = None, end_ts: int | None = None, as_of: int | None = None,
     ) -> list[Trade | Quote]:
         if kind is TickKind.TRADES:
-            rows = self._trade_range_revisions(instrument, start_ts, end_ts)
+            if (
+                self._snapshot is not None and start_ts is not None and end_ts is not None
+                and 0 <= end_ts - start_ts < _TICK_REPLAY_PAGE_MS
+            ):
+                rows = self._replay_trade_range(instrument, start_ts, end_ts)
+            else:
+                rows = self._trade_range_revisions(instrument, start_ts, end_ts)
             # 推定时间只补实测没有覆盖的成交。先按来源选定，再截断可获取时间。
             measured = {row.trade_id for row in rows if isinstance(row, Trade) and row.availability == "measured"}
             rows = [
@@ -1132,7 +1201,7 @@ class ColdReader:
         else:
             rows = self.read_tick_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
         visible = latest_visible_revisions(
-            sorted(rows, key=_tick_order), as_of=as_of, identity=tick_identity,
+            sorted(rows, key=tick_order), as_of=as_of, identity=tick_identity,
             ingested=lambda row: row.ts_ingested,
         )
         in_range = [
@@ -1140,9 +1209,9 @@ class ColdReader:
             if (start_ts is None or row.ts_event >= start_ts) and (end_ts is None or row.ts_event <= end_ts)
         ]
         ordered = []
-        for _, group in groupby(sorted(in_range, key=_tick_order), key=lambda row: row.ts_event):
+        for _, group in groupby(sorted(in_range, key=tick_order), key=lambda row: row.ts_event):
             ties = list(group)
-            if any(not _relative_tick_order_known(first, second) for first, second in pairwise(ties)):
+            if any(not relative_tick_order_known(first, second) for first, second in pairwise(ties)):
                 ties = [replace(row, order_uncertain=True) for row in ties]
             ordered.extend(ties)
         return ordered
@@ -1167,7 +1236,14 @@ class ColdReader:
     ) -> tuple[ColdManifest, list[T]]:
         if self._snapshot is not None:
             key = instrument.venue, instrument.symbol, series
-            pinned = self._snapshot.bars if series in SUPPORTED_TIMEFRAMES else self._snapshot.derivatives
+            if series in SUPPORTED_TIMEFRAMES:
+                pinned = self._snapshot.bars
+            elif series in (TickKind.TRADES, TickKind.QUOTES):
+                pinned = self._snapshot.ticks
+                if pinned is None:
+                    raise ColdStoreIntegrityError("回放清单缺少逐笔与盘口文件清单")
+            else:
+                pinned = self._snapshot.derivatives
             generations = tuple(
                 item for item in self._pinned_series.get(key, ())
                 if (start_ts is None or item.last_ts >= start_ts) and (end_ts is None or item.first_ts <= end_ts)
@@ -1283,7 +1359,7 @@ class ColdStore:
         """原子发布一个 UTC 日内的行情批次。"""
         with self._lock:
             self._ensure_open()
-            batch = TickBatch(instrument, kind, sorted(rows, key=_tick_order))
+            batch = TickBatch(instrument, kind, sorted(rows, key=tick_order))
             if not batch.rows or partition_day(batch.rows[0].ts_event) != partition_day(batch.rows[-1].ts_event):
                 raise ColdStoreQualityError("行情批次必须属于同一 UTC 日且非空")
             _validate_ticks(batch)
@@ -1403,7 +1479,7 @@ class ColdStore:
                 _verify_generation_file(self._data_dir, item), instrument.instrument_id, kind,
             )
         ]
-        rows.sort(key=_tick_order)
+        rows.sort(key=tick_order)
         archive = "".join(
             json.dumps({"source_sha256": item.content_sha256}) + "\n" for item in group
         ).encode("utf-8")

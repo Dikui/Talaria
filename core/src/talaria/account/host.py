@@ -41,9 +41,10 @@ from talaria.account.parameters import validate_parameters
 from talaria.account.paper import DraftIntake, PaperInbox
 from talaria.account.paper_ledger import PaperLedger, open_paper_ledger
 from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
+from talaria.account.plugins.l1_trade_sim import L1TradeSim, l1_trade_sim
 from talaria.account.plugins.live_ws import LiveWS, PaperMark, PaperPulse, live_ws
 from talaria.account.plugins.parquet import (
-    ParquetReplay, ReplayMarkAvailability, ReplayParams, capture_replay_snapshot, parquet_replay,
+    ParquetReplay, ReplayMarkAvailability, ReplayParams, TickMarketEvent, capture_replay_snapshot, parquet_replay,
 )
 from talaria.account.plugins.r_unit import RUnitSizer, r_unit
 from talaria.account.plugins.seven_step import SevenStepRisk, seven_step
@@ -190,6 +191,7 @@ def default_registry() -> PluginRegistry:
     registry.register("r_unit", r_unit)
     registry.register("seven_step", seven_step)
     registry.register("bar_sim_1m", bar_sim_1m)
+    registry.register("l1_trade_sim", l1_trade_sim)
     return registry
 
 
@@ -316,6 +318,7 @@ class AccountProcess:
         plugins = self._plugins
         data = plugins.data
         execution_replay = isinstance(plugins.fill, BarSim1m) and isinstance(data, ParquetReplay)
+        tick_fill = plugins.fill if execution_replay and isinstance(plugins.fill, L1TradeSim) else None
         paper = isinstance(ledger, PaperLedger)
         # 各账本独立提交。同一输入中途宕机时，只有游标相同的子账户共享订阅。
         streams = {}
@@ -346,6 +349,8 @@ class AccountProcess:
             pipelines.append(pipeline)
 
         def read_events(data) -> Iterator[MarketEvent]:
+            if tick_fill is not None:
+                return data.events(execution=True, quote_max_age_ms=tick_fill.quote_max_age_ms)
             events = data.events(execution=True) if execution_replay else data.events()
             if not isinstance(data, LiveWS):
                 return events
@@ -371,6 +376,8 @@ class AccountProcess:
         for source, pipelines in streams.values():
             markets = (plugins.strategy.market_events(lambda feed=source: read_events(feed))
                        if isinstance(plugins.strategy, IsolatedStrategy) else read_events(source))
+            if tick_fill is not None:
+                markets = tick_fill.clock_events(markets, end=source.end_event())
             subscriptions.append((iter(markets), pipelines))
 
         def deliveries():
@@ -440,6 +447,9 @@ class AccountProcess:
             valuation = get_market_pack(DEFAULT_PACK).margin_valuation()
         if valuation is not None and getattr(valuation, "interface_version", None) != MARGIN_VALUATION_VERSION:
             raise SchemeError(f"保证金估值须兼容接口版本 {MARGIN_VALUATION_VERSION}")
+        tick_replay = execution_replay and isinstance(plugins.fill, L1TradeSim)
+        tick_step_options = {"tick_stream": True} if tick_replay else {}
+        minute_execution = (execution_replay and not tick_replay) or isinstance(data, LiveWS)
 
         def record(events):
             guard = self._ownership.guard if self._ownership is not None else nullcontext
@@ -512,7 +522,7 @@ class AccountProcess:
             execution_bar = market.bar
             if execution_replay and ctx is not None:
                 execution_bar = None
-            elif (execution_replay or isinstance(data, LiveWS)) and execution_bar is not None and market.timeframe == "1m":
+            elif minute_execution and execution_bar is not None and market.timeframe == "1m":
                 execution_through = execution_bar.ts_event + timeframe_ms(market.timeframe)
             fill_market = replace(
                 market, bar=execution_bar.model_copy() if execution_bar is not None else None, ctx=None, source=None,
@@ -524,8 +534,8 @@ class AccountProcess:
                     gate.observe_marks_for_approval(now, visible)
                 for points in plugins.fill.market_steps(
                     fill_market, valuation, balances=ledger.balances,
-                    execution_through=execution_through if execution_replay or isinstance(data, LiveWS) else None,
-                    pricing_only=pricing_only,
+                    execution_through=execution_through if minute_execution else None,
+                    pricing_only=pricing_only, **tick_step_options,
                 ):
                     gate.poll_events(now, points=points)
             else:
@@ -577,7 +587,7 @@ class AccountProcess:
                 with ledger.transaction(account):
                     self._reduce_paper(gate, now, "PAPER_STOPPING")
                     checkpoint()
-            if execution_replay:
+            if execution_replay and not tick_replay:
                 end = data.end_event()
                 self._clock.advance(end.as_of)
                 for points in plugins.fill.market_steps(end, valuation, balances=ledger.balances):
@@ -635,7 +645,9 @@ class AccountProcess:
         if market.timeframe not in SUPPORTED_TIMEFRAMES:
             raise AccountProcessError(f"数据入口使用了未知周期 {market.timeframe}")
         bar = market.bar
-        if bar is None and market.source is None and market.ctx is None and market.derivative_points:
+        if bar is None and market.source is None and market.ctx is None and (
+            market.derivative_points or isinstance(market, TickMarketEvent)
+        ):
             return now, None
         if not isinstance(bar, RangeBar):
             raise AccountProcessError("MarketEvent 须携带 RangeBar 或独立衍生品观测")
@@ -801,7 +813,9 @@ def _prepare_new_backtest(config: RunConfig) -> tuple[RunConfig, _FilePlugins]:
             params = ReplayParams.model_validate(selection.params)
         except ValueError as exc:
             raise SchemeError(f"data 插槽插件 parquet_replay：{exc}") from exc
-        config = config.model_copy(update={"cold_snapshot": capture_replay_snapshot(config.data_dir, (params,))})
+        tick_instruments = (params.instrument,) if config.scheme.slots.selection(Slot.FILL).reference == "l1_trade_sim" else ()
+        snapshot = capture_replay_snapshot(config.data_dir, (params,), tick_instruments=tick_instruments)
+        config = config.model_copy(update={"cold_snapshot": snapshot})
     files = _prepare_files(config, "backtest")
     return config.model_copy(update={"file_plugins": {slot: code for slot, (code, _, _) in files.items()}}), files
 

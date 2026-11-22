@@ -423,3 +423,168 @@ def test_report_distinguishes_empty_window_from_no_trades(market, tmp_path, caps
     assert no_trades["by_currency"]["USDT"]["net_pnl"] == "0"
     assert (empty["status"], empty["signal_bars"], empty["empty_sample"]) == ("succeeded", 0, True)
     assert empty["by_currency"] is None and empty["trade_count"] is None
+
+
+def test_l1_replay_compares_same_scheme_on_pinned_ticks(market, tmp_path, monkeypatch, capsys):
+    from uuid import UUID
+
+    from talaria.foundation.ticks import TickKind, Trade
+
+    data_dir, _ = market
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    strategy = write_strategy(tmp_path / "scheme", data_dir)
+    scheme = write_scheme(strategy.with_name("l1.yaml"), "l1", 100)
+    scheme.write_text(scheme.read_text().replace("fill: bar_sim_1m", "fill: l1_trade_sim"))
+    opening = START + 2 * MINUTE
+
+    def publish(ts, price, sequence):
+        with closing(ColdStore(data_dir)) as store:
+            store.publish_ticks(instrument, TickKind.TRADES, [Trade(
+                instrument_id=instrument.instrument_id, ts_event=ts, ts_available=ts,
+                ts_ingested=ts, ts_committed=ts, trade_id=UUID(int=sequence), sequence=sequence,
+                side="Buy", price=Decimal(price), size=Decimal(1000),
+            )])
+
+    with closing(ColdStore(data_dir)) as store:
+        close = opening + MINUTE
+        store.publish(ColdBatch(instrument, "1m", [RawBar(
+            symbol=instrument.symbol, timeframe="1m", ts_event=opening,
+            open=Decimal(103), high=Decimal(140), low=Decimal(89), close=Decimal(103),
+            volume=Decimal(3000), turnover=Decimal(332000), revision=1,
+            ts_available=close, ts_ingested=close, ts_committed=close,
+        )]))
+    publish(opening + 5, 103, 1)
+    publish(opening + 10, 140, 2)
+    publish(opening + 15, 89, 3)
+    publish(START + 7 * MINUTE, 155, 5)
+    launch = subprocess.run
+
+    def publish_after_preflight(*args, **kwargs):
+        # 在固定清单之后追加一笔更早的止损。两个子进程都应使用冻结清单。
+        publish(opening + 7, 89, 4)
+        return launch(*args, **kwargs)
+
+    monkeypatch.setattr("talaria.orchestration.replay_runner.subprocess.run", publish_after_preflight)
+    assert main(["replay", str(scheme), "--data-dir", str(data_dir)]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    by_fill = {run["fill_plugin"]: run for run in report["runs"]}
+    l1, bar = by_fill["l1_trade_sim"], by_fill["bar_sim_1m"]
+    comparison, = report["fill_comparisons"]
+    assert comparison["l1_run_id"] == l1["run_id"] and comparison["bar_run_id"] == bar["run_id"]
+    assert comparison["trade_count_delta"] == 0
+    assert Decimal(comparison["by_currency_delta"]["USDT"]["net_pnl"]) == (
+        Decimal(l1["by_currency"]["USDT"]["net_pnl"]) - Decimal(bar["by_currency"]["USDT"]["net_pnl"])
+    ) > 0
+
+    path = Path(l1["directory"])
+    journal = read_journal(path / "ledger.sqlite")
+    entry, exit_fill = [e for e in journal.events if e.kind in {"ENTRY_FILLED", "EXIT_FILLED"}]
+    assert (entry.ts_event, exit_fill.ts_event, exit_fill.reason) == (opening + 5, opening + 10, "TAKE_PROFIT")
+    assert (entry.fill_tier, exit_fill.fill_tier) == ("trade", "trade")
+    snapshot = json.loads((path / "run-config.json").read_text())["cold_snapshot"]
+    assert snapshot["ticks"]["version"] == snapshot["bars"]["version"]
+    assert len(snapshot["ticks"]["generations"]) == 3
+    rerun = run_backtest(path / "run-config.json", None, replay=True)
+    assert read_journal(rerun.directory / "ledger.sqlite") == journal
+
+
+def test_l1_replay_executes_ticks_in_gap_after_last_confirmed_bar(market, tmp_path):
+    from uuid import UUID
+
+    from talaria.foundation.ticks import TickKind, Trade
+
+    data_dir, _ = market
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    strategy = write_strategy(tmp_path / "gap", data_dir)
+    opening = START + 5 * MINUTE
+    scheme = write_scheme(strategy.with_name("gap.yaml"), "gap", 142, end=opening + 20)
+    scheme.write_text(scheme.read_text().replace("fill: bar_sim_1m", "fill: l1_trade_sim"))
+    with closing(ColdStore(data_dir)) as store:
+        store.publish_ticks(instrument, TickKind.TRADES, [
+            Trade(instrument_id=instrument.instrument_id, ts_event=opening + sequence * 10,
+                  ts_available=opening + sequence * 10, ts_ingested=opening + sequence * 10,
+                  ts_committed=opening + sequence * 10, trade_id=UUID(int=sequence), sequence=sequence,
+                  side="Buy", price=Decimal(price), size=Decimal(1000))
+            for sequence, price in ((1, 145), (2, 180), (3, 120))
+        ])
+    run = run_backtest(scheme, data_dir)
+    fills = [e for e in read_journal(run.directory / "ledger.sqlite").events if e.fill_tier is not None]
+    assert [(e.kind, e.ts_event, e.reason) for e in fills] == [
+        ("ENTRY_FILLED", opening + 10, "TAKER"), ("EXIT_FILLED", opening + 20, "TAKE_PROFIT"),
+    ]
+
+
+def test_l1_replay_uses_l1_in_quote_only_gap(market, tmp_path):
+    from uuid import UUID
+
+    from talaria.foundation.ticks import Quote, TickKind
+
+    data_dir, _ = market
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    strategy = write_strategy(tmp_path / "quotes", data_dir)
+    opening = START + 5 * MINUTE
+    scheme = write_scheme(strategy.with_name("quotes.yaml"), "quotes", 142, end=opening + 500)
+    scheme.write_text(scheme.read_text().replace("fill: bar_sim_1m", "fill: l1_trade_sim"))
+    with closing(ColdStore(data_dir)) as store:
+        store.publish_ticks(instrument, TickKind.QUOTES, [
+            Quote(instrument_id=instrument.instrument_id, ts_event=opening + sequence * 10,
+                  ts_available=opening + sequence * 10, ts_ingested=opening + sequence * 10,
+                  ts_committed=opening + sequence * 10, connection_id=UUID(int=1), update_id=sequence,
+                  bid_price=Decimal(bid), ask_price=Decimal(ask), bid_size=Decimal(1000), ask_size=Decimal(1000))
+            for sequence, bid, ask in ((1, 144, 145), (2, 180, 181), (3, 130, 131))
+        ])
+    run = run_backtest(scheme, data_dir)
+    fills = [e for e in read_journal(run.directory / "ledger.sqlite").events if e.fill_tier is not None]
+    assert [(e.kind, e.ts_event, e.reason, e.fill_tier, e.price) for e in fills] == [
+        ("ENTRY_FILLED", opening + 10, "TAKER", "l1", Decimal("145.1")),
+        ("EXIT_FILLED", opening + 30, "STOP_LOSS", "l1", Decimal("129.9")),
+    ]
+
+
+@pytest.mark.regression
+def test_l1_books_intraminute_exit_before_later_signal_approval(tmp_path):
+    from uuid import UUID
+
+    from talaria.foundation.ticks import TickKind, Trade
+
+    data_dir = tmp_path / "data"
+    spec = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    opening = START + 2 * MINUTE
+    strategy = write_strategy(tmp_path / "timing", data_dir)
+    strategy.write_text(strategy.read_text().replace(
+        "if self.triggered or bar.close != self.trigger_price:",
+        "if bar.close != self.trigger_price:",
+    ))
+    StrategyCodeRegistry(data_dir).register(strategy, "human")
+    scheme = write_scheme(strategy.with_suffix(".yaml"), "timing", 100, end=opening + 40)
+    scheme.write_text(scheme.read_text().replace("fill: bar_sim_1m", "fill: l1_trade_sim"))
+    with closing(ColdStore(data_dir)) as store:
+        store.publish(ColdBatch(spec, "1m", [
+            RawBar(
+                symbol=spec.symbol, timeframe="1m", ts_event=ts, ts_available=available,
+                ts_ingested=available, ts_committed=available, open=Decimal(100),
+                high=Decimal(100), low=Decimal(100), close=Decimal(100),
+                volume=Decimal(0), turnover=Decimal(0),
+            )
+            for ts, available in ((START, START + MINUTE), (START + MINUTE, opening + 20))
+        ]))
+        store.publish_derivatives(spec, DerivativeKind.MARK_PRICE, [DerivativePoint(
+            instrument_id=spec.instrument_id, kind="mark_price", value="103",
+            ts_event=START, ts_available=START, ts_ingested=START, ts_committed=START,
+        )])
+        store.publish_ticks(spec, TickKind.TRADES, [
+            Trade(
+                instrument_id=spec.instrument_id, ts_event=at, ts_available=at,
+                ts_ingested=at, ts_committed=at, trade_id=UUID(int=index), sequence=index,
+                side="Buy", price=Decimal(price), size=Decimal(1000),
+            )
+            for index, (at, price) in enumerate(
+                ((opening + 5, 103), (opening + 10, 89), (opening + 30, 103)), 1,
+            )
+        ])
+    run = run_backtest(scheme, data_dir)
+    fills = [event for event in read_journal(run.directory / "ledger.sqlite").events if event.fill_tier]
+    assert [(event.kind, event.ts_event) for event in fills] == [
+        ("ENTRY_FILLED", opening + 5), ("EXIT_FILLED", opening + 10), ("ENTRY_FILLED", opening + 30),
+    ]
