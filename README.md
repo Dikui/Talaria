@@ -8,13 +8,29 @@ Talaria 是交易员的本地分析工作台。Python 底座负责历史回填�
 - Node.js 26+，pnpm 11+
 - 前端图表锁定 `klinecharts@10.1.1`
 
-## 快速启动（离线确定性样本）
+## 启动工作台
+
+首次启动前安装依赖并构建前端。
 
 ```bash
 uv sync
 pnpm -C dsh install
 pnpm -C dsh build
+```
 
+在 macOS 安装 DSH 后，用下面的命令安装工作台插件和登录自启的常驻服务。
+
+```bash
+uv run talaria dsh-install
+uv run talaria service install
+uv run talaria open
+```
+
+日常用 `talaria open` 进入工作台。DSH 离线时会打开看盘兜底页面，`talaria service status` 会显示宿主状态和日志路径。只需看盘时可用 `talaria service install --solo`。
+
+### 离线确定性样本
+
+```bash
 # 只启动 Python 看盘守护进程，使用仓库内的 Bybit fixture
 uv run talaria up --solo --pack crypto_perp --fixture-dir tests/fixtures/bybit
 ```

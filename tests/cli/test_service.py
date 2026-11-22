@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 
@@ -70,6 +71,7 @@ def test_launchd_plist_renders_expected_snapshot():
         stdout_path=DATA_DIR / "logs" / "service.out.log",
         stderr_path=DATA_DIR / "logs" / "service.err.log",
         working_directory=DATA_DIR,
+        environment_variables={"DSH_HOME": "/Users/me/.dsh"},
     )
 
     assert text == """<?xml version="1.0" encoding="UTF-8"?>
@@ -105,6 +107,11 @@ def test_launchd_plist_renders_expected_snapshot():
   <integer>10</integer>
   <key>WorkingDirectory</key>
   <string>/Users/me/Talaria</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DSH_HOME</key>
+    <string>/Users/me/.dsh</string>
+  </dict>
   <key>StandardOutPath</key>
   <string>/Users/me/Talaria/logs/service.out.log</string>
   <key>StandardErrorPath</key>
@@ -127,9 +134,26 @@ def test_launchd_plist_escapes_xml_special_characters():
     assert "/tmp/数据 &amp; 回放" in text
 
 
-def test_install_writes_config_plist_logs_and_bootstraps(tmp_path):
+@pytest.mark.spec
+@pytest.mark.parametrize("source", ["explicit", "environment", "path", "solo", "missing"])
+def test_install_writes_config_plist_logs_and_bootstraps(tmp_path, monkeypatch, source):
+    # platform/03: launchd gets the install-time DSH settings and an absolute executable.
     data_dir = tmp_path / "data"
     launch_agents = tmp_path / "LaunchAgents"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    dsh = bin_dir / "dsh"
+    if source not in {"solo", "missing"}:
+        dsh.touch(mode=0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.delenv("TALARIA_DSH_BIN", raising=False)
+    monkeypatch.delenv("DSH_HOME", raising=False)
+    if source == "explicit":
+        monkeypatch.setenv("TALARIA_DSH_BIN", "unavailable")
+        monkeypatch.setenv("DSH_HOME", "profile & data")
+    elif source == "environment":
+        monkeypatch.setenv("TALARIA_DSH_BIN", "bin/dsh")
     runner = FakeRunner(
         {
             "bootout": _completed(["bootout"], 3, "", "Boot-out failed: 3: No such process"),
@@ -137,7 +161,7 @@ def test_install_writes_config_plist_logs_and_bootstraps(tmp_path):
         }
     )
 
-    result = install_service(
+    args = dict(
         data_dir=data_dir,
         port=8765,
         pack="crypto_perp",
@@ -147,6 +171,33 @@ def test_install_writes_config_plist_logs_and_bootstraps(tmp_path):
         runner=runner,
         uid=501,
     )
+    if source == "missing":
+        with pytest.raises(ServiceInstallError, match="--solo"):
+            install_service(**args)
+        assert not launch_agents.exists()
+        assert runner.calls == []
+        return
+
+    result = install_service(
+        **args,
+        solo=source == "solo",
+        dsh_bin="bin/dsh" if source == "explicit" else None,
+    )
+    job = plistlib.loads(result.plist_path.read_bytes())
+    expected_arguments = [
+        "/opt/talaria/bin/talaria", "up", "--host", "127.0.0.1", "--port", "8765",
+        "--data-dir", str(data_dir), "--pack", "crypto_perp",
+    ]
+    if source == "solo":
+        expected_arguments += ["--solo"]
+    else:
+        expected_arguments += ["--dsh-bin", str(dsh)]
+    assert job["ProgramArguments"] == expected_arguments
+    dsh_home = tmp_path / "profile & data" if source == "explicit" else Path.home() / ".dsh"
+    expected_environment = {"DSH_HOME": str(dsh_home)}
+    if source != "solo":
+        expected_environment["PATH"] = str(bin_dir)
+    assert job["EnvironmentVariables"] == expected_environment
 
     assert result.plist_path == launch_agents / f"{DEFAULT_SERVICE_LABEL}.plist"
     assert result.config_path == data_dir / "service.json"
@@ -177,6 +228,7 @@ def test_install_keeps_existing_feature_config(tmp_path):
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
+        solo=True,
         launch_agents_dir=tmp_path / "LaunchAgents",
         runner=runner,
         uid=501,
@@ -196,6 +248,7 @@ def test_install_reports_bootstrap_failure(tmp_path):
             port=8765,
             pack="crypto_perp",
             program="/opt/talaria/bin/talaria",
+            solo=True,
             launch_agents_dir=tmp_path / "LaunchAgents",
             runner=runner,
             uid=501,
@@ -212,6 +265,7 @@ def test_uninstall_boots_out_and_removes_plist_idempotently(tmp_path):
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
+        solo=True,
         launch_agents_dir=tmp_path / "LaunchAgents",
         runner=runner,
         uid=501,
@@ -260,6 +314,7 @@ def test_uninstall_cli_preserves_plist_on_bootout_failure(
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
+        solo=True,
         launch_agents_dir=launch_agents,
         runner=FakeRunner(),
     )
@@ -294,6 +349,7 @@ def test_status_reports_running_service_and_features(tmp_path, monkeypatch):
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
+        solo=True,
         launch_agents_dir=launch_agents,
         runner=FakeRunner(),
         uid=501,
@@ -369,6 +425,7 @@ def test_status_reports_not_loaded_when_launchctl_print_fails(tmp_path):
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
+        solo=True,
         launch_agents_dir=launch_agents,
         runner=FakeRunner(),
         uid=501,
@@ -426,6 +483,7 @@ def test_status_cli_reports_matching_runtime_and_pending_changes(
         port=8765,
         pack="crypto_perp",
         program="/opt/talaria/bin/talaria",
+        solo=True,
         launch_agents_dir=launch_agents,
         runner=FakeRunner(),
     )

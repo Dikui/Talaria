@@ -3,34 +3,65 @@
 预研边界：
 - 只通过 ``dsh`` CLI 启动一个独立 Profile，不直接依赖 DSH 内部模块；
 - DSH Web 使用随机 token，stdout 打印的 URL 是唯一可信的入口；
-- 宿主崩溃只标记离线，不结束 Python 守护进程，保证看盘快通道继续工作。
+- 宿主崩溃后独立重启，保证看盘快通道继续工作。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 from collections import deque
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
+
+from talaria.workbench_api.service_descriptor import validate_loopback_host
+
+DEFAULT_DSH_PORT = 8766
 
 _URL_PATTERN = re.compile(r"https?://[^\s]+")
 _ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _SECRET_PATTERN = re.compile(r"([?&]token=)[^\s&]+")
+_ENTRY_NAME = "dsh-entry.json"
 _TAIL_LINES = 30
+_MAX_RESTART_DELAY = 60.0
+_ORPHAN_STOP_TIMEOUT = 0.5
+_LOGGER = logging.getLogger(__name__)
 
 
 class DshHostError(RuntimeError):
     """宿主缺失、启动失败或健康探针失败。"""
+
+
+def redact_dsh_token(text: str) -> str:
+    return _SECRET_PATTERN.sub(r"\1***", text)
+
+
+def is_local_dsh_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        validate_loopback_host(parsed.hostname or "", allow_localhost=True)
+        return (
+            parsed.scheme in {"http", "https"}
+            and parsed.port != 0
+            and parsed.username is None
+            and parsed.password is None
+            and not any(character.isspace() for character in url)
+        )
+    except ValueError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -98,6 +129,25 @@ def bridge_descriptor_path(data_dir: Path) -> Path:
     return data_dir / "runtime" / "dsh-bridge.json"
 
 
+def dsh_entry_path(data_dir: Path) -> Path:
+    return data_dir / "runtime" / _ENTRY_NAME
+
+
+def read_dsh_entry(data_dir: Path, *, daemon_pid: int, pid: int) -> str | None:
+    try:
+        entry = json.loads(dsh_entry_path(data_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(entry, dict)
+        or entry.get("daemon_pid") != daemon_pid
+        or entry.get("pid") != pid
+    ):
+        return None
+    url = entry.get("url")
+    return url if isinstance(url, str) and is_local_dsh_url(url) else None
+
+
 def write_bridge_descriptor(
     path: Path,
     *,
@@ -106,11 +156,6 @@ def write_bridge_descriptor(
     daemon_pid: int,
 ) -> Path:
     """把回环地址与 Bearer token 以 0600 权限写入运行目录。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        path.parent.chmod(0o700)
-    except OSError:  # pragma: no cover - 非 POSIX 平台
-        pass
     payload = {
         "version": 1,
         "base_url": base_url,
@@ -118,16 +163,21 @@ def write_bridge_descriptor(
         "daemon_pid": daemon_pid,
         "created_at": int(time.time()),
     }
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    try:
-        temporary.chmod(0o600)
-    except OSError:  # pragma: no cover - 非 POSIX 平台
-        pass
-    temporary.replace(path)
+    _write_private_json(path, payload)
     return path
+
+
+def _write_private_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    path.parent.chmod(0o700)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def remove_bridge_descriptor(path: Path) -> None:
@@ -137,13 +187,59 @@ def remove_bridge_descriptor(path: Path) -> None:
         return
 
 
+def _wait_for_process_group_exit(pgid: int, deadline: float) -> bool:
+    while True:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+
+
+def reap_stale_dsh_groups(data_dir: Path) -> None:
+    """持有服务锁时，清理描述文件记录的旧服务所启动的 DSH 进程组。"""
+    handled: set[int] = set()
+    for path in (dsh_entry_path(data_dir), bridge_descriptor_path(data_dir)):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        daemon_pid, pgid = payload.get("daemon_pid"), payload.get("pgid")
+        if type(daemon_pid) is not int or daemon_pid <= 0:
+            continue
+        if type(pgid) is not int or pgid <= 1 or pgid in handled or pgid == os.getpgrp():
+            continue
+        try:
+            os.kill(daemon_pid, 0)
+        except ProcessLookupError:
+            pass
+        except (PermissionError, OverflowError):
+            continue
+        else:
+            continue
+        handled.add(pgid)
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            if not _wait_for_process_group_exit(pgid, time.monotonic() + _ORPHAN_STOP_TIMEOUT):
+                os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OverflowError):
+            pass
+        except OSError as exc:
+            _LOGGER.warning("无法清理旧的 DSH 进程组 %s：%s", pgid, redact_dsh_token(str(exc)))
+
+
 class DshHost:
     """一个可被守护进程监督的 DSH Web 子进程。"""
 
     def __init__(
         self,
         *,
-        dsh_bin: str,
+        dsh_bin: str | None,
         profile: str,
         host: str,
         port: int,
@@ -151,6 +247,7 @@ class DshHost:
         log_dir: Path,
         startup_timeout: float = 40.0,
         on_offline: Callable[[DshHostInfo], None] | None = None,
+        prepare_bridge: Callable[[], None] | None = None,
         popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
     ) -> None:
         self._dsh_bin = dsh_bin
@@ -158,31 +255,37 @@ class DshHost:
         self._host = host
         self._port = port
         self._bridge_path = bridge_path
+        self._entry_path = bridge_path.with_name(_ENTRY_NAME)
         self._log_dir = log_dir
         self._startup_timeout = startup_timeout
         self._on_offline = on_offline
+        self._prepare_bridge = prepare_bridge
         self._popen_factory = popen_factory
         self._lock = threading.Lock()
         self._state = "starting"
         self._detail = "等待 DSH 启动"
         self._url: str | None = None
-        self._base_url: str | None = None
-        self._log_path = ""
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self._log_path = str(log_dir / f"dsh-host-{stamp}-{os.getpid()}.log")
         self._process: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
-        self._tail: deque[str] = deque(maxlen=_TAIL_LINES)
-        self._url_ready = threading.Event()
-        self._stopping = False
+        self._supervisor: threading.Thread | None = None
+        self._stopping = threading.Event()
+        self._stop_timeout = 8.0
 
     # ------------------------------------------------------------------ 查询
     def info(self) -> DshHostInfo:
         with self._lock:
             return DshHostInfo(
                 state=self._state,
-                url=self._url,
+                url=self._url if self._state == "online" else None,
                 detail=self._detail,
                 log_path=self._log_path,
-                pid=self._process.pid if self._process is not None else None,
+                pid=(
+                    self._process.pid
+                    if self._process is not None and self._state in {"starting", "online"}
+                    else None
+                ),
             )
 
     def status_payload(self) -> dict[str, object]:
@@ -190,12 +293,12 @@ class DshHost:
 
     @property
     def log_path(self) -> Path:
-        return Path(self._log_path) if self._log_path else self._log_dir
+        return Path(self._log_path)
 
     # ------------------------------------------------------------------ 启动
     def command(self) -> list[str]:
         return [
-            self._dsh_bin,
+            resolve_dsh_bin(self._dsh_bin),
             "--profile",
             self._profile,
             "--no-open",
@@ -208,17 +311,44 @@ class DshHost:
         self._mark_offline(detail)
 
     def start(self) -> DshHostInfo:
+        """等待首次启动结果，成功后持续监督子进程。"""
+        try:
+            self._start_attempt()
+        except (DshHostError, OSError) as exc:
+            self._cleanup_attempt()
+            self._mark_offline(str(exc))
+            raise DshHostError(self.info().detail) from exc
+        info = self.info()
+        self._launch_supervisor()
+        return info
+
+    def supervise(self) -> None:
+        """在后台启动 DSH，首次启动失败也按退避重试。"""
+        self._launch_supervisor()
+
+    def _launch_supervisor(self) -> None:
+        self._supervisor = threading.Thread(
+            target=self._supervise, name="talaria-dsh-watch", daemon=True
+        )
+        self._supervisor.start()
+
+    def _start_attempt(self) -> None:
+        if self._prepare_bridge is not None:
+            self._prepare_bridge()
+        try:
+            command = self.command()
+        except RuntimeError as exc:
+            raise DshHostError(str(exc)) from exc
         self._log_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        self._log_path = str(self._log_dir / f"dsh-host-{stamp}-{os.getpid()}.log")
         env = os.environ.copy()
         env["TALARIA_DSH_BRIDGE"] = str(self._bridge_path)
         try:
             process = self._popen_factory(
-                self.command(),
+                command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                errors="replace",
                 bufsize=1,
                 env=env,
                 start_new_session=True,
@@ -226,69 +356,106 @@ class DshHost:
         except OSError as exc:
             raise DshHostError(f"无法启动 DSH 宿主：{exc}") from exc
         self._process = process
+        # start_new_session=True 使子进程的 PID 成为 PGID，探针通过前也需要记录。
+        self._update_bridge_pgid(process.pid)
+        next_url: Future[str] = Future()
+        tail: deque[str] = deque(maxlen=_TAIL_LINES)
         self._reader = threading.Thread(
-            target=self._read_output, name="talaria-dsh-log", daemon=True
+            target=self._read_output,
+            args=(process, next_url, tail),
+            name="talaria-dsh-log",
+            daemon=True,
         )
         self._reader.start()
         deadline = time.monotonic() + self._startup_timeout
-        while time.monotonic() < deadline:
+        while not self._stopping.is_set() and time.monotonic() < deadline:
             if process.poll() is not None:
-                self._mark_offline(f"DSH 启动失败（退出码 {process.returncode}）")
-                raise DshHostError(self._failure_message())
-            if self._url_ready.wait(timeout=0.2):
                 break
-        else:
-            self.stop()
-            self._mark_offline("DSH 启动超时")
-            raise DshHostError(self._failure_message())
-        if not self._probe_until_ready(deadline):
-            self.stop()
-            self._mark_offline("DSH 健康探针未通过")
-            raise DshHostError(self._failure_message())
-        with self._lock:
-            self._state = "online"
-            self._detail = "健康探针通过"
-        threading.Thread(
-            target=self._watch_exit, name="talaria-dsh-watch", daemon=True
-        ).start()
-        return self.info()
-
-    def _read_output(self) -> None:
-        process = self._process
-        if process is None or process.stdout is None:
+            try:
+                self._url = next_url.result(timeout=0.1)
+                break
+            except TimeoutError:
+                pass
+        if self._url is not None and self._probe_until_ready(process, deadline):
+            with self._lock:
+                _write_private_json(
+                    self._entry_path,
+                    {
+                        "url": self._url,
+                        "daemon_pid": os.getpid(),
+                        "pid": process.pid,
+                        "pgid": process.pid,
+                    },
+                )
+                self._state = "online"
+                self._detail = "健康探针通过"
             return
-        log_file = open(self._log_path, "a", encoding="utf-8")
-        try:
-            for raw in process.stdout:
-                line = _ANSI_PATTERN.sub("", raw.rstrip("\n"))
-                if not line:
-                    continue
-                self._tail.append(line)
-                log_file.write(_SECRET_PATTERN.sub(r"\1***", line) + "\n")
-                log_file.flush()
-                match = _URL_PATTERN.search(line)
-                if match is not None and self._url is None:
-                    self._url = match.group(0)
-                    self._base_url = self._url.split("?", 1)[0]
-                    self._url_ready.set()
-        finally:
-            log_file.close()
+        if process.poll() is not None:
+            self._reader.join(timeout=0.2)
+            reason = f"退出码 {process.returncode}"
+        else:
+            reason = "健康探针未通过" if self._url else "等待入口超时"
+        raise DshHostError(self._failure_message(reason, tail.copy(), command))
 
-    def _probe_until_ready(self, deadline: float) -> bool:
-        while time.monotonic() < deadline:
-            if self._process is not None and self._process.poll() is not None:
+    def _update_bridge_pgid(self, pgid: int | None) -> None:
+        try:
+            payload = json.loads(self._bridge_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            return
+        if not isinstance(payload, dict) or payload.get("daemon_pid") != os.getpid():
+            return
+        if pgid is None:
+            if "pgid" not in payload:
+                return
+            del payload["pgid"]
+        else:
+            payload["pgid"] = pgid
+        _write_private_json(self._bridge_path, payload)
+
+    def _read_output(
+        self, process: subprocess.Popen[str], next_url: Future[str], tail: deque[str]
+    ) -> None:
+        if process.stdout is None:
+            return
+        try:
+            with process.stdout, self.log_path.open("a", encoding="utf-8", buffering=1) as log:
+                for raw in process.stdout:
+                    line = _ANSI_PATTERN.sub("", raw.rstrip("\n"))
+                    if not line:
+                        continue
+                    redacted = redact_dsh_token(line)
+                    tail.append(redacted)
+                    log.write(redacted + "\n")
+                    if not next_url.done():
+                        match = _URL_PATTERN.search(line)
+                        if match is not None and is_local_dsh_url(match.group(0)):
+                            next_url.set_result(match.group(0))
+        except OSError:
+            if not next_url.done():
+                next_url.set_exception(DshHostError("无法读取 DSH 输出或写入日志"))
+
+    def _probe_until_ready(self, process: subprocess.Popen[str], deadline: float) -> bool:
+        while not self._stopping.is_set() and time.monotonic() < deadline:
+            if process.poll() is not None:
                 return False
-            if self.probe():
-                return True
-            time.sleep(0.25)
+            try:
+                ready = self.probe()
+            except Exception as exc:
+                detail = redact_dsh_token(str(exc))
+                raise DshHostError(f"DSH 健康探针失败（{type(exc).__name__}）：{detail}") from None
+            if ready:
+                return process.poll() is None and not self._stopping.is_set()
+            self._stopping.wait(0.25)
         return False
 
     def probe(self) -> bool:
-        if self._url is None:
+        url = self._url
+        if url is None:
             return False
-        request = urllib.request.Request(self._url, method="GET")
+        request = urllib.request.Request(url, method="GET")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with urllib.request.urlopen(request, timeout=2.0) as response:
+            with opener.open(request, timeout=2.0) as response:
                 return response.status < 500
         except urllib.error.HTTPError as exc:
             # 401/403 说明 Web 服务已监听；健康探针不负责登录。
@@ -296,58 +463,100 @@ class DshHost:
         except (urllib.error.URLError, OSError, TimeoutError):
             return False
 
-    def _watch_exit(self) -> None:
-        process = self._process
-        if process is None:
-            return
-        code = process.wait()
-        if self._stopping:
-            return
-        self._mark_offline(f"DSH 宿主意外退出（退出码 {code}）")
-        if self._on_offline is not None:
-            self._on_offline(self.info())
+    def _supervise(self) -> None:
+        delay = 1.0
+        try:
+            while not self._stopping.is_set():
+                try:
+                    if self._process is None:
+                        self._start_attempt()
+                    online_since = time.monotonic()
+                    process = self._process
+                    assert process is not None
+                    while process.poll() is None and not self._stopping.wait(0.1):
+                        pass
+                    if time.monotonic() - online_since >= _MAX_RESTART_DELAY:
+                        delay = 1.0
+                    detail = f"DSH 宿主意外退出（退出码 {process.returncode}）"
+                except (DshHostError, OSError) as exc:
+                    detail = str(exc)
+                self._cleanup_attempt()
+                if self._stopping.is_set():
+                    break
+                self._mark_offline(detail)
+                if self._on_offline is not None:
+                    try:
+                        self._on_offline(self.info())
+                    except OSError:
+                        pass
+                self._stopping.wait(delay)
+                delay = min(delay * 2, _MAX_RESTART_DELAY)
+        finally:
+            self._cleanup_attempt()
 
     def _mark_offline(self, detail: str) -> None:
         with self._lock:
-            if self._state == "offline":
-                return
             self._state = "offline"
-            self._detail = detail
+            self._detail = redact_dsh_token(detail)
 
-    def _failure_message(self) -> str:
-        tail = "\n".join(self._tail) if self._tail else "（无输出）"
+    def _failure_message(self, reason: str, tail: deque[str], command: list[str]) -> str:
+        output = "\n".join(tail) if tail else "（无输出）"
         return (
-            "DSH 协同宿主启动失败。\n"
-            f"命令：{' '.join(self.command())}\n"
+            f"DSH 协同宿主启动失败（{reason}）。\n"
+            f"命令：{' '.join(command)}\n"
             f"日志：{self._log_path}\n"
-            f"最近输出：\n{tail}\n"
+            f"最近输出：\n{output}\n"
             "请先运行 talaria dsh-install 安装 Profile 与插件；"
             "单机模式可用 talaria up --solo。"
         )
 
     # ------------------------------------------------------------------ 停止
     def stop(self, timeout: float = 8.0) -> None:
-        process = self._process
-        if process is None:
-            return
-        self._stopping = True
+        self._stop_timeout = timeout
+        self._stopping.set()
+        if self._supervisor is not None:
+            self._supervisor.join()
+        self._cleanup_attempt()
         with self._lock:
             if self._state != "offline":
                 self._state = "stopped"
                 self._detail = "已由守护进程停止"
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
+
+    def _cleanup_attempt(self) -> None:
+        try:
+            self._entry_path.unlink(missing_ok=True)
+        except OSError as exc:
+            _LOGGER.warning("无法移除 DSH 入口：%s", redact_dsh_token(str(exc)))
+        process = self._process
+        if process is None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            if process.poll() is None:
                 process.terminate()
-            try:
-                process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    process.kill()
-                process.wait(timeout=3)
+        deadline = time.monotonic() + self._stop_timeout
+        try:
+            process.wait(timeout=self._stop_timeout)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            if not _wait_for_process_group_exit(process.pid, deadline):
+                os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            if process.poll() is None:
+                process.kill()
+        process.wait(timeout=3)
         if self._reader is not None:
             self._reader.join(timeout=2)
-        self._process = None
+        try:
+            self._update_bridge_pgid(None)
+        except OSError as exc:
+            _LOGGER.warning("无法清除 DSH 进程组记录：%s", redact_dsh_token(str(exc)))
+        with self._lock:
+            self._process = None
+            self._url = None

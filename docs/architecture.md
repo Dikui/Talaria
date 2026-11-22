@@ -526,7 +526,7 @@ flowchart LR
   DSHAuto["DSH 自治 / 评估子进程（以后，stdio SDK）"]
 
   Launchd -->|"登录启动、崩溃重启"| Svc
-  Svc -->|"启停子进程"| DSHWeb
+  Svc -->|"启停子进程、崩溃后重启"| DSHWeb
   Browser <-->|"HTTP / WS 快通道"| Svc
   Browser <-->|"DSH typert（会诊、轨迹、审批）"| DSHWeb
   DSHWeb <-->|"受控桥接工具"| Svc
@@ -536,8 +536,8 @@ flowchart LR
 ```
 
 - **运行方式**：
-  1. `talaria up --pack crypto_perp`（已实现）：前台启动服务与 `dsh --profile talaria-desk --no-open --port <dsh_port>`；`--solo` 只启动服务，访问 `http://127.0.0.1:8765/desk`。双进程模式在 `<data-dir>/runtime/dsh-bridge.json`（0600）写入回环基址与 Bearer Token；DSH 缺失或启动失败时宿主标为 `offline`，快通道继续服务。
-  2. `talaria service install | uninstall | status`（规划中）：写入 launchd plist（显式 `ProcessType`、`KeepAlive`），服务常驻；功能开关由数据目录下的配置文件决定。服务以子进程方式启停 DSH 宿主；`talaria open`（规划中）打开带 token 的 DSH 入口，取不到 DSH 时打开兜底页面（ADR-0020）。
+  1. 运行 `talaria service install` 注册登录自启的常驻服务（日常用 `talaria open` 进入工作台）。launchd plist 显式设置 `ProcessType`、`KeepAlive`，功能开关由数据目录下的配置文件决定。服务托管 DSH 子进程，崩溃后按指数退避重启。入口保存在 `<data-dir>/runtime/dsh-entry.json`（0600），宿主下线即删除。`talaria open` 在 DSH 不可用时打开 `/desk`（ADR-0020）。可用 `talaria service status` 查看宿主状态及日志，用 `talaria service uninstall` 停止并卸载作业。
+  2. 开发和回放可用 `talaria up --pack crypto_perp` 前台启动服务与 `dsh --profile talaria-desk --no-open --port <dsh_port>`。两种启动方式都可选 `--solo`，只运行服务。双进程模式在 `<data-dir>/runtime/dsh-bridge.json`（0600）写入回环基址与 Bearer Token；DSH 离线时快通道继续服务。
   3. `talaria account run <scheme.yaml> [--mode backtest|paper]`（规划中）：启动一个账户进程；`paper` 模式对方案里的每个子账户取排他锁，取不到即退出。
   4. `talaria replay` / `talaria optimize --workers N`（规划中）：批量启动账户进程。
 - **DSH 权限隔离与版本**：`talaria-desk` 提供分析查询、标注与预警草案工具；交易草案经人工确认。以后的自治子账户（`talaria-auto`）与评估（`talaria-eval`）基于 `sdk-minimal` 剔除 shell、外网与文件写权限，由 Python 经 `deepseek-harness-sdk`（stdio）调用。截至 2026-11-19，本机基线锁定 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`；客户端插槽由 DSH 安装包自带。可用 `--dsh-bin` 或 `TALARIA_DSH_BIN` 指定 DSH 可执行文件。升级前须重跑 `dsh --profile <name> --dump-config` 与确定性探针。

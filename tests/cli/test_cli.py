@@ -9,13 +9,18 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from io import StringIO
 from pathlib import Path
 
 import pytest
+import uvicorn
+from fastapi.testclient import TestClient
 
+from talaria.cli.dsh_host import DshHost, bridge_descriptor_path, dsh_entry_path
 from talaria.cli.main import main, validate_loopback_host
 from talaria.workbench_api.service_config import FeatureToggles
 from talaria.workbench_api.service_descriptor import (
@@ -269,6 +274,135 @@ def _wait_for(predicate, timeout: float = 15.0):
             return value
         time.sleep(0.1)
     raise AssertionError("等待超时")
+
+
+def _install_test_dsh(executable: Path) -> None:
+    executable.write_text(
+        '#!/bin/sh\ntest -s "$TALARIA_DSH_BRIDGE" || exit 5\n'
+        "echo 'http://127.0.0.1:8766/?token=example'\nexec /bin/sleep 60\n"
+    )
+    executable.chmod(0o755)
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("descriptor_name", ["dsh-entry.json", "dsh-bridge.json"])
+def test_up_cleans_orphaned_dsh_group_before_serving(tmp_path, monkeypatch, descriptor_name):
+    # platform/03: use real child processes and replace only the Uvicorn listener.
+    with subprocess.Popen([sys.executable, "-c", "pass"]) as daemon:
+        daemon.wait(timeout=3)
+    term_notice = tmp_path / "term"
+    group = subprocess.Popen(
+        [
+            sys.executable, "-c",
+            "import signal, sys, time\n"
+            "from pathlib import Path\n"
+            "signal.signal(signal.SIGTERM, lambda *_: Path(sys.argv[1]).touch())\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(60)\n",
+            str(term_notice),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        assert group.stdout.readline().strip() == "ready"
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        (runtime / descriptor_name).write_text(json.dumps({
+            "daemon_pid": daemon.pid,
+            "pgid": group.pid,
+        }))
+
+        def run_server(server):
+            assert term_notice.exists()
+            assert group.wait(timeout=3) == -signal.SIGKILL
+            server.started = True
+
+        monkeypatch.setattr(uvicorn.Server, "run", run_server)
+        assert main(["up", "--solo", "--data-dir", str(tmp_path)]) == 0
+    finally:
+        if group.poll() is None:
+            group.kill()
+        group.communicate(timeout=3)
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize(
+    ("obstacle", "detail"),
+    [("binary", "DSH 可执行文件不存在"), ("bridge", "无法写入 DSH 桥接凭据")],
+    ids=["missing-binary", "unwritable-bridge"],
+)
+def test_up_retries_dsh_when_first_attempt_cannot_prepare(
+    tmp_path, monkeypatch, obstacle, detail
+):
+    # platform/03: exercise the real filesystem and CLI with an in-process API.
+    bridge = bridge_descriptor_path(tmp_path)
+    executable = tmp_path / "dsh"
+
+    if obstacle == "bridge":
+        _install_test_dsh(executable)
+        bridge.mkdir(parents=True)
+
+    def run_server(server):
+        server.started = True
+        client = TestClient(server.config.app)
+
+        def status(state):
+            payload = client.get("/api/collaboration").json()
+            return payload if payload["host"] == state else None
+
+        assert detail in _wait_for(lambda: status("offline"), timeout=3)["detail"]
+        if obstacle == "binary":
+            _install_test_dsh(executable)
+        else:
+            bridge.rmdir()
+        assert _wait_for(lambda: status("online"), timeout=3)["pid"] > 0
+        descriptor = read_service_descriptor(tmp_path)
+        assert json.loads(bridge.read_text())["token"] == descriptor.token
+
+    monkeypatch.setattr(DshHost, "probe", lambda self: True)
+    monkeypatch.setattr(uvicorn.Server, "run", run_server)
+    assert main(["up", "--data-dir", str(tmp_path), "--dsh-bin", str(executable)]) == 0
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize(
+    "message", ["Talaria 看盘", "DSH 协同宿主：离线"], ids=["ready", "offline"]
+)
+def test_up_retries_and_stops_when_stderr_print_fails(tmp_path, monkeypatch, message):
+    # platform/03: replace the stderr stream and serve the API without TCP.
+    failed_write = threading.Event()
+
+    class BrokenStderr(StringIO):
+        def write(self, text):
+            if text.startswith(message):
+                failed_write.set()
+                raise BrokenPipeError("stderr closed")
+            return super().write(text)
+
+    stderr = BrokenStderr()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    executable = tmp_path / "dsh"
+    entry = dsh_entry_path(tmp_path)
+
+    def run_server(server):
+        server.started = True
+        client = TestClient(server.config.app)
+        _wait_for(
+            lambda: client.get("/api/collaboration").json()["host"] == "offline",
+            timeout=3,
+        )
+        assert failed_write.wait(3)
+        _install_test_dsh(executable)
+        _wait_for(entry.is_file, timeout=3)
+
+    monkeypatch.setattr(DshHost, "probe", lambda self: True)
+    monkeypatch.setattr(uvicorn.Server, "run", run_server)
+    result = main(["up", "--data-dir", str(tmp_path), "--dsh-bin", str(executable)])
+    assert result == 0, stderr.getvalue()
+    assert not entry.exists()
+    assert not bridge_descriptor_path(tmp_path).exists()
 
 
 def test_up_dual_keeps_fast_path_when_dsh_fails(tmp_path: Path) -> None:
