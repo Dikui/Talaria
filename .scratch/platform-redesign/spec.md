@@ -101,7 +101,8 @@ foundation（契约、算子、关键位引擎）、packs/feed/replay（行情�
 - **模拟成交**：放在策略进程内，回测与模拟盘共用同一成交模块；策略进程自己写账本库，服务只读用于展示（先例 Nautilus Sandbox、LEAN PaperBrokerage）。
 - **高频数据**：对实时订阅的少数标的落盘买一卖一 + 逐笔成交（BTC 永续估算约 30–65 MB/天）；需新增订阅 `publicTrade.{symbol}`；逐笔历史从 Bybit 公开归档 `public.bybit.com` 按日补；多档盘口暂不存。定存储预算前先落盘 1–2 周实测。
 - **快照**：保留，用于固定 agent 会诊和预警触发时的证据；日常取数不再需要先建快照。HTTP 接口新增按时间范围取数，DSH 工具与 SDK 共用同一套契约。
-- **待实测**：服务补尾与直读在并发读写下的一致性；Arrow IPC 经本机 HTTP 传输千万行的耗时。
+- 2026-11-22 的两轮持续写入及合并实测共执行 153 次 SDK 查询。13 次少柱，均标记为 `tail_completed=False`，重柱和文件读取错误均为 0。慢读者在 24 小时和 3 代更新条件均满足后遇到旧文件已回收，重读清单一次即返回完整结果。保留现有回收规则。两次清单换代可让 SDK 丢弃服务已返回的未落盘柱，详见 [data-access/09](../data-access/issues/09-preserve-sdk-tail-during-manifest-churn.md)。
+- 2026-11-22 实测千万行的 Arrow IPC 和 JSON 分别为 1.21 GB 和 2.29 GB，本机 HTTP 匿名套接字传输中位数分别为 1.22 秒和 2.13 秒，解析为各自原生结构分别为 0.076 秒和 8.92 秒。现有范围接口每次最多 10,000 根，保留 JSON，大批量本机历史沿用 SDK 直读 Parquet。若后续有百万行级 HTTP 导出需求，先用 TCP 回环复测，再决定是否提供 Arrow IPC 流。完整结果见 [data-access/05](../data-access/issues/05-measure-tail-consistency-and-arrow.md#实现记录2026-11-22)。
 
 ### D4 指标、信号、策略的统一组件模型（2026-11-20）
 
