@@ -71,7 +71,10 @@ def _alert(level_id, level_event="TOUCH"):
     return AlertCreate(
         instrument_id=INSTRUMENT,
         timeframe="1m",
-        condition={"kind": "LEVEL_EVENT", "level_id": level_id, "level_event": level_event},
+        condition={
+            "version": "1", "timing": ("event" if level_event == "TOUCH" else "bar_close"),
+            "expression": {"op": "level_event", "level_id": level_id, "event": level_event, "level_kind": None},
+        },
     )
 
 
@@ -138,6 +141,10 @@ def test_restarted_alert_reads_cold_levels_without_scanner_or_chart(tmp_path, fi
         nonlocal now
         first = await build_runtime(settings)
         try:
+            first.key_levels.register(KeyLevelSet(
+                instrument_id=INSTRUMENT, timeframe="1m", cutoff_ts=now, as_of_ts=now,
+                snapshot_id="before-restart", levels=[level],
+            ))
             alert = await first.require_alerts().create_alert(_alert(level.level_id))
         finally:
             await first.aclose()
@@ -224,6 +231,10 @@ def test_empty_cold_startup_warms_after_subscription_backfill(tmp_path, monkeypa
             features=FeatureToggles(market_data=False, scanner=False),
         ))
         try:
+            first.key_levels.register(KeyLevelSet(
+                instrument_id=INSTRUMENT, timeframe="1m", cutoff_ts=now, as_of_ts=now,
+                snapshot_id="before-restart", levels=[level],
+            ))
             alert = await first.require_alerts().create_alert(_alert(level.level_id))
         finally:
             await first.aclose()

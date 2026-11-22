@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from talaria.foundation.alerts import AlertCondition
 from talaria.foundation.annotations.contracts import (
     AgentAnnotationCreate,
     AnnotationEvidence,
     AnnotationKind,
 )
 from talaria.foundation.collaboration.tools import ToolBase
+from talaria.foundation.rules import Rule
 from talaria.foundation.types import DecimalStr
 
 
@@ -51,7 +51,7 @@ class CreateAlertDraftInput(ToolBase):
 
     instrument_id: str = Field(min_length=1, max_length=64)
     timeframe: str = Field(min_length=1, max_length=8)
-    condition: AlertCondition
+    condition: Rule
     note: str = Field(default="", max_length=200)
     repeat: bool = True
     cooldown_ms: int = Field(default=60_000, ge=1_000, le=86_400_000)

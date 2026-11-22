@@ -1,4 +1,4 @@
-"""已收盘柱修订的可靠实时通道。"""
+"""收盘柱和衍生品修订的可靠实时通道。"""
 
 import asyncio
 import secrets
@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from talaria.foundation.errors import TalariaError
 from talaria.foundation.strategy_subscription import SubscriptionRequest
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
+from talaria.packs import get_market_pack
 from talaria.service_endpoint import DATA_DIR_HEADER, data_dir_id
 from talaria.workbench_api.routes import get_runtime
 from talaria.workbench_api.strategy_stream import StrategySession
@@ -78,9 +79,19 @@ async def strategy_socket(websocket: WebSocket) -> None:
     if request.timeframe not in SUPPORTED_TIMEFRAMES:
         await _reject(websocket, "VALIDATION_ERROR", f"不支持的周期：{request.timeframe}")
         return
+    key = (request.instrument, request.timeframe)
+    if request.kind is not None:
+        capability = get_market_pack(websocket.app.state.settings.pack).traits(request.instrument).derivatives
+        if (
+            runtime.cold_publisher is None or capability is None
+            or not capability.realtime or request.kind not in capability.kinds
+        ):
+            await _reject(websocket, "FEED_UNAVAILABLE", "该标的的衍生品实时冷库不可用")
+            return
+        key = (*key, request.kind)
     try:
         session = await stream.attach(
-            request.owner, (request.instrument, request.timeframe), request.after,
+            request.owner, key, request.after,
             include_baseline=request.include_baseline,
         )
     except TalariaError as exc:

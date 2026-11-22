@@ -13,8 +13,6 @@ from pathlib import Path
 import pytest
 
 from talaria.foundation.alerts import (
-    AlertCondition,
-    AlertConditionKind,
     AlertDirection,
     AlertMetric,
     AlertOverlayMode,
@@ -29,12 +27,14 @@ from talaria.foundation.drawings import (
     DrawingStyle,
 )
 from talaria.foundation.feed import (
+    DerivativeTickEvent,
     FeedHealthEvent,
     FeedHealthStatus,
     KlineEvent,
     OrderBookEvent,
 )
 from talaria.foundation.types import PrecisionTier
+from talaria.foundation.rules import Rule
 from talaria.perception.alerts import AlertEngine
 from talaria.replay import ReplayFeed
 
@@ -133,12 +133,14 @@ def _metric_alert(
         alert_id=alert_id,
         instrument_id=INSTRUMENT,
         timeframe=TIMEFRAME,
-        condition=AlertCondition(
-            kind=AlertConditionKind.METRIC_THRESHOLD,
-            direction=direction,
-            metric=metric,
-            threshold=threshold,
-        ),
+        condition=Rule.model_validate({
+            "version": "1", "timing": "event",
+            "expression": {
+                "op": "compare", "test": ("gte" if direction == "ABOVE" else "lte"),
+                "left": {"source": "event", "metric": metric},
+                "right": {"source": "constant", "value": threshold},
+            },
+        }),
         status=status,
         repeat=repeat,
         cooldown_ms=cooldown_ms,
@@ -182,12 +184,10 @@ def _overlay_alert(
         alert_id="alr_overlay",
         instrument_id=INSTRUMENT,
         timeframe=TIMEFRAME,
-        condition=AlertCondition(
-            kind=AlertConditionKind.OVERLAY_CROSS,
-            direction=direction,
-            drawing_id="drw_alert",
-            overlay_mode=mode,
-        ),
+        condition=Rule.model_validate({
+            "version": "1", "timing": ("event" if mode == "TOUCH" else "bar_close"),
+            "expression": {"op": "overlay", "direction": direction, "drawing_id": 'drw_alert', "mode": mode},
+        }),
         status=AlertStatus.ARMED,
         repeat=repeat,
         cooldown_ms=cooldown_ms,
@@ -230,9 +230,9 @@ def test_metric_threshold_triggers_on_cross_and_freezes_snapshot() -> None:
     assert len(harness.triggers) == 1
     assert harness.triggers[0][1] == "价格上穿 100"
     assert alert.status is AlertStatus.COOLDOWN
-    assert alert.next_arm_ts == 66_000
+    assert alert.next_arm_ts == BASE_TS + 3 * MINUTE
     assert alert.trigger_count == 1
-    assert alert.last_triggered_ts == 6_000
+    assert alert.last_triggered_ts == BASE_TS + 2 * MINUTE
 
 
 def test_metric_below_uses_order_book_bid_price() -> None:
@@ -256,13 +256,14 @@ def test_indicator_signal_uses_python_operator_series() -> None:
         alert_id="alr_rsi",
         instrument_id=INSTRUMENT,
         timeframe=TIMEFRAME,
-        condition=AlertCondition(
-            kind=AlertConditionKind.INDICATOR_SIGNAL,
-            direction=AlertDirection.ABOVE,
-            indicator="SMA",
-            indicator_period=2,
-            threshold="12",
-        ),
+        condition=Rule.model_validate({
+            "version": "1", "timing": "bar_close",
+            "expression": {
+                "op": "compare", "test": "gte",
+                "left": {"source": "indicator", "name": "SMA", "params": {"period": 2}},
+                "right": {"source": "constant", "value": '12'},
+            },
+        }),
         status=AlertStatus.ARMED,
         repeat=True,
         cooldown_ms=0,
@@ -359,11 +360,12 @@ def test_cooldown_rearms_and_requires_a_fresh_false_to_true_edge() -> None:
     clock.now = 2_000
     harness.engine.handle_event(_kline(BASE_TS + MINUTE, "101"))
     assert alert.status is AlertStatus.COOLDOWN
-    assert alert.next_arm_ts == 3_000
+    visible = BASE_TS + 2 * MINUTE
+    assert alert.next_arm_ts == visible + 1_000
 
-    assert harness.engine.tick(2_500) == []
+    assert harness.engine.tick(visible + 500) == []
     assert alert.status is AlertStatus.COOLDOWN
-    assert harness.engine.tick(3_000) == [alert]
+    assert harness.engine.tick(visible + 1_000) == [alert]
     assert alert.status is AlertStatus.ARMED
 
     harness.engine.handle_event(_kline(BASE_TS + 2 * MINUTE, "102"))
@@ -499,14 +501,14 @@ def test_session_vwap_alert_keeps_utc_anchor_beyond_600_bars(
         on_trigger=lambda trigger, _: triggers.append(trigger),
     )
     alert = _metric_alert(threshold="12", cooldown_ms=0)
-    alert.condition = AlertCondition(
-        kind=AlertConditionKind.INDICATOR_SIGNAL,
-        direction=AlertDirection.ABOVE,
-        indicator="VWAP",
-        indicator_period=1,
-        indicator_anchor="session",
-        threshold="12",
-    )
+    alert.condition = Rule.model_validate({
+        "version": "1", "timing": "bar_close",
+        "expression": {
+            "op": "compare", "test": "gte",
+            "left": {"source": "indicator", "name": "VWAP", "params": {"period": 1, "anchor": "session"}},
+            "right": {"source": "constant", "value": '12'},
+        },
+    })
     engine.put(alert)
     for event in history[-1:] if seed_from_history else history:
         clock.now = event.bar.ts_available
@@ -530,3 +532,235 @@ def test_session_vwap_alert_keeps_utc_anchor_beyond_600_bars(
         assert [(trigger.triggered_ts, trigger.observed) for trigger in triggers] == [
             (clock.now, expected)
         ]
+
+
+
+def test_composite_rule_can_trigger_on_first_confirmed_cross_after_warmup() -> None:
+    # alerts-and-scanning/01: 上穿有两根已确认柱作为判断依据。
+    clock = Clock(BASE_TS + 2 * MINUTE)
+    trigger_times = []
+    seed = [_bar(BASE_TS, "100")]
+    engine = AlertEngine(
+        now_ms=clock, history_provider=lambda *_: seed,
+        on_trigger=lambda trigger, _: trigger_times.append(trigger.triggered_ts),
+    )
+    alert = _metric_alert()
+    alert.condition = Rule.model_validate({
+        "version": "1", "timing": "bar_close", "expression": {
+            "op": "all", "args": [
+                {"op": "compare", "test": "cross_above", "left": {"source": "bar", "field": "close"},
+                 "right": {"source": "indicator", "name": "EMA", "params": {"period": 2}}},
+                {"op": "compare", "test": "lt", "left": {"source": "bar", "field": "close"},
+                 "right": {"source": "constant", "value": "115"}},
+                {"op": "compare", "test": "lt",
+                 "left": {"source": "derivative", "kind": "funding_rate"},
+                 "right": {"source": "constant", "value": "0"}},
+            ],
+        },
+    })
+    engine.put(alert)
+    for ts, rate in ((BASE_TS + MINUTE, "-0.001"), (clock.now + 1, "0.001")):
+        from talaria.foundation.derivatives import DerivativePoint
+
+        engine.seed_derivatives([DerivativePoint(
+            instrument_id=INSTRUMENT, kind="funding_rate", settled=True, value=rate, ts_event=ts,
+            ts_ingested=ts, ts_committed=ts, ts_available=ts,
+        )])
+    engine.handle_event(_kline(BASE_TS + MINUTE, "111", confirmed=False))
+    assert trigger_times == []
+    engine.handle_event(_kline(BASE_TS + MINUTE, "110", revision=1))
+    assert trigger_times == [BASE_TS + 2 * MINUTE]
+
+
+def _rule_alert(expression, timing="bar_close", cooldown_ms=0):
+    alert = _metric_alert(cooldown_ms=cooldown_ms)
+    alert.condition = Rule.model_validate(dict(version="1", timing=timing, expression=expression))
+    return alert
+
+
+def _compare(left, value, test="gt"):
+    return dict(op="compare", test=test, left=left, right=dict(source="constant", value=value))
+
+
+def test_late_first_confirmation_preserves_parent_indicator_trigger_trace():
+    # 21b9b69^ 的 SMA(1) 读取窗口最后一根。迟到的中间槽从未成为最新观察。
+    clock = Clock(BASE_TS + 4 * MINUTE)
+    from talaria.workbench_api.state_repositories.alert_migration import migrate_rule
+
+    records = []
+    engine = AlertEngine(now_ms=clock, on_trigger=lambda trigger, _: records.append(trigger))
+    alert = _metric_alert(cooldown_ms=0)
+    alert.condition = migrate_rule(dict(kind="INDICATOR_SIGNAL", indicator="SMA", indicator_period=1,
+                                        direction="ABOVE", threshold="100"), predates_pine=False)
+    engine.put(alert)
+    counts = []
+    for offset, close in [(0, "90"), (2, "95"), (1, "110"), (3, "120")]:
+        engine.handle_event(_kline(BASE_TS + offset * MINUTE, close))
+        counts.append(alert.trigger_count)
+    assert counts == [0, 0, 0, 1]
+    assert [(t.triggered_ts, str(t.observed), t.message) for t in records] == [
+        (1763597040000, "120", "SMA(1) 上穿 100"),
+    ]
+
+
+def test_old_revision_never_combines_revised_geometry_with_latest_close():
+    harness = Harness(Clock(BASE_TS + 4 * MINUTE))
+    harness.engine.refresh_drawings([_drawing()])
+    alert = _rule_alert(dict(op="all", args=[
+        dict(op="overlay", mode="CLOSE_BREAK", direction="ABOVE", drawing_id="drw_alert"),
+        _compare(dict(source="bar", field="close"), "100", "lt"),
+    ]))
+    harness.engine.put(alert)
+    for event in [_kline(BASE_TS, "95"), _kline(BASE_TS + MINUTE, "95"), _kline(BASE_TS, "110", revision=1)]:
+        harness.engine.handle_event(event)
+    assert alert.trigger_count == 0
+
+
+@pytest.mark.parametrize("rearm", ["live", "cooldown", "already_true"])
+def test_explicit_cross_requires_root_edge_after_rearm(rearm):
+    clock = Clock(BASE_TS)
+    harness = Harness(clock)
+    cross = _compare(dict(source="bar", field="close"), "100", "cross_above")
+    rule = dict(op="any", args=[cross, _compare(dict(source="bar", field="close"), "80")]) if rearm == "already_true" else cross
+    alert = _rule_alert(rule, cooldown_ms=MINUTE if rearm == "cooldown" else 0)
+    harness.engine.put(alert)
+    def send(slot, close):
+        clock.now = BASE_TS + (slot + 1) * MINUTE
+        harness.engine.handle_event(_kline(BASE_TS + slot * MINUTE, close))
+
+    send(0, "70")
+    send(1, "75")
+    if rearm == "already_true":
+        send(2, "90")
+        send(3, "110")
+        assert alert.trigger_count == 1
+    elif rearm == "live":
+        harness.engine.handle_event(_health(FeedHealthStatus.STALE))
+        harness.engine.handle_event(_health(FeedHealthStatus.LIVE))
+        send(2, "110")
+        assert alert.trigger_count == 0
+    else:
+        send(2, "110")
+        # 冷却期间收到对最后一槽的修订，恢复后首个有效观察恰好上穿。
+        harness.engine.handle_event(_kline(BASE_TS + 2 * MINUTE, "90", revision=1))
+        send(3, "110")
+        assert alert.trigger_count == 1
+
+
+@pytest.mark.parametrize("negate", [False, True])
+def test_partial_event_group_observes_false_to_true_on_the_same_input(negate):
+    # any(bid>100, rate>0) 与 not(all(not bid>100, not rate>0)) 等价。
+    args = [_compare(dict(source="event", metric=metric), threshold)
+            for metric, threshold in [("bid_price", "100"), ("funding_rate", "0")]]
+    group = dict(op="any", args=args)
+    if negate:
+        group = dict(op="not", args=[dict(op="all", args=[dict(op="not", args=[arg]) for arg in args])])
+    alert = _rule_alert(group, timing="event")
+    harness = Harness(Clock(BASE_TS))
+    harness.engine.put(alert)
+    for bid in ["99", "101", "102", "99", "101"]:
+        harness.engine.handle_event(_book(bid, bid))
+    assert alert.trigger_count == 2
+
+
+def test_early_confirmation_freezes_and_starts_cooldown_at_visibility():
+    from talaria.foundation.feed import ReceivedKlineEvent
+
+    clock = Clock(BASE_TS + 2 * MINUTE - 250)
+    frozen = []
+    engine = AlertEngine(now_ms=clock, freeze_snapshot=lambda _, ts: frozen.append(ts) or "snap")
+    alert = _metric_alert()
+    engine.put(alert)
+    engine.handle_event(_kline(BASE_TS, "90"))
+    event = _kline(BASE_TS + MINUTE, "110")
+    engine.handle_event(ReceivedKlineEvent(**event.model_dump(), ts_ingested=clock.now))
+    assert frozen == [BASE_TS + 2 * MINUTE]
+    assert alert.next_arm_ts == frozen[0] + alert.cooldown_ms
+
+
+def test_predicted_funding_updates_do_not_create_settlement_observations():
+    alert = _rule_alert(_compare(dict(source="derivative", kind="funding_rate"), "0"))
+    engine = AlertEngine(now_ms=Clock(BASE_TS + 2 * MINUTE))
+    engine.put(alert)
+    for index, rate in enumerate(["-0.001", "0.001"]):
+        ts = BASE_TS + index * MINUTE
+        engine.handle_event(DerivativeTickEvent(instrument_id=INSTRUMENT, funding_rate=rate,
+                                                ts_event=ts, ts_ingested=ts))
+        engine.handle_event(_kline(ts, "100"))
+    assert alert.trigger_count == 0
+
+
+@pytest.mark.regression
+def test_snapshot_backfill_is_observed_on_the_next_feed_event():
+    # alerts-and-scanning/01 × data-access/08：冻结第一条预警的证据会发布一笔历史结算。
+    from talaria.foundation.derivatives import DerivativePoint
+
+    def settlement(ts, rate):
+        return DerivativePoint(instrument_id=INSTRUMENT, kind="funding_rate", value=rate, settled=True,
+                               ts_event=ts, ts_available=ts, ts_ingested=ts, ts_committed=ts)
+
+    archive = [settlement(BASE_TS, "-0.001")]
+    price = _rule_alert(_compare(dict(source="bar", field="close"), "100"))
+    funding = _rule_alert(_compare(dict(source="derivative", kind="funding_rate"), "0"))
+    price.alert_id, funding.alert_id = "a_price", "b_funding"
+
+    def freeze(alert, cutoff):
+        if alert.alert_id == price.alert_id:
+            archive.append(settlement(BASE_TS + MINUTE, "0.001"))
+        return "snap"
+
+    engine = AlertEngine(now_ms=Clock(BASE_TS), read_archived_derivatives=lambda *_: archive,
+                         freeze_snapshot=freeze)
+    engine.load([price, funding])
+    engine.handle_event(_kline(BASE_TS, "90"))
+    engine.handle_event(_kline(BASE_TS + MINUTE, "105"))
+    assert (price.trigger_count, funding.trigger_count) == (1, 0)
+    engine.handle_event(_kline(BASE_TS + 2 * MINUTE, "105"))
+    assert funding.trigger_count == 1
+
+
+@pytest.mark.parametrize("reference", ["drawing_price", "level_price"])
+def test_book_compares_against_geometry_on_event_snapshot(reference):
+    from talaria.foundation.key_levels import KeyLevel
+    level = KeyLevel(level_id="support", instrument_id=INSTRUMENT, timeframe="1m", kind="SWING_LOW",
+                     category="STRUCTURE", evidence_class="OBSERVED", price="100", strength=0.9,
+                     status="ACTIVE", ts_available=BASE_TS, formed_ts=BASE_TS, method_version="test", touch_count=1, volume_weight="1")
+    engine = AlertEngine(now_ms=Clock(BASE_TS + MINUTE),
+                         key_level_provider=lambda i, t, cutoff: [level] if cutoff == BASE_TS + 1 else [])
+    engine.refresh_drawings([_drawing()])
+    operand = dict(source=reference, drawing_id="drw_alert") if reference == "drawing_price" else dict(
+        source=reference, level_id="support", level_kind="SWING_LOW")
+    alert = _rule_alert(dict(op="compare", test="gte", left=dict(source="event", metric="bid_price"),
+                             right=operand), timing="event")
+    engine.put(alert)
+    for bid in ["99", "101"]:
+        engine.handle_event(_book(bid, bid))
+    assert alert.trigger_count == 1
+
+
+def test_first_observed_cross_cannot_retrigger_an_already_true_disjunction():
+    engine = AlertEngine(now_ms=Clock(BASE_TS + 2 * MINUTE))
+    args = [_compare(dict(source="bar", field="close"), "100", "cross_above"),
+            _compare(dict(source="bar", field="close"), "50")]
+    alert = _rule_alert(dict(op="any", args=args))
+    engine.seed_bars(INSTRUMENT, TIMEFRAME, [_bar(BASE_TS, "90")])
+    engine.put(alert)
+    engine.handle_event(_kline(BASE_TS + MINUTE, "110"))
+    assert alert.trigger_count == 0
+
+
+def test_migrated_snapshot_vwap_keeps_parent_observation_window():
+    # 父提交在最近 600 根柱上计算 snapshot VWAP，窗口外高价不能压住后续上穿。
+    from talaria.workbench_api.state_repositories.alert_migration import migrate_rule
+
+    engine = AlertEngine(now_ms=Clock(BASE_TS + 602 * MINUTE))
+    engine.seed_bars(INSTRUMENT, TIMEFRAME, [
+        _bar(BASE_TS + i * MINUTE, "100000" if i == 0 else "10") for i in range(601)
+    ])
+    alert = _metric_alert(cooldown_ms=0)
+    alert.condition = migrate_rule(dict(kind="INDICATOR_SIGNAL", indicator="VWAP", indicator_period=1,
+                                        direction="ABOVE", threshold="11"), predates_pine=False)
+    engine.put(alert)
+    engine.handle_event(_kline(BASE_TS + 600 * MINUTE, "10"))
+    engine.handle_event(_kline(BASE_TS + 601 * MINUTE, "1210"))
+    assert alert.trigger_count == 1

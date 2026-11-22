@@ -20,6 +20,7 @@ from talaria.workbench_api.routes import (
     annotations,
     bars,
     collaboration,
+    derivatives,
     desk_ws,
     drawings,
     health,
@@ -127,6 +128,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(analysis.router)
     app.include_router(bars.router)
+    app.include_router(derivatives.router)
     app.include_router(drawings.router)
     app.include_router(watchlist.router)
     app.include_router(annotations.router)

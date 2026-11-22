@@ -90,6 +90,35 @@ def test_strategy_quantity_is_rejected_and_audited(replay):
     assert journal.entries == ()
 
 
+@pytest.mark.regression
+def test_account_rule_reads_derivatives_from_the_replay_directory(replay):
+    # trading/01 × data-access/08：行情插件与策略规则绑定同一数据目录。
+    from talaria.account.ledger import read_journal
+    from talaria.foundation.derivatives import DerivativePoint
+
+    scheme, data_dir = replay
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    funding = DerivativePoint(instrument_id=instrument.instrument_id, kind="funding_rate",
+                              value="-0.0001", settled=True, ts_event=START, ts_available=START,
+                              ts_ingested=START, ts_committed=START)
+    with closing(ColdStore(data_dir)) as store:
+        store.publish_derivatives(instrument, funding.kind, [funding])
+    strategy = scheme.parent / "replay_strategy.py"
+    strategy.write_text(strategy.read_text().replace(
+        "        bar = ctx.bars()[-1]", """        from talaria.components import compile_rule
+        from talaria.foundation.rules import Rule
+        rule = Rule.model_validate({"version": "1", "timing": "bar_close", "expression": {
+            "op": "compare", "test": "lt", "left": {"source": "derivative", "kind": "funding_rate"},
+            "right": {"source": "constant", "value": "0"}}})
+        if not compile_rule(rule).evaluate(ctx):
+            return Abstain(reason_code=AbstainReason.EVIDENCE_CONFLICT, message="缺少负费率")
+        bar = ctx.bars()[-1]""",
+    ))
+    assert launch(scheme, data_dir) == 0
+    ledger, = (data_dir / "runs").glob("*/ledger.sqlite")
+    assert [event.kind for event in read_journal(ledger).events] == ["ENTRY_FILLED"]
+
+
 @pytest.mark.parametrize(("slot", "params", "message"), [
     ("risk", "resize: true", "定仓"),
     ("fill", "unapproved: true", "未经风控批准"),

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, replace
 
 from talaria.foundation.connector import MarketDataConnector, RawBar
+from talaria.foundation.derivatives import (
+    OI_TIMEFRAME_BY_TIMEFRAME, DerivativeDataConnector, DerivativeKind, RawDerivativePoint,
+)
 from talaria.perception.raw_store import RawStore, latest_visible_bars
 
 
@@ -66,3 +69,59 @@ def ensure_history(
         pages += 1
         existing = usable()
     return existing
+
+
+def derivative_series(timeframes: Sequence[str]) -> tuple[tuple[DerivativeKind, str | None], ...]:
+    return (
+        *((DerivativeKind.MARK_PRICE, tf) for tf in sorted(set(timeframes))),
+        (DerivativeKind.FUNDING_RATE, None),
+        *((DerivativeKind.OPEN_INTEREST, tf) for tf in sorted({
+            OI_TIMEFRAME_BY_TIMEFRAME[tf] for tf in timeframes if tf in OI_TIMEFRAME_BY_TIMEFRAME
+        })),
+    )
+
+
+def derivative_history_pages(
+    connector: DerivativeDataConnector, policy: BackfillPolicy, *, symbol: str,
+    kind: DerivativeKind, timeframe: str | None, cutoff: int,
+    start: int | None = None, end: int | None = None,
+) -> Iterator[list[RawDerivativePoint]]:
+    """从右向左分页。快照保留达到目标时已获取的整页。"""
+    cursor = cutoff if end is None else min(end, cutoff)
+    lower = 0 if start is None else start
+    target = policy.target_bars
+    if kind is DerivativeKind.MARK_PRICE:
+        assert timeframe is not None
+        limit = policy.page_limit
+        fetch = connector.fetch_mark_price_bars
+    elif kind is DerivativeKind.OPEN_INTEREST:
+        assert timeframe is not None
+        limit = 200
+        fetch = connector.fetch_open_interest
+    else:
+        limit = 200
+        target = max(8, min(1000, target // 8))
+        fetch = connector.fetch_funding_settlements
+
+    kwargs = {} if timeframe is None else {"timeframe": timeframe}
+    collected = 0
+    pages = 0
+    while cursor >= lower and (start is not None or pages < policy.max_pages):
+        pages += 1
+        batch = {
+            row.ts_event: row for row in fetch(symbol=symbol, end_ts=cursor, limit=limit, **kwargs)
+            if row.kind is kind and row.timeframe == timeframe and row.symbol == symbol and row.ts_event <= cursor
+        }
+        if kind is DerivativeKind.FUNDING_RATE:
+            # REST 历史给出实际结算。更正的可获取时间由写入器按接收时刻确定。
+            batch = {ts: replace(row, ts_available=ts) for ts, row in batch.items()}
+        visible = [row for row in batch.values() if row.ts_event >= lower and row.ts_available <= cutoff]
+        if visible:
+            yield visible
+        collected += len(visible)
+        if start is None:
+            if len(visible) < limit or collected >= target:
+                break
+        elif len(batch) < limit:
+            break
+        cursor = min(batch) - 1

@@ -32,10 +32,11 @@ def _bar(ts, close, *, timeframe="1m", delay=0, revision=0, volume="1"):
     )
 
 
-def _derivative(ts, available, value, *, kind=DerivativeKind.FUNDING_RATE, timeframe=None):
+def _derivative(ts, available, value, *, kind=DerivativeKind.FUNDING_RATE, timeframe=None, settled=True):
     return DerivativePoint(
         instrument_id=INSTRUMENT.instrument_id, kind=kind, timeframe=timeframe,
         ts_event=ts, ts_available=available, ts_ingested=available, ts_committed=available,
+        ts_published=ts if kind is DerivativeKind.FUNDING_RATE and settled else None,
         value=Decimal(value),
     )
 
@@ -352,6 +353,30 @@ def test_net_odds_accepts_an_observed_zero_funding_rate():
 
 
 @pytest.mark.regression
+@pytest.mark.parametrize("explicit_reader", [False, True])
+def test_history_net_odds_does_not_treat_a_ticker_rate_as_a_settlement(tmp_path, explicit_reader):
+    """data-access/08：实时资金费率可读，净赔率仍以结算事件计资金成本。"""
+    from talaria.components import run_history
+
+    rows = [_bar(START, "100"), _bar(START + MINUTE, "102")]
+    estimate = _derivative(START + MINUTE, START + MINUTE, "0.001", settled=False)
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", rows))
+        store.publish_derivatives(INSTRUMENT, estimate.kind, [estimate])
+
+    result = list(run_history(
+        lambda ctx: (
+            ctx.derivatives("funding_rate"),
+            ctx.indicator("NET_ODDS", period=1)[-1].values["value"],
+        ),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + 2 * MINUTE, data_dir=tmp_path,
+        read_derivatives=partial(sdk.derivatives, data_dir=tmp_path) if explicit_reader else None,
+    ))
+    assert [point.value for point in result[-1].output[0]] == [Decimal("0.001")]
+    assert result[-1].output[1] is None
+
+
+@pytest.mark.regression
 def test_funding_operator_can_use_a_reader_with_only_funding_data():
     from talaria.components import run_history
 
@@ -450,3 +475,154 @@ def test_replay_keeps_only_the_highest_visible_confirmed_revision_from_an_altern
         (START + MINUTE, (original,)),
         (START + 2 * MINUTE, (revised, current)),
     ]
+
+
+def test_standard_signal_receives_historical_geometry_and_confirmed_event():
+    from talaria.components import compile_rule, run_history
+    from talaria.foundation.drawings import DrawingRecord
+    from talaria.foundation.rules import Rule
+
+    drawing = DrawingRecord(drawing_id="line", kind="HORIZONTAL_LINE", instrument_id=INSTRUMENT.instrument_id,
+                            visible_timeframes=["1m"], points=[dict(ts=START, price="100")],
+                            created_ts=START, updated_ts=START, version=1, text="", style={})
+    rule = Rule.model_validate(dict(version="1", timing="bar_close", expression=dict(
+        op="overlay", drawing_id="line", direction="ABOVE", mode="CLOSE_BREAK")))
+    bars = [RangeBar.model_validate(_bar(START + i * MINUTE, price), from_attributes=True)
+            for i, price in enumerate(["99", "101"])]
+    def drawing_at(drawing_id, as_of):
+        return drawing if drawing_id == "line" and as_of >= drawing.created_ts else None
+    def run(ctx):
+        assert ctx.event.bar.timestamp + MINUTE == ctx.now
+        return compile_rule(rule).evaluate(ctx)
+    results = list(run_history(run, INSTRUMENT.instrument_id, "1m", start=START, end=START + 2 * MINUTE,
+                               read_bars=lambda *a, **kw: bars, drawing_at=drawing_at))
+    assert [bool(step.output) for step in results] == [False, True]
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("explicit_reader", [False, True])
+def test_indicator_uses_each_bars_first_confirmation_to_select_derivative_revisions(tmp_path, explicit_reader):
+    # data-access/08、analysis/02：后来的柱和结算修订都不会改变第一根柱的求值时点。
+    from talaria.components import run_history
+
+    original = _derivative(START, START, "0.0001")
+    revised = _derivative(START, START + MINUTE + 1, "0.0002").model_copy(update={"revision": 1})
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", [
+            _bar(START, "100"),
+            _bar(START, "101", revision=1, delay=MINUTE - 1),
+            _bar(START + MINUTE, "102"),
+        ]))
+        store.publish_derivatives(INSTRUMENT, original.kind, [original, revised])
+
+    first, second = run_history(
+        lambda ctx: ctx.indicator("FUNDING_QUANTILE", period=2),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + 2 * MINUTE, data_dir=tmp_path,
+        read_derivatives=partial(sdk.derivatives, data_dir=tmp_path) if explicit_reader else None,
+    )
+    assert [point.values["value"] for point in first.output] == [None]
+    assert [point.values["value"] for point in second.output] == [None, Decimal("0.75")]
+
+
+@pytest.mark.regression
+def test_derivatives_preserve_pre_window_settlement_and_estimate_independently(tmp_path):
+    # data-access/08：结算和 ticker 预估都供组件读取，各保留窗口前最近的一点。
+    from talaria.components import run_history
+
+    actual = _derivative(START - 2, START - 2, "0.0001")
+    estimate = _derivative(START - 1, START - 1, "0.0002", settled=False)
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", [_bar(START, "100")]))
+        store.publish_derivatives(INSTRUMENT, actual.kind, [actual, estimate])
+
+    [step] = run_history(
+        lambda ctx: ctx.derivatives("funding_rate"),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + MINUTE, data_dir=tmp_path,
+    )
+    assert [(point.is_funding_settlement, point.value) for point in step.output] == [
+        (True, actual.value), (False, estimate.value),
+    ]
+
+
+@pytest.mark.regression
+def test_net_odds_uses_the_corrected_rate_once_it_is_visible(tmp_path):
+    # data-access/08：同一结算的更正替换成本，结算身份和历史输出都保留。
+    from talaria.components import run_history
+
+    original = _derivative(START + 2 * MINUTE, START + 2 * MINUTE, "0.01")
+    revised = _derivative(START + 2 * MINUTE, START + 4 * MINUTE + 1, "0.02").model_copy(
+        update={"revision": 1},
+    )
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", [
+            _bar(START + i * MINUTE, price) for i, price in enumerate(("100", "102", "104", "106", "108"))
+        ]))
+        store.publish_derivatives(INSTRUMENT, original.kind, [original, revised])
+
+    result = list(run_history(
+        lambda ctx: ctx.indicator("NET_ODDS", period=3),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + 5 * MINUTE, data_dir=tmp_path,
+    ))
+    assert result[-2].output[-1].values["value"] == Decimal("2.47")
+    assert result[-1].output[-1].values["value"] == Decimal("1.92")
+
+
+@pytest.mark.regression
+def test_alert_scan_and_history_observe_the_same_archived_funding_cross(tmp_path):
+    # alerts-and-scanning/01 × data-access/08：同一结算的更正跨过零，期间还有负的 ticker 预估。
+    import asyncio
+
+    from talaria.components import compile_rule, run_history
+    from talaria.foundation.alerts import AlertCreate
+    from talaria.foundation.feed import KlineEvent
+    from talaria.foundation.rules import Rule
+    from talaria.workbench_api.runtime import build_runtime
+    from talaria.workbench_api.service_config import FeatureToggles
+    from talaria.workbench_api.settings import AppSettings
+
+    symbol = INSTRUMENT.instrument_id
+    bars = [_bar(START, "100"), _bar(START, "101", revision=1, delay=MINUTE - 1),
+            _bar(START + MINUTE, "102")]
+    original = _derivative(START, START, "-0.0001")
+    revised = _derivative(START, START + MINUTE + 1, "0.0002").model_copy(update={"revision": 1})
+    estimate_ts = START + MINUTE + 2
+    estimate = _derivative(estimate_ts, estimate_ts, "-0.0003", settled=False)
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", bars))
+        store.publish_derivatives(INSTRUMENT, original.kind, [original, revised, estimate])
+
+    rule = Rule.model_validate({"version": "1", "timing": "bar_close", "expression": {"op": "all", "args": [
+        {"op": "compare", "test": "cross_above", "left": {"source": "derivative", "kind": "funding_rate"},
+         "right": {"source": "constant", "value": "0"}},
+        {"op": "compare", "test": "eq", "left": {"source": "indicator", "name": "FUNDING_QUANTILE",
+         "params": {"period": 2}}, "right": {"source": "constant", "value": "0.75"}},
+    ]}})
+    history = run_history(compile_rule(rule).evaluate, symbol, "1m", start=START,
+                          end=START + 2 * MINUTE, data_dir=tmp_path)
+    expected = [(START + 2 * MINUTE, Decimal("0.0002"))]
+    assert [(step.as_of, signal.values["observed"]) for step in history for signal in step.output] == expected
+
+    async def replay():
+        now = START
+        runtime = await build_runtime(AppSettings(
+            data_dir=tmp_path, dist_dir=tmp_path / "dist", now_ms=lambda: now,
+            features=FeatureToggles(market_data=False),
+        ))
+        try:
+            alerts, scanner = runtime.require_alerts(), runtime.require_scanner()
+            alert = await alerts.create_alert(AlertCreate(instrument_id=symbol, timeframe="1m", condition=rule))
+            hits = []
+            for bar in bars:
+                now = bar.ts_available
+                event = KlineEvent(instrument_id=symbol, timeframe="1m", bar=bar.to_compact(),
+                                   confirmed=True, revision=bar.revision)
+                alerts.handle_event(event)
+                scanner.handle_event(event)
+                hits.extend(await scanner.scan([symbol], rule=rule))
+            triggers = await alerts.list_triggers(alert_id=alert.alert_id)
+            assert [(t.triggered_ts, t.observed) for t in triggers] == expected
+            assert [(t.created_ts, t.evidence[0].value) for t in hits] == expected
+        finally:
+            await runtime.aclose()
+
+    asyncio.run(replay())
