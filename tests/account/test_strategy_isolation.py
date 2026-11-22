@@ -7,9 +7,10 @@ import sys
 
 import pytest
 
+from fixtures.replay_plugins import fill, risk, sizing
 from talaria.account.contracts import MarketData, MarketEvent
 from talaria.account.host import open_account_process
-from talaria.account.scheme import PluginRegistry, SchemeError, Slot, SlotPlugin
+from talaria.account.scheme import INTERFACE_VERSION, PluginRegistry, SchemeError, Slot, SlotPlugin
 from talaria.account.strategy_code import StrategyCodeRegistry
 from talaria.foundation.bars import RangeBar
 
@@ -24,7 +25,7 @@ import os
 import socket
 import time
 
-from talaria.account.scheme import Slot, SlotPlugin
+from talaria.account.scheme import INTERFACE_VERSION, Slot, SlotPlugin
 from talaria.components import ComponentMeta
 from talaria.foundation.collaboration.contracts import SetupInsight
 
@@ -50,9 +51,8 @@ class Strategy:
             invalidation_stop="8", take_profit=["12"], max_position="1",
         )
 
-plugin = SlotPlugin(Slot.STRATEGY, (1,), Strategy, Strategy.meta.parameters_schema)
+plugin = SlotPlugin(Slot.STRATEGY, (INTERFACE_VERSION,), Strategy, Strategy.meta.parameters_schema)
 """
-FIXTURES = Path(__file__).with_name("fixtures")
 
 
 def bar(ts=0, price="10", **changes):
@@ -68,8 +68,8 @@ def bar(ts=0, price="10", **changes):
 def paper(tmp_path):
     strategy, scheme, data_dir = tmp_path / "strategy.py", tmp_path / "scheme.yaml", tmp_path / "data"
     registry = PluginRegistry()
-    for slot in (Slot.SIZING, Slot.RISK, Slot.FILL):
-        registry.register("example", registry.resolve(slot, f"replay_plugins.py:{slot}", 1, FIXTURES))
+    for plugin in (sizing, risk, fill):
+        registry.register("example", plugin)
 
     first = bar(0, "10")
 
@@ -87,7 +87,7 @@ def paper(tmp_path):
             if after_event:
                 after_event()
 
-    registry.register("example", SlotPlugin(Slot.DATA, (1,), lambda *_: Data()))
+    registry.register("example", SlotPlugin(Slot.DATA, (INTERFACE_VERSION,), lambda *_: Data()))
 
     def start(
         probe, *, params=None, imports="", mode="paper", registered=True,
@@ -102,7 +102,7 @@ def paper(tmp_path):
         strategy.write_text(imports + source.replace("PROBE", probe))
         scheme.write_text(f"""\
 scheme: paper
-interface_version: 1
+interface_version: {INTERFACE_VERSION}
 sub_accounts: [example]
 slots:
   data: example

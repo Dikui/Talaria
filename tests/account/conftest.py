@@ -5,6 +5,30 @@ import pytest
 
 
 @pytest.fixture
+def register_host_fixtures():
+    """由测试交易员登记交易方案选中的当前 Python 插件版本。"""
+    from talaria.account.scheme import Slot, load_scheme, python_reference
+    from talaria.account.strategy_code import StrategyCodeRegistry
+
+    def register(scheme, data_dir, *, include_strategy=True):
+        parsed = load_scheme(scheme)
+        records = StrategyCodeRegistry(data_dir)
+        files = set()
+        slots = (Slot.STRATEGY, Slot.DATA, Slot.SIZING, Slot.RISK, Slot.FILL)
+        for slot in slots:
+            if slot == Slot.STRATEGY and not include_strategy:
+                continue
+            reference = parsed.slots.selection(slot).reference
+            if ":" in reference:
+                path, _ = python_reference(reference, scheme.parent)
+                files.add(path)
+        for path in sorted(files):
+            records.register(path, "human")
+
+    return register
+
+
+@pytest.fixture
 def without_seatbelt(monkeypatch):
     """以测试替身替换 Seatbelt 调用，仍启动真实 Python 进程并执行资源限制。"""
     from talaria.account.strategy_isolation import worker_command

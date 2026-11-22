@@ -16,7 +16,7 @@ def strategy_scheme(tmp_path):
     scheme = tmp_path / "scheme.yaml"
     scheme.write_text("""\
 scheme: paper
-interface_version: 1
+interface_version: 2
 sub_accounts: [alpha]
 slots: {data: live_ws, strategy: {python: strategy.py}, sizing: example, risk: example, fill: example}
 """)
