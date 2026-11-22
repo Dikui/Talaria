@@ -192,6 +192,7 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
             "kline.1.BTCUSDT",
             "orderbook.1.BTCUSDT",
             "tickers.BTCUSDT",
+            "publicTrade.BTCUSDT",
         ]
         assert isinstance(bar, KlineEvent)
         assert (bar.instrument_id, bar.timeframe) == (INSTRUMENT, "1m")
@@ -211,6 +212,48 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
         assert tick.open_interest == Decimal("12345.6")
 
     asyncio.run(Harness(handler).run(scenario))
+
+
+def test_public_trade_batches_and_l1_use_exchange_event_time(monkeypatch) -> None:
+    # data-access/07: inject a WebSocket with matching-engine and wall-clock times.
+    async def scenario() -> None:
+        requests = asyncio.Queue()
+        trade = {
+            "s": "BTCUSDT", "T": BASE + 10, "S": "Buy", "p": "100.1", "v": "0.123",
+            "i": "11111111-0000-0000-0000-000000000001",
+        }
+
+        async def frames():
+            await requests.get()
+            yield json.dumps({"success": True, "op": "subscribe"})
+            yield json.dumps({
+                "topic": "publicTrade.BTCUSDT",
+                "data": [trade, dict(trade, p="broken"), dict(
+                    trade, S="Sell", i="11111111-0000-0000-0000-000000000002",
+                )],
+            })
+            yield json.dumps(dict(book_payload(), cts=BASE + 11))
+
+        ws = MagicMock(send=AsyncMock(side_effect=requests.put), close=AsyncMock())
+        ws.__aiter__.side_effect = frames
+        monkeypatch.setattr("talaria.packs.crypto_perp.stream.ws_connect", AsyncMock(return_value=ws))
+        stream = make_stream("ws://unused", ping_interval_seconds=None, now_ms=lambda: BASE + 1000)
+        await stream.connect()
+        try:
+            await stream.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+            request = json.loads(ws.send.await_args.args[0])
+            assert "publicTrade.BTCUSDT" in request["args"]
+            first, second, quote = [await asyncio.wait_for(stream.recv(), 1) for _ in range(3)]
+            assert [(row.ts_event, row.ts_ingested, row.side, row.price, row.size) for row in (first, second)] == [
+                (BASE + 10, BASE + 1000, "Buy", Decimal("100.1"), Decimal("0.123")),
+                (BASE + 10, BASE + 1000, "Sell", Decimal("100.1"), Decimal("0.123")),
+            ]
+            assert first.trade_id != second.trade_id
+            assert (quote.ts_event, quote.ts_ingested) == (BASE + 11, BASE + 1000)
+        finally:
+            await stream.close()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.regression
@@ -456,7 +499,9 @@ def test_tickers_subscription_is_shared_across_timeframes() -> None:
         await stream.unsubscribe(instrument_id=INSTRUMENT, timeframe="1m")
         assert received[2]["args"] == ["kline.1.BTCUSDT"]
         await stream.unsubscribe(instrument_id=INSTRUMENT, timeframe="5m")
-        assert received[3]["args"] == ["kline.5.BTCUSDT", "orderbook.1.BTCUSDT", "tickers.BTCUSDT"]
+        assert received[3]["args"] == [
+            "kline.5.BTCUSDT", "orderbook.1.BTCUSDT", "tickers.BTCUSDT", "publicTrade.BTCUSDT",
+        ]
         await stream.close()
 
     try:

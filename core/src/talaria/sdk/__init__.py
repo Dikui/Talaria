@@ -13,7 +13,7 @@ from fractions import Fraction
 from itertools import chain
 from math import ceil, floor
 from pathlib import Path
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, cast, overload
 
 import httpx
 
@@ -22,12 +22,14 @@ from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.errors import InstrumentNotFoundError, InvalidRequestError, TalariaError
 from talaria.foundation.indicators import IndicatorParams
 from talaria.foundation.operators import IndicatorName
+from talaria.foundation.ticks import Quote, TickKind, Trade
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
 from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdManifest, ColdReader
 from talaria.perception.indicator_defaults import read_indicator_defaults
 from talaria.perception.raw_store import latest_visible_bars
 from talaria.sdk._derivatives import DerivativesResult
+from talaria.sdk._ticks import QuotesResult, TradesResult
 from talaria.sdk._subscription import (
     StrategyBarEvent, StrategyDerivativeEvent, SubscriptionRejectedError, subscribe, subscribe_derivatives,
 )
@@ -48,6 +50,8 @@ __all__ = [
     "BarsConsistencyError",
     "BarsResult",
     "DerivativesResult",
+    "QuotesResult",
+    "TradesResult",
     "StrategyBarEvent",
     "StrategyDerivativeEvent",
     "SubscriptionRejectedError",
@@ -55,6 +59,8 @@ __all__ = [
     "derivatives",
     "funding_settlements",
     "indicator_defaults",
+    "quotes",
+    "trades",
     "subscribe",
     "subscribe_derivatives",
 ]
@@ -145,6 +151,47 @@ def _data_root(data_dir: str | Path | None) -> Path:
 def indicator_defaults(*, data_dir: str | Path | None = None) -> dict[IndicatorName, IndicatorParams]:
     """读取同一数据目录下与工作台一致的指标默认值。"""
     return read_indicator_defaults(_data_root(data_dir))
+
+
+def trades(
+    instrument: str, start: int | str, end: int | str | None = None,
+    as_of: int | str | None = None, *, data_dir: str | Path | None = None,
+) -> TradesResult:
+    """从冷库按闭区间读取逐笔成交，支持可获取时间截断。"""
+    rows = _tick_range(instrument, TickKind.TRADES, start, end, as_of, data_dir)
+    return TradesResult(cast(list[Trade], rows))
+
+
+def quotes(
+    instrument: str, start: int | str, end: int | str | None = None,
+    as_of: int | str | None = None, *, data_dir: str | Path | None = None,
+) -> QuotesResult:
+    """从冷库按闭区间读取买一卖一，支持可获取时间截断。"""
+    rows = _tick_range(instrument, TickKind.QUOTES, start, end, as_of, data_dir)
+    return QuotesResult(cast(list[Quote], rows))
+
+
+def _tick_range(
+    instrument: str, kind: TickKind, start: int | str, end: int | str | None,
+    as_of: int | str | None, data_dir: str | Path | None,
+) -> list[Trade | Quote]:
+    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
+    if spec is None:
+        raise InstrumentNotFoundError(f"未知标的：{instrument}")
+    exact_start = _time_ms(start)
+    exact_end = None if end is None else _time_ms(end)
+    if exact_end is not None and exact_end < exact_start:
+        raise ValueError("end 不得早于 start")
+    start_ts = ceil(exact_start)
+    end_ts = None if exact_end is None else floor(exact_end)
+    cutoff = None if as_of is None else floor(_time_ms(as_of))
+    if cutoff is not None:
+        end_ts = cutoff if end_ts is None else min(cutoff, end_ts)
+    if end_ts is not None and end_ts < start_ts:
+        return []
+    return ColdReader(_data_root(data_dir)).read_ticks(
+        spec, kind, start_ts=start_ts, end_ts=end_ts, as_of=cutoff,
+    )
 
 
 def derivatives(

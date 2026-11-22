@@ -37,6 +37,8 @@ from talaria.foundation.feed import (
     MarketEventFeed,
     OrderBookEvent,
     ReceivedKlineEvent,
+    TradeEvent,
+    TransportEvent,
     worst_status,
 )
 from talaria.foundation.market import InstrumentSpec
@@ -186,17 +188,15 @@ class FeedSupervisor(MarketEventFeed):
 
     def ingest(
         self,
-        event: KlineEvent | OrderBookEvent | DerivativeTickEvent,
+        event: TransportEvent,
         *,
         now: int | None = None,
     ) -> None:
         now = self._now_ms() if now is None else now
-        if isinstance(event, DerivativeTickEvent):
-            self._accept_derivative_tick(event, now)
-        elif isinstance(event, KlineEvent):
+        if isinstance(event, KlineEvent):
             self._accept_kline(event, now)
         else:
-            self._accept_book(event, now)
+            self._accept_instrument_event(event, now)
 
     def heartbeat(self, *, now: int | None = None) -> None:
         """传输层心跳：只刷新活跃度，不产生行情事件。"""
@@ -348,24 +348,16 @@ class FeedSupervisor(MarketEventFeed):
             received_ts=event.ts_ingested if isinstance(event, ReceivedKlineEvent) else now,
         )
 
-    def _accept_derivative_tick(self, event: DerivativeTickEvent, now: int) -> None:
+    def _accept_instrument_event(self, event: OrderBookEvent | DerivativeTickEvent | TradeEvent, now: int) -> None:
         if not any(
             channel.instrument_id == event.instrument_id
             for channel in self._channels.values()
         ):
             return
         self._mark_activity(
-            event.instrument_id, now, timeframe=None, event_ts=event.ts_event
+            event.instrument_id, now, timeframe=None,
+            event_ts=event.ts_event if isinstance(event, DerivativeTickEvent) else None,
         )
-        self._emit(event)
-
-    def _accept_book(self, event: OrderBookEvent, now: int) -> None:
-        if not any(
-            channel.instrument_id == event.instrument_id
-            for channel in self._channels.values()
-        ):
-            return
-        self._mark_activity(event.instrument_id, now, timeframe=None)
         self._emit(event)
 
     def _apply_bar(

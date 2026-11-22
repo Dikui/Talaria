@@ -2,7 +2,7 @@
 
 协议要点（https://bybit-exchange.github.io/docs/v5/ws/connect）：
 - 端点 ``wss://stream.bybit.com/v5/public/linear``；
-- K 线主题 ``kline.{interval}.{symbol}``，盘口主题 ``orderbook.1.{symbol}``；
+- K 线主题 ``kline.{interval}.{symbol}``，盘口主题 ``orderbook.1.{symbol}``，逐笔主题 ``publicTrade.{symbol}``；
 - 订阅后等待 ``{"success": true, "op": "subscribe"}`` 应答，失败抛 ``FeedTransportError``；
 - 应用层 ``{"op": "ping"}`` 保活，超时未收到任何消息视为断流；
 - 断流由 Supervisor 统一做指数退避重连，本类只负责单条连接的建立与关闭。
@@ -29,6 +29,8 @@ from talaria.foundation.feed import (
     KlineEvent,
     OrderBookEvent,
     ReceivedKlineEvent,
+    TradeEvent,
+    TransportEvent,
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.types import PrecisionTier
@@ -128,7 +130,7 @@ class BybitPublicStream:
         )
         topics = [f"kline.{interval}.{symbol}"]
         if first_for_instrument:
-            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}"])
+            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}", f"publicTrade.{symbol}"])
         self._subscriptions.add((instrument_id, timeframe))
         try:
             await self._request({"op": "subscribe", "args": topics})
@@ -145,13 +147,11 @@ class BybitPublicStream:
         topics = [f"kline.{interval}.{symbol}"]
         if not any(inst == instrument_id for inst, _ in self._subscriptions):
             self._tickers_by_instrument.pop(instrument_id, None)
-            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}"])
+            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}", f"publicTrade.{symbol}"])
         with contextlib.suppress(FeedTransportError):
             await self._request({"op": "unsubscribe", "args": topics})
 
-    async def recv(
-        self,
-    ) -> KlineEvent | OrderBookEvent | DerivativeTickEvent | None:
+    async def recv(self) -> TransportEvent | None:
         item = await self._events.get()
         if item is _LOST:
             raise FeedTransportError("Bybit 公共行情连接已断开")
@@ -278,13 +278,13 @@ class BybitPublicStream:
 
     def _parse(
         self, payload: dict[str, object], received_ts: int,
-    ) -> list[KlineEvent | OrderBookEvent | DerivativeTickEvent]:
+    ) -> list[TransportEvent]:
         topic = payload.get("topic")
         if not isinstance(topic, str):
             return []
         data = payload.get("data")
         if isinstance(data, list):
-            events: list[KlineEvent | OrderBookEvent | DerivativeTickEvent] = []
+            events: list[TransportEvent] = []
             for item in data:
                 events.extend(self._parse_item(topic, item, payload, received_ts))
             return events
@@ -298,13 +298,15 @@ class BybitPublicStream:
         data: object,
         envelope: dict[str, object],
         received_ts: int,
-    ) -> list[KlineEvent | OrderBookEvent | DerivativeTickEvent]:
+    ) -> list[TransportEvent]:
         if not isinstance(data, dict):
             return []
         if topic.startswith("kline."):
             return self._parse_kline(topic, data, received_ts)
-        if topic.startswith("orderbook."):
-            return self._parse_book(data, envelope)
+        if topic.startswith("orderbook.1."):
+            return self._parse_book(data, envelope, received_ts)
+        if topic.startswith("publicTrade."):
+            return self._parse_trade(topic, data, received_ts)
         if topic.startswith("tickers."):
             return self._parse_tickers(topic, data, envelope)
         return []
@@ -416,10 +418,35 @@ class BybitPublicStream:
                     cache[field] = ts_event, value
         return [event] if event is not None else []
 
+    def _parse_trade(
+        self, topic: str, data: dict[str, object], received_ts: int,
+    ) -> list[TradeEvent]:
+        symbol = topic.removeprefix("publicTrade.")
+        instrument_id = self._instrument_by_symbol.get(symbol)
+        if instrument_id is None or data.get("s") != symbol:
+            return []
+        if not any(inst == instrument_id for inst, _ in self._subscriptions):
+            return []
+        try:
+            event = TradeEvent(
+                instrument_id=instrument_id,
+                trade_id=data["i"],
+                side=data["S"],
+                price=_decimal(data["p"]),
+                size=_decimal(data["v"]),
+                ts_event=data["T"],
+                ts_ingested=received_ts,
+            )
+        except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
+            logger.warning("忽略无法解析的 Bybit 逐笔成交：%s", exc)
+            return []
+        return [event]
+
     def _parse_book(
         self,
         data: dict[str, object],
         envelope: dict[str, object],
+        received_ts: int,
     ) -> list[OrderBookEvent]:
         symbol = data.get("s")
         if not isinstance(symbol, str):
@@ -436,7 +463,7 @@ class BybitPublicStream:
         try:
             bid_price, bid_size = bids[0][0], bids[0][1]
             ask_price, ask_size = asks[0][0], asks[0][1]
-            ts_event = int(data.get("ts") or envelope.get("ts") or self._now_ms())
+            ts_event = int(envelope.get("cts") or data.get("ts") or envelope.get("ts") or received_ts)
             event = OrderBookEvent(
                 instrument_id=instrument_id,
                 bid_price=_decimal(bid_price),
@@ -444,9 +471,9 @@ class BybitPublicStream:
                 ask_price=_decimal(ask_price),
                 ask_size=_decimal(ask_size),
                 ts_event=ts_event,
-                ts_ingested=self._now_ms(),
+                ts_ingested=received_ts,
             )
-        except (IndexError, TypeError, ValueError) as exc:
+        except (IndexError, InvalidOperation, KeyError, TypeError, ValueError) as exc:
             logger.warning("忽略无法解析的 Bybit 盘口：%s", exc)
             return []
         return [event]

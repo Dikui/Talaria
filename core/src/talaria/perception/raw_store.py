@@ -14,6 +14,7 @@ from pathlib import Path
 
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.connector import RawBar
+from talaria.foundation.revisions import latest_visible_revisions
 from talaria.foundation.types import PrecisionTier
 
 
@@ -64,15 +65,10 @@ def latest_visible_bars[Bar: RawBar | RangeBar](
     同一修订按可获取和摄取时间取更晚者，完全相同时后出现者胜。
     """
 
-    chosen: dict[int, tuple[tuple[int, int, int], Bar]] = {}
-    for bar in bars:
-        if as_of is not None and bar.ts_available > as_of:
-            continue
-        current = chosen.get(bar.ts_event)
-        version = (bar.revision, bar.ts_available, bar.ts_ingested if isinstance(bar, RawBar) else 0)
-        if current is None or version >= current[0]:
-            chosen[bar.ts_event] = (version, bar)
-    return [chosen[ts_event][1] for ts_event in sorted(chosen)]
+    return latest_visible_revisions(
+        bars, as_of=as_of, identity=lambda bar: bar.ts_event,
+        ingested=lambda bar: bar.ts_ingested if isinstance(bar, RawBar) else 0,
+    )
 
 
 class RawStore:

@@ -17,6 +17,7 @@ Parquet，禁止目录通配。任何阶段崩溃最多留下未引用的孤儿�
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import os
 import shutil
@@ -42,6 +43,8 @@ from talaria.foundation.derivatives import (
 )
 from talaria.foundation.errors import ColdStoreError, ColdStoreIntegrityError, ColdStoreQualityError
 from talaria.foundation.market import InstrumentSpec
+from talaria.foundation.revisions import latest_visible_revisions
+from talaria.foundation.ticks import Quote, TickKind, Trade, tick_identity
 from talaria.foundation.types import PrecisionTier
 from talaria.perception.raw_store import bar_record
 from talaria.perception.raw_store import latest_visible_bars as latest_visible_bars
@@ -58,6 +61,12 @@ COLD_SUBDIR = Path("data") / "cold"
 MANIFEST_DB = Path("data") / "data_manifest.sqlite"
 RETENTION_MS = 24 * 60 * 60 * 1000
 RETAINED_MANIFESTS = 3
+TICK_BATCH_ROWS = 64_000
+_TICK_DECIMALS = {
+    TickKind.TRADES: ("price", "size"),
+    TickKind.QUOTES: ("bid_price", "bid_size", "ask_price", "ask_size"),
+}
+_TICK_TIMES = ("ts_event", "ts_available", "ts_ingested", "ts_committed", "revision")
 
 #: Parquet 元数据键：格式标记、逐列 scale、标的规格版本。读取侧按文件还原，
 #: 不假设整个冷库只有一种 scale（ADR-0017）。
@@ -118,6 +127,22 @@ class DerivativeBatch:
     def timeframe(self) -> str:
         # 清单的 timeframe 是历史列名。衍生品的分区键是类别，周期留在行内。
         return self.kind.value
+
+
+@dataclass(frozen=True, slots=True)
+class TickBatch:
+    """同一标的、数据集与 UTC 日的行情修订。"""
+
+    instrument: InstrumentSpec
+    kind: TickKind
+    rows: Sequence[Trade | Quote]
+
+    @property
+    def timeframe(self) -> str:
+        return self.kind.value
+
+
+type _PublishBatch = ColdBatch | DerivativeBatch | TickBatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -661,6 +686,106 @@ def _read_derivative_cold_parquet(
     return [DerivativePoint.model_validate(row) for row in table.to_pylist()]
 
 
+def partition_day(ts_event: int) -> str:
+    return datetime.fromtimestamp(ts_event // 1000, tz=UTC).date().isoformat()
+
+
+def _tick_order(row: Trade | Quote) -> tuple[int, int]:
+    return row.ts_event, row.ts_ingested
+
+
+def tick_column_scales(instrument: InstrumentSpec, kind: TickKind) -> dict[str, int]:
+    return {
+        column: instrument.price_precision if column.endswith("price") else instrument.qty_precision
+        for column in _TICK_DECIMALS[kind]
+    }
+
+
+def validate_tick_values(row: Trade | Quote, scales: dict[str, int]) -> None:
+    for column, scale in scales.items():
+        value = getattr(row, column)
+        fits, reason = _fits_decimal128(value, scale)
+        if not fits:
+            raise ColdStoreQualityError(f"{column} {reason}")
+        if value < 0 or (value == 0 and (isinstance(row, Trade) or column.endswith("price"))):
+            raise ColdStoreQualityError(f"{column} 非法：{value}")
+    if isinstance(row, Quote) and row.bid_price > row.ask_price:
+        raise ColdStoreQualityError("买一价高于卖一价")
+
+
+def _validate_ticks(batch: TickBatch) -> None:
+    scales = tick_column_scales(batch.instrument, batch.kind)
+    if any(not 0 <= scale <= COLD_DECIMAL_PRECISION for scale in scales.values()):
+        raise ColdStoreQualityError(f"非法行情精度：{scales}")
+    previous = None
+    expected = Trade if batch.kind is TickKind.TRADES else Quote
+    for row in batch.rows:
+        if not isinstance(row, expected) or row.instrument_id != batch.instrument.instrument_id:
+            raise ColdStoreQualityError("行情标的或类别与批次不一致")
+        if row.ts_event < 0 or row.revision < 0 or row.ts_available < row.ts_event or row.ts_committed < row.ts_ingested:
+            raise ColdStoreQualityError("行情时点或修订非法")
+        order = _tick_order(row)
+        if previous is not None and order < previous:
+            raise ColdStoreQualityError("行情批次未按事件时间排序")
+        validate_tick_values(row, scales)
+        previous = order
+
+
+def _tick_content(batch: TickBatch) -> bytes:
+    # 用压缩归档保留完整标准化输入，高频数据不重复保存每行的列名。
+    def record(row: Trade | Quote) -> str:
+        values = [getattr(row, field) for field in _TICK_TIMES]
+        values.append(row.precision.value)
+        values.extend(str(getattr(row, column)) for column in _TICK_DECIMALS[batch.kind])
+        if isinstance(row, Trade):
+            values.extend((row.trade_id.hex, row.side))
+        return json.dumps(values, separators=(",", ":"))
+
+    header = json.dumps([batch.instrument.instrument_id, batch.kind])
+    return gzip.compress(
+        (header + "\n" + "\n".join(map(record, batch.rows)) + "\n").encode(),
+        compresslevel=1, mtime=0,
+    )
+
+
+def _write_tick_parquet(path: Path, batch: TickBatch) -> None:
+    scales = tick_column_scales(batch.instrument, batch.kind)
+    fields = [
+        *(pa.field(name, pa.int64(), nullable=False) for name in _TICK_TIMES),
+        pa.field("precision", pa.dictionary(pa.int8(), pa.string()), nullable=False),
+        *(pa.field(name, pa.decimal128(COLD_DECIMAL_PRECISION, scale), nullable=False)
+          for name, scale in scales.items()),
+    ]
+    data = {field.name: [getattr(row, field.name) for row in batch.rows] for field in fields}
+    if batch.kind is TickKind.TRADES:
+        fields.extend([pa.field("trade_id", pa.binary(16), nullable=False), pa.field("side", pa.bool_(), nullable=False)])
+        data["trade_id"] = [row.trade_id.bytes for row in batch.rows]
+        data["side"] = [row.side == "Buy" for row in batch.rows]
+    table = pa.Table.from_pydict(data, schema=pa.schema(fields))
+    _write_decimal_parquet(path, table, scales, batch.instrument)
+
+
+def _read_tick_parquet(
+    path: Path, instrument_id: str, kind: TickKind, *,
+    start_ts: int | None = None, end_ts: int | None = None,
+) -> list[Trade | Quote]:
+    table = _read_range_table(path, start_ts, end_ts)
+    metadata = table.schema.metadata or {}
+    if metadata.get(COLD_FORMAT_METADATA) != COLD_FORMAT_DECIMAL128:
+        raise ColdStoreIntegrityError(f"未知行情冷库数值格式：{path}")
+    _verify_decimal_schema(table.schema, _column_scales_from_metadata(metadata, _TICK_DECIMALS[kind]))
+    rows = []
+    for values in table.to_pylist():
+        values["precision"] = PrecisionTier(values["precision"])
+        if kind is TickKind.TRADES:
+            values["trade_id"] = uuid.UUID(bytes=values["trade_id"])
+            values["side"] = "Buy" if values["side"] else "Sell"
+            rows.append(Trade(instrument_id=instrument_id, **values))
+        else:
+            rows.append(Quote(instrument_id=instrument_id, **values))
+    return rows
+
+
 def partition_month(ts_event: int) -> str:
     return datetime.fromtimestamp(ts_event // 1000, tz=UTC).strftime("%Y-%m")
 
@@ -810,6 +935,39 @@ class ColdReader:
             as_of=as_of,
         )
 
+    def read_tick_revisions(
+        self, instrument: InstrumentSpec, kind: TickKind, *,
+        start_ts: int | None = None, end_ts: int | None = None,
+    ) -> list[Trade | Quote]:
+        def read(path: Path, *, start_ts: int | None, end_ts: int | None) -> list[Trade | Quote]:
+            return _read_tick_parquet(path, instrument.instrument_id, kind, start_ts=start_ts, end_ts=end_ts)
+
+        _, rows = self._read_manifest(
+            instrument, kind.value, read, start_ts=start_ts, end_ts=end_ts,
+        )
+        return rows
+
+    def read_trade_ids(self, instrument: InstrumentSpec, *, start_ts: int, end_ts: int) -> set[bytes]:
+        def read(path: Path, *, start_ts: int, end_ts: int) -> list[bytes]:
+            return pq.read_table(
+                path, columns=["trade_id"], filters=[("ts_event", ">=", start_ts), ("ts_event", "<=", end_ts)],
+            ).column("trade_id").to_pylist()
+
+        _, ids = self._read_manifest(
+            instrument, TickKind.TRADES.value, read, start_ts=start_ts, end_ts=end_ts,
+        )
+        return set(ids)
+
+    def read_ticks(
+        self, instrument: InstrumentSpec, kind: TickKind, *,
+        start_ts: int | None = None, end_ts: int | None = None, as_of: int | None = None,
+    ) -> list[Trade | Quote]:
+        rows = self.read_tick_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
+        return latest_visible_revisions(
+            sorted(rows, key=_tick_order), as_of=as_of, identity=tick_identity,
+            ingested=lambda row: row.ts_ingested,
+        )
+
     def _read_manifest[T](
         self, instrument: InstrumentSpec, series: str, read_parquet: Callable[..., list[T]], *,
         start_ts: int | None, end_ts: int | None,
@@ -925,6 +1083,36 @@ class ColdStore:
             self._commit_manifest(generation)
             return generation
 
+    def publish_ticks(
+        self, instrument: InstrumentSpec, kind: TickKind, rows: Sequence[Trade | Quote],
+    ) -> ColdGeneration:
+        """原子发布一个 UTC 日内的行情批次。"""
+        with self._lock:
+            self._ensure_open()
+            batch = TickBatch(instrument, kind, sorted(rows, key=_tick_order))
+            if not batch.rows or partition_day(batch.rows[0].ts_event) != partition_day(batch.rows[-1].ts_event):
+                raise ColdStoreQualityError("行情批次必须属于同一 UTC 日且非空")
+            _validate_ticks(batch)
+            content = _tick_content(batch)
+            generation_id = _sha256_bytes(content)
+            existing = self._select_generation(batch, generation_id)
+            if existing is not None:
+                _verify_generation_file(self._data_dir, existing)
+                return existing
+            generation = self._prepare_generation(batch, generation_id, tick_content=content)
+            self._commit_manifest(generation)
+            return generation
+
+    def read_tick_revisions(
+        self, instrument: InstrumentSpec, kind: TickKind, *, start_ts: int, end_ts: int,
+    ) -> list[Trade | Quote]:
+        self._ensure_open()
+        return self._reader.read_tick_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
+
+    def read_trade_ids(self, instrument: InstrumentSpec, *, start_ts: int, end_ts: int) -> set[bytes]:
+        self._ensure_open()
+        return self._reader.read_trade_ids(instrument, start_ts=start_ts, end_ts=end_ts)
+
     def generations(self, instrument: InstrumentSpec, timeframe: str) -> list[ColdGeneration]:
         with self._lock:
             self._ensure_open()
@@ -979,8 +1167,53 @@ class ColdStore:
                 instrument = specs.get((venue, symbol))
                 if instrument is None:
                     continue
-                self._compact_series(instrument, timeframe, now_ms)
+                if timeframe in TickKind:
+                    self._compact_ticks(instrument, TickKind(timeframe), now_ms)
+                else:
+                    self._compact_series(instrument, timeframe, now_ms)
             self._prune_retired(time.time_ns() // 1_000_000 if now_ms is None else now_ms)
+
+    def _compact_ticks(self, instrument: InstrumentSpec, kind: TickKind, now_ms: int | None) -> None:
+        # 活跃日保持分钟尾部。已结束的日分批合并，限制读取与质检的峰值内存。
+        version = instrument_spec_version(instrument)
+        today = partition_day(time.time_ns() // 1_000_000 if now_ms is None else now_ms)
+        tail_prefix = f"tail-{version}-"
+        partition_prefix = f"partition-{version}-"
+        days: dict[str, list[ColdGeneration]] = {}
+        for generation in _select_generations(self._connection, instrument, kind.value):
+            day = partition_day(generation.first_ts)
+            if day < today and generation.parquet_path.name.startswith((tail_prefix, partition_prefix)):
+                days.setdefault(day, []).append(generation)
+        for generations in days.values():
+            group: list[ColdGeneration] = []
+            size = 0
+            for generation in generations:
+                if group and size + generation.bars > TICK_BATCH_ROWS:
+                    self._compact_tick_group(instrument, kind, group, now_ms)
+                    group, size = [], 0
+                group.append(generation)
+                size += generation.bars
+            self._compact_tick_group(instrument, kind, group, now_ms)
+
+    def _compact_tick_group(
+        self, instrument: InstrumentSpec, kind: TickKind,
+        group: Sequence[ColdGeneration], now_ms: int | None,
+    ) -> None:
+        if len(group) < 2 or not any(item.parquet_path.name.startswith("tail-") for item in group):
+            return
+        rows = [
+            row for item in group for row in _read_tick_parquet(
+                _verify_generation_file(self._data_dir, item), instrument.instrument_id, kind,
+            )
+        ]
+        rows.sort(key=_tick_order)
+        archive = "".join(
+            json.dumps({"source_sha256": item.content_sha256}) + "\n" for item in group
+        ).encode("utf-8")
+        generation = self._prepare_generation(
+            TickBatch(instrument, kind, rows), _sha256_bytes(b"tick-partition\n" + archive), source_archive=archive,
+        )
+        self._commit_manifest(generation, replaced=group, retired_ts=now_ms)
 
     def _compact_series(
         self, instrument: InstrumentSpec, timeframe: str, now_ms: int | None
@@ -1071,9 +1304,10 @@ class ColdStore:
 
     # ------------------------------------------------------------------ 发布阶段
 
-    def _archive_content(self, content: bytes, sha256: str) -> ArchivedBatch:
+    def _archive_content(self, content: bytes, sha256: str, *, compressed: bool = False) -> ArchivedBatch:
         self._hook(ColdPhase.ARCHIVE_BEFORE)
-        path = self._data_dir / ARCHIVE_SUBDIR / f"{sha256}.jsonl"
+        suffix = ".jsonl.gz" if compressed else ".jsonl"
+        path = self._data_dir / ARCHIVE_SUBDIR / f"{sha256}{suffix}"
         if path.exists():
             if _sha256_file(path) != sha256:
                 raise ColdStoreIntegrityError(f"归档内容哈希不符：{path.relative_to(self._data_dir)}")
@@ -1089,7 +1323,7 @@ class ColdStore:
     def _staging_file(self, archived: ArchivedBatch) -> Path:
         return self._data_dir / STAGING_SUBDIR / archived.sha256 / "bars.parquet"
 
-    def _write_staging(self, archived: ArchivedBatch, batch: ColdBatch | DerivativeBatch) -> None:
+    def _write_staging(self, archived: ArchivedBatch, batch: _PublishBatch) -> None:
         self._hook(ColdPhase.STAGING_BEFORE)
         staging_dir = (self._data_dir / STAGING_SUBDIR) / archived.sha256
         # 上一次崩溃可能留下残片；发布永远从干净 staging 重建，绝不信任旧文件。
@@ -1099,6 +1333,8 @@ class ColdStore:
         temporary = staging_dir / "bars.parquet.tmp"
         if isinstance(batch, DerivativeBatch):
             _write_derivative_cold_parquet(temporary, batch)
+        elif isinstance(batch, TickBatch):
+            _write_tick_parquet(temporary, batch)
         else:
             _write_cold_parquet(temporary, batch.bars, instrument=batch.instrument)
         with temporary.open("rb") as handle:
@@ -1108,7 +1344,7 @@ class ColdStore:
         self._hook(ColdPhase.STAGING_AFTER)
 
     def _quality_check(
-        self, archived: ArchivedBatch, batch: ColdBatch | DerivativeBatch, *, compacted: bool
+        self, archived: ArchivedBatch, batch: _PublishBatch, *, compacted: bool
     ) -> None:
         self._hook(ColdPhase.QC_BEFORE)
         path = self._staging_file(archived)
@@ -1117,6 +1353,9 @@ class ColdStore:
             _validate_derivatives(
                 DerivativeBatch(batch.instrument, batch.kind, decoded), allow_equal_revisions=compacted,
             )
+        elif isinstance(batch, TickBatch):
+            decoded = _read_tick_parquet(path, batch.instrument.instrument_id, batch.kind)
+            _validate_ticks(TickBatch(batch.instrument, batch.kind, decoded))
         else:
             decoded = _read_cold_parquet(path)
             _validate_bars(
@@ -1128,16 +1367,19 @@ class ColdStore:
         self._hook(ColdPhase.QC_AFTER)
 
     def _prepare_generation(
-        self, batch: ColdBatch | DerivativeBatch, generation_id: str, *, source_archive: bytes | None = None
+        self, batch: _PublishBatch, generation_id: str, *,
+        source_archive: bytes | None = None, tick_content: bytes | None = None,
     ) -> ColdGeneration:
         compacted = source_archive is not None
         if source_archive is not None:
             content = source_archive
+        elif tick_content is not None:
+            content = tick_content
         elif isinstance(batch, DerivativeBatch):
             content = _derivative_content(batch.rows)
         else:
             content = _content_bytes(batch.bars)
-        archived = self._archive_content(content, _sha256_bytes(content))
+        archived = self._archive_content(content, _sha256_bytes(content), compressed=tick_content is not None)
         self._write_staging(archived, batch)
         self._quality_check(archived, batch, compacted=compacted)
         final = self._promote(archived, batch, generation_id, compacted=compacted)
@@ -1156,17 +1398,18 @@ class ColdStore:
         )
 
     def _promote(
-        self, archived: ArchivedBatch, batch: ColdBatch | DerivativeBatch, generation_id: str, *, compacted: bool
+        self, archived: ArchivedBatch, batch: _PublishBatch, generation_id: str, *, compacted: bool
     ) -> Path:
         self._hook(ColdPhase.RENAME_BEFORE)
         kind = "partition" if compacted else "tail"
         version = instrument_spec_version(batch.instrument)
+        partition = partition_day if isinstance(batch, TickBatch) else partition_month
         final = (
             self._data_dir / COLD_SUBDIR
             / _safe_path_part(batch.instrument.venue, "venue")
             / _safe_path_part(batch.instrument.symbol, "symbol")
             / _safe_path_part(batch.timeframe, "timeframe")
-            / partition_month(batch.rows[0].ts_event)
+            / partition(batch.rows[0].ts_event)
             / f"{kind}-{version}-{generation_id}.parquet"
         )
         final.parent.mkdir(parents=True, exist_ok=True)
@@ -1301,7 +1544,7 @@ class ColdStore:
         return None
 
     def _select_generation(
-        self, batch: ColdBatch | DerivativeBatch, generation_id: str
+        self, batch: _PublishBatch, generation_id: str
     ) -> ColdGeneration | None:
         row = self._connection.execute(
             f"""
@@ -1327,3 +1570,26 @@ class ColdStore:
     def _ensure_open(self) -> None:
         if self._closed:
             raise ColdStoreError("ColdStore 已关闭")
+
+
+def tick_capacity(data_dir: Path, day: str | None = None) -> list[tuple[str, str, str, str, int, int]]:
+    """按 UTC 日统计清单当前引用的逐笔和买一卖一 Parquet 行数与字节数。"""
+    data_dir = data_dir.resolve()
+    db_path = data_dir / MANIFEST_DB
+    if not db_path.is_file():
+        return []
+    with closing(sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)) as db:
+        entries = db.execute(
+            "SELECT venue, symbol, timeframe, parquet_path, first_ts, bars FROM generations "
+            "WHERE timeframe IN (?, ?)",
+            (TickKind.TRADES, TickKind.QUOTES),
+        ).fetchall()
+    totals: dict[tuple[str, str, str, str], tuple[int, int]] = {}
+    for venue, symbol, kind, path, first_ts, count in entries:
+        partition = partition_day(first_ts)
+        if day is not None and day != partition:
+            continue
+        key = partition, venue, symbol, kind
+        rows, size = totals.get(key, (0, 0))
+        totals[key] = rows + count, size + _path_under_root(data_dir, Path(path)).stat().st_size
+    return [(*key, *values) for key, values in sorted(totals.items())]
