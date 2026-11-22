@@ -774,6 +774,161 @@ body:has(.talaria-desk--standalone) {
   min-width: 0;
 }
 
+.chart-rule-editor {
+  container-type: inline-size;
+  flex: none;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.rule-editor-header,
+.rule-editor-footer,
+.rule-node-header,
+.rule-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.rule-editor-header,
+.rule-editor-footer {
+  padding: 6px 12px;
+}
+
+.rule-editor-header {
+  min-height: 38px;
+}
+
+.rule-editor-header .rule-field {
+  flex-direction: row;
+  align-items: center;
+}
+
+.rule-editor-body {
+  max-block-size: min(35dvh, 20rem);
+  padding: 8px 12px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  border-block: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.rule-status,
+.rule-warmup,
+.rule-empty p {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.rule-editor-footer .primary-button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.rule-editor-footer .primary-button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.rule-warmup {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.rule-node {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.rule-sr-only {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.rule-node-header {
+  justify-content: space-between;
+  align-items: end;
+}
+
+.rule-children,
+.rule-operand {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.rule-children {
+  margin-top: 6px;
+  padding-inline-start: 5px;
+  border-inline-start: 2px solid var(--border-strong);
+}
+
+.rule-children > button {
+  justify-self: start;
+}
+
+.rule-comparison,
+.rule-reference {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(5.6rem, .55fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.rule-reference {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+}
+
+.rule-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.rule-field :is(select, input) {
+  min-height: 28px;
+  width: 100%;
+  padding: 3px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.rule-field select {
+  cursor: pointer;
+}
+
+.rule-field input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.rule-field [aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+@container (max-width: 30rem) {
+  .rule-comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .indicator-bar {
   display: flex;
   flex: none;

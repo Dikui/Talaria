@@ -59,6 +59,7 @@ import {
 } from "./features/key-levels/model";
 import { useKeyLevels } from "./features/key-levels/useKeyLevels";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
+import { ChartRuleEditor, type ChartRulePreview } from "./features/rules/ChartRuleEditor";
 import { ScannerPanel } from "./features/scanner/ScannerPanel";
 import { useScanner } from "./features/scanner/useScanner";
 import { WatchlistPanel } from "./features/watchlist/WatchlistPanel";
@@ -138,6 +139,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
   const [indicatorsLoading, setIndicatorsLoading] = useState(false);
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
   const [chart, setChart] = useState<Chart | null>(null);
+  const [rulePreview, setRulePreview] = useState<ChartRulePreview | null>(null);
   const [drawingManagerOpen, setDrawingManagerOpen] = useState(false);
   const [keyLevelFilter, setKeyLevelFilter] = useState<KeyLevelFilter>(
     defaultKeyLevelFilter,
@@ -803,6 +805,24 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
           className={`chart-panel${keyLevelPanelOpen ? "" : " key-levels-collapsed"}`}
           aria-label="K 线主图"
         >
+          <ChartRuleEditor
+            key={`${instrumentId}:${timeframe}`}
+            instrumentId={instrumentId}
+            timeframe={timeframe}
+            snapshotId={!showEmpty && snapshot?.instrument_id === instrumentId
+                && snapshot.timeframes.includes(timeframe) ? snapshot.snapshot_id : null}
+            loadedSlots={stats.loaded + stats.gaps}
+            defaults={indicatorDefaults}
+            drawings={drawings.drawings}
+            levels={keyLevels.levels}
+            pricePrecision={pricePrecision}
+            onPreview={setRulePreview}
+            onSaved={() => void alerts.refresh()}
+            onViewAlerts={() => {
+              setRightTab("alerts");
+              alerts.markSeen();
+            }}
+          />
           {loading ? (
             <div className="loading-state" data-testid="loading-state" aria-live="polite">
               <div className="skeleton" aria-hidden="true">
@@ -876,6 +896,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                   locateTs={snapshotCutoff}
                   crosshairLink={link}
                   indicatorSeries={visibleIndicators?.series ?? []}
+                  rulePreview={rulePreview?.snapshotId === snapshot.snapshot_id ? rulePreview.response : null}
                   onStats={setStats}
                   onLoadError={(caught) => setError(describeError(caught))}
                   overlay={

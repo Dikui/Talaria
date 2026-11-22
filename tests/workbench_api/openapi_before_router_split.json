@@ -4204,6 +4204,110 @@
         "title": "RuleOverlay",
         "type": "object"
       },
+      "RulePreviewIndicator": {
+        "additionalProperties": false,
+        "properties": {
+          "operand": {
+            "$ref": "#/components/schemas/RuleIndicator"
+          },
+          "pane": {
+            "enum": [
+              "main",
+              "sub"
+            ],
+            "title": "Pane",
+            "type": "string"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/IndicatorPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operand",
+          "pane",
+          "points"
+        ],
+        "title": "RulePreviewIndicator",
+        "type": "object"
+      },
+      "RulePreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 300,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/Rule-Input"
+          },
+          "timeframe": {
+            "title": "Timeframe",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timeframe",
+          "rule"
+        ],
+        "title": "RulePreviewRequest",
+        "type": "object"
+      },
+      "RulePreviewResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "indicators": {
+            "items": {
+              "$ref": "#/components/schemas/RulePreviewIndicator"
+            },
+            "title": "Indicators",
+            "type": "array"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/Rule-Output"
+          },
+          "signals": {
+            "items": {
+              "$ref": "#/components/schemas/RulePreviewSignal"
+            },
+            "title": "Signals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rule",
+          "signals",
+          "indicators"
+        ],
+        "title": "RulePreviewResponse",
+        "type": "object"
+      },
+      "RulePreviewSignal": {
+        "additionalProperties": false,
+        "properties": {
+          "price": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Price",
+            "type": "string"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timestamp",
+          "price"
+        ],
+        "title": "RulePreviewSignal",
+        "type": "object"
+      },
       "ScannerBriefing": {
         "additionalProperties": false,
         "description": "持久化的一条简报；``snapshot_id`` 必须与触发它的扫描冻结快照一致。",
@@ -8367,6 +8471,55 @@
           }
         },
         "summary": "Get Key Levels"
+      }
+    },
+    "/api/snapshots/{snapshot_id}/rule-preview": {
+      "post": {
+        "operationId": "preview_rule_api_snapshots__snapshot_id__rule_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RulePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RulePreviewResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Rule"
       }
     },
     "/api/watchlist": {

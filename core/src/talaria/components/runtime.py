@@ -26,6 +26,7 @@ from talaria.foundation.key_levels import KeyLevel
 from talaria.foundation.indicators import IndicatorParams, IndicatorPoint
 from talaria.foundation.operators import MAX_PERIOD, IndicatorName
 from talaria.foundation.operators.inputs import derivative_samples
+from talaria.foundation.rules import RuleIndicator
 from talaria.foundation.timeframes import last_closed_bar_start, timeframe_ms
 from talaria.perception.compaction import compact_series
 from talaria.perception.raw_store import latest_visible_bars
@@ -126,6 +127,9 @@ class Ctx:
     _indicator_history_limit: int | None = field(default=None, repr=False, compare=False, kw_only=True)
 
     _session_prefix: Sequence[CompactBar] = field(default=(), repr=False, compare=False, kw_only=True)
+    _rule_indicators: dict[tuple[object, ...], Series] = field(
+        default_factory=dict, init=False, repr=False, compare=False,
+    )
 
     def compact_bars(self) -> tuple[CompactBar, ...]:
         """保留有界实时窗口中的缺口，同时按可获取时点截断确认柱。"""
@@ -259,7 +263,8 @@ class Ctx:
 
     def indicator(
         self, name: str, *, timeframe: str | None = None, version: str = "1",
-        _history_limit: int | None = None, _include_ticks: bool = False, **params: object,
+        _history_limit: int | None = None, _include_ticks: bool = False,
+        _output_limit: int | None = None, **params: object,
     ) -> Series:
         """计算已注册算子的 Decimal 序列，跨大周期只返回最后一个点。"""
         operator = OPERATORS.get(name, version=version)
@@ -298,10 +303,24 @@ class Ctx:
         points = operator.compute(bars, params, derivatives=samples)
         if timeframe_ms(requested) > timeframe_ms(self.timeframe):
             bars, points = bars[-1:], points[-1:]
+        if _output_limit is not None:
+            bars, points = bars[-_output_limit:], points[-_output_limit:]
         return tuple(
             IndicatorPoint(timestamp=bar.timestamp, values=values)
             for bar, values in zip(bars, points, strict=True)
         )
+
+    def _rule_indicator(self, operand: RuleIndicator, history_limit: int) -> Series:
+        params = operand.params
+        key = (operand.name, operand.version, params.period, params.anchor, params.std_dev, history_limit)
+        if key not in self._rule_indicators:
+            self._rule_indicators[key] = self.indicator(
+                operand.name, version=operand.version,
+                _history_limit=self._indicator_history_limit or history_limit,
+                _include_ticks=True, _output_limit=2,
+                **params.model_dump(exclude_none=True),
+            )
+        return self._rule_indicators[key]
 
 
 @dataclass(frozen=True, slots=True)

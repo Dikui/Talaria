@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -18,6 +19,7 @@ from talaria.foundation.derivatives import (
     DerivativeSeries,
     DerivativeSummary,
 )
+from talaria.foundation.drawings import DrawingRecord
 from talaria.foundation.errors import (
     FeatureNotImplementedError,
     InstrumentNotFoundError,
@@ -51,6 +53,7 @@ from talaria.foundation.operators import (
     spec_from_params,
 )
 from talaria.foundation.operators.inputs import derivative_samples
+from talaria.foundation.rules import RulePreviewRequest, RulePreviewResponse
 from talaria.foundation.snapshot import (
     ChartPage,
     SnapshotMeta,
@@ -68,6 +71,7 @@ from talaria.perception.snapshot_store import (
     read_derivative_points,
     read_snapshot_bars,
 )
+from talaria.workbench_api.rule_preview import evaluate_preview
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +261,18 @@ class WorkbenchService:
                 open_interest_ts=None if oi is None else oi.ts_event,
                 oi_history_available=bool(oi_points),
             ),
+        )
+
+    def preview_rule(
+        self, snapshot_id: str, request: RulePreviewRequest,
+        drawings: Mapping[str, Sequence[DrawingRecord]],
+        levels_at: Callable[[int], Sequence[KeyLevel]],
+    ) -> RulePreviewResponse:
+        record = self._snapshot_record(snapshot_id, request.timeframe)
+        meta, bars = self._snapshot_bars(snapshot_id, request.timeframe)
+        return evaluate_preview(
+            request, meta.instrument_id, meta.cutoff_ts, bars,
+            lambda: self._derivative_points(record, request.timeframe), drawings, levels_at,
         )
 
     def get_indicators(

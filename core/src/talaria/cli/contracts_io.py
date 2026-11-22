@@ -17,6 +17,8 @@ from typing import Annotated, Any, Iterable, Literal, Union, get_args, get_origi
 
 from pydantic import BaseModel
 
+from talaria.components.operators import OPERATORS
+from talaria.foundation.operators import CHANNELS
 from talaria.foundation.alerts import (
     AlertCreate,
     AlertDirection,
@@ -140,6 +142,10 @@ from talaria.foundation.rules import (
     RuleIndicatorParams,
     RuleLevelEvent,
     RuleOverlay,
+    RulePreviewIndicator,
+    RulePreviewRequest,
+    RulePreviewResponse,
+    RulePreviewSignal,
 )
 from talaria.foundation.snapshot import (
     ChartPage,
@@ -248,6 +254,8 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "watchlist_group": WatchlistGroup,
     "watchlist": Watchlist,
     "rule": Rule,
+    "rule_preview_request": RulePreviewRequest,
+    "rule_preview_response": RulePreviewResponse,
     "alert_create": AlertCreate,
     "alert_patch": AlertPatch,
     "alert_record": AlertRecord,
@@ -300,6 +308,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
 RULE_NODE_TYPES = (
     RuleGroup, RuleComparison, RuleConstant, RuleBar, RuleDerivative,
     RuleEvent, RuleIndicator, RuleIndicatorParams, RuleLevelEvent, RuleOverlay, RuleDrawingPrice, RuleLevelPrice,
+    RulePreviewIndicator, RulePreviewSignal,
 )
 
 #: 枚举的固定输出顺序。
@@ -581,6 +590,54 @@ def _contains_null(node: Any) -> bool:
     return False
 
 
+def _rule_editor_schema() -> dict[str, Any]:
+    schema = _schema_for(Rule)
+    definitions = schema["$defs"]
+
+    def options(node: dict[str, Any]) -> list[str]:
+        if "$ref" in node:
+            return options(definitions[node["$ref"].rsplit("/", 1)[-1]])
+        if "anyOf" in node:
+            return [option for alternative in node["anyOf"] for option in options(alternative)]
+        return node.get("enum", [node["const"]] if "const" in node else [])
+
+    def prop(model: str, field: str) -> dict[str, Any]:
+        return definitions[model]["properties"][field]
+
+    version, = options(prop("RuleIndicator", "version"))
+    def operator_metadata(name: str) -> dict[str, Any]:
+        operator = OPERATORS.get(name, version=version)
+        assert operator.indicator_name is not None
+        return {
+            "version": version,
+            "channels": CHANNELS[operator.indicator_name],
+            "parameters": operator.parameters_schema["properties"],
+        }
+
+    return {
+        "version": schema["properties"]["version"]["const"],
+        "timings": options(schema["properties"]["timing"]),
+        "expressions": list(schema["properties"]["expression"]["discriminator"]["mapping"]),
+        "operands": list(prop("RuleComparison", "left")["discriminator"]["mapping"]),
+        "comparisons": options(prop("RuleComparison", "test")),
+        "barFields": options(prop("RuleBar", "field")),
+        "eventMetrics": options(prop("RuleEvent", "metric")),
+        "derivatives": options(prop("RuleDerivative", "kind")),
+        "directions": options(prop("RuleOverlay", "direction")),
+        "overlayModes": options(prop("RuleOverlay", "mode")),
+        "levelEvents": options(prop("RuleLevelEvent", "event")),
+        "edges": options(prop("RuleDrawingPrice", "edge")),
+        "decimalPattern": prop("RuleConstant", "value")["pattern"],
+        "maxDepth": MAX_RULE_DEPTH,
+        "maxNodes": prop("RuleGroup", "args")["maxItems"],
+        "previewLimit": _schema_for(RulePreviewRequest)["properties"]["limit"]["maximum"],
+        "operators": {
+            name: operator_metadata(name)
+            for name in options(prop("RuleIndicator", "name"))
+        },
+    }
+
+
 def _render_ts() -> str:
     lines = [_HEADER]
     lines.append("export type DecimalString = string;\n\n")
@@ -599,6 +656,7 @@ def _render_ts() -> str:
             optional = "" if field.is_required() else "?"
             lines.append(f"  {name}{optional}: {ts_type};\n")
         lines.append("}\n")
+    lines.append(f"\nexport const RULE_EDITOR_SCHEMA = {_dump_json(_rule_editor_schema()).rstrip()} as const;\n")
     return "".join(lines).rstrip() + "\n"
 
 

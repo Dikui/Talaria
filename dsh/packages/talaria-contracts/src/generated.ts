@@ -446,6 +446,16 @@ export interface Rule {
   timing: "bar_close" | "event";
   expression: RuleComparison | RuleOverlay | RuleLevelEvent | RuleGroup;
 }
+export interface RulePreviewRequest {
+  timeframe: string;
+  rule: Rule;
+  limit?: number;
+}
+export interface RulePreviewResponse {
+  rule: Rule;
+  signals: RulePreviewSignal[];
+  indicators: RulePreviewIndicator[];
+}
 export interface AlertCreate {
   instrument_id: string;
   timeframe: string;
@@ -870,3 +880,258 @@ export interface RuleLevelPrice {
   level_kind?: KeyLevelKind | null;
   edge?: "lower" | "upper";
 }
+export interface RulePreviewIndicator {
+  operand: RuleIndicator;
+  pane: "main" | "sub";
+  points: IndicatorPoint[];
+}
+export interface RulePreviewSignal {
+  timestamp: number;
+  price: DecimalString;
+}
+
+export const RULE_EDITOR_SCHEMA = {
+  "barFields": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "turnover"
+  ],
+  "comparisons": [
+    "lt",
+    "lte",
+    "gt",
+    "gte",
+    "eq",
+    "cross_above",
+    "cross_below"
+  ],
+  "decimalPattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+  "derivatives": [
+    "mark_price",
+    "funding_rate",
+    "open_interest"
+  ],
+  "directions": [
+    "ABOVE",
+    "BELOW"
+  ],
+  "edges": [
+    "lower",
+    "upper"
+  ],
+  "eventMetrics": [
+    "last_price",
+    "bid_price",
+    "ask_price",
+    "mark_price",
+    "funding_rate",
+    "open_interest"
+  ],
+  "expressions": [
+    "all",
+    "any",
+    "compare",
+    "level_event",
+    "not",
+    "overlay"
+  ],
+  "levelEvents": [
+    "TOUCH",
+    "BREAK",
+    "RETEST"
+  ],
+  "maxDepth": 5,
+  "maxNodes": 64,
+  "operands": [
+    "bar",
+    "constant",
+    "derivative",
+    "drawing_price",
+    "event",
+    "indicator",
+    "level_price"
+  ],
+  "operators": {
+    "ATR": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 14,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "BOLL": {
+      "channels": [
+        "mid",
+        "upper",
+        "lower"
+      ],
+      "parameters": {
+        "period": {
+          "default": 20,
+          "maximum": 5000,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "std_dev": {
+          "default": "2",
+          "pattern": "^(?:[1-9][0-9]*(?:\\.[0-9]+)?|0\\.[0-9]*[1-9][0-9]*)$",
+          "type": "string"
+        }
+      },
+      "version": "1"
+    },
+    "EMA": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 9,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "FUNDING_QUANTILE": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 30,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "NET_ODDS": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 20,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "OI_DIVERGENCE": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 30,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "RSI": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 14,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "SMA": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 9,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "VWAP": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "anchor": {
+          "default": "session",
+          "enum": [
+            "snapshot",
+            "session"
+          ]
+        },
+        "period": {
+          "default": 1,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "legacy_atr": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 14,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    },
+    "legacy_ema": {
+      "channels": [
+        "value"
+      ],
+      "parameters": {
+        "period": {
+          "default": 9,
+          "maximum": 5000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "version": "1"
+    }
+  },
+  "overlayModes": [
+    "TOUCH",
+    "CLOSE_BREAK"
+  ],
+  "previewLimit": 1000,
+  "timings": [
+    "bar_close",
+    "event"
+  ],
+  "version": "1"
+} as const;

@@ -37,6 +37,8 @@ import type {
   KeyLevelIgnoreList,
   KeyLevelSet,
   OperatorRequest,
+  RulePreviewRequest,
+  RulePreviewResponse,
   ScannerBriefing,
   ScannerFocusResponse,
   ScannerScanResponse,
@@ -145,9 +147,11 @@ async function writeJson<T>(
   path: string,
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const response = await fetch(apiPath(path), {
     method,
+    signal,
     headers: {
       Accept: "application/json",
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -275,6 +279,12 @@ export const api = {
     }
     return getJson<ChartPage>(
       `/api/snapshots/${encodeURIComponent(snapshotId)}/bars?${query.toString()}`,
+    );
+  },
+
+  previewRule(snapshotId: string, payload: RulePreviewRequest, signal: AbortSignal): Promise<RulePreviewResponse> {
+    return writeJson<RulePreviewResponse>(
+      `/api/snapshots/${encodeURIComponent(snapshotId)}/rule-preview`, "POST", payload, signal,
     );
   },
 

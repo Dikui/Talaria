@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 from bisect import bisect_right
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from functools import partial
 from operator import attrgetter
 
 from talaria.foundation.key_levels import KeyLevel, KeyLevelSet
@@ -12,6 +13,11 @@ from talaria.foundation.key_levels import KeyLevel, KeyLevelSet
 logger = logging.getLogger(__name__)
 MAX_VERSIONS_PER_SERIES = 256
 _cutoff = attrgetter("cutoff_ts")
+
+
+def _visible_levels(versions: Sequence[KeyLevelSet], cutoff_ts: int) -> list[KeyLevel]:
+    end = bisect_right(versions, cutoff_ts, key=_cutoff)
+    return [level for level in versions[end - 1].levels if level.ts_available <= cutoff_ts] if end else []
 
 
 class KeyLevelRegistry:
@@ -49,11 +55,13 @@ class KeyLevelRegistry:
         versions = self._versions.get((instrument_id, timeframe))
         if not versions:
             return []
-        end = bisect_right(versions, cutoff_ts, key=_cutoff)
-        if end == 0:
+        if cutoff_ts < versions[0].cutoff_ts:
             logger.debug(
                 "%s %s 的事件截止时刻 %s 早于最早关键位版本 %s",
                 instrument_id, timeframe, cutoff_ts, versions[0].cutoff_ts,
             )
-            return []
-        return [level for level in versions[end - 1].levels if level.ts_available <= cutoff_ts]
+        return _visible_levels(versions, cutoff_ts)
+
+    def capture(self, instrument_id: str, timeframe: str) -> Callable[[int], list[KeyLevel]]:
+        """在线程外计算前固定版本列表，之后按各观察柱的收盘时刻选版。"""
+        return partial(_visible_levels, tuple(self._versions.get((instrument_id, timeframe), ())))

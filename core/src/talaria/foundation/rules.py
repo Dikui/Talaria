@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 from pydantic import BeforeValidator, Field, model_validator
 
 from talaria.foundation.derivatives import DerivativeKind
+from talaria.foundation.indicators import IndicatorPoint
 from talaria.foundation.key_levels.contracts import KeyLevelKind
 from talaria.foundation.operators import CHANNELS, MAX_PERIOD, IndicatorName, spec_from_params
 from talaria.foundation.types import DECIMAL_PATTERN, ContractModel, DecimalStr
@@ -210,3 +211,26 @@ class Rule(ContractModel):
             ):
                 raise ValueError("画线突破和关键位突破/回踩需要收盘求值")
         return self
+
+
+class RulePreviewRequest(ContractModel):
+    timeframe: str
+    rule: Rule
+    limit: int = Field(default=300, ge=1, le=1000)
+
+
+class RulePreviewSignal(ContractModel):
+    timestamp: int
+    price: DecimalStr
+
+
+class RulePreviewIndicator(ContractModel):
+    operand: RuleIndicator
+    pane: Literal["main", "sub"]
+    points: list[IndicatorPoint]
+
+
+class RulePreviewResponse(ContractModel):
+    rule: Rule
+    signals: list[RulePreviewSignal]
+    indicators: list[RulePreviewIndicator]

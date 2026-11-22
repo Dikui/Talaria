@@ -31,6 +31,9 @@ from talaria.foundation.key_levels import (
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.operators import IndicatorName
+from talaria.foundation.rules import (
+    Rule, RuleDrawingPrice, RuleLevelEvent, RuleLevelPrice, RuleOverlay, RulePreviewRequest, RulePreviewResponse,
+)
 from talaria.foundation.snapshot import (
     ChartPage,
     ErrorResponse,
@@ -38,6 +41,7 @@ from talaria.foundation.snapshot import (
     SnapshotRequest,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
+from talaria.workbench_api.indicator_defaults import pin_rule_indicator_params
 from talaria.workbench_api.routes import get_runtime
 
 router = APIRouter()
@@ -172,6 +176,40 @@ async def get_indicators(
         limit=limit,
         params=params,
         extra_bars=extra_bars,
+    )
+
+
+@router.post("/api/snapshots/{snapshot_id}/rule-preview", response_model=RulePreviewResponse)
+async def preview_rule(
+    snapshot_id: str, payload: RulePreviewRequest, request: Request,
+) -> RulePreviewResponse:
+    runtime = get_runtime(request)
+    meta = runtime.workbench.get_snapshot(snapshot_id)
+    if payload.timeframe not in meta.timeframes:
+        raise NotFoundError(f"快照 {snapshot_id} 不包含周期 {payload.timeframe}")
+    rule = payload.rule.model_copy(deep=True)
+    defaults = await runtime.indicator_defaults.effective()
+    try:
+        pin_rule_indicator_params(rule.expression, None, defaults)
+        rule = Rule.model_validate(rule.model_dump())
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+    references = tuple(rule.references())
+    drawings = {}
+    for drawing_id in dict.fromkeys(
+        ref.drawing_id for ref in references if isinstance(ref, (RuleDrawingPrice, RuleOverlay))
+    ):
+        history = await runtime.drawings.list_versions(drawing_id)
+        if history.versions[-1].instrument_id != meta.instrument_id:
+            raise InvalidRequestError("画线不属于该标的")
+        drawings[drawing_id] = history.versions
+    levels_at = (
+        runtime.key_levels.capture(meta.instrument_id, payload.timeframe)
+        if any(isinstance(ref, (RuleLevelEvent, RuleLevelPrice)) for ref in references)
+        else lambda _: ()
+    )
+    return await run_in_threadpool(
+        runtime.workbench.preview_rule, snapshot_id, payload.model_copy(update={"rule": rule}), drawings, levels_at,
     )
 
 
