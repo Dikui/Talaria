@@ -22,6 +22,7 @@ from xml.parsers.expat import ExpatError
 
 import uvicorn
 
+from talaria.cli.ticks import add_tick_commands
 from talaria.cli.account import add_account_command
 from talaria.cli.contracts_io import (
     DSH_TOOL_SPECS,
@@ -974,6 +975,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="talaria", description="Talaria 分析工作台")
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_account_command(subparsers)
+    add_tick_commands(subparsers)
 
     up = subparsers.add_parser("up", help="启动本地看盘守护进程")
     up.add_argument(

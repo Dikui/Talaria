@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from enum import StrEnum
-from typing import Callable, Protocol, TypeAlias, runtime_checkable
+from typing import Callable, Literal, Protocol, TypeAlias, runtime_checkable
+from uuid import UUID
 
 from pydantic import Field, model_validator
 
@@ -67,6 +68,30 @@ class OrderBookEvent(ContractModel):
         if self.bid_price > self.ask_price:
             raise ValueError("买价不能高于卖价")
         return self
+
+
+class ReceivedOrderBookEvent(OrderBookEvent):
+    """传输层盘口，携带报文时刻和连接内的更新身份。"""
+
+    ts_published: int | None = Field(default=None, ge=0, exclude=True)
+    connection_id: UUID = Field(exclude=True)
+    update_id: int = Field(ge=0, exclude=True)
+
+
+class TradeEvent(ContractModel):
+    """一笔公开成交，方向为主动成交方。"""
+
+    instrument_id: str
+    trade_id: UUID
+    side: Literal["Buy", "Sell"]
+    price: DecimalStr = Field(gt=0)
+    size: DecimalStr = Field(gt=0)
+    ts_event: int = Field(ge=0)
+    ts_ingested: int
+    ts_published: int | None = Field(default=None, ge=0, exclude=True)
+    sequence: int | None = Field(default=None, ge=0, exclude=True)
+    packet_id: UUID | None = Field(default=None, exclude=True)
+    packet_index: int | None = Field(default=None, ge=0, exclude=True)
 
 
 class DerivativeTickEvent(ContractModel):
@@ -138,9 +163,8 @@ class FeedHealthReport(ContractModel):
     channels: list[FeedHealthEvent]
 
 
-FeedEvent: TypeAlias = (
-    KlineEvent | OrderBookEvent | DerivativeTickEvent | FeedHealthEvent
-)
+TransportEvent: TypeAlias = KlineEvent | OrderBookEvent | DerivativeTickEvent | TradeEvent
+FeedEvent: TypeAlias = TransportEvent | FeedHealthEvent
 
 
 class FeedTransport(Protocol):
@@ -157,7 +181,7 @@ class FeedTransport(Protocol):
     async def unsubscribe(self, *, instrument_id: str, timeframe: str) -> None:
         """取消订阅。"""
 
-    async def recv(self) -> KlineEvent | OrderBookEvent | DerivativeTickEvent | None:
+    async def recv(self) -> TransportEvent | None:
         """读取下一条行情事件；``None`` 表示心跳活动，传输失联抛 ``FeedTransportError``。"""
 
     async def close(self) -> None:

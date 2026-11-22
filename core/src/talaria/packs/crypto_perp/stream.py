@@ -2,7 +2,7 @@
 
 协议要点（https://bybit-exchange.github.io/docs/v5/ws/connect）：
 - 端点 ``wss://stream.bybit.com/v5/public/linear``；
-- K 线主题 ``kline.{interval}.{symbol}``，盘口主题 ``orderbook.1.{symbol}``；
+- K 线主题 ``kline.{interval}.{symbol}``，盘口主题 ``orderbook.1.{symbol}``，逐笔主题 ``publicTrade.{symbol}``；
 - 订阅后等待 ``{"success": true, "op": "subscribe"}`` 应答，失败抛 ``FeedTransportError``；
 - 应用层 ``{"op": "ping"}`` 保活，超时未收到任何消息视为断流；
 - 断流由 Supervisor 统一做指数退避重连，本类只负责单条连接的建立与关闭。
@@ -17,6 +17,7 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 from decimal import Decimal, InvalidOperation
+from uuid import NAMESPACE_OID, UUID, uuid4, uuid5
 
 from websockets.asyncio.client import ClientConnection
 from websockets.asyncio.client import connect as ws_connect
@@ -29,6 +30,9 @@ from talaria.foundation.feed import (
     KlineEvent,
     OrderBookEvent,
     ReceivedKlineEvent,
+    ReceivedOrderBookEvent,
+    TradeEvent,
+    TransportEvent,
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.types import PrecisionTier
@@ -88,6 +92,7 @@ class BybitPublicStream:
         self._acks: list[asyncio.Future[None]] = []
         self._subscriptions: set[tuple[str, str]] = set()
         self._tickers_by_instrument: dict[str, dict[str, tuple[int, object]]] = {}
+        self._book_updates: dict[str, tuple[UUID, int]] = {}
         self._reader: asyncio.Task[None] | None = None
         self._pinger: asyncio.Task[None] | None = None
         self._last_message_at: float = 0.0
@@ -110,6 +115,7 @@ class BybitPublicStream:
             )
         except (OSError, WebSocketException, asyncio.TimeoutError) as exc:
             raise FeedTransportError(f"无法连接 Bybit 公共行情：{exc}") from exc
+        self._subscriptions.clear()
         self._last_message_at = time.monotonic()
         self._events = asyncio.Queue()
         self._reader = asyncio.create_task(self._read_loop(), name="talaria-bybit-read")
@@ -123,35 +129,37 @@ class BybitPublicStream:
         interval = INTERVAL_BY_TIMEFRAME.get(timeframe)
         if interval is None:
             raise FeedTransportError(f"不支持的周期：{timeframe}")
+        if (instrument_id, timeframe) in self._subscriptions:
+            return
         first_for_instrument = not any(
             inst == instrument_id for inst, _ in self._subscriptions
         )
         topics = [f"kline.{interval}.{symbol}"]
         if first_for_instrument:
-            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}"])
+            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}", f"publicTrade.{symbol}"])
         self._subscriptions.add((instrument_id, timeframe))
         try:
             await self._request({"op": "subscribe", "args": topics})
         except FeedTransportError:
             self._subscriptions.discard((instrument_id, timeframe))
+            await self._teardown()
             raise
 
     async def unsubscribe(self, *, instrument_id: str, timeframe: str) -> None:
         symbol = self._symbol_by_instrument.get(instrument_id)
         interval = INTERVAL_BY_TIMEFRAME.get(timeframe)
-        if symbol is None or interval is None:
+        if symbol is None or interval is None or (instrument_id, timeframe) not in self._subscriptions:
             return
         self._subscriptions.discard((instrument_id, timeframe))
         topics = [f"kline.{interval}.{symbol}"]
         if not any(inst == instrument_id for inst, _ in self._subscriptions):
             self._tickers_by_instrument.pop(instrument_id, None)
-            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}"])
+            self._book_updates.pop(instrument_id, None)
+            topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}", f"publicTrade.{symbol}"])
         with contextlib.suppress(FeedTransportError):
             await self._request({"op": "unsubscribe", "args": topics})
 
-    async def recv(
-        self,
-    ) -> KlineEvent | OrderBookEvent | DerivativeTickEvent | None:
+    async def recv(self) -> TransportEvent | None:
         item = await self._events.get()
         if item is _LOST:
             raise FeedTransportError("Bybit 公共行情连接已断开")
@@ -170,21 +178,26 @@ class BybitPublicStream:
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._acks.append(future)
         try:
-            await ws.send(json.dumps(payload))
-        except (OSError, WebSocketException) as exc:
-            self._acks.remove(future)
-            raise FeedTransportError(f"订阅请求发送失败：{exc}") from exc
-        try:
-            await asyncio.wait_for(future, timeout=self._ack_timeout_seconds)
-        except TimeoutError as exc:
-            raise FeedTransportError("等待 Bybit 订阅应答超时") from exc
+            try:
+                await ws.send(json.dumps(payload))
+            except (OSError, WebSocketException) as exc:
+                raise FeedTransportError(f"订阅请求发送失败：{exc}") from exc
+            try:
+                await asyncio.wait_for(future, timeout=self._ack_timeout_seconds)
+            except TimeoutError as exc:
+                raise FeedTransportError("等待 Bybit 订阅应答超时") from exc
         finally:
             if future in self._acks:
                 self._acks.remove(future)
+            if future.done() and not future.cancelled():
+                future.exception()  # 断线可能在 send 完成前已使应答失败。
+            else:
+                future.cancel()
 
     async def _read_loop(self) -> None:
         ws = self._ws
         assert ws is not None
+        events = self._events
         try:
             async for raw in ws:
                 received_ts = self._now_ms()
@@ -205,21 +218,20 @@ class BybitPublicStream:
                         await ws.send(json.dumps({"op": "pong"}))
                     continue
                 for event in self._parse(payload, received_ts):
-                    await self._events.put(event)
-            if not self._closed:
-                # 正常关闭握手时迭代会直接结束，同样视为断流。
-                await self._events.put(_LOST)
+                    await events.put(event)
         except asyncio.CancelledError:
             raise
         except (ConnectionClosed, OSError) as exc:
             if not self._closed:
                 logger.warning("Bybit 公共行情断开：%s", exc)
-                await self._events.put(_LOST)
         except Exception:  # pragma: no cover - 防御性兜底
             logger.exception("Bybit 消息循环异常")
-            await self._events.put(_LOST)
         finally:
-            await self._teardown()
+            if self._ws is ws:
+                await self._teardown()
+            if not self._closed:
+                # 先关掉旧连接，再通知 supervisor 开始重连。
+                events.put_nowait(_LOST)
 
     async def _ping_loop(self) -> None:
         assert self._ping_interval_seconds is not None
@@ -240,27 +252,28 @@ class BybitPublicStream:
             return
 
     async def _teardown(self) -> None:
+        ws, self._ws = self._ws, None
         current = asyncio.current_task()
         tasks = [
             task
             for task in (self._reader, self._pinger)
             if task is not None and task is not current
         ]
+        self._reader = self._pinger = None
+        self._tickers_by_instrument.clear()
+        self._book_updates.clear()
+        for future in self._acks:
+            if not future.done():
+                future.set_exception(FeedTransportError("订阅应答等待被中断"))
+        self._acks.clear()
         for task in tasks:
             task.cancel()
         for task in tasks:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-        self._reader = self._pinger = None
-        ws, self._ws = self._ws, None
-        self._tickers_by_instrument.clear()
         if ws is not None:
             with contextlib.suppress(Exception):
                 await ws.close()
-        for future in self._acks:
-            if not future.done():
-                future.set_exception(FeedTransportError("订阅应答等待被中断"))
-        self._acks.clear()
 
     def _resolve_ack(self, payload: dict[str, object]) -> None:
         if not self._acks:
@@ -278,13 +291,25 @@ class BybitPublicStream:
 
     def _parse(
         self, payload: dict[str, object], received_ts: int,
-    ) -> list[KlineEvent | OrderBookEvent | DerivativeTickEvent]:
+    ) -> list[TransportEvent]:
         topic = payload.get("topic")
         if not isinstance(topic, str):
             return []
         data = payload.get("data")
+        if topic.startswith("publicTrade."):
+            trades = []
+            for index, item in enumerate(data if isinstance(data, list) else [data]):
+                if isinstance(item, dict):
+                    trade = self._parse_trade(topic, item, payload, received_ts, index)
+                    if trade is not None:
+                        trades.append(trade)
+            if trades:
+                # 同一 seq 可跨帧重复。按帧内成交 ID 的顺序生成稳定身份。
+                packet_id = uuid5(NAMESPACE_OID, "".join(trade.trade_id.hex for trade in trades))
+                return [trade.model_copy(update={"packet_id": packet_id}) for trade in trades]
+            return []
         if isinstance(data, list):
-            events: list[KlineEvent | OrderBookEvent | DerivativeTickEvent] = []
+            events: list[TransportEvent] = []
             for item in data:
                 events.extend(self._parse_item(topic, item, payload, received_ts))
             return events
@@ -298,13 +323,13 @@ class BybitPublicStream:
         data: object,
         envelope: dict[str, object],
         received_ts: int,
-    ) -> list[KlineEvent | OrderBookEvent | DerivativeTickEvent]:
+    ) -> list[TransportEvent]:
         if not isinstance(data, dict):
             return []
         if topic.startswith("kline."):
             return self._parse_kline(topic, data, received_ts)
-        if topic.startswith("orderbook."):
-            return self._parse_book(data, envelope)
+        if topic.startswith("orderbook.1."):
+            return self._parse_book(data, envelope, received_ts)
         if topic.startswith("tickers."):
             return self._parse_tickers(topic, data, envelope)
         return []
@@ -416,10 +441,39 @@ class BybitPublicStream:
                     cache[field] = ts_event, value
         return [event] if event is not None else []
 
+    def _parse_trade(
+        self, topic: str, data: dict[str, object], envelope: dict[str, object], received_ts: int,
+        packet_index: int,
+    ) -> TradeEvent | None:
+        symbol = topic.removeprefix("publicTrade.")
+        instrument_id = self._instrument_by_symbol.get(symbol)
+        if instrument_id is None or data.get("s") != symbol:
+            return None
+        if not any(inst == instrument_id for inst, _ in self._subscriptions):
+            return None
+        try:
+            event = TradeEvent(
+                instrument_id=instrument_id,
+                trade_id=data["i"],
+                side=data["S"],
+                price=_decimal(data["p"]),
+                size=_decimal(data["v"]),
+                ts_event=data["T"],
+                ts_ingested=received_ts,
+                ts_published=envelope.get("ts"),
+                sequence=data.get("seq"),
+                packet_index=packet_index,
+            )
+        except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
+            logger.warning("忽略无法解析的 Bybit 逐笔成交：%s", exc)
+            return None
+        return event
+
     def _parse_book(
         self,
         data: dict[str, object],
         envelope: dict[str, object],
+        received_ts: int,
     ) -> list[OrderBookEvent]:
         symbol = data.get("s")
         if not isinstance(symbol, str):
@@ -436,19 +490,30 @@ class BybitPublicStream:
         try:
             bid_price, bid_size = bids[0][0], bids[0][1]
             ask_price, ask_size = asks[0][0], asks[0][1]
-            ts_event = int(data.get("ts") or envelope.get("ts") or self._now_ms())
-            event = OrderBookEvent(
+            ts_event = int(envelope.get("cts") or data.get("ts") or envelope.get("ts") or received_ts)
+            update_id = int(data["u"])
+            previous = self._book_updates.get(instrument_id)
+            if previous is None and envelope.get("type") != "snapshot":
+                return []
+            if previous is not None and update_id <= previous[1]:
+                return []
+            connection_id = uuid4() if previous is None else previous[0]
+            event = ReceivedOrderBookEvent(
                 instrument_id=instrument_id,
                 bid_price=_decimal(bid_price),
                 bid_size=_decimal(bid_size),
                 ask_price=_decimal(ask_price),
                 ask_size=_decimal(ask_size),
                 ts_event=ts_event,
-                ts_ingested=self._now_ms(),
+                ts_ingested=received_ts,
+                ts_published=envelope.get("ts"),
+                connection_id=connection_id,
+                update_id=update_id,
             )
-        except (IndexError, TypeError, ValueError) as exc:
+        except (IndexError, InvalidOperation, KeyError, TypeError, ValueError) as exc:
             logger.warning("忽略无法解析的 Bybit 盘口：%s", exc)
             return []
+        self._book_updates[instrument_id] = connection_id, update_id
         return [event]
 
 

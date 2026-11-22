@@ -14,8 +14,8 @@ from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.errors import ColdStoreError, FeatureDisabledError, TalariaError
-from talaria.foundation.feed import FeedEvent, FeedTransport, KlineEvent
-from talaria.foundation.market import InstrumentSpec
+from talaria.foundation.feed import FeedEvent, FeedTransport, KlineEvent, TradeEvent
+from talaria.foundation.market import InstrumentSpec, TradeArchiveReader
 from talaria.foundation.snapshot import SnapshotRequest
 from talaria.foundation.timeframes import TIMEFRAME_MS
 from talaria.packs import get_market_pack
@@ -188,6 +188,7 @@ async def build_runtime(
                 cold_publisher = ColdPublisher(
                     cold_store, instruments=instruments, connector=connector,
                     policy=policy, now_ms=settings.now_ms, hot_buffer=hot_buffer,
+                    archive_reader=pack if isinstance(pack, TradeArchiveReader) else None,
                     funding_intervals_ms={
                         spec.instrument_id: hours * 3_600_000
                         for spec in instruments
@@ -228,6 +229,9 @@ async def build_runtime(
             )
             resources.push_async_callback(supervisor.stop)
             if cold_publisher is not None:
+                resources.callback(supervisor.add_listener(cold_publisher.ingest_ticks))
+                tick_flusher = asyncio.create_task(cold_publisher.flush_ticks_periodically())
+                resources.push_async_callback(_stop_task, tick_flusher)
                 resources.callback(supervisor.add_listener(cold_publisher.ingest_derivatives))
                 derivative_flusher = asyncio.create_task(cold_publisher.flush_derivatives_periodically())
                 resources.push_async_callback(_stop_task, derivative_flusher)
@@ -425,6 +429,8 @@ async def build_runtime(
             await alerts.start()
             if supervisor is not None:
                 def handle_alert_event(event: FeedEvent) -> None:
+                    if isinstance(event, TradeEvent):
+                        return
                     if (
                         isinstance(event, KlineEvent) and event.confirmed
                         and event.bar.close is not None

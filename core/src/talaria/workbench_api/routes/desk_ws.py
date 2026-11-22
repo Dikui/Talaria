@@ -13,6 +13,7 @@ from talaria.foundation.feed import (
     FeedHealthEvent,
     KlineEvent,
     OrderBookEvent,
+    TradeEvent,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.workbench_api.desk_broadcast import enqueue, levels_payload
@@ -78,7 +79,7 @@ async def desk_socket(websocket: WebSocket) -> None:
             await watchlist.rebalance()
 
     def listener(event: FeedEvent) -> None:
-        if not _wanted(event, subscriptions):
+        if isinstance(event, TradeEvent) or not _wanted(event, subscriptions):
             return
         enqueue(queue, _ws_payload(event))
 

@@ -27,6 +27,7 @@ from talaria.workbench_api.routes import (
     scanner,
     static,
     strategy_ws,
+    ticks,
     watchlist,
 )
 from talaria.workbench_api.runtime import build_runtime
@@ -129,6 +130,7 @@ def create_app(
     app.include_router(analysis.router)
     app.include_router(bars.router)
     app.include_router(derivatives.router)
+    app.include_router(ticks.router)
     app.include_router(drawings.router)
     app.include_router(watchlist.router)
     app.include_router(annotations.router)
