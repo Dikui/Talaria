@@ -476,13 +476,16 @@ def _run_up(
         server.should_exit = True
     finally:
         server.should_exit = True
-        if host_started and dsh_host is not None:
-            dsh_host.stop()
-        remove_bridge_descriptor(bridge_path)
-        remove_service_descriptor(descriptor_path)
-        worker.join(timeout=10)
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
+        try:
+            if host_started and dsh_host is not None:
+                dsh_host.stop()
+            remove_bridge_descriptor(bridge_path)
+            remove_service_descriptor(descriptor_path)
+        finally:
+            # _cmd_up 退出时会释放数据目录锁，必须先等服务线程关闭存储。
+            worker.join()
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
     return exit_code
 
 
