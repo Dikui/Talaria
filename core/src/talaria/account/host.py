@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -39,6 +39,7 @@ from talaria.account.scheme import (
     TradingScheme,
     load_scheme,
 )
+from talaria.account.strategy_isolation import paper_strategy_plugin
 from talaria.components import ComponentMeta, ControllerPatch, Ctx, Strategy
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.collaboration.contracts import Abstain, SetupInsight
@@ -96,14 +97,21 @@ def default_registry() -> PluginRegistry:
 
 def _assemble(
     scheme: TradingScheme, scheme_dir: Path, registry: PluginRegistry, context: PluginContext,
+    lifetime: ExitStack,
 ) -> _Plugins:
+    strategy_ref = scheme.slots.selection(Slot.STRATEGY).reference
+    paper_strategy = None
+    if context.mode == "paper" and ":" in strategy_ref:
+        paper_strategy = paper_strategy_plugin(
+            strategy_ref, scheme.interface_version, scheme_dir, context.data_dir, lifetime,
+        )
     expected_interfaces = {
         Slot.DATA: DataEntry, Slot.SIZING: SizingSlot, Slot.RISK: RiskSlot, Slot.FILL: FillSlot,
     }
     definitions = []
     for slot in (Slot.DATA, Slot.STRATEGY, Slot.SIZING, Slot.RISK, Slot.FILL):
         selection = scheme.slots.selection(slot)
-        plugin = registry.resolve(
+        plugin = paper_strategy if slot == Slot.STRATEGY and paper_strategy is not None else registry.resolve(
             slot, selection.reference, scheme.interface_version, scheme_dir, mode=context.mode,
         )
         definitions.append((slot, selection, plugin))
@@ -278,8 +286,8 @@ def _open_process(
     clock = _EventClock()
     context = PluginContext(config.data_dir, mode, scheme.seed, clock.now)
     ownership = hold_sub_accounts(config.data_dir, scheme.sub_accounts) if mode == "paper" else nullcontext()
-    with ownership as held:
-        plugins = _assemble(scheme, config.scheme_dir, registry or default_registry(), context)
+    with ownership as held, ExitStack() as lifetime:
+        plugins = _assemble(scheme, config.scheme_dir, registry or default_registry(), context, lifetime)
         yield AccountProcess(scheme, plugins, clock, config.indicator_defaults, held)
 
 

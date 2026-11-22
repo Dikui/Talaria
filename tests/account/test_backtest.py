@@ -49,6 +49,15 @@ def launch(scheme, data_dir):
     return main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)])
 
 
+def test_agent_strategy_can_backtest_without_approval(replay):
+    from talaria.account.strategy_code import StrategyCodeRegistry
+
+    scheme, data_dir = replay
+    record = StrategyCodeRegistry(data_dir).register(scheme.parent / "replay_strategy.py", "agent")
+    assert record.approval is None
+    assert launch(scheme, data_dir) == 0
+
+
 def test_cli_replays_same_scheme_data_and_seed_into_equal_journals(replay, capsys):
     scheme, data_dir = replay
     assert launch(scheme, data_dir) == 0
