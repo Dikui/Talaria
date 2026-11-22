@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0016；`docs/architecture.md` §4.1。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 新的策略订阅 WS 端点与图表 `WS /ws/desk` 分开，语义不同；交付单位是一个已收盘柱的修订，带变更序号 `(epoch, seq)`。
 - [ ] 重连协议：客户端带最后序号；服务先挂实时订阅并缓冲，再从变更日志补发更大序号的修订，最后放出缓冲并按序号去重。序号超出保留范围或 `epoch` 变化时返回需要重新同步，SDK 经范围接口重取并按 `(ts_event, revision)` 去重。
