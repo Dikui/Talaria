@@ -16,6 +16,7 @@ DESCRIPTOR_NAME = "service-descriptor.json"
 DESCRIPTOR_VERSION = 1
 DATA_DIR_HEADER = "X-Talaria-Data-Dir"
 NOW_MS_HEADER = "X-Talaria-Now-Ms"
+BARS_MANIFEST_HEADER = "X-Talaria-Bars-Manifest"
 
 
 class ServiceDescriptorError(ValueError):

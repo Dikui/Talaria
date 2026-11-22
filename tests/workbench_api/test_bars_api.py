@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from threading import Event, current_thread
@@ -12,7 +13,7 @@ from anyio import to_thread
 from fastapi.testclient import TestClient
 
 from talaria import sdk
-from talaria.foundation.bars import CompactBar
+from talaria.foundation.bars import MAX_RANGE_BARS, CompactBar
 from talaria.foundation.connector import RawBar
 from talaria.foundation.feed import KlineEvent
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
@@ -34,7 +35,7 @@ START = 1_795_045_500_000
 
 
 class Market:
-    def __init__(self, tmp_path: Path, fixture_dir: Path) -> None:
+    def __init__(self, tmp_path: Path, fixture_dir: Path | None) -> None:
         self.now = START
         # Use an idle replay in place of a live exchange connection.
         replay = tmp_path / "events.jsonl"
@@ -235,6 +236,127 @@ def test_sdk_retries_tail_when_manifest_advances_after_response(tmp_path, fixtur
 
 
 @pytest.mark.regression
+def test_sdk_preserves_hot_tail_when_another_series_advances_manifest(tmp_path, fixture_dir, monkeypatch):
+    # data-access/09: delay the real cold write while driving the SDK through the ASGI range route.
+    market = Market(tmp_path, fixture_dir)
+    tail = START + MINUTE
+    market.archive(_raw(START, "100"))
+    market.now = tail + MINUTE
+    eth = CRYPTO_PERP_PACK.instrument("ETH-USDT-PERP")
+    release = Event()
+    publish = ColdStore.publish
+
+    def delay_btc(store, batch):
+        if batch.instrument == INSTRUMENT:
+            assert release.wait(5)
+        return publish(store, batch)
+
+    monkeypatch.setattr(ColdStore, "publish", delay_btc)
+    with _published_endpoint(market), TestClient(market.app) as client:
+        market.ingest(client, _event(tail, "101", confirmed=True))
+        eth_slots = iter((START, tail))
+
+        def serve_sdk_request(transport, request):
+            response = client.send(request)
+            if request.url.path == "/api/bars":
+                assert [bar["ts_event"] for bar in response.json()["bars"]] == [tail]
+                row = replace(_raw(next(eth_slots), "200"), symbol=eth.symbol)
+                market.app.state.runtime.cold_store.publish(ColdBatch(eth, TIMEFRAME, (row,)))
+            return response
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", serve_sdk_request)
+        try:
+            result = sdk.bars(INSTRUMENT.instrument_id, TIMEFRAME, START, tail, data_dir=market.settings.data_dir)
+            assert [(bar.ts_event, bar.close) for bar in result] == [(START, Decimal("100")), (tail, Decimal("101"))]
+            assert result.tail_completed
+        finally:
+            release.set()
+
+    local = sdk.bars(INSTRUMENT.instrument_id, TIMEFRAME, START, tail, data_dir=market.settings.data_dir)
+    assert not local.tail_completed
+    assert tuple(local) == tuple(result)
+
+
+@pytest.mark.regression
+def test_sdk_reports_retryable_error_when_target_manifest_keeps_changing(tmp_path, fixture_dir, monkeypatch):
+    # data-access/09: the real route answers every attempt, but the target file set keeps changing.
+    market = Market(tmp_path, fixture_dir)
+    market.archive(_raw(START, "100"))
+    market.now = START + MINUTE + 2_000
+    with _published_endpoint(market), TestClient(market.app) as client:
+        revisions = iter((1, 2))
+
+        def serve_sdk_request(transport, request):
+            response = client.send(request)
+            if request.url.path == "/api/bars":
+                assert response.status_code == 200
+                revision = next(revisions)
+                row = _raw(START, str(100 + revision), revision=revision, available=market.now)
+                market.app.state.runtime.cold_store.publish(ColdBatch(INSTRUMENT, TIMEFRAME, (row,)))
+            return response
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", serve_sdk_request)
+        with pytest.raises(sdk.BarsConsistencyError, match="请重试"):
+            sdk.bars(INSTRUMENT.instrument_id, TIMEFRAME, START, START, data_dir=market.settings.data_dir)
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("at_close", [True, False], ids=["as-of-close", "latest"])
+def test_sdk_selects_visible_revisions_across_segments_with_different_manifests(tmp_path, monkeypatch, at_close):
+    # data-access/09: publish into the second segment after the first segment's real HTTP response.
+    market = Market(tmp_path, None)
+    boundary = START + MAX_RANGE_BARS * MINUTE
+    before_boundary = boundary - MINUTE
+    cutoff = boundary + MINUTE
+    market.now = cutoff + 1_000
+    market.archive(_raw(before_boundary, "100", revision=3))
+    eth = CRYPTO_PERP_PACK.instrument("ETH-USDT-PERP")
+    release = Event()
+    publish = ColdStore.publish
+
+    def delay_correction(store, batch):
+        if batch.bars[0].ts_event == before_boundary:
+            assert release.wait(5)
+        return publish(store, batch)
+
+    monkeypatch.setattr(ColdStore, "publish", delay_correction)
+    with _published_endpoint(market), TestClient(market.app) as client:
+        market.ingest(client, _event(before_boundary, "101", confirmed=True))
+        store = market.app.state.runtime.cold_store
+        eth_slots = iter(range(START, START + 4 * MINUTE, MINUTE))
+        published_boundary = False
+
+        def serve_sdk_request(transport, request):
+            nonlocal published_boundary
+            response = client.send(request)
+            if request.url.path == "/api/bars":
+                assert response.status_code == 200
+                if not published_boundary:
+                    store.publish(ColdBatch(INSTRUMENT, TIMEFRAME, (
+                        _raw(boundary, "200"),
+                        _raw(boundary, "201", revision=1, available=market.now),
+                    )))
+                    published_boundary = True
+                row = replace(_raw(next(eth_slots), "300"), symbol=eth.symbol)
+                store.publish(ColdBatch(eth, TIMEFRAME, (row,)))
+            return response
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", serve_sdk_request)
+        try:
+            result = sdk.bars(
+                INSTRUMENT.instrument_id, TIMEFRAME, START, boundary, as_of=cutoff if at_close else None,
+                data_dir=market.settings.data_dir,
+            )
+            assert result.tail_completed
+            assert [(bar.ts_event, bar.close, bar.revision) for bar in result] == (
+                [(before_boundary, Decimal("100"), 3), (boundary, Decimal("200"), 0)] if at_close else
+                [(before_boundary, Decimal("101"), 4), (boundary, Decimal("201"), 1)]
+            )
+        finally:
+            release.set()
+
+
+@pytest.mark.regression
 @pytest.mark.parametrize("switched_after_health", [False, True])
 def test_sdk_rejects_service_using_another_data_directory(tmp_path, fixture_dir, monkeypatch, switched_after_health):
     # data-access/04: a port can now belong to a service serving a different directory.
@@ -390,7 +512,7 @@ def test_as_of_keeps_earlier_revision_when_a_later_close_lands_during_read(
     market.now = START + MINUTE + 1_000
     cutoff = market.now
     reading, release, published = Event(), Event(), Event()
-    read_revisions, publish = ColdReader.read_manifest_revisions, ColdStore.publish
+    read_revisions, publish = ColdReader.read_manifest_snapshot, ColdStore.publish
 
     def pause_query_until_later_write(reader, *args, **kwargs):
         if current_thread().name.startswith("asyncio_"):
@@ -405,7 +527,7 @@ def test_as_of_keeps_earlier_revision_when_a_later_close_lands_during_read(
         published.set()
         return result
 
-    monkeypatch.setattr(ColdReader, "read_manifest_revisions", pause_query_until_later_write)
+    monkeypatch.setattr(ColdReader, "read_manifest_snapshot", pause_query_until_later_write)
     monkeypatch.setattr(ColdStore, "publish", fail_first_correction)
     with TestClient(market.app) as client, ThreadPoolExecutor(1) as requests:
         market.ingest(client, _event(START, "101", confirmed=True))

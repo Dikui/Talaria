@@ -5734,6 +5734,12 @@
             },
             "description": "Successful Response",
             "headers": {
+              "X-Talaria-Bars-Manifest": {
+                "description": "补尾响应所用的范围清单指纹",
+                "schema": {
+                  "type": "string"
+                }
+              },
               "X-Talaria-Data-Dir": {
                 "description": "数据目录标识",
                 "schema": {
