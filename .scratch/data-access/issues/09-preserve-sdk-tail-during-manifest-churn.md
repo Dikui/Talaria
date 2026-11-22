@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0016、ADR-0018、`docs/architecture.md` §4.3。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 复现
 
