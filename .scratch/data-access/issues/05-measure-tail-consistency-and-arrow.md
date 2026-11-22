@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0016、ADR-0018。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 一致性：高频写入 + 合并期间反复读取，统计漏柱、重柱、读到旧文件被删等错误次数；另让一个读者读出清单后暂停，跨过合并和清理再继续，验证保留期与重试是否足够。给出复现脚本（原型代码不提交）。
 - [ ] Arrow IPC：1M、10M 行在 JSON 与 Arrow IPC 下的传输与解析耗时。
