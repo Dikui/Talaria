@@ -120,6 +120,7 @@ export interface RangeBar {
 export interface BarsResponse {
   instrument_id: string;
   timeframe: string;
+  generation: number;
   bars: RangeBar[];
 }
 export interface KlineEvent {

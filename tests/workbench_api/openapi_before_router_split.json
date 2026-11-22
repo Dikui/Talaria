@@ -1184,6 +1184,12 @@
             "title": "Bars",
             "type": "array"
           },
+          "generation": {
+            "description": "用于读取冷库和协调热端修订的清单代号。",
+            "minimum": 0.0,
+            "title": "Generation",
+            "type": "integer"
+          },
           "instrument_id": {
             "title": "Instrument Id",
             "type": "string"
@@ -1196,6 +1202,7 @@
         "required": [
           "instrument_id",
           "timeframe",
+          "generation",
           "bars"
         ],
         "title": "BarsResponse",
@@ -5612,7 +5619,7 @@
             }
           },
           {
-            "description": "事件时间上界（含），省略时取服务当前时间。每次最多查询 10,000 根。",
+            "description": "事件时间上界（含），省略时取服务当前时刻最后一根已收盘柱。每次最多查询 10,000 根。",
             "in": "query",
             "name": "end",
             "required": false,
@@ -5627,7 +5634,7 @@
                   "type": "null"
                 }
               ],
-              "description": "事件时间上界（含），省略时取服务当前时间。每次最多查询 10,000 根。",
+              "description": "事件时间上界（含），省略时取服务当前时刻最后一根已收盘柱。每次最多查询 10,000 根。",
               "title": "End"
             }
           },
@@ -5685,7 +5692,15 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "X-Talaria-Data-Dir": {
+                "description": "数据目录标识",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -6516,7 +6531,21 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "X-Talaria-Data-Dir": {
+                "description": "数据目录标识",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Talaria-Now-Ms": {
+                "description": "服务当前时刻（UTC 毫秒）",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
           }
         },
         "summary": "Health"

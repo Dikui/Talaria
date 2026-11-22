@@ -41,7 +41,7 @@ from talaria.perception.sqlite import (
     open_writer_connection,
     release_writer,
 )
-from talaria.workbench_api.service_lock import ServiceLock
+from talaria.service_lock import ServiceLock
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,6 +336,8 @@ def _migrate_locked(
                         migration.old_generation_id,
                     ),
                 ).rowcount
+            if "manifest_version" in tables:
+                connection.execute("UPDATE manifest_version SET version = version + 1 WHERE id = 1")
             connection.execute("COMMIT")
         except BaseException:
             with suppress(sqlite3.Error):

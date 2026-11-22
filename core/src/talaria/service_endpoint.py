@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
+import os
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from talaria.service_lock import ROLE_SERVICE, probe_lock
+
 DESCRIPTOR_NAME = "service-descriptor.json"
 DESCRIPTOR_VERSION = 1
+DATA_DIR_HEADER = "X-Talaria-Data-Dir"
+NOW_MS_HEADER = "X-Talaria-Now-Ms"
 
 
 class ServiceDescriptorError(ValueError):
@@ -17,6 +23,11 @@ class ServiceDescriptorError(ValueError):
 
 def service_descriptor_path(data_dir: str | Path) -> Path:
     return Path(data_dir).resolve() / "runtime" / DESCRIPTOR_NAME
+
+
+def data_dir_id(data_dir: str | Path) -> str:
+    """标识解析后的数据目录路径。"""
+    return hashlib.sha256(os.fsencode(Path(data_dir).resolve())).hexdigest()
 
 
 def validate_loopback_host(host: str, *, allow_localhost: bool = False) -> str:
@@ -65,7 +76,7 @@ def read_descriptor_payload(path: Path) -> dict[str, object] | None:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ServiceDescriptorError(f"无法读取服务接口描述 {path}：{exc}") from exc
     try:
         payload = json.loads(raw)
@@ -81,6 +92,17 @@ def read_descriptor_payload(path: Path) -> dict[str, object] | None:
 
 
 def read_service_endpoint(data_dir: str | Path) -> str | None:
+    holder = probe_lock(data_dir)
+    if holder is None or holder.role != ROLE_SERVICE or holder.pid is None:
+        return None
     path = service_descriptor_path(data_dir)
-    payload = read_descriptor_payload(path)
-    return None if payload is None else normalize_base_url(payload.get("base_url"), path)
+    try:
+        payload = read_descriptor_payload(path)
+        if payload is None:
+            return None
+        pid = payload.get("pid")
+        if type(pid) is not int or pid <= 0 or pid != holder.pid:
+            return None
+        return normalize_base_url(payload.get("base_url"), path)
+    except ServiceDescriptorError:
+        return None

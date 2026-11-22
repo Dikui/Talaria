@@ -94,6 +94,12 @@
       "title": "Bars",
       "type": "array"
     },
+    "generation": {
+      "description": "用于读取冷库和协调热端修订的清单代号。",
+      "minimum": 0,
+      "title": "Generation",
+      "type": "integer"
+    },
     "instrument_id": {
       "title": "Instrument Id",
       "type": "string"
@@ -106,6 +112,7 @@
   "required": [
     "instrument_id",
     "timeframe",
+    "generation",
     "bars"
   ],
   "title": "BarsResponse",

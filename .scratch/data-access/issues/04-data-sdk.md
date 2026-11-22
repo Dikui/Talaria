@@ -33,3 +33,11 @@
 
 - 在线路径通过进程内 HTTP 和替代 REST 验证。实际 TCP、交易所和生产负载下并发写读未实测。补尾只传输热端数据，服务端协调修订和回填时仍会扫描相关冷库范围，吞吐及并发一致性实测归 data-access/05。
 - `git add -- .scratch/data-access/issues/04-data-sdk.md` 返回 128，沙箱禁止在主仓库的 worktree 元数据目录创建 `index.lock`。改动保留在 `ticket/data-access-04` 工作区，HEAD 为 `1df0a58`。
+
+### 审查修复（2026-11-22）
+
+- `/api/bars` 返回用于协调冷热修订的清单代号 `generation`。冷读在同一个 SQLite 读事务中取得代号和文件列表。SDK 要求所有分段响应与直读清单的代号一致。代号变化时整次重试一次，仍不一致时返回本地结果并标记 `tail_completed=False`。回归测试在补尾响应后发布新修订，覆盖「A 旧值、B 新值」的竞态。
+- SDK 先核对数据目录锁的常驻服务角色及 PID，再使用描述文件地址。`/api/health` 和成功的 `/api/bars` 响应返回数据目录标识，SDK 逐次核对。坏描述、跨目录响应和传输中断均降级为本地读取，常驻服务明确返回的 HTTP 504 仍传给调用方。
+- HTTP、在线 SDK 和离线 SDK 在省略 `end` 时都截到最后一根已收盘柱。在线 SDK 从 `/api/health` 取服务时钟，离线冷读使用本地时钟。ISO 区间先按原始精度校验，再将 `start` 向上、`end` 向下取整到毫秒。有效区间内没有整数毫秒时返回空结果。
+- 六项均先复现失败再修复。指定的 `tests/sdk tests/workbench_api tests/perception tests/foundation tests/acceptance` 范围共 623 项通过。`test_host_dispatch_ignores_ambient_http_proxy`、`test_m1_solo_cli_loopback_and_token` 和 `test_m2_copilot_dual_plane_scenario` 因沙箱拒绝绑定 `127.0.0.1` 失败。`test_m1_solo_acceptance_flow` 等待关键位和画线预警超时，基线 `6c1e762` 单独复跑在同一处超时。
+- 排除上述四项后复跑为 623 项通过。pytest 沿用临时 pandas 依赖目录。`contract-check` 和 `git diff --check` 通过，CLI 与 OpenAPI 补充检查共 36 项通过。改动保留在 `ticket/data-access-04` 工作区，HEAD 为 `6c1e762`。

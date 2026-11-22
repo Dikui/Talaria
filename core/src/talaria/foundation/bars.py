@@ -100,7 +100,7 @@ class BarsQuery(ContractModel):
     start: int = Field(ge=0, le=2**63 - 1, description="事件时间下界（含）")
     end: int | None = Field(
         None, ge=0, le=2**63 - 1,
-        description=f"事件时间上界（含），省略时取服务当前时间。每次最多查询 {MAX_RANGE_BARS:,} 根。",
+        description=f"事件时间上界（含），省略时取服务当前时刻最后一根已收盘柱。每次最多查询 {MAX_RANGE_BARS:,} 根。",
     )
     as_of: int | None = Field(None, ge=0, le=2**63 - 1, description="可获取时间上界（含）")
     include_open: bool = Field(False, description="包含进行中的柱，无可见真实柱时可返回合成柱。")
@@ -118,4 +118,5 @@ class BarsResponse(ContractModel):
 
     instrument_id: str
     timeframe: str
+    generation: int = Field(ge=0, description="用于读取冷库和协调热端修订的清单代号。")
     bars: list[RangeBar] = Field(max_length=MAX_RANGE_BARS)

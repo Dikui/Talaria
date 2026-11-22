@@ -17,3 +17,8 @@ SUPPORTED_TIMEFRAMES: tuple[str, ...] = tuple(TIMEFRAME_MS)
 def timeframe_ms(timeframe: str) -> int:
     """返回周期毫秒数；未知周期抛 ``KeyError``。"""
     return TIMEFRAME_MS[timeframe]
+
+
+def last_closed_bar_start(now_ms: int, interval_ms: int) -> int:
+    """返回当前时刻最后一根已结束柱的事件时间（开盘槽）。"""
+    return (now_ms // interval_ms - 1) * interval_ms
