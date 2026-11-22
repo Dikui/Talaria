@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §5.4。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `POST /api/snapshots` 路由不再承担关键位的业务写入；搜索广播器上的关键位缓存读写无残留，WS 投影行为保持不变。
 - [ ] 服务启动时为有活跃关键位预警或实时订阅的 `(instrument, timeframe)` 按当前时刻从冷库算一版预热。
