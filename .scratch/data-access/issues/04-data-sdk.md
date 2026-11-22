@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0016；`docs/architecture.md` §4.3。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] SDK 不依赖 `workbench_api` 和 FastAPI，导入边界测试守住。
 - [ ] 直读部分只读清单显式列出的文件；补尾部分按 `(ts_event, revision)` 拼接去重；默认只返回已收盘的柱。
