@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0021（修订 ADR-0020 后果第一条）、ADR-0020、ADR-0005；`docs/architecture.md` §1.1、§8.1。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 现状
 
