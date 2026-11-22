@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0015；`docs/architecture.md` §6.1、§6.5；GLOSSARY 的 Account Process、Trading Scheme、Plugin Slot。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 交易方案配置的 Schema 与校验；插槽注册表；插件声明兼容的接口版本，不兼容时启动失败并说明原因。工具插槽只定接口，不实现插件。
 - [ ] 事件循环按“数据 → 策略 → 定仓与风控 → 成交 → 记账”推进，回测与实时同一时钟语义。
