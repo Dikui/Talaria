@@ -70,7 +70,7 @@ class WorkbenchService:
         self,
         *,
         pack: MarketPack,
-        connector: MarketDataConnector,
+        connector: MarketDataConnector | None,
         data_dir: Path,
         snapshot_store: SnapshotStore,
         builder: SnapshotBuilder,
@@ -87,6 +87,8 @@ class WorkbenchService:
     def feed_mode(self) -> str:
         if self._feed_mode is not None:
             return self._feed_mode
+        if self._connector is None:
+            return "disabled"
         return getattr(self._connector, "feed_mode", "unknown")
 
     def instruments(self) -> Sequence[InstrumentSpec]:

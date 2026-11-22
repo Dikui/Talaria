@@ -90,17 +90,19 @@ async def build_runtime(
 ) -> Runtime:
     async with AsyncExitStack() as resources:
         pack = get_market_pack(settings.pack)
-        connector = (
-            FixtureConnector(settings.fixture_dir)
-            if settings.fixture_dir is not None
-            else pack.create_history_connector(base_url=settings.history_base_url)
-        )
-        close_connector = getattr(connector, "close", None)
-        if callable(close_connector):
-            resources.callback(close_connector)
+        features = settings.features
+        connector = None
+        if features.market_data:
+            connector = (
+                FixtureConnector(settings.fixture_dir)
+                if settings.fixture_dir is not None
+                else pack.create_history_connector(base_url=settings.history_base_url)
+            )
+            close_connector = getattr(connector, "close", None)
+            if callable(close_connector):
+                resources.callback(close_connector)
         instruments = pack.instruments()
         instruments_by_id = {spec.instrument_id: spec for spec in instruments}
-        features = settings.features
 
         cold_store: ColdStore | None = None
         cold_publishers: dict[tuple[str, str], ColdPublisher] | None = None
@@ -139,10 +141,11 @@ async def build_runtime(
             if stream is not None
             else None
         )
+        raw_store = RawStore(settings.data_dir, raw_archive_id=pack.raw_archive_id)
         builder = SnapshotBuilder(
             data_dir=settings.data_dir,
             connector=connector,
-            raw_store=RawStore(settings.data_dir, raw_archive_id=pack.raw_archive_id),
+            raw_store=raw_store,
             snapshot_store=snapshot_store,
             policy=BackfillPolicy(
                 target_bars=settings.backfill_bars,
@@ -257,6 +260,7 @@ async def build_runtime(
             state_writer=state_writer,
             instruments=instruments,
             connector=connector,
+            raw_store=raw_store if not features.market_data else None,
             supervisor=supervisor,
             scheduler=scheduler,
             now_ms=settings.now_ms,
