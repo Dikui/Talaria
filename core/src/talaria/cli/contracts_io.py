@@ -18,8 +18,6 @@ from typing import Annotated, Any, Iterable, Literal, Union, get_args, get_origi
 from pydantic import BaseModel
 
 from talaria.foundation.alerts import (
-    AlertCondition,
-    AlertConditionKind,
     AlertCreate,
     AlertDirection,
     AlertLevelEvent,
@@ -29,6 +27,7 @@ from talaria.foundation.alerts import (
     AlertPatch,
     AlertRecord,
     AlertStatus,
+    AlertTriggerKind,
     AlertTriggerListResponse,
     AlertTriggerRecord,
 )
@@ -125,6 +124,22 @@ from talaria.foundation.scanner import (
     ScannerTrigger,
     ScannerTriggerListResponse,
     ScannerTriggerRoute,
+)
+from talaria.foundation.rules import (
+    MAX_RULE_DEPTH,
+    Rule,
+    RuleBar,
+    RuleComparison,
+    RuleConstant,
+    RuleDerivative,
+    RuleDrawingPrice,
+    RuleLevelPrice,
+    RuleEvent,
+    RuleGroup,
+    RuleIndicator,
+    RuleIndicatorParams,
+    RuleLevelEvent,
+    RuleOverlay,
 )
 from talaria.foundation.snapshot import (
     ChartPage,
@@ -232,7 +247,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "watchlist_item": WatchlistItem,
     "watchlist_group": WatchlistGroup,
     "watchlist": Watchlist,
-    "alert_condition": AlertCondition,
+    "rule": Rule,
     "alert_create": AlertCreate,
     "alert_patch": AlertPatch,
     "alert_record": AlertRecord,
@@ -282,6 +297,11 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "annotation_clear_response": AnnotationClearResponse,
 }
 
+RULE_NODE_TYPES = (
+    RuleGroup, RuleComparison, RuleConstant, RuleBar, RuleDerivative,
+    RuleEvent, RuleIndicator, RuleIndicatorParams, RuleLevelEvent, RuleOverlay, RuleDrawingPrice, RuleLevelPrice,
+)
+
 #: 枚举的固定输出顺序。
 ENUM_TYPES: tuple[type[StrEnum], ...] = (
     PrecisionTier,
@@ -299,7 +319,7 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     WatchlistGroupKind,
     QuoteSource,
     DegradationReason,
-    AlertConditionKind,
+    AlertTriggerKind,
     AlertLevelEvent,
     AlertMetric,
     AlertDirection,
@@ -440,17 +460,25 @@ def _inline_refs(schema: dict[str, Any]) -> dict[str, Any]:
     root = copy.deepcopy(schema)
     definitions = root.pop("$defs", {})
 
-    def resolve(node: Any) -> Any:
+    def resolve(node: Any, groups: int = 0) -> Any:
         if isinstance(node, dict):
             if "$ref" in node:
                 name = str(node["$ref"]).rsplit("/", 1)[-1]
-                resolved = resolve(copy.deepcopy(definitions[name]))
-                siblings = {key: resolve(value) for key, value in node.items() if key != "$ref"}
+                resolved = resolve(definitions[name], groups + (name == "RuleGroup"))
+                siblings = {key: resolve(value, groups) for key, value in node.items() if key != "$ref"}
                 resolved.update(siblings)
                 return resolved
-            return {key: resolve(value) for key, value in node.items()}
+            return {key: resolve(value, groups) for key, value in node.items() if key != "discriminator"}
         if isinstance(node, list):
-            return [resolve(item) for item in node]
+            # DSH's tool validator cannot resolve recursive references. The
+            # rules contract bounds group depth, so its tool schema can inline it.
+            return [
+                resolve(item, groups) for item in node
+                if not (
+                    groups >= MAX_RULE_DEPTH - 1 and isinstance(item, dict)
+                    and item.get("$ref") == "#/$defs/RuleGroup"
+                )
+            ]
         return node
 
     resolved = resolve(root)
@@ -521,7 +549,8 @@ def _ts_type(annotation: Any, prop: dict[str, Any]) -> str:
     if get_origin(annotation) is list:
         (item_annotation,) = get_args(annotation)
         item_prop = prop.get("items", {}) if isinstance(prop, dict) else {}
-        return f"{_ts_type(item_annotation, item_prop)}[]"
+        item_type = _ts_type(item_annotation, item_prop)
+        return f"({item_type})[]" if " | " in item_type else f"{item_type}[]"
     if get_origin(annotation) is dict:
         key_annotation, value_annotation = get_args(annotation)
         return f"Record<{_ts_type(key_annotation, {})}, {_ts_type(value_annotation, {})}>"
@@ -558,8 +587,11 @@ def _render_ts() -> str:
     for enum_type in ENUM_TYPES:
         members = " | ".join(json.dumps(member.value, ensure_ascii=False) for member in enum_type)
         lines.append(f"export type {enum_type.__name__} = {members};\n\n")
-    for model in SCHEMA_MODELS.values():
-        properties = _schema_for(model).get("properties", {})
+    for model in (*SCHEMA_MODELS.values(), *RULE_NODE_TYPES):
+        schema = _schema_for(model)
+        if "$ref" in schema:
+            schema = schema["$defs"][model.__name__]
+        properties = schema.get("properties", {})
         lines.append(f"export interface {model.__name__} {{\n")
         for name, field in model.model_fields.items():
             prop = properties.get(name, {})
@@ -585,6 +617,8 @@ def render_contracts(root: Path | None = None) -> dict[Path, str]:
             "inputSchema": tool_schema,
         }
         artifacts[DSH_TOOL_PATHS[name]] = _dump_json(tool_payload)
+    plugin_alert_tool = Path("dsh/packages/talaria-dsh-plugin/create_alert.tool.json")
+    artifacts[plugin_alert_tool] = artifacts[DSH_TOOL_PATHS["create_alert"]]
     artifacts[TS_PATH] = _render_ts()
     return artifacts
 

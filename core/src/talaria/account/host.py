@@ -191,6 +191,7 @@ class AccountProcess:
     _clock: _EventClock
     _indicator_defaults: Mapping[IndicatorName, IndicatorParams]
     _ownership: AccountOwnership | None
+    _data_dir: Path | None = None
 
     def run(self, ledger: AccountLedger, *, valuation: MarginValuation | None = None) -> None:
         guard = self._ownership.guard if self._ownership is not None else nullcontext
@@ -263,7 +264,7 @@ class AccountProcess:
             market.instrument_id, market.timeframe, source.history_start, now,
             _read_bars=source.read_bars, _read_derivatives=source.read_derivatives,
             _bar_ts=bar.ts_event, _discovery_tail_completed=source.tail_completed,
-            _indicator_defaults=self._indicator_defaults,
+            _indicator_defaults=self._indicator_defaults, _data_dir=self._data_dir,
         )
         if ctx.bars()[-1:] != (bar,):
             raise AccountProcessError("策略求值的行情与已确认柱不一致")
@@ -280,7 +281,7 @@ def _open_process(
     ownership = hold_sub_accounts(config.data_dir, scheme.sub_accounts) if mode == "paper" else nullcontext()
     with ownership as held:
         plugins = _assemble(scheme, config.scheme_dir, registry or default_registry(), context)
-        yield AccountProcess(scheme, plugins, clock, config.indicator_defaults, held)
+        yield AccountProcess(scheme, plugins, clock, config.indicator_defaults, held, config.data_dir)
 
 
 def _resolve_config(scheme_path: Path, data_dir: Path) -> _RunConfig:

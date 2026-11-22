@@ -117,6 +117,7 @@ def test_create_alert_schema_has_no_status_or_draft_escape_hatch() -> None:
     assert "draft" not in properties
     assert "status" not in properties
     condition = properties["condition"]
-    assert condition["required"] == ["kind"]
+    assert condition["required"] == ["version", "timing", "expression"]
+    assert set(condition["properties"]) == set(condition["required"])
     assert condition["additionalProperties"] is False
     assert "$defs" not in json.dumps(schema)

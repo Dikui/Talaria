@@ -477,6 +477,28 @@ def test_replay_keeps_only_the_highest_visible_confirmed_revision_from_an_altern
     ]
 
 
+def test_standard_signal_receives_historical_geometry_and_confirmed_event():
+    from talaria.components import compile_rule, run_history
+    from talaria.foundation.drawings import DrawingRecord
+    from talaria.foundation.rules import Rule
+
+    drawing = DrawingRecord(drawing_id="line", kind="HORIZONTAL_LINE", instrument_id=INSTRUMENT.instrument_id,
+                            visible_timeframes=["1m"], points=[dict(ts=START, price="100")],
+                            created_ts=START, updated_ts=START, version=1, text="", style={})
+    rule = Rule.model_validate(dict(version="1", timing="bar_close", expression=dict(
+        op="overlay", drawing_id="line", direction="ABOVE", mode="CLOSE_BREAK")))
+    bars = [RangeBar.model_validate(_bar(START + i * MINUTE, price), from_attributes=True)
+            for i, price in enumerate(["99", "101"])]
+    def drawing_at(drawing_id, as_of):
+        return drawing if drawing_id == "line" and as_of >= drawing.created_ts else None
+    def run(ctx):
+        assert ctx.event.bar.timestamp + MINUTE == ctx.now
+        return compile_rule(rule).evaluate(ctx)
+    results = list(run_history(run, INSTRUMENT.instrument_id, "1m", start=START, end=START + 2 * MINUTE,
+                               read_bars=lambda *a, **kw: bars, drawing_at=drawing_at))
+    assert [bool(step.output) for step in results] == [False, True]
+
+
 @pytest.mark.regression
 @pytest.mark.parametrize("explicit_reader", [False, True])
 def test_indicator_uses_each_bars_first_confirmation_to_select_derivative_revisions(tmp_path, explicit_reader):
@@ -543,3 +565,64 @@ def test_net_odds_uses_the_corrected_rate_once_it_is_visible(tmp_path):
     ))
     assert result[-2].output[-1].values["value"] == Decimal("2.47")
     assert result[-1].output[-1].values["value"] == Decimal("1.92")
+
+
+@pytest.mark.regression
+def test_alert_scan_and_history_observe_the_same_archived_funding_cross(tmp_path):
+    # alerts-and-scanning/01 × data-access/08：同一结算的更正跨过零，期间还有负的 ticker 预估。
+    import asyncio
+
+    from talaria.components import compile_rule, run_history
+    from talaria.foundation.alerts import AlertCreate
+    from talaria.foundation.feed import KlineEvent
+    from talaria.foundation.rules import Rule
+    from talaria.workbench_api.runtime import build_runtime
+    from talaria.workbench_api.service_config import FeatureToggles
+    from talaria.workbench_api.settings import AppSettings
+
+    symbol = INSTRUMENT.instrument_id
+    bars = [_bar(START, "100"), _bar(START, "101", revision=1, delay=MINUTE - 1),
+            _bar(START + MINUTE, "102")]
+    original = _derivative(START, START, "-0.0001")
+    revised = _derivative(START, START + MINUTE + 1, "0.0002").model_copy(update={"revision": 1})
+    estimate_ts = START + MINUTE + 2
+    estimate = _derivative(estimate_ts, estimate_ts, "-0.0003", settled=False)
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", bars))
+        store.publish_derivatives(INSTRUMENT, original.kind, [original, revised, estimate])
+
+    rule = Rule.model_validate({"version": "1", "timing": "bar_close", "expression": {"op": "all", "args": [
+        {"op": "compare", "test": "cross_above", "left": {"source": "derivative", "kind": "funding_rate"},
+         "right": {"source": "constant", "value": "0"}},
+        {"op": "compare", "test": "eq", "left": {"source": "indicator", "name": "FUNDING_QUANTILE",
+         "params": {"period": 2}}, "right": {"source": "constant", "value": "0.75"}},
+    ]}})
+    history = run_history(compile_rule(rule).evaluate, symbol, "1m", start=START,
+                          end=START + 2 * MINUTE, data_dir=tmp_path)
+    expected = [(START + 2 * MINUTE, Decimal("0.0002"))]
+    assert [(step.as_of, signal.values["observed"]) for step in history for signal in step.output] == expected
+
+    async def replay():
+        now = START
+        runtime = await build_runtime(AppSettings(
+            data_dir=tmp_path, dist_dir=tmp_path / "dist", now_ms=lambda: now,
+            features=FeatureToggles(market_data=False),
+        ))
+        try:
+            alerts, scanner = runtime.require_alerts(), runtime.require_scanner()
+            alert = await alerts.create_alert(AlertCreate(instrument_id=symbol, timeframe="1m", condition=rule))
+            hits = []
+            for bar in bars:
+                now = bar.ts_available
+                event = KlineEvent(instrument_id=symbol, timeframe="1m", bar=bar.to_compact(),
+                                   confirmed=True, revision=bar.revision)
+                alerts.handle_event(event)
+                scanner.handle_event(event)
+                hits.extend(await scanner.scan([symbol], rule=rule))
+            triggers = await alerts.list_triggers(alert_id=alert.alert_id)
+            assert [(t.triggered_ts, t.observed) for t in triggers] == expected
+            assert [(t.created_ts, t.evidence[0].value) for t in hits] == expected
+        finally:
+            await runtime.aclose()
+
+    asyncio.run(replay())

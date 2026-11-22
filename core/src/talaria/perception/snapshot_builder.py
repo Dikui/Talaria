@@ -67,6 +67,7 @@ class SnapshotBuilder:
         policy: BackfillPolicy,
         now_ms: Callable[[], int],
         hot_bars: HotBarProvider | None = None,
+        on_derivatives: Callable[[str, Sequence[DerivativePoint]], None] | None = None,
         cold_publisher: ColdPublisher | None = None,
     ) -> None:
         self._data_dir = data_dir
@@ -76,6 +77,7 @@ class SnapshotBuilder:
         self._policy = policy
         self._now_ms = now_ms
         self._hot_bars = hot_bars
+        self._on_derivatives = on_derivatives
         self._cold_publisher = cold_publisher
         self._cold_reader = ColdReader(data_dir)
 
@@ -137,9 +139,12 @@ class SnapshotBuilder:
         derivative_points = self._derivative_points(
             instrument=instrument, request=request, cutoff_ts=cutoff
         )
-        return self._freeze(
+        meta = self._freeze(
             instrument, request, frames, cutoff, now, derivative_points=derivative_points
         )
+        if derivative_points and self._on_derivatives is not None:
+            self._on_derivatives(instrument.instrument_id, derivative_points)
+        return meta
 
     def _freeze(
         self,
