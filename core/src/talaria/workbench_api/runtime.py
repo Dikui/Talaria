@@ -108,7 +108,19 @@ async def build_runtime(
         instruments = pack.instruments()
         instruments_by_id = {spec.instrument_id: spec for spec in instruments}
 
+        stream: FeedTransport | None = None
+        if features.market_data:
+            if settings.replay_events is not None:
+                stream = ReplayFeed(settings.replay_events, speed=settings.replay_speed)
+            elif settings.fixture_dir is None:
+                stream = pack.create_realtime_stream(now_ms=settings.now_ms)
+        hot_buffer = (
+            HotStreamBuffer(instruments=instruments, now_ms=settings.now_ms)
+            if stream is not None
+            else None
+        )
         policy = BackfillPolicy(target_bars=settings.backfill_bars, max_pages=settings.max_pages)
+        supervisor: FeedSupervisor | None = None
         cold_store: ColdStore | None = None
         cold_publisher: ColdPublisher | None = None
         if features.cold_store:
@@ -120,7 +132,10 @@ async def build_runtime(
                 resources.callback(cold_store.close)
                 cold_publisher = ColdPublisher(
                     cold_store, instruments=instruments, connector=connector,
-                    policy=policy, now_ms=settings.now_ms,
+                    policy=policy, now_ms=settings.now_ms, hot_buffer=hot_buffer,
+                    has_channel=lambda instrument_id, timeframe: (
+                        supervisor is not None and supervisor.has_channel(instrument_id, timeframe)
+                    ),
                 )
                 resources.push_async_callback(cold_publisher.close)
                 compactor = asyncio.create_task(
@@ -129,13 +144,6 @@ async def build_runtime(
                 resources.push_async_callback(_stop_task, compactor)
         snapshot_store = SnapshotStore(settings.data_dir)
         resources.callback(snapshot_store.close)
-        stream: FeedTransport | None = None
-        if features.market_data:
-            if settings.replay_events is not None:
-                stream = ReplayFeed(settings.replay_events, speed=settings.replay_speed)
-            elif settings.fixture_dir is None:
-                stream = pack.create_realtime_stream(now_ms=settings.now_ms)
-        supervisor = None
         if stream is not None:
             supervisor = FeedSupervisor(
                 stream=stream,
@@ -153,11 +161,6 @@ async def build_runtime(
             )
             resources.push_async_callback(supervisor.stop)
 
-        hot_buffer = (
-            HotStreamBuffer(instruments=instruments, now_ms=settings.now_ms)
-            if stream is not None
-            else None
-        )
         raw_store = RawStore(settings.data_dir, raw_archive_id=pack.raw_archive_id)
         builder = SnapshotBuilder(
             data_dir=settings.data_dir,

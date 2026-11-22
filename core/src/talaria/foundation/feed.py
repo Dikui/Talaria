@@ -44,8 +44,9 @@ class ReceivedKlineEvent(KlineEvent):
     """传输层收到的 K 线，携带解析时记录的本地接收时刻。"""
 
     ts_ingested: int = Field(exclude=True)
-    # REST 恢复及合成柱只补缺。
+    # REST 恢复只补缺。合成柱供快照和图表填充时间槽。
     history_only: bool = Field(default=False, exclude=True)
+    synthetic: bool = Field(default=False, exclude=True)
 
 
 class OrderBookEvent(ContractModel):

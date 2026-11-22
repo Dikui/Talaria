@@ -20,6 +20,7 @@
       "type": "string"
     },
     "confirmed": {
+      "description": "已确认收盘。进行中和合成柱为 false。",
       "title": "Confirmed",
       "type": "boolean"
     },

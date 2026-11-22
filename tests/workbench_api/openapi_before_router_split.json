@@ -1180,6 +1180,7 @@
             "items": {
               "$ref": "#/components/schemas/RangeBar"
             },
+            "maxItems": 10000,
             "title": "Bars",
             "type": "array"
           },
@@ -3701,6 +3702,7 @@
             "type": "string"
           },
           "confirmed": {
+            "description": "已确认收盘。进行中和合成柱为 false。",
             "title": "Confirmed",
             "type": "boolean"
           },
@@ -5610,7 +5612,7 @@
             }
           },
           {
-            "description": "事件时间上界（含）",
+            "description": "事件时间上界（含），省略时取服务当前时间。每次最多查询 10,000 根。",
             "in": "query",
             "name": "end",
             "required": false,
@@ -5625,7 +5627,7 @@
                   "type": "null"
                 }
               ],
-              "description": "事件时间上界（含）",
+              "description": "事件时间上界（含），省略时取服务当前时间。每次最多查询 10,000 根。",
               "title": "End"
             }
           },
@@ -5650,11 +5652,13 @@
             }
           },
           {
+            "description": "包含进行中的柱，无可见真实柱时可返回合成柱。",
             "in": "query",
             "name": "include_open",
             "required": false,
             "schema": {
               "default": false,
+              "description": "包含进行中的柱，无可见真实柱时可返回合成柱。",
               "title": "Include Open",
               "type": "boolean"
             }
@@ -5671,6 +5675,16 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "K 线范围超过单次请求上限"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -5680,6 +5694,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "等待历史回填超时，可以重试"
           }
         },
         "summary": "Get Range Bars"

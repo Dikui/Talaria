@@ -65,6 +65,14 @@ class InvalidRequestError(TalariaError):
     code = "VALIDATION_ERROR"
 
 
+class BarsRangeTooLargeError(TalariaError):
+    code = "BARS_RANGE_TOO_LARGE"
+
+
+class BarsBackfillTimeoutError(TalariaError):
+    code = "BARS_BACKFILL_TIMEOUT"
+
+
 class ServiceLockError(TalariaError):
     """数据目录已被另一个 Talaria 进程独占。"""
 

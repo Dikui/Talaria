@@ -6,9 +6,11 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_serializer, model_validator
 
-from talaria.foundation.types import ContractModel, DecimalStr, PrecisionTier
+from talaria.foundation.types import ContractModel, DecimalStr, PrecisionTier, decimal_to_string
+
+MAX_RANGE_BARS = 10_000
 
 
 class BarStatus(StrEnum):
@@ -78,8 +80,16 @@ class RangeBar(ContractModel):
     turnover: DecimalStr
     ts_available: int
     precision: PrecisionTier
-    confirmed: bool
+    confirmed: bool = Field(description="已确认收盘。进行中和合成柱为 false。")
     revision: int = Field(ge=0)
+
+    @field_serializer("open", "high", "low", "close", "volume", "turnover", when_used="json")
+    def _serialize_decimal(self, value: Decimal) -> str:
+        # Parquet 的列精度会补尾零，范围查询在写盘前后使用同一字符串。
+        if value == 0:
+            return "0"
+        text = decimal_to_string(value)
+        return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 class BarsQuery(ContractModel):
@@ -88,9 +98,12 @@ class BarsQuery(ContractModel):
     instrument: str = Field(min_length=1)
     timeframe: str
     start: int = Field(ge=0, le=2**63 - 1, description="事件时间下界（含）")
-    end: int | None = Field(None, ge=0, le=2**63 - 1, description="事件时间上界（含）")
+    end: int | None = Field(
+        None, ge=0, le=2**63 - 1,
+        description=f"事件时间上界（含），省略时取服务当前时间。每次最多查询 {MAX_RANGE_BARS:,} 根。",
+    )
     as_of: int | None = Field(None, ge=0, le=2**63 - 1, description="可获取时间上界（含）")
-    include_open: bool = False
+    include_open: bool = Field(False, description="包含进行中的柱，无可见真实柱时可返回合成柱。")
 
     @model_validator(mode="after")
     def _check_range(self) -> Self:
@@ -104,4 +117,4 @@ class BarsResponse(ContractModel):
 
     instrument_id: str
     timeframe: str
-    bars: list[RangeBar]
+    bars: list[RangeBar] = Field(max_length=MAX_RANGE_BARS)

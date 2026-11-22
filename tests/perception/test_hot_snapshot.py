@@ -16,6 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from talaria.feed.supervisor import FeedSupervisor
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.connector import RawBar
 from talaria.foundation.feed import KlineEvent
@@ -31,6 +32,7 @@ from talaria.perception.snapshot_store import (
     read_snapshot_bars,
     read_snapshot_entries,
 )
+from talaria.replay.replay import ReplayFeed
 
 pytestmark = [pytest.mark.medium, pytest.mark.spec]
 
@@ -232,6 +234,45 @@ def test_snapshot_keeps_revision_visible_at_each_cutoff(tmp_path: Path, source: 
             snapshot = read_snapshot_bars(tmp_path, record.parquet_path, TIMEFRAME)
             assert [(item.close, item.ts_available) for item in snapshot] == [
                 (bar.close, bar.ts_available)
+            ]
+    finally:
+        snapshot_store.close()
+
+
+@pytest.mark.regression
+def test_snapshot_keeps_synthetic_bar_until_real_revision_is_received(tmp_path: Path) -> None:
+    # data-access/03: preserve main's snapshot cutoff even inside HTTP's close grace period.
+    clock = {"now": BASE + MINUTE}
+    replay = tmp_path / "events.jsonl"
+    replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+    supervisor = FeedSupervisor(
+        stream=ReplayFeed(replay), instruments=[INSTRUMENT], now_ms=lambda: clock["now"],
+    )
+    hot = HotStreamBuffer(instruments=[INSTRUMENT], now_ms=lambda: clock["now"])
+    supervisor.add_listener(hot.ingest)
+    supervisor.subscribe(instrument_id=INSTRUMENT.instrument_id, timeframe=TIMEFRAME)
+
+    def deliver(timestamp: int, close: str, *, confirmed: bool) -> None:
+        supervisor.ingest(KlineEvent(
+            instrument_id=INSTRUMENT.instrument_id, timeframe=TIMEFRAME,
+            bar=_raw(timestamp, close=close).to_compact(), confirmed=confirmed, revision=0,
+        ))
+
+    deliver(BASE, "100", confirmed=True)
+    end = BASE + 2 * MINUTE
+    clock["now"] = end + 1_000
+    deliver(end, "102", confirmed=False)
+    clock["now"] = end + 2_000
+    deliver(BASE + MINUTE, "101", confirmed=True)
+    builder, _, snapshot_store = _builder(tmp_path, history=[], hot=hot)
+    try:
+        for cutoff, close in ((end + 1_500, "100"), (end + 2_000, "101")):
+            meta = builder.build(instrument=INSTRUMENT, request=_request(cutoff))
+            record = snapshot_store.get(meta.snapshot_id)
+            assert record is not None
+            snapshot = read_snapshot_bars(tmp_path, record.parquet_path, TIMEFRAME)
+            assert [(bar.timestamp, bar.close) for bar in snapshot] == [
+                (BASE, Decimal("100")), (BASE + MINUTE, Decimal(close)),
             ]
     finally:
         snapshot_store.close()

@@ -20,6 +20,7 @@
           "type": "string"
         },
         "confirmed": {
+          "description": "已确认收盘。进行中和合成柱为 false。",
           "title": "Confirmed",
           "type": "boolean"
         },
@@ -89,6 +90,7 @@
       "items": {
         "$ref": "#/$defs/RangeBar"
       },
+      "maxItems": 10000,
       "title": "Bars",
       "type": "array"
     },

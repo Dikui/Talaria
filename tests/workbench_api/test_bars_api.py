@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
+from threading import Event, current_thread
 
 import pytest
+from anyio import to_thread
 from fastapi.testclient import TestClient
 
 from talaria.foundation.bars import CompactBar
@@ -14,6 +17,7 @@ from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.cold_store import ColdBatch, ColdReader, ColdStore
 from talaria.workbench_api.app import create_app
+from talaria.workbench_api.routes import bars as bars_route
 from talaria.workbench_api.service_config import FeatureToggles
 from talaria.workbench_api.settings import AppSettings
 
@@ -163,6 +167,140 @@ def test_restart_correction_continues_archived_revision(tmp_path, fixture_dir, m
     assert (latest.close, latest.revision, latest.ts_available) == (Decimal("101"), 4, market.now)
 
 
+@pytest.mark.regression
+def test_failed_cold_write_keeps_earlier_as_of_revision(tmp_path, fixture_dir, monkeypatch):
+    # data-access/03: simulate a failed Parquet write followed by a successful correction.
+    market = Market(tmp_path, fixture_dir)
+    market.archive(_raw(START, "100", revision=3))
+    first_received = START + MINUTE + 1_000
+    published = Event()
+    publish = ColdStore.publish
+
+    def fail_first_correction(store, batch):
+        if batch.bars[0].close == Decimal("101"):
+            _disk_full()
+        result = publish(store, batch)
+        published.set()
+        return result
+
+    monkeypatch.setattr(ColdStore, "publish", fail_first_correction)
+    with TestClient(market.app) as client:
+        market.now = first_received
+        market.ingest(client, _event(START, "101", confirmed=True))
+        earlier = _get(client, START, START, as_of=first_received)
+        assert (Decimal(earlier[0]["close"]), earlier[0]["revision"]) == (Decimal("101"), 4)
+
+        market.now += 1_000
+        market.ingest(client, _event(START, "102", confirmed=True))
+        assert published.wait(5)
+        latest = _get(client, START, START)
+        assert (Decimal(latest[0]["close"]), latest[0]["revision"]) == (Decimal("102"), 5)
+        assert _get(client, START, START, as_of=first_received) == earlier
+
+
+@pytest.mark.regression
+def test_as_of_keeps_earlier_revision_when_a_later_close_lands_during_read(
+    tmp_path, fixture_dir, monkeypatch,
+):
+    # The query captures the earlier hot version before the cold read can see the later write.
+    market = Market(tmp_path, fixture_dir)
+    market.archive(_raw(START, "100", revision=3))
+    market.now = START + MINUTE + 1_000
+    cutoff = market.now
+    reading, release, published = Event(), Event(), Event()
+    read_revisions, publish = ColdReader.read_revisions, ColdStore.publish
+
+    def pause_query_until_later_write(reader, *args, **kwargs):
+        if current_thread().name.startswith("asyncio_"):
+            reading.set()
+            assert release.wait(5)
+        return read_revisions(reader, *args, **kwargs)
+
+    def fail_first_correction(store, batch):
+        if batch.bars[0].close == Decimal("101"):
+            _disk_full()
+        result = publish(store, batch)
+        published.set()
+        return result
+
+    monkeypatch.setattr(ColdReader, "read_revisions", pause_query_until_later_write)
+    monkeypatch.setattr(ColdStore, "publish", fail_first_correction)
+    with TestClient(market.app) as client, ThreadPoolExecutor(1) as requests:
+        market.ingest(client, _event(START, "101", confirmed=True))
+        pending = requests.submit(_get, client, START, START, as_of=cutoff)
+        try:
+            assert reading.wait(5)
+            market.now += 1_000
+            market.ingest(client, _event(START, "102", confirmed=True))
+            assert published.wait(5)
+        finally:
+            release.set()
+        bar = pending.result(timeout=5)[0]
+        assert (bar["close"], bar["revision"]) == ("101", 4)
+
+
+@pytest.mark.regression
+def test_hot_preview_revision_follows_archived_revision(tmp_path, fixture_dir):
+    # data-access/03: a distinct preview and cold confirmation cannot share a revision.
+    market = Market(tmp_path, fixture_dir)
+    end = START + MINUTE
+    market.archive(_raw(START, "100"))
+    with TestClient(market.app) as client:
+        market.now = end - 1_000
+        market.ingest(client, _event(START, "99", confirmed=False))
+        preview = _get(client, START, START, as_of=market.now, include_open=True)[0]
+        confirmed = _get(client, START, START, as_of=end, include_open=True)[0]
+        assert (preview["close"], preview["revision"]) == ("99", 1)
+        assert (Decimal(confirmed["close"]), confirmed["revision"]) == (Decimal("100"), 0)
+
+
+@pytest.mark.regression
+def test_ws_confirmation_after_skipped_recovery_uses_ws_receipt(tmp_path, fixture_dir, monkeypatch):
+    # ADR-0018: REST only fills missing slots, even when WS later agrees with that response.
+    market = Market(tmp_path, fixture_dir)
+    end = START + MINUTE
+    market.archive(_raw(START, "100"))
+    attempted, release, published = Event(), Event(), Event()
+    publish = ColdStore.publish
+
+    def delay_confirmation(store, batch):
+        attempted.set()
+        assert release.wait(5)
+        result = publish(store, batch)
+        published.set()
+        return result
+
+    monkeypatch.setattr(ColdStore, "publish", delay_confirmation)
+    with TestClient(market.app) as client:
+        try:
+            market.now = end + 6_000
+            market.ingest(client)
+
+            async def reconnect() -> None:
+                supervisor = market.app.state.runtime.supervisor
+                supervisor.transport_lost()
+                supervisor.transport_restored(backfill=[_raw(START, "101", available=market.now)])
+
+            client.portal.call(reconnect)
+            earlier = _get(client, START, START, as_of=end + 7_000)
+            assert Decimal(earlier[0]["close"]) == 100
+
+            market.now = end + 8_000
+            market.ingest(client, _event(START, "101", confirmed=True))
+            assert attempted.wait(5)
+            assert _get(client, START, START, as_of=end + 7_000) == earlier
+            confirmed = _get(client, START, START, as_of=market.now)
+            assert (Decimal(confirmed[0]["close"]), confirmed[0]["ts_available"]) == (101, market.now)
+
+            release.set()
+            assert published.wait(5)
+            assert _get(client, START, START, as_of=end + 7_000) == earlier
+            assert _get(client, START, START, as_of=market.now) == confirmed
+        finally:
+            release.set()
+
+
+@pytest.mark.regression
 def test_exchange_close_replaces_a_synthetic_bar_at_the_grace_cutoff(tmp_path, fixture_dir, monkeypatch):
     # data-access/02: a synthetic zero-volume bar is only a hot fallback.
     market = Market(tmp_path, fixture_dir)
@@ -174,11 +312,58 @@ def test_exchange_close_replaces_a_synthetic_bar_at_the_grace_cutoff(tmp_path, f
         market.ingest(client, _event(START, "100", confirmed=True))
         market.now = close_ts + 1_000
         market.ingest(client, _event(close_ts, "102", confirmed=False))
-        synthetic = _get(client, synthetic_ts, synthetic_ts, as_of=close_ts)[0]
-        assert (synthetic["close"], synthetic["volume"]) == ("100", "0")
+        assert _get(client, synthetic_ts, synthetic_ts) == []
+        synthetic = _get(client, synthetic_ts, synthetic_ts, include_open=True)[0]
+        assert (synthetic["close"], synthetic["volume"], synthetic["confirmed"]) == ("100", "0", False)
         market.ingest(client, _event(synthetic_ts, "101", confirmed=True))
         actual = _get(client, synthetic_ts, synthetic_ts, as_of=close_ts)[0]
         assert (actual["close"], actual["ts_available"], actual["revision"]) == ("101", close_ts, 1)
+
+
+@pytest.mark.regression
+def test_synthetic_bar_never_masks_real_preview_across_confirmation_write(
+    tmp_path, fixture_dir, monkeypatch,
+):
+    # ADR-0016: a real preview remains visible at a cutoff before the late close.
+    market = Market(tmp_path, fixture_dir)
+    timestamp = START + MINUTE
+    end = timestamp + MINUTE
+    attempted, release, published = Event(), Event(), Event()
+    publish = ColdStore.publish
+
+    def delay_confirmation(store, batch):
+        if batch.bars[0].ts_event != timestamp:
+            return publish(store, batch)
+        attempted.set()
+        assert release.wait(5)
+        result = publish(store, batch)
+        published.set()
+        return result
+
+    monkeypatch.setattr(ColdStore, "publish", delay_confirmation)
+    with TestClient(market.app) as client:
+        try:
+            market.now = timestamp
+            market.ingest(client, _event(START, "100", confirmed=True))
+            market.now = end + 1_000
+            market.ingest(client, _event(end, "102", confirmed=False))
+            market.now = end + 2_000
+            market.ingest(client, _event(timestamp, "98", confirmed=False))
+            cutoff = market.now
+            preview = _get(client, timestamp, timestamp, as_of=cutoff, include_open=True)
+            assert (preview[0]["close"], preview[0]["confirmed"]) == ("98", False)
+            assert _get(client, timestamp, timestamp, as_of=cutoff) == []
+
+            market.now = end + 6_000
+            market.ingest(client, _event(timestamp, "101", confirmed=True))
+            assert attempted.wait(5)
+            assert _get(client, timestamp, timestamp, as_of=cutoff, include_open=True) == preview
+            release.set()
+            assert published.wait(5)
+            assert _get(client, timestamp, timestamp, as_of=cutoff, include_open=True) == preview
+            assert _get(client, timestamp, timestamp, as_of=cutoff) == []
+        finally:
+            release.set()
 
 
 def test_range_backfills_missing_history_without_confirming_a_live_preview(
@@ -206,3 +391,145 @@ def test_range_backfills_missing_history_without_confirming_a_live_preview(
 
     offline = ColdReader(market.settings.data_dir).read_bars(INSTRUMENT, TIMEFRAME)
     assert [(bar.ts_event, bar.close) for bar in offline] == [(START, Decimal("100"))]
+
+
+@pytest.mark.regression
+def test_range_backfill_rechecks_preview_received_during_rest(tmp_path, fixture_dir, monkeypatch):
+    # ADR-0018: the range fetch starts with an empty slot and completes after a live preview.
+    market = Market(tmp_path, fixture_dir)
+    market.now = START + MINUTE + 10_000
+    requested, release = Event(), Event()
+
+    def fetch_bars(connector, **kwargs):
+        requested.set()
+        assert release.wait(5)
+        return [_raw(START, "100")]
+
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", fetch_bars)
+    with TestClient(market.app) as client, ThreadPoolExecutor(1) as requests:
+        pending = requests.submit(_get, client, START, START)
+        try:
+            assert requested.wait(5)
+            market.ingest(client, _event(START, "101", confirmed=False))
+        finally:
+            release.set()
+        assert pending.result(timeout=5) == []
+        preview = _get(client, START, START, include_open=True)[0]
+        assert (preview["close"], preview["confirmed"]) == ("101", False)
+
+    assert ColdReader(market.settings.data_dir).read_bars(INSTRUMENT, TIMEFRAME) == []
+
+
+@pytest.mark.regression
+def test_range_backfill_can_replace_old_preview_after_unsubscribe(tmp_path, fixture_dir, monkeypatch):
+    # data-access/03: a preview from a closed subscription does not cover the slot.
+    market = Market(tmp_path, fixture_dir)
+
+    def fetch_bars(connector, **kwargs):
+        return [_raw(START, "100")]
+
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", fetch_bars)
+    with TestClient(market.app) as client:
+        market.now = START + 5_000
+        market.ingest(client, _event(START, "99", confirmed=False))
+
+        async def unsubscribe() -> None:
+            market.app.state.runtime.supervisor.unsubscribe(
+                instrument_id=INSTRUMENT.instrument_id, timeframe=TIMEFRAME,
+            )
+
+        client.portal.call(unsubscribe)
+        market.now = START + MINUTE + 10_000
+        bars = _get(client, START, START)
+        assert [(bar["close"], bar["confirmed"]) for bar in bars] == [("100", True)]
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("explicit_end", [True, False])
+def test_range_rejects_more_than_ten_thousand_slots(tmp_path, fixture_dir, explicit_end):
+    # data-access/03: both an explicit and the default end enforce the inclusive slot limit.
+    market = Market(tmp_path, fixture_dir)
+    market.now = START + 10_000 * MINUTE
+    params = {"instrument": INSTRUMENT.instrument_id, "timeframe": TIMEFRAME, "start": START}
+    if explicit_end:
+        params["end"] = market.now
+    with TestClient(market.app) as client:
+        response = client.get("/api/bars", params=params)
+        assert response.status_code == 400
+        assert "分段" in response.text
+
+
+@pytest.mark.regression
+def test_range_backfill_fetches_all_ten_thousand_slots(tmp_path, fixture_dir, monkeypatch):
+    # data-access/03: produce a full REST history extending past the subscription's five pages.
+    market = Market(tmp_path, fixture_dir)
+    end = START + 9_999 * MINUTE
+    market.now = end + MINUTE
+
+    def fetch_bars(connector, *, symbol, timeframe, end_ts, limit):
+        return [_raw(ts, "100") for ts in range(end_ts - (limit - 1) * MINUTE, end_ts + 1, MINUTE)]
+
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", fetch_bars)
+    with TestClient(market.app) as client:
+        bars = _get(client, START, end)
+        assert [bar["ts_event"] for bar in bars] == list(range(START, end + 1, MINUTE))
+
+
+@pytest.mark.regression
+def test_concurrent_range_backfills_leave_health_responsive(tmp_path, fixture_dir, monkeypatch):
+    # data-access/03: constrain the shared pool so a blocked synchronous request exhausts it.
+    market = Market(tmp_path, fixture_dir)
+    market.now = START + 2 * MINUTE
+    requested, release = Event(), Event()
+
+    def fetch_bars(connector, **kwargs):
+        requested.set()
+        assert release.wait(5)
+        return [_raw(START, "100")]
+
+    async def constrain_request_pool() -> None:
+        to_thread.current_default_thread_limiter().total_tokens = 1
+
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", fetch_bars)
+    with TestClient(market.app) as client, ThreadPoolExecutor(3) as requests:
+        client.portal.call(constrain_request_pool)
+        pending = [requests.submit(_get, client, START, START) for _ in range(2)]
+        try:
+            assert requested.wait(5)
+            health = requests.submit(client.get, "/api/health").result(timeout=2)
+            assert health.status_code == 200
+            assert health.json()["ok"] is True
+            assert all(not request.done() for request in pending)
+        finally:
+            release.set()
+        assert all(request.result(timeout=5)[0]["close"] == "100" for request in pending)
+
+
+@pytest.mark.regression
+def test_range_backfill_timeout_returns_retryable_504(tmp_path, fixture_dir, monkeypatch):
+    # data-access/03: a timed-out waiter can retry while the shared backfill finishes.
+    market = Market(tmp_path, fixture_dir)
+    market.now = START + 2 * MINUTE
+    requested, release = Event(), Event()
+
+    def fetch_bars(connector, **kwargs):
+        requested.set()
+        assert release.wait(5)
+        return [_raw(START, "100")]
+
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", fetch_bars)
+    monkeypatch.setattr(bars_route, "HISTORY_TIMEOUT_SECONDS", 0.1, raising=False)
+    params = {
+        "instrument": INSTRUMENT.instrument_id, "timeframe": TIMEFRAME, "start": START, "end": START,
+    }
+    with TestClient(market.app) as client, ThreadPoolExecutor(1) as requests:
+        pending = requests.submit(client.get, "/api/bars", params=params)
+        try:
+            assert requested.wait(5)
+            response = pending.result(timeout=2)
+            assert response.status_code == 504
+            assert "重试" in response.json()["message"]
+        finally:
+            release.set()
+        monkeypatch.setattr(bars_route, "HISTORY_TIMEOUT_SECONDS", 5)
+        assert _get(client, START, START)[0]["close"] == "100"

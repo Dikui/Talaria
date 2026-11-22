@@ -711,6 +711,12 @@ class ColdStore:
             instrument, timeframe, as_of=as_of, start_ts=start_ts, end_ts=end_ts,
         )
 
+    def read_revisions(
+        self, instrument: InstrumentSpec, timeframe: str, *, start_ts: int, end_ts: int,
+    ) -> list[RawBar]:
+        self._ensure_open()
+        return self._reader.read_revisions(instrument, timeframe, start_ts=start_ts, end_ts=end_ts)
+
     def compact(self, instruments: Sequence[InstrumentSpec], *, now_ms: int | None = None) -> None:
         """合并同月、同标的规格的文件，保留每一行。"""
 

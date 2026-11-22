@@ -81,34 +81,33 @@ class HotStreamBuffer:
             revision=event.revision,
             confirmed=event.confirmed,
             history_only=isinstance(event, ReceivedKlineEvent) and event.history_only,
+            synthetic=isinstance(event, ReceivedKlineEvent) and event.synthetic,
         )
         key = (event.instrument_id, event.timeframe)
         with self._lock:
             series = self._series.setdefault(key, {})
             versions = series.setdefault(raw.ts_event, {})
-            if not isinstance(event, ReceivedKlineEvent) and raw.confirmed and any(
-                version.confirmed for version in versions.values()
-            ):
-                raw = replace(raw, ts_available=max(raw.ts_available, now))
             versions.setdefault(raw.revision, raw)
             while len(series) > self._max_bars:
                 series.pop(min(series))
 
     def recent_bars(self, *, instrument_id: str, timeframe: str) -> list[RawBar]:
-        """提供快照所用的版本，同一可获取时刻的进行中版本可合并。"""
+        """快照中，已收盘时间槽的下一次修订从实际接收后才可见。"""
         versions = self.revisions(instrument_id=instrument_id, timeframe=timeframe)
-        previews: dict[tuple[int, int], RawBar] = {}
-        confirmed: set[tuple[int, int]] = set()
-        closed: list[RawBar] = []
+        selected: dict[tuple[int, int, int], RawBar] = {}
+        confirmed: set[int] = set()
         for bar in versions:
-            key = (bar.ts_event, bar.ts_available)
+            if bar.ts_event in confirmed:
+                if not bar.confirmed:
+                    continue
+                bar = replace(bar, ts_available=max(bar.ts_available, bar.ts_committed))
+            key = (bar.ts_event, bar.ts_available, -1)
             if bar.confirmed:
-                confirmed.add(key)
-                closed.append(bar)
-            else:
-                previews[key] = bar
-        closed.extend(bar for key, bar in previews.items() if key not in confirmed)
-        return sorted(closed, key=lambda bar: (bar.ts_event, bar.ts_available, bar.revision))
+                confirmed.add(bar.ts_event)
+                selected.pop(key, None)
+                key = (bar.ts_event, bar.ts_available, bar.revision)
+            selected[key] = bar
+        return [selected[key] for key in sorted(selected)]
 
     def revisions(
         self, *, instrument_id: str, timeframe: str, start_ts: int = 0, end_ts: int | None = None,
@@ -116,9 +115,10 @@ class HotStreamBuffer:
         """按事件时间与修订排序读取热缓冲中的完整发布版本。"""
         with self._lock:
             series = self._series.get((instrument_id, timeframe), {})
+            timestamps = (start_ts,) if start_ts == end_ts else sorted(series)
             return [
                 series[timestamp][version]
-                for timestamp in sorted(series)
+                for timestamp in timestamps
                 if start_ts <= timestamp and (end_ts is None or timestamp <= end_ts)
-                for version in sorted(series[timestamp])
+                for version in sorted(series.get(timestamp, {}))
             ]
