@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
+import sys
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -40,9 +41,16 @@ from talaria.account.scheme import (
     PluginRegistry,
     SchemeError,
     Slot,
+    SlotPlugin,
     TradingScheme,
+    check_plugin,
+    load_python_module,
     load_scheme,
+    python_reference,
 )
+from talaria.account.strategy_code import StrategyCodeRegistry, StrategySource
+from talaria.account.strategy_isolation import IsolatedStrategy, isolated_strategy_plugin
+from talaria.account.strategy_snapshot import StrategySnapshot
 from talaria.components import ComponentMeta, ControllerPatch, Ctx, Strategy
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.collaboration.contracts import Abstain, SetupInsight
@@ -104,6 +112,7 @@ def default_registry() -> PluginRegistry:
 
 def _assemble(
     scheme: TradingScheme, scheme_dir: Path, registry: PluginRegistry, context: PluginContext,
+    file_plugins: dict[Slot, SlotPlugin],
 ) -> _Plugins:
     expected_interfaces = {
         Slot.DATA: DataEntry, Slot.SIZING: SizingSlot, Slot.RISK: RiskSlot, Slot.FILL: FillSlot,
@@ -111,7 +120,7 @@ def _assemble(
     definitions = []
     for slot in (Slot.DATA, Slot.STRATEGY, Slot.SIZING, Slot.RISK, Slot.FILL):
         selection = scheme.slots.selection(slot)
-        plugin = registry.resolve(
+        plugin = file_plugins.get(slot) or registry.resolve(
             slot, selection.reference, scheme.interface_version, scheme_dir, mode=context.mode,
         )
         definitions.append((slot, selection, plugin))
@@ -136,7 +145,7 @@ def _assemble(
             matches = isinstance(plugin, expected_interfaces[slot])
         if not matches:
             raise SchemeError(f"{slot} 插槽插件 {selection.reference} 未实现接口")
-        if slot == Slot.STRATEGY:
+        if slot == Slot.STRATEGY and not isinstance(plugin, IsolatedStrategy):
             try:
                 validate_parameters(selection.params, meta.parameters_schema)
             except (TypeError, ValueError) as exc:
@@ -222,7 +231,11 @@ class AccountProcess:
         )
         self._initialize_risk_accounts(ledger, gate, default_risk=default_risk)
         now = 0
-        for market in plugins.data.events():
+        events = (
+            plugins.strategy.market_events(plugins.data)
+            if isinstance(plugins.strategy, IsolatedStrategy) else plugins.data.events()
+        )
+        for market in events:
             with guard():
                 pass
             try:
@@ -308,9 +321,31 @@ class AccountProcess:
             _bar_ts=bar.ts_event, _discovery_tail_completed=source.tail_completed,
             _indicator_defaults=self._indicator_defaults, _data_dir=self._data_dir,
         )
+        if isinstance(self._plugins.strategy, IsolatedStrategy):
+            return close, self._plugins.strategy.verify_signal_bar(ctx, bar)
         if ctx.bars()[-1:] != (bar,):
             raise AccountProcessError("策略求值的行情与已确认柱不一致")
         return close, ctx
+
+
+def _prepare_files(config: _RunConfig, mode: Mode) -> dict[Slot, tuple[Path, str, StrategySource, StrategySnapshot]]:
+    records = StrategyCodeRegistry(config.data_dir)
+    snapshots = {}
+    files = {}
+    for slot in (Slot.STRATEGY, Slot.DATA, Slot.SIZING, Slot.RISK, Slot.FILL):
+        reference = config.scheme.slots.selection(slot).reference
+        if ":" not in reference:
+            continue
+        if mode == "paper" and slot != Slot.STRATEGY:
+            raise SchemeError(f"{slot}：模拟盘尚未支持从交易方案加载该插槽的 Python 插件")
+        path, symbol = python_reference(reference, config.scheme_dir)
+        if path not in snapshots:
+            snapshots[path] = records.source_for_run(path, mode)
+        origin, snapshot = snapshots[path]
+        if slot != Slot.STRATEGY and origin != "human":
+            raise SchemeError(f"{slot} 插槽不能加载隔离策略，宿主文件插件须由交易员登记为 human：{path}")
+        files[slot] = path, symbol, origin, snapshot
+    return files
 
 
 @contextmanager
@@ -321,8 +356,27 @@ def _open_process(
     clock = _EventClock()
     context = PluginContext(config.data_dir, mode, scheme.seed, clock.now, scheme.account_risk)
     ownership = hold_sub_accounts(config.data_dir, scheme.sub_accounts) if mode == "paper" else nullcontext()
-    with ownership as held:
-        plugins = _assemble(scheme, config.scheme_dir, registry or default_registry(), context)
+    files = _prepare_files(config, mode)
+    with ownership as held, ExitStack() as lifetime:
+        definitions = {}
+        modules = {}
+        for slot, (path, symbol, origin, snapshot) in files.items():
+            try:
+                if origin == "agent":
+                    entry = lifetime.enter_context(snapshot.materialize())
+                    definitions[slot] = isolated_strategy_plugin(
+                        entry, path.parent, symbol, scheme.interface_version, lifetime,
+                    )
+                else:
+                    if path not in modules:
+                        entry = lifetime.enter_context(snapshot.materialize())
+                        module = load_python_module(entry, entry.read_bytes())
+                        modules[path] = module
+                        lifetime.callback(sys.modules.pop, module.__name__, None)
+                    definitions[slot] = check_plugin(getattr(modules[path], symbol), slot, scheme.interface_version)
+            except Exception as exc:
+                raise SchemeError(f"{slot} 插槽插件 {path}:{symbol}：{exc}") from exc
+        plugins = _assemble(scheme, config.scheme_dir, registry or default_registry(), context, definitions)
         yield AccountProcess(scheme, plugins, clock, config.indicator_defaults, held, config.data_dir)
 
 

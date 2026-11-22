@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
+from types import ModuleType
 from typing import Annotated, Literal, Self
 
 import yaml
@@ -131,10 +132,42 @@ class SlotPlugin[T]:
     parameters_schema: ParameterSchema | None = None
 
 
+def python_reference(reference: str, scheme_dir: Path) -> tuple[Path, str]:
+    filename, _, symbol = reference.rpartition(":")
+    path = scheme_dir / filename
+    path = path.parent.resolve() / path.name
+    if path.suffix != ".py" or not symbol.isidentifier():
+        raise SchemeError("Python 插件引用格式为 文件.py:导出名")
+    return path, symbol
+
+
+def check_plugin(plugin: object, slot: Slot, version: int) -> SlotPlugin:
+    if not isinstance(plugin, SlotPlugin) or plugin.slot != slot:
+        raise SchemeError(f"插件必须声明为 {slot} 插槽的 SlotPlugin")
+    if version not in plugin.compatible_versions:
+        raise SchemeError(f"插件兼容接口版本 {plugin.compatible_versions}，方案要求 {version}")
+    return plugin
+
+
+def load_python_module(path: Path, source: bytes) -> ModuleType:
+    name = "_talaria_plugin_" + sha256(str(path).encode()).hexdigest()
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise SchemeError(f"无法加载 {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        exec(compile(source, str(path), "exec"), module.__dict__)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    return module
+
+
 class PluginRegistry:
     def __init__(self) -> None:
         self._plugins: dict[tuple[Slot, str], SlotPlugin] = {}
-        self._modules: dict[Path, object] = {}
+        self._modules: dict[Path, ModuleType] = {}
 
     def register(self, name: str, plugin: SlotPlugin) -> None:
         key = (plugin.slot, name)
@@ -147,6 +180,8 @@ class PluginRegistry:
     ) -> SlotPlugin:
         try:
             if ":" in reference:
+                if slot == Slot.STRATEGY:
+                    raise SchemeError("Python 策略须经账户宿主校验来源与快照")
                 if mode == "paper":
                     raise SchemeError("模拟盘尚未支持从交易方案加载 Python 插件")
                 plugin = self._load_file(reference, scheme_dir)
@@ -154,31 +189,12 @@ class PluginRegistry:
                 plugin = self._plugins.get((slot, reference))
                 if plugin is None:
                     raise SchemeError("插件未注册")
-            if not isinstance(plugin, SlotPlugin) or plugin.slot != slot:
-                raise SchemeError(f"插件必须声明为 {slot} 插槽的 SlotPlugin")
-            if version not in plugin.compatible_versions:
-                raise SchemeError(f"插件兼容接口版本 {plugin.compatible_versions}，方案要求 {version}")
+            return check_plugin(plugin, slot, version)
         except Exception as exc:
             raise SchemeError(f"{slot} 插槽插件 {reference}：{exc}") from exc
-        return plugin
 
     def _load_file(self, reference: str, scheme_dir: Path) -> object:
-        filename, _, symbol = reference.rpartition(":")
-        path = (scheme_dir / filename).resolve()
-        if path.suffix != ".py" or not symbol.isidentifier():
-            raise SchemeError("Python 插件引用格式为 文件.py:导出名")
+        path, symbol = python_reference(reference, scheme_dir)
         if path not in self._modules:
-            name = "_talaria_plugin_" + sha256(str(path).encode()).hexdigest()
-            spec = importlib.util.spec_from_file_location(name, path)
-            if spec is None or spec.loader is None:
-                raise SchemeError(f"无法加载 {path}")
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[name] = module
-            try:
-                source = compile(path.read_bytes(), str(path), "exec")
-                exec(source, module.__dict__)
-            except BaseException:
-                del sys.modules[name]
-                raise
-            self._modules[path] = module
+            self._modules[path] = load_python_module(path, path.read_bytes())
         return getattr(self._modules[path], symbol)
