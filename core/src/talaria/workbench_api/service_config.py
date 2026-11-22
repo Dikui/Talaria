@@ -73,6 +73,13 @@ def load_service_config(data_dir: str | Path) -> ServiceConfig:
     if not isinstance(payload, dict):
         raise _error(path, "顶层必须是 JSON 对象")
 
+    unknown_keys = sorted(payload.keys() - {"version", "features", "comment"})
+    if unknown_keys:
+        raise _error(
+            path,
+            f"未知顶层键：{'、'.join(unknown_keys)}。可用键为 version、features、comment",
+        )
+
     version = payload.get("version", CONFIG_VERSION)
     if isinstance(version, bool) or not isinstance(version, int):
         raise _error(path, f"version 必须是整数，收到 {version!r}")
@@ -119,12 +126,15 @@ def write_default_service_config(data_dir: str | Path) -> Path:
     return path
 
 
-def describe_features(features: FeatureToggles) -> str:
+def describe_features(
+    features: FeatureToggles, *, changed_from: FeatureToggles | None = None
+) -> str:
     """给 ``talaria up`` / ``talaria service status`` 的一行中文摘要。"""
 
     return "；".join(
         f"{FEATURE_LABELS[name]}={'开' if getattr(features, name) else '关'}"
         for name in FEATURE_NAMES
+        if changed_from is None or getattr(features, name) != getattr(changed_from, name)
     )
 
 

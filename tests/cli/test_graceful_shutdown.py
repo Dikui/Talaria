@@ -6,11 +6,16 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
+
+from talaria.cli import main as cli
+from talaria.workbench_api.service_lock import probe_lock
 
 pytestmark = pytest.mark.medium
 
@@ -84,3 +89,72 @@ def test_sigterm_shuts_down_gracefully(tmp_path, fixture_dir, repo_root: Path) -
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+@pytest.mark.regression
+def test_up_keeps_lock_until_timed_out_worker_finishes(tmp_path, monkeypatch) -> None:
+    # platform/01: 模拟启动超时后仍需等待的存储关闭，缩短 CLI 的等待时钟。
+    shutdown_waiting = threading.Event()
+    finish_storage = threading.Event()
+    cli_returned = threading.Event()
+    observed_holders = []
+
+    class SlowServer:
+        started = False
+        should_exit = False
+
+        def __init__(self, config):
+            pass
+
+        def run(self):
+            finish_storage.wait(timeout=5)
+
+    class Worker(threading.Thread):
+        def join(self, timeout=None):
+            shutdown_waiting.set()
+            # 原有有限等待会提前返回，实际测试无需等十秒。
+            super().join(timeout=0 if timeout is not None else None)
+
+    def probe_during_shutdown():
+        try:
+            if shutdown_waiting.wait(timeout=5):
+                cli_returned.wait(timeout=0.1)
+                observed_holders.append(probe_lock(tmp_path))
+        finally:
+            finish_storage.set()
+
+    clock = iter((0, 21))
+    monkeypatch.setattr(cli.uvicorn, "Server", SlowServer)
+    monkeypatch.setattr(cli, "threading", SimpleNamespace(Thread=Worker))
+    monkeypatch.setattr(cli, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    observer = threading.Thread(target=probe_during_shutdown)
+    observer.start()
+    try:
+        assert cli.main(["up", "--solo", "--data-dir", str(tmp_path)]) == 2
+    finally:
+        cli_returned.set()
+        observer.join(timeout=5)
+
+    assert len(observed_holders) == 1
+    assert observed_holders[0] is not None
+    assert probe_lock(tmp_path) is None
+
+
+@pytest.mark.regression
+def test_up_returns_nonzero_when_a_started_worker_crashes(tmp_path, monkeypatch, capsys):
+    # platform/01: 模拟 Uvicorn 启动后抛出异常，使 launchd 看见失败退出。
+    class CrashingServer:
+        started = False
+
+        def __init__(self, config):
+            pass
+
+        def run(self):
+            self.started = True
+            raise RuntimeError("worker crashed")
+
+    monkeypatch.setattr(cli.uvicorn, "Server", CrashingServer)
+
+    assert cli.main(["up", "--solo", "--data-dir", str(tmp_path)]) == 1
+    assert "RuntimeError: worker crashed" in capsys.readouterr().err
+    assert probe_lock(tmp_path) is None

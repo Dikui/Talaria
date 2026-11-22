@@ -15,7 +15,7 @@ from talaria.foundation.derivatives import (
     DerivativePoint,
     RawDerivativePoint,
 )
-from talaria.foundation.errors import ColdStoreError, FeedUnavailableError
+from talaria.foundation.errors import ColdStoreError, FeatureDisabledError, FeedUnavailableError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
 from talaria.perception.backfill import BackfillPolicy, ensure_history
@@ -59,7 +59,7 @@ class SnapshotBuilder:
         self,
         *,
         data_dir: Path,
-        connector: MarketDataConnector,
+        connector: MarketDataConnector | None,
         raw_store: RawStore,
         snapshot_store: SnapshotStore,
         policy: BackfillPolicy,
@@ -90,14 +90,15 @@ class SnapshotBuilder:
         committed_ts: int | None = None
 
         for timeframe in request.timeframes:
-            ensure_history(
-                raw_store=self._raw_store,
-                connector=self._connector,
-                symbol=instrument.symbol,
-                timeframe=timeframe,
-                cutoff_ts=cutoff,
-                policy=self._policy,
-            )
+            if self._connector is not None:
+                ensure_history(
+                    raw_store=self._raw_store,
+                    connector=self._connector,
+                    symbol=instrument.symbol,
+                    timeframe=timeframe,
+                    cutoff_ts=cutoff,
+                    policy=self._policy,
+                )
             archived = self._raw_store.revisions(instrument.symbol, timeframe)
             hot = (
                 self._hot_bars.recent_bars(
@@ -108,6 +109,11 @@ class SnapshotBuilder:
             )
             revisions = [*archived, *hot]
             raw_bars = latest_visible_bars(revisions, as_of=cutoff)
+            if self._connector is None and not raw_bars:
+                raise FeatureDisabledError(
+                    f"行情采集已在 service.json 中关闭，缺少本地历史："
+                    f"{instrument.instrument_id} {timeframe}（截至 {cutoff}）"
+                )
             self._publish_cold(
                 instrument=instrument,
                 timeframe=timeframe,

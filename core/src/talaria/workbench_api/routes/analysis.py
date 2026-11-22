@@ -31,6 +31,7 @@ from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.operators import IndicatorName
 from talaria.foundation.snapshot import (
     ChartPage,
+    ErrorResponse,
     SnapshotMeta,
     SnapshotRequest,
 )
@@ -45,7 +46,11 @@ def instruments(request: Request) -> list[InstrumentSpec]:
     return list(get_runtime(request).workbench.instruments())
 
 
-@router.post("/api/snapshots", response_model=SnapshotMeta)
+@router.post(
+    "/api/snapshots",
+    response_model=SnapshotMeta,
+    responses={409: {"model": ErrorResponse, "description": "行情采集已关闭，且缺少本地历史"}},
+)
 async def create_snapshot(
     payload: SnapshotRequest, request: Request
 ) -> SnapshotMeta:

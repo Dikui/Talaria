@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import os
 import secrets
@@ -13,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
@@ -35,9 +35,11 @@ from talaria.cli.dsh_host import (
     write_bridge_descriptor,
 )
 from talaria.cli.service import (
+    DEFAULT_DATA_DIR,
     DEFAULT_SERVICE_LABEL,
     ServiceInstallError,
     ServiceStatus,
+    ServiceUninstallError,
     install_service,
     service_status,
     uninstall_service,
@@ -53,9 +55,11 @@ from talaria.workbench_api.service_config import (
 )
 from talaria.workbench_api.service_descriptor import (
     ServiceDescriptorError,
+    loopback_base_url,
     read_service_descriptor,
     remove_service_descriptor,
     service_descriptor_path,
+    validate_loopback_host,
     write_service_descriptor,
 )
 from talaria.workbench_api.service_lock import (
@@ -71,7 +75,6 @@ if TYPE_CHECKING:
     from talaria.workbench_api.service_descriptor import ServiceDescriptor
     from talaria.workbench_api.usage_scan import UsageScanResult
 
-DEFAULT_DATA_DIR = Path(".talaria")
 DEFAULT_PORT = 8765
 DEFAULT_DSH_PORT = 8766
 DEFAULT_DSH_PROFILE = "talaria-desk"
@@ -79,17 +82,6 @@ DEFAULT_DSH_PROFILE = "talaria-desk"
 
 def repo_dist_dir() -> Path:
     return repo_root() / "dsh" / "packages" / "talaria-desk-ui" / "dist"
-
-
-def validate_loopback_host(host: str) -> str:
-    """只允许回环地址；``--solo`` 不对外暴露端口。"""
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError as exc:
-        raise ValueError(f"host 必须是回环 IP 地址：{host}") from exc
-    if not address.is_loopback:
-        raise ValueError(f"--solo 只允许绑定回环地址，拒绝：{host}")
-    return host
 
 
 def _cmd_contract_check(args: argparse.Namespace) -> int:
@@ -388,14 +380,14 @@ def _run_up(
     # uvicorn 0.54 在优雅关闭后会重新抛出捕获的 SIGTERM，使进程以 -15 退出。
     # solo 守护进程需要可预测的 0 退出码，因此把服务器放到工作线程、由主线程
     # 接收信号并翻转 should_exit；工作线程里的 uvicorn 不会安装信号处理器。
-    exit_code = 0
+    worker_error: BaseException | None = None
 
     def run_server() -> None:
-        nonlocal exit_code
+        nonlocal worker_error
         try:
             server.run()
-        except SystemExit as exc:  # 端口占用等启动失败
-            exit_code = int(exc.code or 0)
+        except BaseException as exc:
+            worker_error = exc
 
     def stop_server(signum: int, frame: object) -> None:
         server.should_exit = True
@@ -407,6 +399,7 @@ def _run_up(
     worker = threading.Thread(target=run_server, name="talaria-uvicorn", daemon=False)
     worker.start()
     host_started = False
+    startup_failed = False
     try:
         deadline = time.monotonic() + 20
         while (
@@ -416,74 +409,87 @@ def _run_up(
         ):
             time.sleep(0.05)
         if not server.started:
+            startup_failed = True
             print(
                 "Talaria 守护进程启动失败；请检查端口占用与日志。",
                 file=sys.stderr,
             )
-            return 2 if exit_code == 0 else exit_code
+        else:
+            base_url = loopback_base_url(host, args.port)
+            try:
+                write_service_descriptor(
+                    descriptor_path,
+                    base_url=base_url,
+                    token=token,
+                    pid=os.getpid(),
+                    features=features,
+                )
+            except (OSError, ValueError) as exc:
+                # 描述缺失时 usage-scan 会拒绝直写（锁在服务手里），但看盘不受影响。
+                print(
+                    f"警告：无法发布服务写入接口：{exc}\n"
+                    f"同机命令在服务运行期间将无法经服务写入；描述路径：{descriptor_path}",
+                    file=sys.stderr,
+                )
 
-        base_url = f"http://{f'[{host}]' if ':' in host else host}:{args.port}"
-        try:
-            write_service_descriptor(
-                descriptor_path,
-                base_url=base_url,
-                token=token,
-                pid=os.getpid(),
-                features=features,
-            )
-        except (OSError, ValueError) as exc:
-            # 描述缺失时 usage-scan 会拒绝直写（锁在服务手里），但看盘不受影响。
-            print(
-                f"警告：无法发布服务写入接口：{exc}\n"
-                f"同机命令在服务运行期间将无法经服务写入；描述路径：{descriptor_path}",
-                file=sys.stderr,
-            )
-
-        if dsh_host is not None:
-            write_bridge_descriptor(
-                bridge_path,
-                base_url=base_url,
-                token=token,
-                daemon_pid=os.getpid(),
-            )
-            if dsh_start_error is None:
-                try:
-                    info = dsh_host.start()
-                    host_started = True
-                except DshHostError as exc:
-                    dsh_host.mark_unavailable(str(exc))
+            if dsh_host is not None:
+                write_bridge_descriptor(
+                    bridge_path,
+                    base_url=base_url,
+                    token=token,
+                    daemon_pid=os.getpid(),
+                )
+                if dsh_start_error is None:
+                    try:
+                        info = dsh_host.start()
+                        host_started = True
+                    except DshHostError as exc:
+                        dsh_host.mark_unavailable(str(exc))
+                        print(
+                            f"警告：{exc}\n"
+                            "Talaria 守护进程继续提供图表快通道；"
+                            "可修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
+                            file=sys.stderr,
+                        )
+                        info = dsh_host.info()
+                else:
+                    dsh_host.mark_unavailable(dsh_start_error)
                     print(
-                        f"警告：{exc}\n"
+                        f"警告：{dsh_start_error}\n"
                         "Talaria 守护进程继续提供图表快通道；"
-                        "可修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
+                        "修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
                         file=sys.stderr,
                     )
                     info = dsh_host.info()
-            else:
-                dsh_host.mark_unavailable(dsh_start_error)
-                print(
-                    f"警告：{dsh_start_error}\n"
-                    "Talaria 守护进程继续提供图表快通道；"
-                    "修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
-                    file=sys.stderr,
-                )
-                info = dsh_host.info()
-            _print_ready(host, args.port, info, bridge_path, features)
+                _print_ready(host, args.port, info, bridge_path, features)
 
-        while worker.is_alive():
-            worker.join(timeout=0.2)
+            while worker.is_alive():
+                worker.join(timeout=0.2)
     except KeyboardInterrupt:  # pragma: no cover - 主线程信号由 stop_server 接管
         server.should_exit = True
     finally:
         server.should_exit = True
-        if host_started and dsh_host is not None:
-            dsh_host.stop()
-        remove_bridge_descriptor(bridge_path)
-        remove_service_descriptor(descriptor_path)
-        worker.join(timeout=10)
-        for sig, handler in previous_handlers.items():
-            signal.signal(sig, handler)
-    return exit_code
+        try:
+            if host_started and dsh_host is not None:
+                dsh_host.stop()
+            remove_bridge_descriptor(bridge_path)
+            remove_service_descriptor(descriptor_path)
+        finally:
+            # _cmd_up 退出时会释放数据目录锁，必须先等服务线程关闭存储。
+            worker.join()
+            for sig, handler in previous_handlers.items():
+                signal.signal(sig, handler)
+    if isinstance(worker_error, SystemExit):  # 端口占用等启动失败
+        code = worker_error.code
+        if isinstance(code, int) and code != 0:
+            return code
+        if code is not None and not isinstance(code, int):
+            print(code, file=sys.stderr)
+            return 1
+    elif worker_error is not None:
+        traceback.print_exception(worker_error)
+        return 1
+    return 2 if startup_failed else 0
 
 
 def _report_host_offline(info: DshHostInfo) -> None:
@@ -708,12 +714,12 @@ def _default_service_program() -> str | None:
 def _cmd_service(args: argparse.Namespace) -> int:
     """install/uninstall/status 三个动作；launchctl 只在本机真实执行。"""
 
-    data_dir = Path(args.data_dir).expanduser().resolve()
     launch_agents_dir = Path(args.launch_agents_dir).expanduser()
     label = args.label
     command = args.service_command
 
     if command == "install":
+        data_dir = Path(args.data_dir).expanduser().resolve()
         program = args.program or _default_service_program()
         if program is None:
             print(
@@ -750,7 +756,7 @@ def _cmd_service(args: argparse.Namespace) -> int:
                 launch_agents_dir=launch_agents_dir,
                 label=label,
             )
-        except (ValueError, OSError) as exc:
+        except (ServiceUninstallError, ValueError, OSError) as exc:
             print(str(exc), file=sys.stderr)
             return 2
         if result.removed:
@@ -762,7 +768,7 @@ def _cmd_service(args: argparse.Namespace) -> int:
 
     try:
         status = service_status(
-            data_dir=data_dir,
+            data_dir=args.data_dir,
             launch_agents_dir=launch_agents_dir,
             label=label,
         )
@@ -775,17 +781,27 @@ def _cmd_service(args: argparse.Namespace) -> int:
 
 def _print_service_status(status: ServiceStatus) -> None:
     print(f"plist：{status.plist_path}")
-    hint = "" if status.config_exists else "（service.json 不存在，使用默认全开）"
-    print(f"功能开关：{describe_features(status.features)}{hint}")
     print(f"配置文件：{status.config_path}")
+    if status.features is None:
+        print("运行态功能开关：不可用")
+    else:
+        print(f"运行态功能开关：{describe_features(status.features)}")
+    if status.disk_features is not None:
+        hint = "" if status.config_exists else "（service.json 不存在，默认全开）"
+        if status.features is None:
+            print(f"磁盘配置：{describe_features(status.disk_features)}{hint}")
+        else:
+            changes = describe_features(status.disk_features, changed_from=status.features)
+            if changes:
+                print(f"待重启生效：{changes}{hint}")
     if not status.installed:
         print("状态：未安装（执行 talaria service install 后随登录启动）")
     else:
         state = status.state or ("已加载" if status.loaded else "未知")
         pid_hint = f"，pid={status.pid}" if status.pid is not None else ""
         print(f"状态：已安装，launchd={state}{pid_hint}")
-        if status.detail:
-            print(f"launchctl：{status.detail}")
+    if status.detail:
+        print(f"详情：{status.detail}")
     holder = status.lock_holder
     if holder is None:
         print("数据目录锁：空闲")
@@ -1051,8 +1067,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     service_status_parser.add_argument(
         "--data-dir",
-        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
-        help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
+        default=None,
+        help="数据目录（省略时读取作业配置，其次 $TALARIA_DATA_DIR 或 ./.talaria）",
     )
     service_status_parser.add_argument(
         "--launch-agents-dir",

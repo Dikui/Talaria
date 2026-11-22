@@ -20,7 +20,7 @@
 ### 实现记录（platform-01）
 
 - **launchd**：新增 `core/src/talaria/cli/service.py`。`render_launchd_plist` 是纯函数，plist 显式包含 `Label`、`ProgramArguments`、`RunAtLoad`、`KeepAlive`（`SuccessfulExit=false`）、`ProcessType=Interactive`、`ThrottleInterval=10`、`WorkingDirectory`、`StandardOutPath`、`StandardErrorPath`；日志默认写到 `<data-dir>/logs/service.{out,err}.log`。`install_service`/`uninstall_service`/`service_status` 的 `launchctl` 调用通过 `runner` 注入，测试用 fake runner，不执行真实 `launchctl`，也不写真实 `~/Library/LaunchAgents`。CLI 新增 `talaria service install|uninstall|status`，集中在 `_cmd_service`；`service status` 不启动服务。
-- **功能开关**：新增 `<data-dir>/service.json`（`service_config.py`），四项 `market_data`/`cold_store`/`alerts`/`scanner`，缺省全开；`install` 首次写入全开配置且不覆盖已有文件；未知键、非 bool、坏 JSON、版本不符均报出配置路径。`AppSettings.features` 传入组合根 `build_runtime`：关闭行情采集不建实时流/`FeedSupervisor`/热缓冲/订阅调度；关闭冷库写入不建 `ColdStore` 与 `ColdPublisher`；关闭预警不建 `AlertService`/ticker/listener；关闭扫描不建 `ScannerService`/ticker/listener。关闭功能的 HTTP 写入口返回 `409 FEATURE_DISABLED`（`Runtime.require_alerts/require_scanner`），不启动对应引擎、不写对应存储。
+- **功能开关**：新增 `<data-dir>/service.json`（`service_config.py`），四项 `market_data`/`cold_store`/`alerts`/`scanner`，缺省全开；`install` 首次写入全开配置且不覆盖已有文件。顶层接受 `version`、`features` 和说明字段 `comment`，未知顶层键、未知功能开关、非 bool、坏 JSON、版本不符均报出配置路径。`AppSettings.features` 传入组合根 `build_runtime`：关闭行情采集不建实时流/`FeedSupervisor`/热缓冲/订阅调度；关闭冷库写入不建 `ColdStore` 与 `ColdPublisher`；关闭预警不建 `AlertService`/ticker/listener；关闭扫描不建 `ScannerService`/ticker/listener。关闭功能的 HTTP 写入口返回 `409 FEATURE_DISABLED`（`Runtime.require_alerts/require_scanner`），不启动对应引擎、不写对应存储。
 - **排他锁**：新增 `<data-dir>/runtime/service.lock`（`service_lock.py`），`fcntl.flock(LOCK_EX|LOCK_NB)`；锁文件内记录 pid/角色/启动时间；第二个实例失败信息包含数据目录、锁路径、持有者 pid/角色。`talaria up`（含 `--solo`）启动时取锁，`finally` 释放；锁文件保留不删，避免删除/重建 inode 造成双写。服务启动成功后写 0600 的 `<data-dir>/runtime/service-descriptor.json`（回环 base_url、token、pid、features），退出时删除。
 - **usage-scan**：先尝试取同一把锁；取到则直写 `StateStore`；取不到时探测持有者：若为 `service` 且描述文件 pid 与持有者一致，则逐条 POST `/api/collaboration/usage`（Bearer token 来自描述文件）；服务在启动窗口内描述文件缺失、描述过期、或 HTTP 失败时一律以退出码 2 失败关闭（明确提示“未直写数据目录”），不打开 `StateStore`。其他角色持锁时提示“另一个进程”及 pid，不写入。
 - **前台模式**：`talaria up` 双进程前台模式保留；DSH 仍由前台 `up` 启动，launchd Agent 只跑 `up --solo`。服务运行时 `service status` 可显示 launchd state/pid、功能开关、锁持有者与写入接口；未安装时只报告状态，不启动服务。
@@ -58,3 +58,35 @@
 - 并入 `integration/platform-redesign-batch-1`（merge commit `623b04b`）。
 - 合并后复跑 `pytest tests/workbench_api -q` → 210 passed；新增/受影响测试 44 passed；综合受影响范围 585 passed（`--deselect` 既有环境相关失败）。
 - 第 16 项保留未勾选：真实 launchd 安装、崩溃重启与卸载需在本机人工执行（步骤见上），其自动化部分已通过。
+
+### 验收返工（2026-11-22）
+
+| 问题 | 确认与修复 | 回归测试及结果 |
+|---|---|---|
+| 1. 启动超时提前解锁 | 复现工作线程未结束时锁已空闲。清理路径等待服务线程完成存储关闭后再释放数据目录锁。 | `tests/cli/test_graceful_shutdown.py::test_up_keeps_lock_until_timed_out_worker_finishes`，红 1 → 绿 1。 |
+| 2. 服务线程崩溃退出 0 | 复现服务就绪后抛出 `RuntimeError` 仍返回 0。主线程接收异常、输出诊断并返回非零。 | `tests/cli/test_graceful_shutdown.py::test_up_returns_nonzero_when_a_started_worker_crashes`，红 1 → 绿 1。 |
+| 3. 卸载失败仍删除 plist | 复现权限或 I/O 错误后仍报告成功。作业未加载（`ESRCH`）可清理 plist，其他失败保留 plist 并退出 2。 | `tests/cli/test_service.py::test_uninstall_cli_preserves_plist_on_bootout_failure`，红 2 → 绿 3。 |
+| 4. 状态目录和功能开关取错 | 复现省略参数后探测默认目录。保留显式 `--data-dir`，否则优先取已加载作业的参数，缺失时读 plist，然后才使用环境变量或默认目录。描述文件的 PID 与服务锁持有者匹配时显示运行态，另列磁盘差异。 | `tests/cli/test_service.py::test_status_reports_running_service_and_features`、`::test_status_cli_reports_matching_runtime_and_pending_changes`，红 3 → 绿 3。 |
+| 5. 关闭行情后仍回填 | 复现快照追加 RawStore 和自选向历史连接器取报价。关闭行情采集后仅从已有 RawStore K 线取历史，允许快照使用现有根数。缺少快照所需周期时返回 `409 FEATURE_DISABLED`，缺少自选报价时返回 `UNAVAILABLE`。 | `tests/workbench_api/test_runtime_features.py::test_market_data_disabled_snapshot_uses_only_local_history`、`::test_market_data_disabled_watchlist_quotes_use_only_local_history`，红 4 → 绿 4。 |
+| 6. 回环地址校验不一致 | 复现接口描述拒绝 `127.0.0.2`，CLI 不规范化展开的 IPv6。启动与描述文件共用回环 IP 校验、规范化和 URL 格式，描述文件兼容原有 `localhost`。 | `tests/cli/test_cli.py::test_up_loopback_host_can_be_published_in_service_descriptor`，红 2 → 绿 2。 |
+| 7. 顶层误拼静默全开 | 复现 `feature` 等误拼生效为全开。配置文件遇到未知顶层键时报出路径、误拼键及合法键，保留 `comment` 说明字段。 | `tests/workbench_api/test_service_config.py::test_unknown_top_level_key_reports_expected_keys`，红 4 → 绿 4，`::test_config_allows_comment_metadata` 通过。 |
+| 8. 关闭扫描后仍可更新简报 | 复现既有简报可标记已读和提交结果。任务单要求关闭的功能停止写入对应存储，ADR-0014 将简报列为协同状态，因此两个写入口均返回 `409 FEATURE_DISABLED`。已有简报仍可列出，咨询种子仍可读取。 | `tests/workbench_api/test_briefing_api.py::test_disabled_scanner_keeps_existing_briefing_read_only`，红 2 → 绿 2，回读确认记录原样保留。 |
+
+从本 worktree 根目录运行，`PYTHONPATH` 指向 `$PWD/core/src`。Python 与 pytest 均来自 `../../Talaria/.venv/bin`。
+
+- `pytest tests/cli/test_cli.py tests/cli/test_graceful_shutdown.py tests/cli/test_service.py tests/workbench_api/test_runtime_features.py tests/workbench_api/test_service_config.py tests/workbench_api/test_briefing_api.py -q -p no:cacheprovider -m regression` → `20 passed, 52 deselected, 1 warning in 1.37s`。
+- `python -m talaria contract-check --write` 后复跑 `python -m talaria contract-check` → 契约生成物零漂移。同步 `tests/workbench_api/openapi_before_router_split.json` 的三个 `409` 响应。`pytest tests/workbench_api/test_runtime_features.py tests/workbench_api/test_briefing_api.py tests/workbench_api/test_openapi.py -q -p no:cacheprovider` → `17 passed, 1 warning in 1.34s`。
+- `pytest tests/perception tests/foundation tests/workbench_api tests/cli tests/evaluation tests/feed -q -p no:cacheprovider` → `6 failed, 607 passed, 1 skipped, 1 warning, 1 error in 22.06s`。`DSH_HOME` 指向不存在的测试目录，已安装 DSH Profile 的真实快照用例因此跳过。其余失败和错误均源于沙箱拒绝 TCP 绑定。
+- 同一受影响套件以 `--deselect` 排除以下 7 项复跑 → `607 passed, 1 skipped, 7 deselected, 1 warning in 21.35s`。警告来自 Starlette 的 `httpx` 测试客户端弃用。
+
+排除的回环 TCP 测试：
+
+- `tests/workbench_api/test_collaboration_api.py::test_host_dispatch_ignores_ambient_http_proxy`
+- `tests/cli/test_cli.py::test_up_dual_keeps_fast_path_when_dsh_fails`
+- `tests/cli/test_cli.py::test_up_dual_keeps_fast_path_when_dsh_binary_missing`
+- `tests/cli/test_dsh_host.py::test_host_starts_probes_and_stops_with_redacted_log`
+- `tests/cli/test_graceful_shutdown.py::test_sigterm_shuts_down_gracefully`
+- `tests/cli/test_usage_scan_service.py::test_usage_scan_fails_closed_when_service_endpoint_is_unreachable`
+- `tests/cli/test_usage_scan_service.py::test_usage_scan_writes_through_running_service`
+
+本单 8 项均已修复。真实 launchd 登录启动、崩溃重启和卸载需按上文人工步骤验证。本轮以 fake runner 验证 launchd 指令，没有访问真实数据目录。

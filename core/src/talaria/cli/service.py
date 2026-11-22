@@ -2,27 +2,32 @@
 
 from __future__ import annotations
 
-import json
+import errno
 import os
+import plistlib
 import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 from xml.sax.saxutils import escape
 
 from talaria.workbench_api.service_config import (
     FeatureToggles,
+    ServiceConfigError,
     describe_features,
     load_service_config,
+    service_config_path,
     write_default_service_config,
 )
 from talaria.workbench_api.service_descriptor import (
     ServiceDescriptorError,
     read_service_descriptor,
 )
-from talaria.workbench_api.service_lock import LockHolder, probe_lock
+from talaria.workbench_api.service_lock import ROLE_SERVICE, LockHolder, probe_lock
 
+DEFAULT_DATA_DIR = Path(".talaria")
 DEFAULT_SERVICE_LABEL = "com.talaria.workbench"
 SERVICE_LOG_SUBDIR = Path("logs")
 SERVICE_STDOUT_NAME = "service.out.log"
@@ -33,6 +38,10 @@ LaunchctlRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 class ServiceInstallError(RuntimeError):
     """plist 已写入但 ``launchctl bootstrap`` 失败。"""
+
+
+class ServiceUninstallError(RuntimeError):
+    """``launchctl bootout`` 失败，plist 已保留。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +67,8 @@ class ServiceStatus:
     installed: bool
     loaded: bool
     config_exists: bool
-    features: FeatureToggles
+    features: FeatureToggles | None
+    disk_features: FeatureToggles | None
     state: str | None
     pid: int | None
     lock_holder: LockHolder | None
@@ -211,21 +221,25 @@ def uninstall_service(
     if not target.exists():
         return ServiceUninstallResult(plist_path=target, removed=False)
     launchctl = runner or _run_launchctl
-    launchctl(["bootout", f"{_domain(uid)}/{label}"])
+    result = launchctl(["bootout", f"{_domain(uid)}/{label}"])
+    if result.returncode not in (0, errno.ESRCH):
+        detail = (result.stderr or result.stdout).strip() or "无输出"
+        raise ServiceUninstallError(
+            f"launchctl bootout 失败（退出码 {result.returncode}）：{detail}\n"
+            f"plist 已保留：{target}"
+        )
     target.unlink()
     return ServiceUninstallResult(plist_path=target, removed=True)
 
 
 def service_status(
     *,
-    data_dir: str | Path,
     launch_agents_dir: str | Path,
+    data_dir: str | Path | None = None,
     label: str = DEFAULT_SERVICE_LABEL,
     runner: LaunchctlRunner | None = None,
     uid: int | None = None,
 ) -> ServiceStatus:
-    resolved_data_dir = Path(data_dir).expanduser().resolve()
-    config = load_service_config(resolved_data_dir)
     target = plist_path(launch_agents_dir, label)
     installed = target.exists()
     loaded = False
@@ -241,14 +255,40 @@ def service_status(
             state = _launchctl_value(result.stdout, "state")
             raw_pid = _launchctl_value(result.stdout, "pid")
             pid = int(raw_pid) if raw_pid is not None and raw_pid.isdigit() else None
+            if data_dir is None:
+                data_dir = _job_data_dir(
+                    _launchctl_arguments(result.stdout),
+                    _launchctl_value(result.stdout, "working directory"),
+                )
         else:
             detail = (result.stderr or result.stdout or "").strip() or (
                 f"launchctl print 退出码 {result.returncode}"
             )
 
+    if data_dir is None and installed:
+        try:
+            with target.open("rb") as handle:
+                plist = plistlib.load(handle)
+            if not isinstance(plist, dict):
+                raise ValueError("顶层必须是字典")
+            arguments = plist.get("ProgramArguments", [])
+            if not isinstance(arguments, list) or not all(
+                isinstance(argument, str) for argument in arguments
+            ):
+                raise ValueError("ProgramArguments 必须是字符串数组")
+            working_dir = plist.get("WorkingDirectory")
+            data_dir = _job_data_dir(
+                arguments, working_dir if isinstance(working_dir, str) else None
+            )
+        except (OSError, ValueError, plistlib.InvalidFileException, ExpatError) as exc:
+            detail = _merge_detail(detail, f"无法读取作业 plist {target}：{exc}")
+    if data_dir is None:
+        data_dir = os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR))
+    resolved_data_dir = Path(data_dir).expanduser().resolve()
     holder = probe_lock(resolved_data_dir)
     endpoint: str | None = None
-    if holder is not None:
+    features: FeatureToggles | None = None
+    if holder is not None and holder.role == ROLE_SERVICE:
         try:
             descriptor = read_service_descriptor(resolved_data_dir)
         except ServiceDescriptorError as exc:
@@ -256,19 +296,29 @@ def service_status(
         else:
             if descriptor is not None and holder.pid == descriptor.pid:
                 endpoint = descriptor.base_url
+                features = descriptor.features
             elif descriptor is not None:
                 detail = _merge_detail(
                     detail,
                     f"锁持有者 pid={holder.pid} 与接口描述 pid={descriptor.pid} 不一致",
                 )
 
+    config = None
+    try:
+        config = load_service_config(resolved_data_dir)
+    except ServiceConfigError as exc:
+        if features is None:
+            raise
+        detail = _merge_detail(detail, str(exc))
+
     return ServiceStatus(
         plist_path=target,
-        config_path=config.path,
+        config_path=service_config_path(resolved_data_dir),
         installed=installed,
         loaded=loaded,
-        config_exists=config.exists,
-        features=config.features,
+        config_exists=config is None or config.exists,
+        features=features,
+        disk_features=config.features if config is not None else None,
         state=state,
         pid=pid,
         lock_holder=holder,
@@ -300,6 +350,31 @@ def _launchctl_value(stdout: str, key: str) -> str | None:
         left, separator, right = line.strip().partition("=")
         if separator and left.strip() == key:
             return right.strip()
+    return None
+
+
+def _launchctl_arguments(stdout: str) -> list[str]:
+    lines = iter(stdout.splitlines())
+    for line in lines:
+        if line.strip() == "arguments = {":
+            arguments = []
+            for argument in lines:
+                if argument.strip() == "}":
+                    return arguments
+                arguments.append(argument.strip())
+            break
+    return []
+
+
+def _job_data_dir(arguments: Sequence[str], working_dir: str | None) -> Path | None:
+    for index in range(len(arguments) - 1, -1, -1):
+        option, separator, value = arguments[index].partition("=")
+        if option != "--data-dir":
+            continue
+        if not separator and index + 1 < len(arguments):
+            value = arguments[index + 1]
+        if value:
+            return Path(working_dir or "/") / Path(value).expanduser()
     return None
 
 

@@ -1,8 +1,8 @@
 """Watchlist 业务层：分组/条目持久化、订阅配额与行情展示。
 
 写操作全部经 ``StateWriterQueue.run`` 在专用线程上串行执行；行情读取优先使用
-``FeedSupervisor`` 已接收的最近 1 分钟柱，没有实时订阅时回退到最近快照/fixture
-最新价，并明确标注来源。STALE 只由 ``FeedHealth`` 判定，不用报价时间猜测。
+``FeedSupervisor`` 已接收的最近 1 分钟柱。没有实时订阅时使用历史报价，
+关闭行情采集时只查本地原始行情。STALE 只由 ``FeedHealth`` 判定。
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
 
 from talaria.feed.supervisor import FeedSupervisor
+from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.errors import (
     FeedUnavailableError,
     InstrumentNotFoundError,
@@ -30,6 +30,7 @@ from talaria.foundation.watchlist import (
     WatchlistGroupKind,
     WatchlistItem,
 )
+from talaria.perception.raw_store import RawStore
 from talaria.workbench_api.state_repositories.watchlist import (
     WatchlistGroupRecord,
     WatchlistItemRecord,
@@ -77,15 +78,17 @@ class WatchlistService:
         *,
         state_writer: StateWriterQueue,
         instruments: Sequence[InstrumentSpec],
-        connector: Any | None,
+        connector: MarketDataConnector | None,
         supervisor: FeedSupervisor | None,
         scheduler: RealtimeSubscriptionScheduler | None,
         now_ms: Callable[[], int],
         alerted_instruments: Callable[[], Sequence[str]] | None = None,
+        raw_store: RawStore | None = None,
     ) -> None:
         self._state_writer = state_writer
         self._instruments = {spec.instrument_id: spec for spec in instruments}
         self._connector = connector
+        self._raw_store = raw_store
         self._supervisor = supervisor
         self._scheduler = scheduler
         self._now_ms = now_ms
@@ -193,15 +196,8 @@ class WatchlistService:
 
         spec = self._instruments.get(instrument_id)
         quote = _NO_QUOTE
-        if spec is not None and self._connector is not None:
-            try:
-                bars = self._connector.fetch_bars(
-                    symbol=spec.symbol,
-                    timeframe=WATCHLIST_TIMEFRAME,
-                    limit=2,
-                )
-            except FeedUnavailableError:
-                bars = ()
+        if spec is not None:
+            bars = self._quote_bars(spec.symbol, now)
             closes = [bar for bar in bars if bar.close is not None]
             if closes:
                 latest = closes[-1]
@@ -218,6 +214,22 @@ class WatchlistService:
                 )
         self._quote_cache[instrument_id] = (now, quote)
         return quote
+
+    def _quote_bars(self, symbol: str, now: int) -> Sequence[RawBar]:
+        if self._raw_store is not None:
+            return [
+                bar
+                for bar in self._raw_store.read(symbol, WATCHLIST_TIMEFRAME)
+                if bar.ts_available <= now
+            ][-2:]
+        if self._connector is None:
+            return ()
+        try:
+            return self._connector.fetch_bars(
+                symbol=symbol, timeframe=WATCHLIST_TIMEFRAME, limit=2
+            )
+        except FeedUnavailableError:
+            return ()
 
     def _render(
         self,

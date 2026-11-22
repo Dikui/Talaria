@@ -118,13 +118,28 @@ def test_invalid_payloads_are_rejected(tmp_path, payload, expected):
             assert "可用开关" in message
 
 
-def test_unknown_top_level_keys_are_ignored(tmp_path):
+def test_config_allows_comment_metadata(tmp_path):
     _write_config(
         tmp_path,
         {"version": 1, "comment": "由 talaria service install 生成", "features": {"alerts": False}},
     )
 
     assert load_service_config(tmp_path).features.alerts is False
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("key", ["feature", "featuers", "verison", "scanner"])
+def test_unknown_top_level_key_reports_expected_keys(tmp_path, key):
+    # platform/01: 开关拼写错误不能退回默认全开。
+    _write_config(tmp_path, {key: {"scanner": False}})
+
+    with pytest.raises(ServiceConfigError) as excinfo:
+        load_service_config(tmp_path)
+
+    message = str(excinfo.value)
+    assert key in message
+    assert "features" in message
+    assert str(service_config_path(tmp_path)) in message
 
 
 def test_write_default_config_is_readable_and_does_not_overwrite(tmp_path):
