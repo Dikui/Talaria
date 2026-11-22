@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §4.2、§4.3；ADR-0017（费率类 scale 固定 8）、ADR-0018。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 冷库写入器支持衍生品分区与清单，数值格式与 01 一致；修订与 `as_of` 规则与 K 线相同。
 - [ ] 实时：从现有 `tickers.{symbol}` 读数写入；历史：REST 回填，重复执行幂等。现有快照里的衍生品文件改为从冷库取。
