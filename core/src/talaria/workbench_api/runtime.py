@@ -65,6 +65,7 @@ class Runtime:
     supervisor: FeedSupervisor | None
     subscription_scheduler: RealtimeSubscriptionScheduler | None
     cold_store: ColdStore | None
+    cold_publisher: ColdPublisher | None
     snapshot_store: SnapshotStore
     hot_buffer: HotStreamBuffer | None
     state_writer: StateWriterQueue
@@ -348,6 +349,7 @@ async def build_runtime(
             supervisor=supervisor,
             subscription_scheduler=scheduler,
             cold_store=cold_store,
+            cold_publisher=cold_publisher,
             snapshot_store=snapshot_store,
             hot_buffer=hot_buffer,
             state_writer=state_writer,

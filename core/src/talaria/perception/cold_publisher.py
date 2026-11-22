@@ -6,7 +6,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from itertools import groupby
 
@@ -15,6 +15,7 @@ from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.timeframes import timeframe_ms
 from talaria.perception.backfill import BackfillPolicy
+from talaria.perception.bar_range import next_confirmed_revision
 from talaria.perception.cold_store import ColdBatch, ColdStore, partition_month
 
 logger = logging.getLogger(__name__)
@@ -40,11 +41,12 @@ class ColdPublisher:
         self._now_ms = now_ms
         self._writes = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-writer")
         self._history = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-history")
-        self._pending_history: set[tuple[str, str, int, int]] = set()
+        self._pending_history: dict[tuple[str, str, int, int, frozenset[int]], Future[None]] = {}
         self._history_lock = threading.Lock()
 
     def record_close(
-        self, instrument: InstrumentSpec, timeframe: str, bar: CompactBar, received_ts: int
+        self, instrument: InstrumentSpec, timeframe: str, bar: CompactBar, received_ts: int,
+        revision: int = 0,
     ) -> None:
         """接收交易所实时交付的已收盘柱。"""
         if bar.close is None:  # FEED_GAP 不归档
@@ -57,6 +59,7 @@ class ColdPublisher:
             open=bar.open, high=bar.high, low=bar.low, close=bar.close,
             volume=bar.volume, turnover=bar.turnover, ts_available=bar.ts_available,
             ts_ingested=received_ts, ts_committed=received_ts, precision=bar.precision,
+            revision=revision,
         )
         self._queue_publish(instrument, timeframe, raw)
 
@@ -84,19 +87,21 @@ class ColdPublisher:
 
     def request_history(
         self, instrument: InstrumentSpec, timeframe: str, *, start_ts: int, end_ts: int,
-    ) -> None:
+        hot_timestamps: frozenset[int] = frozenset(),
+    ) -> Future[None] | None:
         if self._connector is None or start_ts > end_ts:
             return
-        key = (instrument.instrument_id, timeframe, start_ts, end_ts)
+        key = (instrument.instrument_id, timeframe, start_ts, end_ts, hot_timestamps)
         with self._history_lock:
             if key in self._pending_history:
-                return
-            self._pending_history.add(key)
+                return self._pending_history[key]
             try:
-                self._history.submit(self._backfill, key, instrument)
+                future = self._history.submit(self._backfill, key, instrument)
             except Exception as exc:
-                self._pending_history.remove(key)
                 logger.warning("冷库历史回填任务提交失败（%s %s）：%s", instrument.instrument_id, timeframe, exc)
+                return None
+            self._pending_history[key] = future
+            return future
 
     async def compact_periodically(self) -> None:
         while True:
@@ -111,19 +116,21 @@ class ColdPublisher:
         await asyncio.to_thread(self._history.shutdown)
         await asyncio.to_thread(self._writes.shutdown)
 
-    def _backfill(self, key: tuple[str, str, int, int], instrument: InstrumentSpec) -> None:
-        _, timeframe, start, end = key
+    def _backfill(
+        self, key: tuple[str, str, int, int, frozenset[int]], instrument: InstrumentSpec,
+    ) -> None:
+        _, timeframe, start, end, hot_timestamps = key
         try:
             assert self._connector is not None
             interval = timeframe_ms(timeframe)
             start = max(0, (start + interval - 1) // interval * interval)
             cursor = end // interval * interval
-            covered = {
+            covered = hot_timestamps.union(
                 bar.ts_event
                 for bar in self._store.read_bars(
                     instrument, timeframe, start_ts=start, end_ts=end,
                 )
-            }
+            )
             for _ in range(self._policy.max_pages):
                 while cursor in covered:
                     cursor -= interval
@@ -150,7 +157,7 @@ class ColdPublisher:
             logger.warning("冷库历史回填失败（%s %s）：%s", instrument.instrument_id, timeframe, exc)
         finally:
             with self._history_lock:
-                self._pending_history.discard(key)
+                self._pending_history.pop(key, None)
 
     def _publish(
         self, instrument: InstrumentSpec, timeframe: str, candidates: Sequence[RawBar],
@@ -175,17 +182,12 @@ class ColdPublisher:
                 committed = self._now_ms()
                 for raw in bars:
                     previous = latest.get(raw.ts_event)
-                    if previous is not None:
-                        if history_only or replace(
-                            previous, ts_available=raw.ts_available, ts_ingested=raw.ts_ingested,
-                            ts_committed=raw.ts_committed, revision=raw.revision,
-                        ) == raw:
-                            continue
-                    bar = replace(
-                        raw,
-                        ts_committed=max(committed, raw.ts_ingested),
-                        revision=0 if previous is None else previous.revision + 1,
-                    )
+                    if history_only and previous is not None:
+                        continue
+                    version = next_confirmed_revision(raw, previous)
+                    if version is previous:
+                        continue
+                    bar = replace(version, ts_committed=max(committed, version.ts_ingested))
                     rows.append(bar)
                     latest[bar.ts_event] = bar
                 if rows:

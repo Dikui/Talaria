@@ -95,6 +95,32 @@ export interface CompactBar {
   ts_available: number;
   precision: PrecisionTier;
 }
+export interface BarsQuery {
+  instrument: string;
+  timeframe: string;
+  start: number;
+  end?: number | null;
+  as_of?: number | null;
+  include_open?: boolean;
+}
+export interface RangeBar {
+  ts_event: number;
+  open: DecimalString;
+  high: DecimalString;
+  low: DecimalString;
+  close: DecimalString;
+  volume: DecimalString;
+  turnover: DecimalString;
+  ts_available: number;
+  precision: PrecisionTier;
+  confirmed: boolean;
+  revision: number;
+}
+export interface BarsResponse {
+  instrument_id: string;
+  timeframe: string;
+  bars: RangeBar[];
+}
 export interface KlineEvent {
   instrument_id: string;
   timeframe: string;
