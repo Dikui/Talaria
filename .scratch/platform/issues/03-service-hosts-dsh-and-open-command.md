@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0020（后果第一条）、ADR-0014 常驻服务部分；`docs/architecture.md` §8.1。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## 现状
 
