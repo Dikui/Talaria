@@ -35,7 +35,7 @@
 | 批 | 任务单 | 说明 |
 |---|---|---|
 | 1 | `data-access/01`、`platform/01`、`analysis/03` | 主干起点；先把服务装配与功能开关改完，后面的单往里接；指标口径尽早定下 |
-| 2 | `data-access/02`、`data-access/03`、`platform/02` | 02 与 03 都改实时解析与热缓冲，先合 02，03 在其上合；`platform/02` 开工前先把原型结论写进任务单 |
+| 2 | `data-access/02`、`data-access/03`、`platform/02` | 02 与 03 都改实时解析与热缓冲，先合 02，03 在其上合；`platform/02` 的原型结论已写进任务单（2026-11-22） |
 | 3 | `data-access/04`、`analysis/01` | 04 完成即“一两行代码取数”可用；`analysis/01` 等 `data-access/02` 合并后再做 |
 | 4+ | `analysis/02` → `alerts-and-scanning/01`、`trading/01` → 交易链 | `data-access/05`–`08` 在 04 之后插空，`data-access/08` 须早于 `trading/03` |
 
