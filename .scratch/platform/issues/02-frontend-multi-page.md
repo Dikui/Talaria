@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0020（取代 ADR-0014 的前端一条）、ADR-0005；`docs/architecture.md` §1.1。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **2026-11-22 改写：** 原单是“浏览器多页面 + PWA”为主、DSH 插槽为另一使用方；按 ADR-0020 改为 DSH 为主入口。
 
