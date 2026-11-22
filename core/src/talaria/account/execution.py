@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
+from threading import RLock
 from types import MappingProxyType
 
 from talaria.account.contracts import (
@@ -18,23 +20,31 @@ from talaria.account.contracts import (
     BarrierReceipt,
     EntryCandidate,
     ExecutionEvent,
+    ExitBarrierSpec,
     FillSlot,
     Intervention,
     MarginValuation,
     PlanReceipt,
     RejectedPlanRecord,
     RiskSlot,
+    RoundExposure,
     RoundStatus,
     SizingDecision,
+    SizingRejected,
     SizingSlot,
     TradingState,
 )
 from talaria.account.ledger import LedgerError, check_postings
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
+from talaria.foundation.margin import MarginPosition
+from talaria.foundation.types import decimal_from_finite_fraction
+from talaria.packs import DEFAULT_PACK, get_market_pack
 
 
 _LOG = logging.getLogger(__name__)
 
 _FILL_EVENTS = frozenset({"ENTRY_FILLED", "EXIT_FILLED"})
+_UTC_DAY_MS = 86_400_000
 _TRADE_ACCOUNTS = frozenset({"TRADE_PAYABLE", "POSITION_COST"})
 _TERMINAL_PLAN_EVENTS = frozenset({
     "ENTRY_CANCELLED", "PLAN_CANCELLED", "PLAN_COMPLETED", "PLAN_EXPIRED",
@@ -77,40 +87,122 @@ class ExecutionGate:
         self._valuation = valuation
         self._record = record
         self._states = dict.fromkeys(sub_accounts, TradingState.ACTIVE)
+        self._approvals = {account: RLock() for account in sub_accounts}
+        self._submit_lock = RLock()
         self._positions: dict[str, RoundStatus] = {}
         self._position_costs: dict[str, tuple[str, Fraction]] = {}
         # 直接干预的回执可能先于成交入账，用其限制后续直接干预的数量。
         self._pending_reductions: dict[str, Fraction] = {}
-        self._round_identities: dict[str, tuple[str, str, str, str]] = {}
+        self._round_origins: dict[str, RoundStatus] = {}
+        self._barriers: dict[str, ExitBarrierSpec] = {}
         self._plans: dict[str, ApprovedExecutionPlan] = {}
-        self._used_plan_ids: set[str] = set()
+        self._submitted_plan_rounds: dict[str, str | None] = {}
         self._filled: dict[str, Fraction] = {}
         self._amendment_ids: set[str] = set()
         self._last_execution_ts = -1
+        self._market_as_of = 0
+        self._marks: dict[str, DerivativePoint] = {}
+        self._funding_rates: dict[str, DerivativePoint] = {}
+        self._audit: dict[str, list[ExecutionEvent]] = {account: [] for account in sub_accounts}
+        self._drawdown_transition = getattr(risk, "drawdown_transition", None)
+        self._start_trading_day = getattr(risk, "start_trading_day", None)
+        self._entry_fill_allows = getattr(risk, "entry_fill_allows", None)
+        self._market_pack = get_market_pack(DEFAULT_PACK)
+
+    def _approval_lock(self, account: str) -> RLock:
+        try:
+            return self._approvals[account]
+        except KeyError:
+            raise AccountProcessError(f"账户进程不承载子账户 {account}") from None
+
+    @contextmanager
+    def _all_accounts(self):
+        with ExitStack() as stack:
+            for lock in self._approvals.values():
+                stack.enter_context(lock)
+            yield
 
     def account_state(self, sub_account_id: str) -> AccountState:
-        if sub_account_id not in self._states:
-            raise AccountProcessError(f"账户进程不承载子账户 {sub_account_id}")
+        with self._approval_lock(sub_account_id):
+            return self._account_state(sub_account_id)
+
+    def _account_state(self, sub_account_id: str) -> AccountState:
         rounds = {
-            key: position for key, position in self._positions.items()
+            key: position for key, position in self._positions.copy().items()
             if position.sub_account_id == sub_account_id and position.quantity > 0
         }
+        exposures = []
+        for key, position in rounds.items():
+            _, cost = self._position_costs[key]
+            exposures.append(self._position_exposure(position, cost))
+        reservations = []
+        for plan in self._plans.copy().values():
+            candidate = plan.candidate
+            if candidate.sub_account_id != sub_account_id:
+                continue
+            remaining = Fraction(plan.sizing.quantity) - self._filled.get(plan.plan_id, Fraction(0))
+            if remaining <= 0:
+                continue
+            position = rounds.get(plan.round_id)
+            entry = candidate.entry_high if candidate.direction == "LONG" else candidate.entry_low
+            slip = Fraction(plan.allowed_slippage or 0)
+            entry = Fraction(entry) + (slip if candidate.direction == "LONG" else -slip)
+            max_entry_price = decimal_from_finite_fraction(Fraction(candidate.entry_high) + slip)
+            reservations.append(RoundExposure(plan.round_id, MarginPosition(
+                candidate.instrument_id, candidate.direction,
+                decimal_from_finite_fraction(remaining), decimal_from_finite_fraction(entry),
+            ), position.stop if position is not None else candidate.invalidation_stop, max_entry_price))
         return AccountState(
-            sub_account_id, self._balances(sub_account_id), MappingProxyType(rounds),
-            self._states[sub_account_id],
+            sub_account_id, MappingProxyType(dict(self._balances(sub_account_id))), MappingProxyType(rounds),
+            self._states[sub_account_id], max(self._market_as_of, self._last_execution_ts),
+            tuple(exposures), tuple(reservations),
+            MappingProxyType({key: self._barriers[key] for key in rounds if key in self._barriers}),
+            MappingProxyType({key: point.model_copy() for key, point in self._marks.items()}),
+            MappingProxyType({key: point.model_copy() for key, point in self._funding_rates.items()}),
         )
+
+    def _contract_multiplier(self, instrument_id: str) -> Fraction:
+        try:
+            return Fraction(self._market_pack.traits(instrument_id).margin.contract_multiplier)
+        except KeyError as exc:
+            raise AccountProcessError(f"成交引用未知标的 {instrument_id}") from exc
+
+    def _position_exposure(self, position: RoundStatus, cost: Fraction) -> RoundExposure:
+        entry = abs(cost) / (Fraction(position.quantity) * self._contract_multiplier(position.instrument_id))
+        return RoundExposure(position.round_id, MarginPosition(
+            position.instrument_id, position.direction, position.quantity,
+            Decimal(entry.numerator) / Decimal(entry.denominator),
+        ), position.stop)
 
     def submit_candidate(self, candidate: EntryCandidate) -> PlanReceipt | RejectedPlanRecord:
         if not isinstance(candidate, EntryCandidate):
             raise AccountProcessError("开仓或加仓须先提交不含数量的候选意图")
-        state = self.account_state(candidate.sub_account_id)
+        with self._approval_lock(candidate.sub_account_id):
+            decision = self._submit_candidate(candidate)
+            if isinstance(decision, RejectedPlanRecord) or not decision.accepted:
+                self._audit[candidate.sub_account_id].append(ExecutionEvent(
+                    kind="CANDIDATE_REJECTED", sub_account_id=candidate.sub_account_id,
+                    ts_event=min(candidate.ts_decision, max(self._market_as_of, self._last_execution_ts)),
+                    reason=decision.reason or "FILL_REJECTED",
+                ))
+            return decision
+
+    def _submit_candidate(self, candidate: EntryCandidate) -> PlanReceipt | RejectedPlanRecord:
+        state = self._account_state(candidate.sub_account_id)
+        if state.trading_state != TradingState.ACTIVE:
+            return RejectedPlanRecord(reason="TRADING_STATE_BLOCKED")
+        if candidate.ts_decision > state.as_of:
+            return RejectedPlanRecord(reason="FUTURE_DECISION")
         if candidate.round_id is not None:
             position = state.rounds.get(candidate.round_id)
-            if position is None or (position.instrument_id, position.direction) != (
-                candidate.instrument_id, candidate.direction,
-            ):
+            if position is None or position.instrument_id != candidate.instrument_id:
                 return RejectedPlanRecord(reason="ADD_ON_ROUND_MISMATCH")
-        sizing = self._sizing.size(candidate, state, self._valuation)
+            if position.direction != candidate.direction:
+                return RejectedPlanRecord(reason="OPPOSITE_POSITION_OPEN")
+        try:
+            sizing = self._sizing.size(candidate, state, self._valuation)
+        except SizingRejected as exc:
+            return RejectedPlanRecord(reason=str(exc))
         if not isinstance(sizing, SizingDecision):
             raise AccountProcessError("定仓插件须返回 SizingDecision")
         decision = self._risk.evaluate_candidate(candidate, sizing, state, self._valuation)
@@ -120,27 +212,48 @@ class ExecutionGate:
             raise AccountProcessError("风控插件须返回 ApprovedExecutionPlan 或 RejectedPlanRecord")
         if decision.candidate != candidate or decision.sizing != sizing:
             raise AccountProcessError("风控插件不得更改候选意图或定仓结果")
-        if decision.plan_id in self._used_plan_ids:
+        with self._submit_lock:
+            return self._submit_approved(decision)
+
+    def _submit_approved(self, decision: ApprovedExecutionPlan) -> PlanReceipt:
+        candidate = decision.candidate
+        if decision.plan_id in self._submitted_plan_rounds:
             raise AccountProcessError(f"重复的获批计划 ID：{decision.plan_id}")
         if candidate.round_id is not None and decision.round_id != candidate.round_id:
             raise AccountProcessError("风控插件不得更改加仓回合")
-        if candidate.round_id is None and decision.round_id in self._round_identities:
+        if candidate.round_id is None and decision.round_id in self._round_origins:
             raise AccountProcessError("开仓计划需要新的回合 ID")
 
         receipt = self._fill.submit_plan(decision)
         if not isinstance(receipt, PlanReceipt):
             raise AccountProcessError("成交插件须返回 PlanReceipt")
-        self._used_plan_ids.add(decision.plan_id)
+        self._submitted_plan_rounds[decision.plan_id] = decision.round_id if receipt.accepted else None
         if receipt.accepted:
             self._plans[decision.plan_id] = decision
             if candidate.round_id is None:
-                self._round_identities[decision.round_id] = (
-                    decision.round_id, candidate.sub_account_id, candidate.instrument_id, candidate.direction,
+                self._round_origins[decision.round_id] = RoundStatus(
+                    round_id=decision.round_id, sub_account_id=candidate.sub_account_id,
+                    instrument_id=candidate.instrument_id, direction=candidate.direction,
+                    quantity=0, stop=candidate.invalidation_stop,
                 )
+                if decision.barriers is not None:
+                    self._barriers[decision.round_id] = decision.barriers
         return receipt
 
     def change_barrier(self, request: BarrierChangeRequest) -> BarrierReceipt | RejectedPlanRecord:
-        state = self.account_state(request.sub_account_id)
+        with self._approval_lock(request.sub_account_id):
+            state = self._account_state(request.sub_account_id)
+            decision = self._change_barrier(request, state)
+            if isinstance(decision, RejectedPlanRecord) or not decision.accepted:
+                self._audit[request.sub_account_id].append(ExecutionEvent(
+                    kind="BARRIER_REJECTED", sub_account_id=request.sub_account_id,
+                    ts_event=state.as_of, reason=decision.reason or "FILL_REJECTED",
+                ))
+            return decision
+
+    def _change_barrier(
+        self, request: BarrierChangeRequest, state: AccountState,
+    ) -> BarrierReceipt | RejectedPlanRecord:
         position = state.rounds.get(request.round_id)
         if position is None:
             return RejectedPlanRecord(reason="ROUND_NOT_OPEN")
@@ -149,6 +262,8 @@ class ExecutionGate:
             self._accept_barrier(position, request, receipt)
             return receipt
 
+        if state.trading_state != TradingState.ACTIVE:
+            return RejectedPlanRecord(reason="TRADING_STATE_BLOCKED")
         decision = self._risk.approve_barrier_widening(request, state, self._valuation)
         if isinstance(decision, RejectedPlanRecord):
             return decision
@@ -175,6 +290,15 @@ class ExecutionGate:
     def intervene_position(
         self, round_id: str, action: Intervention, ratio: Decimal | None, reason: str,
     ) -> RoundStatus:
+        origin = self._round_origins.get(round_id)
+        if origin is None:
+            raise AccountProcessError(f"减风险操作引用未知回合 {round_id}")
+        with self._approval_lock(origin.sub_account_id):
+            return self._intervene_position(round_id, action, ratio, reason)
+
+    def _intervene_position(
+        self, round_id: str, action: Intervention, ratio: Decimal | None, reason: str,
+    ) -> RoundStatus:
         if action not in ("CANCEL_ENTRY", "CLOSE_ALL", "REDUCE_RATIO"):
             raise AccountProcessError(f"不支持的减风险操作：{action}")
         if action == "REDUCE_RATIO":
@@ -184,14 +308,7 @@ class ExecutionGate:
             raise AccountProcessError("只有按比例减仓允许指定比例")
         previous = self._positions.get(round_id)
         if previous is None and action == "CANCEL_ENTRY":
-            plan = next((plan for plan in self._plans.values() if plan.round_id == round_id), None)
-            if plan is not None:
-                candidate = plan.candidate
-                previous = RoundStatus(
-                    round_id=round_id, sub_account_id=candidate.sub_account_id,
-                    instrument_id=candidate.instrument_id, direction=candidate.direction,
-                    quantity=0, stop=candidate.invalidation_stop,
-                )
+            previous = self._round_origins.get(round_id)
         if previous is None:
             raise AccountProcessError(f"减风险操作引用未知回合 {round_id}")
         before = self._pending_reductions.get(round_id, previous.quantity)
@@ -234,41 +351,136 @@ class ExecutionGate:
     def set_trading_state(
         self, sub_account_id: str | None, state: TradingState, reason: str,
     ) -> None:
+        lock = self._all_accounts() if sub_account_id is None else self._approval_lock(sub_account_id)
+        with lock:
+            self._set_trading_state(sub_account_id, state, reason)
+
+    def _set_trading_state(
+        self, sub_account_id: str | None, state: TradingState, reason: str,
+    ) -> None:
         if state not in (TradingState.REDUCING, TradingState.HALTED):
             raise AccountProcessError("减风险通道仅允许 REDUCING 或 HALTED")
         accounts = self._states if sub_account_id is None else (sub_account_id,)
         for account in accounts:
-            current = self.account_state(account).trading_state
+            current = self._states[account]
             if current == TradingState.HALTED and state == TradingState.REDUCING:
                 raise AccountProcessError("减风险通道不允许从 HALTED 恢复为 REDUCING")
-        self._fill.set_trading_state(sub_account_id, state, reason)
         for account in accounts:
             self._states[account] = state
+        try:
+            self._fill.set_trading_state(sub_account_id, state, reason)
+        finally:
+            if state == TradingState.HALTED:
+                for plan_id, plan in tuple(self._plans.items()):
+                    if plan.candidate.sub_account_id in accounts:
+                        del self._plans[plan_id]
+                        self._filled.pop(plan_id, None)
 
-    def poll_events(self, now: int) -> list[ExecutionEvent]:
-        accepted = []
-        first_error = None
-        events = sorted(
-            self._fill.poll_events(now),
-            key=lambda event: event.ts_event if isinstance(event, ExecutionEvent) else now,
-        )
-        for event in events:
+    def observe_market(self, as_of: int, points: Sequence[DerivativePoint]) -> None:
+        with self._all_accounts():
+            self._process_batch(as_of, points, ())
+
+    @staticmethod
+    def _update_observation(observations: dict[str, DerivativePoint], point: DerivativePoint) -> None:
+        previous = observations.get(point.instrument_id)
+        if previous is None or (point.observation_time, point.ts_available, point.ts_committed) >= (
+            previous.observation_time, previous.ts_available, previous.ts_committed,
+        ):
+            observations[point.instrument_id] = point.model_copy()
+
+    def _advance_time(self, now: int) -> None:
+        previous = max(self._market_as_of, self._last_execution_ts)
+        midnight = now // _UTC_DAY_MS * _UTC_DAY_MS
+        if previous < midnight and self._start_trading_day is not None:
+            self._market_as_of = midnight
+            for account in self._states:
+                self._start_trading_day(self._account_state(account), self._valuation)
+        self._market_as_of = max(previous, now)
+
+    def _check_drawdowns(self, errors: list[AccountProcessError | LedgerError]) -> None:
+        if self._drawdown_transition is not None:
+            for account in self._states:
+                transition = self._drawdown_transition(self._account_state(account), self._valuation)
+                if transition is not None:
+                    self._apply_drawdown(account, *transition, errors=errors)
+
+    def _apply_drawdown(
+        self, account: str, state: TradingState, liquidate: bool, *,
+        errors: list[AccountProcessError | LedgerError],
+    ) -> None:
+        reason = "DRAWDOWN_LIMIT"
+        snapshot = self._account_state(account)
+        self._set_trading_state(account, state, reason)
+        self._write_event(ExecutionEvent(
+            kind="TRADING_STATE_CHANGED", sub_account_id=account, ts_event=self._market_as_of,
+            reason=f"{reason}:{state.value}",
+        ))
+        actions: list[tuple[str, Intervention]] = [
+            (round_id, "CANCEL_ENTRY") for round_id in dict.fromkeys(item.round_id for item in snapshot.reservations)
+        ]
+        if liquidate:
+            actions.extend((round_id, "CLOSE_ALL") for round_id in snapshot.rounds)
+        for round_id, action in actions:
             try:
-                fill = self._check_event(event, now)
-            except (AccountProcessError, LedgerError) as exc:
-                if isinstance(event, ExecutionEvent):
-                    self._record_rejection(min(event.ts_event, now), str(exc), event.sub_account_id, event.plan_id)
-                else:
-                    self._record_rejection(now, str(exc))
-                if first_error is None:
-                    first_error = exc
-                continue
-            self._write_event(event)
-            self._accept_event(event, fill)
-            accepted.append(event)
-        if first_error is not None:
+                self._intervene_position(round_id, action, None, reason)
+            except AccountProcessError as exc:
+                # 插槽可能已生成同批的后续成交。违规回执不得阻止其余减仓入账。
+                errors.append(exc)
+
+    def poll_events(self, now: int, *, points: Sequence[DerivativePoint] = ()) -> list[ExecutionEvent]:
+        with self._all_accounts():
+            return self._process_batch(now, points, self._fill.poll_events(now))
+
+    def _process_batch(
+        self, now: int, points: Sequence[DerivativePoint], events: Sequence[ExecutionEvent],
+    ) -> list[ExecutionEvent]:
+        # 同一可获取时刻先处理观测，再校验该时刻的成交。观测按实际观测时刻及修订顺序处理。
+        observations = sorted(
+            (point for point in points if point.visible_at(now)),
+            key=lambda point: (point.ts_available, point.observation_time, point.ts_committed),
+        )
+        timeline = [(point.ts_available, point) for point in observations]
+        timeline.extend((event.ts_event if isinstance(event, ExecutionEvent) else now, event) for event in events)
+        accepted = []
+        errors: list[AccountProcessError | LedgerError] = []
+        for timestamp, event in sorted(timeline, key=lambda item: item[0]):
+            if isinstance(event, DerivativePoint):
+                self._advance_time(timestamp)
+                if event.kind == DerivativeKind.MARK_PRICE and event.value > 0:
+                    self._update_observation(self._marks, event)
+                elif event.kind == DerivativeKind.FUNDING_RATE:
+                    self._update_observation(self._funding_rates, event)
+            else:
+                try:
+                    fill = self._check_event(event, now)
+                except (AccountProcessError, LedgerError) as exc:
+                    if isinstance(event, ExecutionEvent):
+                        self._record_rejection(min(event.ts_event, now), str(exc), event.sub_account_id, event.plan_id)
+                    else:
+                        self._record_rejection(now, str(exc))
+                    errors.append(exc)
+                    continue
+                self._advance_time(timestamp)
+                self._write_event(event)
+                self._accept_event(event, fill)
+                accepted.append(event)
+            self._check_drawdowns(errors)
+        self._advance_time(now)
+        self._check_drawdowns(errors)
+        self._flush_audit(now)
+        if errors:
+            first_error = errors[0]
             raise AccountProcessError(str(first_error)) from first_error
         return accepted
+
+    def _flush_audit(self, now: int) -> None:
+        pending = sorted(
+            (event for events in self._audit.values() for event in events if event.ts_event <= now),
+            key=lambda event: event.ts_event,
+        )
+        for event in pending:
+            self._write_event(event.model_copy(update={"ts_event": max(event.ts_event, self._last_execution_ts)}))
+            self._audit[event.sub_account_id].remove(event)
 
     def record_host_event(self, event: ExecutionEvent) -> None:
         self._write_event(event)
@@ -293,20 +505,24 @@ class ExecutionGate:
     def _check_event(self, event: ExecutionEvent, now: int) -> _FillUpdate | None:
         if not isinstance(event, ExecutionEvent):
             raise AccountProcessError("成交插件须返回 ExecutionEvent")
-        if not self._last_execution_ts <= event.ts_event <= now:
+        if not max(self._market_as_of, self._last_execution_ts) <= event.ts_event <= now:
             raise AccountProcessError("成交事件时点超前或倒退")
         if event.sub_account_id not in self._states:
             raise AccountProcessError(f"成交事件引用未知子账户 {event.sub_account_id}")
         plan = self._plans.get(event.plan_id)
         is_fill = event.kind in _FILL_EVENTS
         if event.plan_id is not None and is_fill and plan is None:
-            raise AccountProcessError("成交未经风控批准或计划已失效")
+            if (
+                event.kind != "EXIT_FILLED" or event.position is None
+                or self._submitted_plan_rounds.get(event.plan_id) != event.position.round_id
+            ):
+                raise AccountProcessError("成交未经风控批准或计划已失效")
         if plan is not None and (
             plan.candidate.sub_account_id != event.sub_account_id
             or (event.position is not None and event.position.round_id != plan.round_id)
         ):
             raise AccountProcessError("成交事件与获批计划的子账户或回合不一致")
-        if is_fill and plan is not None and (
+        if event.kind == "ENTRY_FILLED" and plan is not None and (
             plan.candidate.valid_until is not None and event.ts_event > plan.candidate.valid_until
         ):
             raise AccountProcessError("成交引用的计划已过期")
@@ -323,7 +539,8 @@ class ExecutionGate:
             return None
         if position.sub_account_id != event.sub_account_id:
             raise AccountProcessError("成交事件与回合的子账户不一致")
-        if self._round_identities.get(position.round_id) != _identity(position):
+        origin = self._round_origins.get(position.round_id)
+        if origin is None or _identity(origin) != _identity(position):
             raise AccountProcessError("成交事件引用未知回合或更改回合的归属、标的或方向")
         previous = self._positions.get(position.round_id)
 
@@ -342,6 +559,10 @@ class ExecutionGate:
         if not is_fill:
             return None
         currency, remaining_cost = self._check_fill_postings(event, position)
+        if event.kind == "ENTRY_FILLED" and self._entry_fill_allows is not None:
+            exposure = self._position_exposure(position, remaining_cost)
+            if not self._entry_fill_allows(event.sub_account_id, exposure, self._valuation, event.ts_event):
+                raise AccountProcessError("开仓成交后的强平价未保留硬止损安全距离")
         return _FillUpdate(total, currency, remaining_cost)
 
     def _check_fill_postings(self, event: ExecutionEvent, position: RoundStatus) -> tuple[str, Fraction]:
@@ -349,7 +570,7 @@ class ExecutionGate:
             raise AccountProcessError("成交缺少复式分录")
         if event.price is None or event.quantity is None:
             raise AccountProcessError("成交缺少单价或数量")
-        expected = Fraction(event.price) * Fraction(event.quantity)
+        expected = Fraction(event.price) * Fraction(event.quantity) * self._contract_multiplier(position.instrument_id)
         buying = (event.kind == "ENTRY_FILLED") == (position.direction == "LONG")
         settlement: dict[str, Fraction] = defaultdict(Fraction)
         position_cost: dict[str, Fraction] = defaultdict(Fraction)
@@ -400,6 +621,8 @@ class ExecutionGate:
         increase: Fraction, previous: RoundStatus | None,
     ) -> Fraction:
         plan = self._plans.get(event.plan_id)
+        if self._states[event.sub_account_id] == TradingState.HALTED:
+            raise AccountProcessError("HALTED 状态拒绝开仓或加仓成交")
         if event.kind != "ENTRY_FILLED" or plan is None:
             raise AccountProcessError("开仓或加仓成交未经风控批准")
         candidate = plan.candidate

@@ -14,6 +14,8 @@ from collections.abc import Callable, Iterable, Sequence
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.derivatives import DerivativePoint
+from talaria.foundation.drawings import DrawingRecord
+from talaria.foundation.rules import Rule
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.scanner.contracts import (
     ScannerConditionKind,
@@ -23,8 +25,10 @@ from talaria.foundation.scanner.contracts import (
     ScannerTrigger,
     ScannerTriggerRoute,
 )
-from talaria.perception.scanner.engine import KIND_ORDER, ScannerConfig, ScannerEngine
+from talaria.perception.rule_derivatives import ArchiveReader
+from talaria.perception.scanner.engine import KIND_ORDER, RuleLevelsAt, ScannerConfig, ScannerEngine
 from talaria.perception.scanner.routing import TriggerRoutingPolicy
+from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService, pin_rule_indicator_params
 from talaria.workbench_api.state_repositories.watchlist import SCANNER_FOCUS_GROUP_ID
 from talaria.workbench_api.state_store import StateStore, StateWriterQueue
 
@@ -54,8 +58,11 @@ class ScannerService:
         config: ScannerConfig | None = None,
         routing: TriggerRoutingPolicy | None = None,
         focus_name: str = SCANNER_FOCUS_NAME,
+        rule_levels_at: RuleLevelsAt | None = None,
+        read_archived_derivatives: ArchiveReader | None = None,
     ) -> None:
         self._state_writer = state_writer
+        self._indicator_defaults = IndicatorDefaultsService(state_writer)
         self._instruments = {spec.instrument_id: spec for spec in instruments}
         self._now_ms = now_ms
         self._publish = publish
@@ -66,6 +73,8 @@ class ScannerService:
             now_ms=now_ms,
             config=config,
             freeze_snapshot=freeze_snapshot,
+            rule_levels_at=rule_levels_at,
+            read_archived_derivatives=read_archived_derivatives,
         )
         self._history: deque[ScannerTrigger] = deque(maxlen=HISTORY_LIMIT)
         self._lock = asyncio.Lock()
@@ -106,6 +115,9 @@ class ScannerService:
     async def scan(
         self,
         instrument_ids: Sequence[str] | None = None,
+        *,
+        rule: Rule | None = None,
+        drawing: Callable[[str], DrawingRecord | None] | None = None,
     ) -> list[ScannerTrigger]:
         """扫描一轮；同一时刻的并发调用串行化，避免重复冻结。"""
 
@@ -123,7 +135,12 @@ class ScannerService:
             ]
             if unknown:
                 raise ValueError(f"未知标的：{', '.join(unknown)}")
-            triggers = self._engine.scan(requested, now=now)
+            if rule is not None:
+                rule = rule.model_copy(deep=True)
+                pin_rule_indicator_params(rule.expression, None, await self._indicator_defaults.effective())
+            triggers = self._engine.scan(
+                requested, now=now, rule=rule, drawing=drawing, include_gate_hits=self._routing.co_pilot_enabled,
+            )
             routed: list[ScannerTrigger] = []
             for trigger in triggers:
                 routed.append(self._apply_route(trigger))
@@ -135,7 +152,7 @@ class ScannerService:
                     except Exception:
                         logger.exception("广播扫描异动失败：%s", trigger.trigger_id)
             await self._sync_focus(now)
-            return routed
+            return [t for t in routed if rule is None or t.kind is ScannerConditionKind.RULE]
 
     async def scan_now(
         self, instrument_ids: Sequence[str] | None = None
@@ -212,7 +229,7 @@ class ScannerService:
                 continue
             kinds = [
                 kind
-                for kind in KIND_ORDER
+                for kind in (*KIND_ORDER, ScannerConditionKind.RULE)
                 if any(trigger.kind is kind for trigger in triggers)
             ]
             latest_trigger = max(

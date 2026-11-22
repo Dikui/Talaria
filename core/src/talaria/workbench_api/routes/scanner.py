@@ -11,6 +11,7 @@ from talaria.foundation.briefings import (
     BriefingResultRequest,
     ScannerBriefing,
 )
+from talaria.foundation.rules import RuleDrawingPrice, RuleOverlay
 from talaria.foundation.scanner import (
     ScannerConditionKind,
     ScannerFocusResponse,
@@ -121,14 +122,22 @@ async def submit_scanner_briefing_result(
 async def scan_now(
     request: Request, payload: ScannerScanRequest | None = None
 ) -> ScannerScanResponse:
-    scanner = get_runtime(request).require_scanner()
+    runtime = get_runtime(request)
+    scanner = runtime.require_scanner()
     requested = (
         list(dict.fromkeys(payload.instrument_ids))
         if payload is not None and payload.instrument_ids is not None
         else scanner.universe
     )
     try:
-        triggers = await scanner.scan(requested)
+        rule = payload.rule if payload is not None else None
+        drawings = {}
+        if rule is not None:
+            for drawing_id in dict.fromkeys(
+                node.drawing_id for node in rule.references() if isinstance(node, (RuleOverlay, RuleDrawingPrice))
+            ):
+                drawings[drawing_id] = await runtime.drawings.get_drawing(drawing_id)
+        triggers = await scanner.scan(requested, rule=rule, drawing=drawings.get)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ScannerScanResponse(

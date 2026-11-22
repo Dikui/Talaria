@@ -32,7 +32,7 @@ export type QuoteSource = "SUPERVISOR" | "SNAPSHOT" | "UNAVAILABLE";
 
 export type DegradationReason = "QUOTA" | "NO_FEED";
 
-export type AlertConditionKind = "METRIC_THRESHOLD" | "INDICATOR_SIGNAL" | "OVERLAY_CROSS" | "LEVEL_EVENT";
+export type AlertTriggerKind = "METRIC_THRESHOLD" | "INDICATOR_SIGNAL" | "OVERLAY_CROSS" | "LEVEL_EVENT" | "RULE";
 
 export type AlertLevelEvent = "TOUCH" | "BREAK" | "RETEST";
 
@@ -44,7 +44,7 @@ export type AlertOverlayMode = "TOUCH" | "CLOSE_BREAK";
 
 export type AlertStatus = "DRAFT" | "ARMED" | "COOLDOWN" | "EXPIRED" | "DISABLED";
 
-export type ScannerConditionKind = "LIQUIDITY_ANOMALY" | "VOLATILITY_EXPANSION" | "FUNDING_EXTREME" | "OI_DIVERGENCE" | "KEY_LEVEL_EVENT";
+export type ScannerConditionKind = "LIQUIDITY_ANOMALY" | "VOLATILITY_EXPANSION" | "FUNDING_EXTREME" | "OI_DIVERGENCE" | "KEY_LEVEL_EVENT" | "RULE";
 
 export type ScannerSeverity = "INFO" | "WARNING" | "CRITICAL";
 
@@ -161,6 +161,8 @@ export interface DerivativePoint {
   precision?: PrecisionTier;
   ts_ingested: number;
   ts_committed: number;
+  revision?: number;
+  settled?: boolean | null;
 }
 export interface DerivativeSeries {
   kind: DerivativeKind;
@@ -439,33 +441,15 @@ export interface Watchlist {
   realtime_used: number;
   generated_ts: number;
 }
-export interface AlertCondition {
-  kind: AlertConditionKind;
-  direction?: AlertDirection | null;
-  metric?: AlertMetric | null;
-  threshold?: DecimalString | null;
-  indicator?: IndicatorName | null;
-  indicator_period?: number | null;
-  indicator_anchor?: "snapshot" | "session" | null;
-  indicator_seed?: "pine" | "legacy_sma" | null;
-  indicator_std_dev?: DecimalString | null;
-  indicator_channel?: string | null;
-  compare_indicator?: IndicatorName | null;
-  compare_period?: number | null;
-  compare_anchor?: "snapshot" | "session" | null;
-  compare_seed?: "pine" | "legacy_sma" | null;
-  compare_std_dev?: DecimalString | null;
-  drawing_id?: string | null;
-  overlay_mode?: AlertOverlayMode | null;
-  overlay_ratio?: DecimalString | null;
-  level_id?: string | null;
-  level_event?: AlertLevelEvent | null;
-  level_kind?: KeyLevelKind | null;
+export interface Rule {
+  version: "1";
+  timing: "bar_close" | "event";
+  expression: RuleComparison | RuleOverlay | RuleLevelEvent | RuleGroup;
 }
 export interface AlertCreate {
   instrument_id: string;
   timeframe: string;
-  condition: AlertCondition;
+  condition: Rule;
   note?: string;
   draft?: boolean;
   repeat?: boolean;
@@ -473,7 +457,7 @@ export interface AlertCreate {
   expires_at?: number | null;
 }
 export interface AlertPatch {
-  condition?: AlertCondition | null;
+  condition?: Rule | null;
   note?: string | null;
   repeat?: boolean | null;
   cooldown_ms?: number | null;
@@ -484,7 +468,7 @@ export interface AlertRecord {
   alert_id: string;
   instrument_id: string;
   timeframe: string;
-  condition: AlertCondition;
+  condition: Rule;
   status: AlertStatus;
   repeat: boolean;
   cooldown_ms: number;
@@ -504,7 +488,7 @@ export interface AlertTriggerRecord {
   alert_id: string;
   instrument_id: string;
   timeframe: string;
-  condition_kind: AlertConditionKind;
+  condition_kind: AlertTriggerKind;
   triggered_ts: number;
   snapshot_id: string;
   observed?: DecimalString | null;
@@ -559,6 +543,7 @@ export interface ScannerFocusResponse {
 }
 export interface ScannerScanRequest {
   instrument_ids?: string[] | null;
+  rule?: Rule | null;
 }
 export interface ScannerScanResponse {
   triggers: ScannerTrigger[];
@@ -821,4 +806,67 @@ export interface AnnotationClearResponse {
   instrument_id: string;
   session_id: string | null;
   cleared: number;
+}
+export interface RuleGroup {
+  op: "all" | "any" | "not";
+  args: (RuleComparison | RuleOverlay | RuleLevelEvent | RuleGroup)[];
+}
+export interface RuleComparison {
+  op: "compare";
+  test: "lt" | "lte" | "gt" | "gte" | "eq" | "cross_above" | "cross_below";
+  left: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice;
+  right: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice;
+}
+export interface RuleConstant {
+  source: "constant";
+  value: DecimalString;
+}
+export interface RuleBar {
+  source: "bar";
+  field: "open" | "high" | "low" | "close" | "volume" | "turnover";
+}
+export interface RuleDerivative {
+  source: "derivative";
+  kind: DerivativeKind;
+}
+export interface RuleEvent {
+  source: "event";
+  metric: AlertMetric;
+}
+export interface RuleIndicator {
+  source: "indicator";
+  name: IndicatorName | "legacy_ema" | "legacy_atr";
+  version?: "1";
+  channel?: string | null;
+  params?: RuleIndicatorParams;
+}
+export interface RuleIndicatorParams {
+  period?: number | null;
+  anchor?: "snapshot" | "session" | null;
+  std_dev?: DecimalString | null;
+}
+export interface RuleLevelEvent {
+  op: "level_event";
+  level_id: string;
+  event: AlertLevelEvent;
+  level_kind?: KeyLevelKind | null;
+}
+export interface RuleOverlay {
+  op: "overlay";
+  drawing_id: string;
+  mode: AlertOverlayMode;
+  direction: AlertDirection;
+  ratio?: DecimalString | null;
+}
+export interface RuleDrawingPrice {
+  source: "drawing_price";
+  drawing_id: string;
+  edge?: "lower" | "upper";
+  ratio?: DecimalString | null;
+}
+export interface RuleLevelPrice {
+  source: "level_price";
+  level_id: string;
+  level_kind?: KeyLevelKind | null;
+  edge?: "lower" | "upper";
 }

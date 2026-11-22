@@ -11,8 +11,6 @@ from decimal import Decimal
 import pytest
 
 from talaria.foundation.alerts import (
-    AlertCondition,
-    AlertConditionKind,
     AlertLevelEvent,
     AlertRecord,
     AlertStatus,
@@ -31,6 +29,7 @@ from talaria.foundation.key_levels import (
     KeyLevelStatus,
 )
 from talaria.foundation.types import PrecisionTier
+from talaria.foundation.rules import Rule
 from talaria.perception.alerts import AlertEngine
 
 pytestmark = pytest.mark.small
@@ -148,12 +147,10 @@ def _level_alert(
     cooldown_ms: int = 60_000,
     level_kind: KeyLevelKind | None = None,
 ) -> AlertRecord:
-    condition = AlertCondition(
-        kind=AlertConditionKind.LEVEL_EVENT,
-        level_id=LEVEL_ID,
-        level_event=event,
-        level_kind=level_kind,
-    )
+    condition = Rule.model_validate({
+        "version": "1", "timing": ("event" if event == "TOUCH" else "bar_close"),
+        "expression": {"op": "level_event", "level_id": LEVEL_ID, "event": event, "level_kind": level_kind},
+    })
     return AlertRecord(
         alert_id=alert_id,
         instrument_id=INSTRUMENT,
@@ -206,7 +203,7 @@ def test_touch_triggers_on_rising_edge_and_freezes_snapshot() -> None:
     assert frozen == ["snap_frozen"]
     record = engine.get(alert.alert_id)
     assert record is not None
-    assert record.last_triggered_ts == 1_000
+    assert record.last_triggered_ts == BASE_TS + 2 * MINUTE
 
 
 def test_touch_repeat_after_cooldown_needs_new_edge() -> None:
@@ -377,22 +374,71 @@ def test_zone_touch_uses_low_and_high() -> None:
     assert alert.trigger_count == 1
 
 
-def test_level_event_contract_rejects_cross_kind_fields() -> None:
-    with pytest.raises(ValueError):
-        AlertCondition(
-            kind=AlertConditionKind.LEVEL_EVENT,
-            level_id=LEVEL_ID,
-            level_event=AlertLevelEvent.TOUCH,
-            threshold=Decimal("100"),
-        )
-    with pytest.raises(ValueError):
-        AlertCondition(kind=AlertConditionKind.LEVEL_EVENT, level_id=LEVEL_ID)
-    with pytest.raises(ValueError):
-        AlertCondition(
-            kind=AlertConditionKind.METRIC_THRESHOLD,
-            direction="ABOVE",
-            metric="last_price",
-            threshold=Decimal("100"),
-            level_id=LEVEL_ID,
-            level_event=AlertLevelEvent.TOUCH,
-        )
+def test_level_event_rejects_extra_fields() -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        Rule.model_validate({
+            "version": "1", "timing": "event",
+            "expression": {"op": "level_event", "level_id": LEVEL_ID,
+                           "event": "TOUCH", "threshold": "100"},
+        })
+
+
+def test_signal_reads_level_and_consumes_retest_from_context():
+    from talaria.components import Ctx, compile_rule
+    from talaria.components.runtime import RuleState
+
+    level = _level(status=KeyLevelStatus.BROKEN)
+    signal = compile_rule(_level_alert(AlertLevelEvent.RETEST).condition)
+    state = RuleState()
+    results = []
+    for i, low in enumerate(["102", "99", "99"]):
+        bar = _bar(BASE_TS + i * MINUTE, "102", low=low)
+        ctx = Ctx(INSTRUMENT, TIMEFRAME, 0, bar.ts_available, levels={level.level_id: level},
+                  rule_state=state, _confirmed_compact=[bar], _indicator_defaults={})
+        results.append(bool(signal.evaluate(ctx)))
+    assert results == [False, True, False]
+
+    future = level.model_copy(update={"ts_available": ctx.now + MINUTE})
+    touch = compile_rule(_level_alert(AlertLevelEvent.TOUCH).condition)
+    event = _kline(bar.timestamp, "102", low="99")
+    ctx = Ctx(INSTRUMENT, TIMEFRAME, 0, ctx.now, levels={future.level_id: future}, event=event,
+              _confirmed_compact=[bar], _indicator_defaults={})
+    assert touch.evaluate(ctx) == []
+
+
+def test_late_close_matches_at_identical_price_and_as_of_across_rule_hosts():
+    from talaria.components import Ctx, compile_rule
+    from talaria.perception.scanner import ScannerEngine
+
+    level = _level(status=KeyLevelStatus.BROKEN)
+    alert = _level_alert(AlertLevelEvent.BREAK)
+    expression = alert.condition.expression.model_dump(mode="json")
+    alert.condition = Rule.model_validate(dict(version="1", timing="bar_close", expression=dict(op="all", args=[
+        expression, dict(op="compare", test="gte", left=dict(source="indicator", name="SMA", params={"period": 1}),
+                         right=dict(source="constant", value="101")),
+    ])))
+    close = BASE_TS + 2 * MINUTE
+    def levels(instrument, timeframe, cutoff):
+        return [level] if cutoff <= close else []
+    clock = Clock()
+    records = []
+    frozen = []
+    engine = AlertEngine(now_ms=clock, key_level_provider=levels, on_trigger=lambda record, _: records.append(record))
+    scanner = ScannerEngine(now_ms=clock, rule_levels_at=levels, freeze_snapshot=lambda i, tf, ts: frozen.append(ts) or "snap")
+    signal = compile_rule(alert.condition)
+    engine.put(alert)
+    history = []
+    for slot, price, delay in [(BASE_TS, "100", 0), (BASE_TS + MINUTE, "102", 1000)]:
+        event = _kline(slot, price)
+        clock.now = event.bar.ts_available + delay
+        event.bar.ts_available = clock.now
+        history.append(event.bar)
+        engine.handle_event(event)
+        scanner.handle_event(event)
+        hits = scanner.scan([INSTRUMENT], rule=alert.condition)
+        ctx = Ctx(INSTRUMENT, TIMEFRAME, 0, clock.now, event=event, _indicator_defaults={},
+                  _confirmed_compact=history, levels={lv.level_id: lv for lv in levels(INSTRUMENT, TIMEFRAME, slot + MINUTE)})
+        signals = signal.evaluate(ctx)
+        assert bool(records) == bool(hits) == bool(signals) == (delay > 0)
+    assert records[0].observed == hits[0].evidence[0].value == signals[0].values["observed"] == 102
+    assert records[0].triggered_ts == frozen[0] == signals[0].timestamp == close + 1000

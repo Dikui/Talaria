@@ -6,7 +6,7 @@ pytestmark = [pytest.mark.small, pytest.mark.spec]
 
 SCHEME = """\
 scheme: breakout
-interface_version: 1
+interface_version: 2
 sub_accounts: [alpha, beta]
 slots:
   data: {plugin: parquet_replay, params: {instrument: BTC-USDT-PERP}}
@@ -35,8 +35,8 @@ def test_load_scheme_with_named_slots_and_python_strategy(tmp_path):
 @pytest.mark.parametrize(("original", "invalid", "message"), [
     ("[alpha, beta]", "[alpha, alpha]", "重复"),
     ("[alpha, beta]", "[../alpha]", "sub_accounts"),
-    ("interface_version: 1", "interface_version: 9", "interface_version"),
-    ("interface_version: 1", "interface_version: true", "interface_version"),
+    ("interface_version: 2", "interface_version: 9", "interface_version"),
+    ("interface_version: 2", "interface_version: true", "interface_version"),
     ("tools: []", "tools: [tool]", "tools"),
     ("risk: example", "risk: example\n  risk: replaced", "重复"),
 ])

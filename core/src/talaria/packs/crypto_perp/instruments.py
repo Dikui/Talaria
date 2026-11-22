@@ -19,6 +19,7 @@ from talaria.foundation.market import (
     TradingSession,
 )
 from talaria.packs.crypto_perp.connector import DEFAULT_BASE_URL, BybitLinearConnector
+from talaria.packs.crypto_perp.margin import CryptoPerpMarginValuation
 from talaria.packs.crypto_perp.prompt import MARKET_PACK_SKILL
 from talaria.packs.crypto_perp.stream import BybitPublicStream
 
@@ -118,6 +119,12 @@ class CryptoPerpPack:
         if instrument_id not in self._by_id:
             raise KeyError(instrument_id)
         return _TRAITS
+
+    def margin_valuation(self) -> CryptoPerpMarginValuation:
+        return CryptoPerpMarginValuation(self._margin_trait)
+
+    def _margin_trait(self, instrument_id: str) -> MarginTrait:
+        return self.traits(instrument_id).margin
 
     def create_history_connector(
         self, *, base_url: str | None = None

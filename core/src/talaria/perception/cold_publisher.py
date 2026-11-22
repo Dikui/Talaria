@@ -5,19 +5,22 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from itertools import groupby
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
+from talaria.foundation.derivatives import DerivativeDataConnector, DerivativeKind
 from talaria.foundation.errors import FeedUnavailableError
+from talaria.foundation.feed import FeedEvent
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.timeframes import timeframe_ms
 from talaria.perception.backfill import BackfillPolicy
 from talaria.perception.bar_range import range_visible_bars, unpublished_revisions
 from talaria.perception.cold_store import ColdBatch, ColdStore, partition_month
+from talaria.perception.derivative_publisher import DerivativePublisher
 from talaria.perception.hot_buffer import HotSlot, HotStreamBuffer
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,8 @@ class ColdPublisher:
         has_channel: Callable[[str, str], bool] | None = None,
         on_publish: Callable[[tuple[str, str], int, int], None] | None = None,
         on_history_complete: Callable[[str, str], None] | None = None,
+        on_derivative_publish: Callable[[str, DerivativeKind, int, int], None] | None = None,
+        funding_intervals_ms: Mapping[str, int] | None = None,
     ) -> None:
         self._store = store
         self._instruments = instruments
@@ -53,6 +58,30 @@ class ColdPublisher:
         self._history = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-history")
         self._pending_history: dict[tuple[str, str, int, int, frozenset[int], int | None], Future[None]] = {}
         self._history_lock = threading.Lock()
+        self._derivatives = DerivativePublisher(
+            store, instruments=instruments, connector=connector if isinstance(connector, DerivativeDataConnector) else None,
+            policy=policy, now_ms=now_ms, writer=self._writes, history=self._history,
+            on_publish=on_derivative_publish, funding_intervals_ms=funding_intervals_ms or {},
+        )
+
+    def ingest_derivatives(self, event: FeedEvent) -> None:
+        self._derivatives.ingest(event)
+
+    async def flush_derivatives_periodically(self) -> None:
+        await self._derivatives.flush_periodically()
+
+    def request_derivative_history(
+        self, instrument: InstrumentSpec, timeframes: Sequence[str], *, cutoff_ts: int,
+    ) -> Future[None] | None:
+        return self._derivatives.request_history(instrument, timeframes, cutoff_ts=cutoff_ts)
+
+    def request_derivative_range(
+        self, instrument: InstrumentSpec, kind: DerivativeKind, timeframes: Sequence[str | None],
+        *, start: int, end: int, cutoff: int, refresh: bool = False,
+    ) -> Future[None] | None:
+        return self._derivatives.request_range(
+            instrument, kind, timeframes, start=start, end=end, cutoff=cutoff, refresh=refresh,
+        )
 
     def record_close(
         self, instrument: InstrumentSpec, timeframe: str, bar: CompactBar, received_ts: int,
@@ -109,6 +138,8 @@ class ColdPublisher:
             end_ts=subscribed_ts - interval,
             max_pages=self._policy.max_pages,
         )
+        self._derivatives.track_funding(instrument.instrument_id, subscribed_ts)
+        self.request_derivative_history(instrument, (timeframe,), cutoff_ts=subscribed_ts)
 
     def request_history(
         self, instrument: InstrumentSpec, timeframe: str, *, start_ts: int, end_ts: int,
@@ -139,6 +170,7 @@ class ColdPublisher:
 
     async def close(self) -> None:
         await asyncio.to_thread(self._history.shutdown)
+        await self._derivatives.flush()
         await asyncio.to_thread(self._writes.shutdown)
 
     def _backfill(

@@ -6,6 +6,9 @@ Pine v6 对齐的工厂默认值。覆盖值的读改写由 ``StateWriterQueue``
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from talaria.foundation.rules import RuleComparison, RuleExpression, RuleGroup, RuleIndicator, RuleIndicatorParams
 from talaria.foundation.indicators import IndicatorParams
 from talaria.foundation.operators import IndicatorName, spec_from_params
 from talaria.perception.indicator_defaults import (
@@ -62,3 +65,26 @@ class IndicatorDefaultsService:
         else:
             payload[name.value] = params.model_dump(mode="json")
         store.meta.set(DEFAULTS_KEY, payload)
+
+
+def pin_rule_indicator_params(
+    node: RuleExpression,
+    previous: RuleExpression | None,
+    defaults: Mapping[IndicatorName, IndicatorParams],
+) -> None:
+    if isinstance(node, RuleGroup):
+        previous_args = previous.args if isinstance(previous, RuleGroup) and previous.op == node.op else ()
+        for index, child in enumerate(node.args):
+            old_child = previous_args[index] if index < len(previous_args) else None
+            pin_rule_indicator_params(child, old_child, defaults)
+    elif isinstance(node, RuleComparison):
+        for side in ("left", "right"):
+            operand = getattr(node, side)
+            if not isinstance(operand, RuleIndicator):
+                continue
+            explicit = operand.params.model_dump(exclude_none=True)
+            old = getattr(previous, side, None)
+            if isinstance(old, RuleIndicator) and old.name == operand.name and old.params.std_dev is not None:
+                explicit.setdefault("std_dev", old.params.std_dev)
+            params = defaults[operand.indicator_name].model_dump(exclude_none=True) | explicit
+            operand.params = RuleIndicatorParams.model_validate(params)

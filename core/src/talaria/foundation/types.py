@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
+from fractions import Fraction
 from enum import StrEnum
 from typing import Annotated
 
@@ -11,6 +12,12 @@ from pydantic.json_schema import WithJsonSchema
 
 #: 十进制字符串的正则；所有价格、数量、金额字段的 JSON Schema 都必须是这个形状。
 DECIMAL_PATTERN = r"^-?(?:0|[1-9]\d*)(?:\.\d+)?$"
+
+
+def decimal_from_finite_fraction(value: Fraction) -> Decimal:
+    """还原由有限十进制加减乘得到的有理数，保留全部有效位。"""
+    with localcontext(prec=len(str(abs(value.numerator))) + value.denominator.bit_length()):
+        return Decimal(value.numerator) / Decimal(value.denominator)
 
 
 def decimal_to_string(value: Decimal) -> str:

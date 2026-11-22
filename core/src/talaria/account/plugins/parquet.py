@@ -8,7 +8,7 @@ from pydantic import Field, StrictInt, model_validator
 
 from talaria import sdk
 from talaria.account.contracts import MarketData, MarketEvent
-from talaria.account.scheme import PluginContext, PluginParams, SchemeError, Slot, SlotPlugin
+from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParams, SchemeError, Slot, SlotPlugin
 from talaria.components.runtime import confirmed_bars
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.foundation.types import ContractModel
@@ -56,4 +56,4 @@ class ParquetReplay:
             )
 
 
-parquet_replay = SlotPlugin(Slot.DATA, (1,), ParquetReplay, ReplayParams)
+parquet_replay = SlotPlugin(Slot.DATA, (INTERFACE_VERSION,), ParquetReplay, ReplayParams)

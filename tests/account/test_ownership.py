@@ -25,7 +25,7 @@ class TestData:
         return iter(())
 
 registry = PluginRegistry()
-for definition in (fill, risk, sizing, plugin, SlotPlugin(Slot.DATA, (1,), lambda *_: TestData())):
+for definition in (fill, risk, sizing, plugin, SlotPlugin(Slot.DATA, (2,), lambda *_: TestData())):
     registry.register("example", definition)
 try:
     with open_account_process(Path(sys.argv[1]), Path(sys.argv[2]), mode="paper", registry=registry):
@@ -44,7 +44,7 @@ def test_paper_process_cannot_start_with_an_owned_sub_account(tmp_path):
         path = tmp_path / f"{name}.yaml"
         path.write_text(f"""\
 scheme: {name}
-interface_version: 1
+interface_version: 2
 sub_accounts: {sub_accounts}
 slots: {{data: example, strategy: {{plugin: example, params: {{trigger_price: '11'}}}}, sizing: example, risk: example, fill: example}}
 """)
@@ -138,11 +138,11 @@ def test_paper_process_cannot_write_after_its_owner_lock_is_released(tmp_path, r
         (Slot.DATA, Data), (Slot.FILL, Fill), (Slot.STRATEGY, OtherSlots),
         (Slot.SIZING, OtherSlots), (Slot.RISK, OtherSlots),
     ):
-        registry.register("example", SlotPlugin(slot, (1,), lambda *_, factory=factory: factory()))
+        registry.register("example", SlotPlugin(slot, (2,), lambda *_, factory=factory: factory()))
     scheme = tmp_path / "paper.yaml"
     scheme.write_text("""\
 scheme: paper
-interface_version: 1
+interface_version: 2
 sub_accounts: [example]
 slots: {data: example, strategy: example, sizing: example, risk: example, fill: example}
 """)

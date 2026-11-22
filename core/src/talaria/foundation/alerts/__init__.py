@@ -1,31 +1,26 @@
 """盘面预警的契约与画线几何纯函数。"""
 
 from talaria.foundation.alerts.contracts import (
-    AlertCondition,
-    AlertConditionKind,
     AlertCreate,
-    AlertDirection,
-    AlertLevelEvent,
     AlertListResponse,
-    AlertMetric,
-    AlertOverlayMode,
     AlertPatch,
     AlertRecord,
     AlertStatus,
     AlertTriggerListResponse,
     AlertTriggerRecord,
+    AlertTriggerKind,
 )
+from talaria.foundation.rules import AlertDirection, AlertLevelEvent, AlertMetric, AlertOverlayMode
 from talaria.foundation.alerts.overlay import OverlayBounds, overlay_bounds
 
 __all__ = [
-    "AlertCondition",
-    "AlertConditionKind",
     "AlertCreate",
     "AlertDirection",
     "AlertLevelEvent",
-    "AlertListResponse",
     "AlertMetric",
     "AlertOverlayMode",
+    "AlertTriggerKind",
+    "AlertListResponse",
     "AlertPatch",
     "AlertRecord",
     "AlertStatus",

@@ -1,14 +1,15 @@
 {
   "$defs": {
-    "AlertConditionKind": {
-      "description": "规则条件的来源；前端不复制任何指标、几何或关键位数学。",
+    "AlertTriggerKind": {
+      "description": "触发记录的展示类别。保留既有记录的分类值。",
       "enum": [
         "METRIC_THRESHOLD",
         "INDICATOR_SIGNAL",
         "OVERLAY_CROSS",
-        "LEVEL_EVENT"
+        "LEVEL_EVENT",
+        "RULE"
       ],
-      "title": "AlertConditionKind",
+      "title": "AlertTriggerKind",
       "type": "string"
     },
     "AlertTriggerRecord": {
@@ -20,7 +21,7 @@
           "type": "string"
         },
         "condition_kind": {
-          "$ref": "#/$defs/AlertConditionKind"
+          "$ref": "#/$defs/AlertTriggerKind"
         },
         "instrument_id": {
           "title": "Instrument Id",

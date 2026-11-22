@@ -14,10 +14,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
-from typing import Protocol, Sequence, runtime_checkable
+from operator import attrgetter
+from typing import Iterable, Protocol, Sequence, runtime_checkable
 
-from pydantic import model_validator
+from pydantic import ConfigDict, Field, model_validator
 
+from talaria.foundation.timeframes import timeframe_ms
 from talaria.foundation.types import (
     ContractModel,
     DecimalStr,
@@ -46,6 +48,8 @@ class DerivativeKind(StrEnum):
 class DerivativePoint(ContractModel):
     """一个带五重时点的衍生品观测值。"""
 
+    model_config = ConfigDict(frozen=True)
+
     instrument_id: str
     kind: DerivativeKind
     timeframe: str | None = None
@@ -56,6 +60,29 @@ class DerivativePoint(ContractModel):
     precision: PrecisionTier = PrecisionTier.SECOND_VERIFIED
     ts_ingested: int
     ts_committed: int
+    revision: int = Field(default=0, ge=0)
+    settled: bool | None = Field(default=None, description="资金费率是否已结算。旧记录可省略。")
+
+    @property
+    def is_funding_settlement(self) -> bool:
+        if self.kind is not DerivativeKind.FUNDING_RATE:
+            return False
+        if self.settled is not None:
+            return self.settled
+        # 旧 Parquet 和快照没有单独的结算标识。
+        return self.ts_published == self.ts_event
+
+    @property
+    def observation_time(self) -> int:
+        if self.kind == DerivativeKind.MARK_PRICE and self.timeframe is not None:
+            return self.ts_event + timeframe_ms(self.timeframe)
+        return self.ts_event
+
+    def visible_at(self, as_of: int) -> bool:
+        try:
+            return 0 <= self.ts_event <= self.observation_time <= self.ts_available <= as_of
+        except KeyError:
+            return False
 
     @model_validator(mode="after")
     def _timestamps_are_ordered(self) -> DerivativePoint:
@@ -64,6 +91,31 @@ class DerivativePoint(ContractModel):
         if self.ts_committed < self.ts_ingested:
             raise ValueError("ts_committed 不能早于 ts_ingested")
         return self
+
+
+def derivative_identity(point: DerivativePoint) -> tuple[str, str, str, bool, int]:
+    return (
+        point.instrument_id, point.kind.value, point.timeframe or "",
+        point.is_funding_settlement, point.ts_event,
+    )
+
+
+derivative_revision_order = attrgetter("revision", "ts_available", "ts_ingested")
+
+
+def latest_visible_derivatives(
+    points: Iterable[DerivativePoint], *, as_of: int | None = None,
+) -> list[DerivativePoint]:
+    """先按可获取时间截断，再按种类、周期和事件时间选版。"""
+    selected: dict[tuple[str, str, str, bool, int], DerivativePoint] = {}
+    for point in points:
+        if as_of is not None and point.ts_available > as_of:
+            continue
+        key = derivative_identity(point)
+        previous = selected.get(key)
+        if previous is None or derivative_revision_order(point) >= derivative_revision_order(previous):
+            selected[key] = point
+    return sorted(selected.values(), key=lambda point: (point.ts_event, derivative_identity(point)))
 
 
 class DerivativeSeries(ContractModel):
@@ -125,6 +177,7 @@ class RawDerivativePoint:
             precision=self.precision,
             ts_ingested=self.ts_ingested,
             ts_committed=self.ts_committed,
+            settled=True if self.kind is DerivativeKind.FUNDING_RATE else None,
         )
 
 
