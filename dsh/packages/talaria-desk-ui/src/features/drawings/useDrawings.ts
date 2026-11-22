@@ -8,6 +8,7 @@ import type {
 } from "@talaria/contracts";
 
 import { api } from "../../lib/api";
+import type { PanelLink } from "../../workbench/link";
 import {
   applyDrawingPatch,
   emptyHistory,
@@ -64,6 +65,7 @@ export interface UseDrawingsOptions {
   timeframe: string;
   pricePrecision: number;
   readOnly: boolean;
+  link: Pick<PanelLink, "subscribeDrawings" | "notifyDrawingsChanged">;
 }
 
 function describeError(error: unknown): string {
@@ -108,7 +110,7 @@ function samePoints(a: DrawingPoint[], b: DrawingPoint[]): boolean {
 
 /** 画线状态机：乐观重绘 + 单一异步串行写队列 + 前端版本链撤销/重做。 */
 export function useDrawings(options: UseDrawingsOptions): DrawingsController {
-  const { chart, instrumentId, timeframe, pricePrecision, readOnly } = options;
+  const { chart, instrumentId, timeframe, pricePrecision, readOnly, link } = options;
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<DrawingToolId>("select");
@@ -149,12 +151,16 @@ export function useDrawings(options: UseDrawingsOptions): DrawingsController {
 
   const enqueue = useCallback(<T,>(task: () => Promise<T>): Promise<T> => {
     setPending((value) => value + 1);
-    const promise = queueRef.current.run(task);
+    const promise = queueRef.current.run(async () => {
+      const result = await task();
+      link.notifyDrawingsChanged(instrumentId);
+      return result;
+    });
     promise
       .catch(() => undefined)
       .finally(() => setPending((value) => Math.max(0, value - 1)));
     return promise;
-  }, []);
+  }, [instrumentId, link]);
 
   const loadWindow = useCallback(
     async (target: Chart): Promise<void> => {
@@ -198,6 +204,17 @@ export function useDrawings(options: UseDrawingsOptions): DrawingsController {
     if (target == null) return;
     void loadWindow(target);
   }, [loadWindow]);
+
+  useEffect(() => {
+    let disposed = false;
+    const stop = link.subscribeDrawings(instrumentId, () => {
+      void queueRef.current.idle().then(() => { if (!disposed) refresh(); });
+    });
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, [instrumentId, link, refresh]);
 
   // 切换标的/周期/图表实例：清空本地状态并按新可见范围恢复。
   useEffect(() => {

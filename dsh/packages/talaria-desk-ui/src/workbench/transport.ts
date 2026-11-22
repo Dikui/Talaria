@@ -40,7 +40,10 @@ export function connectEmbeddedRelay(): void {
     port.onmessage = ({ data }: MessageEvent<LinkMessage>) => {
       cacheRelaySelection(storage, data);
       const cached = cachedRelayReply(storage, data);
-      if (cached) port.postMessage(cached);
+      if (cached) {
+        port.postMessage(cached);
+        transport.send(cached);
+      }
       transport.send(data);
     };
     port.postMessage(LINK_READY);

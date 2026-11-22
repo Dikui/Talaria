@@ -115,7 +115,7 @@ interface ChartWorkbenchProps {
 }
 
 export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: ChartWorkbenchProps) {
-  const { instrumentId, timeframe, locateTs: snapshotCutoff, crosshair } = useLinkSnapshot(link);
+  const { instrumentId, timeframe, locateTs: snapshotCutoff } = useLinkSnapshot(link);
   const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
   const [feedMode, setFeedMode] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SnapshotMeta | null>(null);
@@ -513,8 +513,9 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
     timeframe,
     pricePrecision,
     readOnly: readOnlyViewport,
+    link,
   });
-  const annotations = useAnnotations({ instrumentId });
+  const annotations = useAnnotations({ instrumentId, onDrawingsChanged: link.notifyDrawingsChanged });
   const activeAnnotationCount = activeAnnotations(annotations.annotations).length;
   const keyLevels = useKeyLevels({
     snapshotId: snapshot?.snapshot_id ?? null,
@@ -871,8 +872,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                   loadOlder={loadOlder}
                   liveBars={snapshotCutoff === null ? stream.bars : undefined}
                   locateTs={snapshotCutoff}
-                  linkedCrosshair={crosshair}
-                  onCrosshair={link.sendCrosshair}
+                  crosshairLink={link}
                   indicatorSeries={visibleIndicators?.series ?? []}
                   onStats={setStats}
                   onLoadError={(caught) => setError(describeError(caught))}
@@ -1011,6 +1011,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
       {alerts.toast !== null && (
         <AlertToast
           trigger={alerts.toast}
+          theme={theme}
           onLocate={(trigger) => {
             locateTrigger(trigger);
             alerts.clearToast();

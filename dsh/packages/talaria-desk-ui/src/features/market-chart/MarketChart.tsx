@@ -25,8 +25,9 @@ import {
   INDICATOR_COLORS,
 } from "../indicators/config";
 import type { Theme } from "../../lib/theme";
+import type { PanelLink } from "../../workbench/link";
 
-import { applyLinkedCrosshair, CANDLE_PANE_ID, CROSSHAIR_ACTION, linkedCrosshairTime } from "./crosshair";
+import { CANDLE_PANE_ID, observeLinkedCrosshair, observeLocalCrosshair } from "./crosshair";
 import { shouldDeliverLiveBar } from "./liveDelivery";
 
 type IndicatorRow = Record<string, number | null>;
@@ -119,8 +120,7 @@ interface MarketChartProps {
   /** 图表实例挂载/销毁通知，供覆盖层做坐标投影。 */
   onChartReady?: (chart: Chart | null) => void;
   locateTs?: number | null;
-  linkedCrosshair?: number | null;
-  onCrosshair?: (timestamp: number | null) => void;
+  crosshairLink?: Pick<PanelLink, "getCrosshair" | "subscribeCrosshair" | "sendCrosshair">;
 }
 
 /**
@@ -148,8 +148,7 @@ export function MarketChart({
   overlay,
   onChartReady,
   locateTs = null,
-  linkedCrosshair = null,
-  onCrosshair,
+  crosshairLink,
 }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -160,6 +159,7 @@ export function MarketChart({
   const barCallbackRef = useRef<((data: KLineData) => void) | null>(null);
   const pendingLiveRef = useRef<KlineEvent[]>([]);
   const deliveredRef = useRef<Map<number, number>>(new Map());
+  const cursorRef = useRef<ReturnType<typeof observeLinkedCrosshair> | null>(null);
   const onChartReadyRef = useRef(onChartReady);
   onChartReadyRef.current = onChartReady;
 
@@ -183,6 +183,7 @@ export function MarketChart({
       deliveredRef.current.set(event.bar.timestamp, event.revision);
       callback(point);
     }
+    cursorRef.current?.refresh();
   }, []);
 
   useEffect(() => {
@@ -235,6 +236,7 @@ export function MarketChart({
             forward: initialHasMoreForward,
             backward: false,
           });
+          cursorRef.current?.refresh();
           return;
         }
         if (type !== "forward") {
@@ -259,6 +261,7 @@ export function MarketChart({
             forward: page.hasMoreForward,
             backward: false,
           });
+          cursorRef.current?.refresh();
         } catch (error) {
           onLoadError(error);
           callback([], { forward: false, backward: false });
@@ -278,6 +281,7 @@ export function MarketChart({
 
     const observer = new ResizeObserver(() => {
       chart.resize();
+      cursorRef.current?.refresh();
     });
     observer.observe(element);
     chart.resize();
@@ -304,21 +308,19 @@ export function MarketChart({
   useEffect(() => {
     const chart = chartRef.current;
     const element = containerRef.current;
-    if (!chart || !element || !onCrosshair) return;
-    const move = (action: unknown) => onCrosshair(linkedCrosshairTime(chart, action));
-    const leave = () => onCrosshair(null);
-    chart.subscribeAction(CROSSHAIR_ACTION, move);
-    element.addEventListener("pointerleave", leave);
+    if (!chart || !element || !crosshairLink) return;
+    const cursor = observeLinkedCrosshair(chart, crosshairLink.getCrosshair);
+    cursorRef.current = cursor;
+    const stopRemote = crosshairLink.subscribeCrosshair(cursor.refresh);
+    const stopLocal = observeLocalCrosshair(chart, element, crosshairLink.sendCrosshair);
+    cursor.refresh();
     return () => {
-      element.removeEventListener("pointerleave", leave);
-      chart.unsubscribeAction(CROSSHAIR_ACTION, move);
-      leave();
+      cursorRef.current = null;
+      stopLocal();
+      stopRemote();
+      cursor.close();
     };
-  }, [onCrosshair]);
-
-  useEffect(() => {
-    if (chartRef.current) applyLinkedCrosshair(chartRef.current, linkedCrosshair);
-  }, [linkedCrosshair]);
+  }, [crosshairLink]);
 
   useEffect(() => {
     chartRef.current?.setStyles(theme);

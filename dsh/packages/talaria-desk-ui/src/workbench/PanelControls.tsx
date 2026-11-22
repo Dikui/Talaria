@@ -6,6 +6,7 @@ import { useLinkSnapshot } from "./usePanelLink";
 
 export function LinkControls({ link }: { link: PanelLink }) {
   const { group, peers } = useLinkSnapshot(link);
+  const sameGroupPeers = group === "none" ? [] : peers.filter((peer) => peer.group === group);
   return (
     <div className="link-controls" data-link-group={group}>
       <label className="link-group">
@@ -21,9 +22,9 @@ export function LinkControls({ link }: { link: PanelLink }) {
         </select>
       </label>
       <details className="link-peers">
-        <summary>同组 {group === "none" ? 0 : peers.filter((peer) => peer.group === group).length}</summary>
+        <summary>同组 {sameGroupPeers.length}</summary>
         <ul>
-          {peers.length === 0 ? <li>暂无其他面板</li> : peers.map((peer) => (
+          {sameGroupPeers.length === 0 ? <li>暂无其他面板</li> : sameGroupPeers.map((peer) => (
             <li key={peer.from}>
               <span>{PANEL_LABELS[peer.panel]} · {GROUP_LABELS[peer.group]}</span>
               <span title={peer.instrumentId}>{peer.instrumentId} · {peer.timeframe}</span>

@@ -8,10 +8,10 @@ import { createPortal } from "react-dom";
 import styles from "@talaria/desk-ui/styles.css?inline";
 import hostStyles from "./styles.css?inline";
 import { createLinkRelay } from "./linkRelay";
+import { panelLinkKey, restoreActivePanel } from "./panelPreferences.mjs";
 import { panelId, registerPanels } from "./registerPanels.mjs";
 
 const STYLE_ID = "talaria-desk-plugin-styles";
-const ACTIVE_PANEL_KEY = "talaria-dsh-main-panel";
 const DOCK_KEY = "talaria-dsh-docked-panel";
 const DOCK_PANELS = ["alerts", "scanner", "levels"] as const;
 type DockPanel = (typeof DOCK_PANELS)[number];
@@ -52,10 +52,9 @@ function readPreference(key: string) {
   }
 }
 
-function savePreference(key: string, value: string, shared = false) {
+function savePreference(key: string, value: string) {
   try {
     sessionStorage.setItem(key, value);
-    if (shared) localStorage.setItem(key, value);
   } catch {
     // A restricted storage context can still use each panel.
   }
@@ -184,7 +183,7 @@ function ChartWithDock({
       <div className="talaria-dsh-chart">
         <WorkbenchPanel
           panel="chart"
-          persistenceKey="main:chart"
+          persistenceKey={panelLinkKey("chart", "main")}
           theme={theme}
           transport={connection.relay}
           embedded
@@ -209,7 +208,7 @@ function ChartWithDock({
           <WorkbenchPanel
             key={panel}
             panel={panel}
-            persistenceKey={`dock:${panel}`}
+            persistenceKey={panelLinkKey(panel, "dock")}
             theme={theme}
             transport={connection.relay}
             tools={
@@ -258,7 +257,7 @@ export function apply(ctx: SlotContext): void {
         <Surface connection={connection}>
           {(value, theme) => panel === "chart"
             ? <ChartWithDock connection={value} ctx={ctx} theme={theme} />
-            : <WorkbenchPanel panel={panel} theme={theme} transport={value.relay} persistenceKey={`main:${panel}`}
+            : <WorkbenchPanel panel={panel} theme={theme} transport={value.relay} persistenceKey={panelLinkKey(panel, "main")}
                 tools={<button type="button" className="ghost-button" onClick={() => {
                   savePreference(DOCK_KEY, panel);
                   ctx.layout.selectPanel(panelId("chart"));
@@ -272,25 +271,16 @@ export function apply(ctx: SlotContext): void {
         <path d={ICONS[panel]} />
       </svg>
     ),
-    sessionTab: (panel: PanelName) => function SessionTab() {
+    sessionTab: (panel: PanelName) => function SessionTab({ sessionId }: { sessionId: string }) {
       return (
         <Surface connection={connection}>
-          {(value, theme) => <WorkbenchPanel panel={panel} persistenceKey={`session:${panel}`}
+          {(value, theme) => <WorkbenchPanel key={sessionId} panel={panel} persistenceKey={panelLinkKey(panel, "session", sessionId)}
             theme={theme} transport={value.relay} embedded fullWorkbench={panel === "chart"} />}
         </Surface>
       );
     },
     onMainRegistered() {
-      const active = ctx.layout.panelInfo;
-      const remember = () => {
-        const id = active.getSnapshot().activePanelId;
-        if (id && PANELS.some((panel) => panelId(panel) === id)) savePreference(ACTIVE_PANEL_KEY, id, true);
-      };
-      const saved = readPreference(ACTIVE_PANEL_KEY);
-      if (active.getSnapshot().activePanelId === null && PANELS.some((panel) => panelId(panel) === saved)) {
-        ctx.layout.selectPanel(saved);
-      }
-      return active.subscribe(remember);
+      return restoreActivePanel(ctx.layout, PANELS);
     },
   });
 

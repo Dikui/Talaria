@@ -53,6 +53,14 @@
 - 自动检查记录了 red → green。desk-ui 174 项通过，DSH 插件注册用例通过，插件套件 14 项通过、9 项因沙箱禁止回环 TCP 绑定失败。Python 路由专项 5 项通过，工作台套件 258 项通过、`test_host_dispatch_ignores_ambient_http_proxy` 因相同限制失败。TypeScript 检查与生产构建通过。设计文档的 YAML 及 11 个运行时颜色值已核对。整包设计审计仍报告原生控件配置和既有表单规则问题。
 - 在生产源码中执行 `grep -rnE 'prototype\.html|vite\.prototype\.config\.ts|src/prototype|talaria-proto' dsh/packages/talaria-desk-ui/src dsh/packages/talaria-desk-ui/index.html dsh/packages/talaria-desk-ui/vite.config.ts`，退出 1，零匹配。本机原型目录及共享 `.git/info/exclude` 的三行由主任务执行者清理。
 
+### 审查修复
+
+- 同组面板在加入或中继就绪后交换带版本的标的、周期和最近定位。较新的状态收敛到组内，定位随组缓存和加入回复恢复，手动切换标的或周期会清除定位。
+- DSH 的面板注册失败时回滚注册，卸载后可重新加载。返回会诊清除面板恢复记录，停靠面板沿用主区联动组，会诊面板按会话 ID 保存联动组。
+- 十字光标离开绘图区时发送清除。发送按动画帧合并，接收按时刻二分查找 K 线，在数据加载、缩放和平移后重新投影，更新仅通知十字光标订阅者。画线写入成功后同组图表和预警按标的重新拉取。预警按触发 ID 在同页仅提示和响铃一次。窗口列表与计数共用同组数据。
+- 十项回归均记录了红 → 绿。desk-ui 187 项通过。DSH 插件 21 项通过，9 项因沙箱禁止绑定 `127.0.0.1` 而失败（`bridge.test.mjs` 7 项，`index.test.mjs` 2 项）。TypeScript 检查和生产构建通过。真实 DSH 浏览器交互待本机验收。
+- `/desk/link` 鉴权留待本地鉴权加固。
+
 ### 本机待验收
 
 1. 使用本分支的前端构建及插件，通过 `talaria open` 打开带 token 的 DSH 入口（默认 `http://127.0.0.1:8766/`）。从 DSH 左栏逐个打开四个 Talaria 面板。图表点「功能右栏」，切换三个 tab，拖动 DSH 栏宽，并验证「在主区打开」与「停靠图表右栏」。进会话后检查右栏原有 `Talaria 看盘` 及「＋」里的三个新 tab。

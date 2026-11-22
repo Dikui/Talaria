@@ -78,6 +78,8 @@ function FeatureWorkbench({
       <div className="feature-workbench-body">
         {panel === "alerts" && (
           <AlertWorkbench
+            link={link}
+            theme={theme}
             instrumentId={instrumentId}
             timeframe={timeframe}
             instruments={instruments}
@@ -99,6 +101,8 @@ function FeatureWorkbench({
         )}
         {alertSeed && (
           <AlertWorkbench
+            link={link}
+            theme={theme}
             instrumentId={alertSeed.instrumentId ?? instrumentId}
             timeframe={alertSeed.timeframe ?? timeframe}
             instruments={instruments}

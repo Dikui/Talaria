@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { DrawingRecord, InstrumentSpec } from "@talaria/contracts";
 import { api } from "../../lib/api";
-import type { LocateTarget } from "../../workbench/link";
+import type { Theme } from "../../lib/theme";
+import type { LocateTarget, PanelLink } from "../../workbench/link";
 import { useMarketStream } from "../feed/useMarketStream";
 import { AlertPanel, AlertToast, type AlertFormSeed } from "./AlertPanel";
 import { useAlerts } from "./useAlerts";
@@ -10,13 +11,15 @@ interface AlertWorkbenchProps {
   instrumentId: string;
   timeframe: string;
   instruments: InstrumentSpec[];
+  theme: Theme;
   onLocate: (target: LocateTarget) => void;
+  link: Pick<PanelLink, "subscribeDrawings">;
   formSeed?: AlertFormSeed;
   onClose?: () => void;
 }
 
 export function AlertWorkbench({
-  instrumentId, timeframe, instruments, onLocate, formSeed, onClose,
+  instrumentId, timeframe, instruments, theme, onLocate, link, formSeed, onClose,
 }: AlertWorkbenchProps) {
   const controller = useAlerts();
   const { alert } = useMarketStream(instrumentId, timeframe);
@@ -28,16 +31,26 @@ export function AlertWorkbench({
   }, [alert, controller.ingestTrigger]);
 
   useEffect(() => {
-    let cancelled = false;
+    let request = 0;
     setDrawings([]);
     setDrawingError(false);
-    api.drawings(instrumentId, timeframe).then((response) => {
-      if (!cancelled) setDrawings(response.drawings);
-    }).catch(() => {
-      if (!cancelled) setDrawingError(true);
-    });
-    return () => { cancelled = true; };
-  }, [instrumentId, timeframe]);
+    function refreshDrawings() {
+      const current = ++request;
+      api.drawings(instrumentId, timeframe).then((response) => {
+        if (current !== request) return;
+        setDrawings(response.drawings);
+        setDrawingError(false);
+      }).catch(() => {
+        if (current === request) setDrawingError(true);
+      });
+    }
+    const stop = link.subscribeDrawings(instrumentId, refreshDrawings);
+    refreshDrawings();
+    return () => {
+      request += 1;
+      stop();
+    };
+  }, [instrumentId, timeframe, link]);
 
   return (
     <>
@@ -55,6 +68,7 @@ export function AlertWorkbench({
       {controller.toast && (
         <AlertToast
           trigger={controller.toast}
+          theme={theme}
           onLocate={(trigger) => {
             onLocate(trigger);
             controller.clearToast();

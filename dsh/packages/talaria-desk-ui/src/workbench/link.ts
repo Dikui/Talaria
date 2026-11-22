@@ -6,7 +6,7 @@ export const LINK_CHANNEL = "talaria-workbench-v1";
 
 type StorageAccess = Pick<Storage, "getItem" | "setItem">;
 type Selection = { instrumentId: string; timeframe: string };
-type VersionedSelection = Selection & { revision: number; author: string };
+type VersionedSelection = Selection & { revision: number; author: string; locateTs?: number | null };
 type GroupMessage = { from: string; group: LinkGroup };
 
 export type LocateTarget = {
@@ -20,7 +20,8 @@ type LinkPayload =
   | { type: "symbol"; selection: VersionedSelection; to?: string }
   | { type: "locate"; selection: VersionedSelection; ts: number }
   | { type: "crosshair"; ts: number | null }
-  | { type: "ask" }
+  | { type: "drawings-changed"; instrumentId: string }
+  | { type: "ask"; selection?: VersionedSelection }
   | { type: "presence"; peer: Peer }
   | { type: "bye" };
 
@@ -35,7 +36,6 @@ export interface LinkTransport {
 interface LinkSnapshot extends Selection {
   group: LinkGroup;
   locateTs: number | null;
-  crosshair: number | null;
   peers: Peer[];
 }
 
@@ -92,28 +92,29 @@ function readSelection(storage: StorageAccess | undefined, key: string): Version
   return INITIAL;
 }
 
-function precedes(left: VersionedSelection, right: VersionedSelection) {
+export function selectionPrecedes(left: VersionedSelection, right: VersionedSelection) {
   return left.revision < right.revision || (left.revision === right.revision && left.author < right.author);
 }
 
 function rememberSelection(storage: StorageAccess | undefined, key: string, selection: VersionedSelection) {
-  if (precedes(readSelection(storage, key), selection)) {
+  if (selectionPrecedes(readSelection(storage, key), selection)) {
     save(storage, key, JSON.stringify(selection));
   }
 }
 
 /** Share the group cache even if the last active panel was at the other origin. */
 export function cacheRelaySelection(storage: StorageAccess | undefined, message: LinkMessage) {
-  if (message.group !== "none" && (message.type === "locate" || message.type === "symbol")) {
-    rememberSelection(storage, selectionKey(message.group, ""), message.selection);
+  if (message.group !== "none" && "selection" in message && message.selection) {
+    const selection = message.type === "locate" ? { ...message.selection, locateTs: message.ts } : message.selection;
+    rememberSelection(storage, selectionKey(message.group, ""), selection);
   }
 }
 
 export function cachedRelayReply(storage: StorageAccess | undefined, message: LinkMessage): LinkMessage | undefined {
   if (message.type !== "ask" || message.group === "none") return;
   const selection = readSelection(storage, selectionKey(message.group, ""));
-  if (selection.revision === 0) return;
-  return { type: "symbol", group: message.group, from: "relay", to: message.from, selection };
+  if (!selectionPrecedes(message.selection ?? INITIAL, selection)) return;
+  return { type: "symbol", group: message.group, from: "relay", selection };
 }
 
 export function createLink({ key, panel, transport, storage, preferences = storage }: LinkOptions) {
@@ -123,18 +124,22 @@ export function createLink({ key, panel, transport, storage, preferences = stora
   let group: LinkGroup = isGroup(savedGroup) ? savedGroup : "red";
   const selectionStorage = () => group === "none" ? preferences : storage;
   let selection = readSelection(selectionStorage(), selectionKey(group, key));
-  let locateTs: number | null = null;
+  let locateDismissed = false;
   let crosshair: number | null = null;
   let crosshairOwner: string | null = null;
   let lastSentCrosshair: number | null = null;
+  let pendingCrosshair: number | null = null;
+  let crosshairFrame: number | undefined;
   let peerList: Peer[] = [];
   let joined = false;
   const peers = new Map<string, { peer: Peer; seen: number }>();
   const listeners = new Set<() => void>();
+  const crosshairListeners = new Set<() => void>();
+  const drawingListeners = new Set<(instrumentId: string) => void>();
   const snapshot = (): LinkSnapshot => ({
     instrumentId: selection.instrumentId,
     timeframe: selection.timeframe,
-    group, locateTs, crosshair, peers: peerList,
+    group, locateTs: locateDismissed ? null : selection.locateTs ?? null, peers: peerList,
   });
   let current = snapshot();
 
@@ -159,12 +164,12 @@ export function createLink({ key, panel, transport, storage, preferences = stora
     });
   }
 
-  function setSelection(next: VersionedSelection, ts: number | null) {
+  function setSelection(next: VersionedSelection) {
     selection = next;
-    locateTs = ts;
-    crosshair = null;
+    locateDismissed = false;
     crosshairOwner = null;
-    lastSentCrosshair = null;
+    cancelCrosshair();
+    updateCrosshair(null);
     rememberSelection(selectionStorage(), selectionKey(group, key), selection);
     publish();
   }
@@ -175,8 +180,9 @@ export function createLink({ key, panel, transport, storage, preferences = stora
       ...next,
       revision: Math.max(Date.now(), selection.revision + 1, saved.revision + 1),
       author: from,
+      locateTs: ts,
     };
-    setSelection(nextSelection, ts);
+    setSelection(nextSelection);
     if (group !== "none") {
       if (ts === null) send({ type: "symbol", selection: nextSelection });
       else send({ type: "locate", selection: nextSelection, ts });
@@ -186,13 +192,29 @@ export function createLink({ key, panel, transport, storage, preferences = stora
 
   function join() {
     joined = true;
+    const saved = readSelection(selectionStorage(), selectionKey(group, key));
+    if (selectionPrecedes(selection, saved)) setSelection(saved);
     beat();
-    if (group !== "none") send({ type: "ask" });
+    if (group !== "none") send({ type: "ask", selection });
   }
 
   function leave() {
     if (joined) send({ type: "bye" });
     joined = false;
+    cancelCrosshair();
+  }
+
+  function cancelCrosshair() {
+    if (crosshairFrame !== undefined) cancelAnimationFrame(crosshairFrame);
+    crosshairFrame = undefined;
+    pendingCrosshair = null;
+    lastSentCrosshair = null;
+  }
+
+  function updateCrosshair(timestamp: number | null) {
+    if (timestamp === crosshair) return;
+    crosshair = timestamp;
+    crosshairListeners.forEach((listener) => listener());
   }
 
   const unsubscribe = transport.subscribe((message) => {
@@ -211,32 +233,32 @@ export function createLink({ key, panel, transport, storage, preferences = stora
     if (message.type === "bye") {
       if (peers.delete(message.from)) updatePeers();
       if (message.from === crosshairOwner) {
-        crosshair = null;
         crosshairOwner = null;
-        publish();
+        updateCrosshair(null);
       }
       return;
     }
     if (group === "none" || message.group !== group) return;
     switch (message.type) {
       case "ask":
-        send({ type: "symbol", selection, to: message.from });
+        if (message.selection && selectionPrecedes(selection, message.selection)) setSelection(message.selection);
+        else if (selectionPrecedes(message.selection ?? INITIAL, selection)) send({ type: "symbol", selection });
         return;
       case "symbol":
         if (message.to !== undefined && message.to !== from) return;
-        if (precedes(selection, message.selection)) setSelection(message.selection, null);
+        if (selectionPrecedes(selection, message.selection)) setSelection(message.selection);
         return;
       case "locate":
-        if (precedes(selection, message.selection)) setSelection(message.selection, message.ts);
+        if (selectionPrecedes(selection, message.selection)) setSelection({ ...message.selection, locateTs: message.ts });
         return;
       case "crosshair":
         if (panel !== "chart") return;
         if (message.ts === null && crosshairOwner !== message.from) return;
-        crosshairOwner = message.from;
-        if (crosshair !== message.ts) {
-          crosshair = message.ts;
-          publish();
-        }
+        crosshairOwner = message.ts === null ? null : message.from;
+        updateCrosshair(message.ts);
+        return;
+      case "drawings-changed":
+        drawingListeners.forEach((listener) => listener(message.instrumentId));
         return;
     }
   });
@@ -252,7 +274,7 @@ export function createLink({ key, panel, transport, storage, preferences = stora
         expired = true;
         if (crosshairOwner === id) {
           crosshairOwner = null;
-          crosshair = null;
+          updateCrosshair(null);
         }
       }
     }
@@ -266,18 +288,30 @@ export function createLink({ key, panel, transport, storage, preferences = stora
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
+    getCrosshair: () => crosshair,
+    subscribeCrosshair(listener: () => void) {
+      crosshairListeners.add(listener);
+      return () => { crosshairListeners.delete(listener); };
+    },
+    subscribeDrawings(instrumentId: string, refresh: () => void) {
+      const listener = (changed: string) => { if (changed === instrumentId) refresh(); };
+      drawingListeners.add(listener);
+      return () => { drawingListeners.delete(listener); };
+    },
+    notifyDrawingsChanged(instrumentId: string) {
+      if (joined && group !== "none") send({ type: "drawings-changed", instrumentId });
+    },
     setGroup(next: LinkGroup) {
       if (next === group) return;
-      if (lastSentCrosshair !== null && group !== "none") send({ type: "crosshair", ts: null });
+      leave();
       const previous = selection;
       group = next;
       save(preferences, preferenceKey, group);
       const saved = readSelection(selectionStorage(), selectionKey(group, key));
       setSelection(
         next === "none" && saved.revision === 0
-          ? { ...previous, revision: Date.now(), author: from }
+          ? { ...previous, revision: Date.now(), author: from, locateTs: null }
           : saved,
-        null,
       );
       join();
     },
@@ -291,22 +325,31 @@ export function createLink({ key, panel, transport, storage, preferences = stora
       );
     },
     clearLocate() {
-      locateTs = null;
+      locateDismissed = true;
       publish();
     },
     sendCrosshair(ts: number | null) {
-      if (group === "none" || ts === lastSentCrosshair) return;
-      lastSentCrosshair = ts;
-      send({ type: "crosshair", ts });
+      if (!joined || group === "none") return;
+      pendingCrosshair = ts;
+      if (crosshairFrame !== undefined || ts === lastSentCrosshair) return;
+      crosshairFrame = requestAnimationFrame(() => {
+        crosshairFrame = undefined;
+        if (pendingCrosshair === lastSentCrosshair) return;
+        lastSentCrosshair = pendingCrosshair;
+        send({ type: "crosshair", ts: pendingCrosshair });
+      });
     },
     join,
     leave,
     close({ announce = true } = {}) {
       if (announce) leave();
+      else cancelCrosshair();
       clearInterval(heartbeat);
       unsubscribeReady?.();
       unsubscribe();
       listeners.clear();
+      crosshairListeners.clear();
+      drawingListeners.clear();
     },
   };
 }
