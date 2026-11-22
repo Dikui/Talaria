@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0016、ADR-0018；`docs/architecture.md` §4.3。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `GET /api/bars?instrument=&timeframe=&start=&end=&as_of=&include_open=` 返回冷库与热缓冲拼接、按 `(ts_event, revision)` 去重的序列；数值为十进制字符串，每根带 `confirmed` 与 `revision`。
 - [ ] 热缓冲保留 `confirmed` 与 `revision`，不再按 `ts_event` 覆盖丢失这两个字段。
