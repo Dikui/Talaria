@@ -265,3 +265,46 @@ def test_trade_writer_rejects_values_that_fit_scale_but_miss_instrument_step(tmp
         with pytest.raises(ColdStoreQualityError, match=step):
             store.publish_ticks(spec, TickKind.TRADES, [trade, invalid])
     assert not ColdReader(tmp_path).read_ticks(spec, TickKind.TRADES)
+
+
+@pytest.mark.regression
+def test_tick_arrivals_skip_empty_pages_between_parquet_row_groups(tmp_path, monkeypatch):
+    from contextlib import closing
+    from uuid import UUID
+
+    import pyarrow.parquet as pq
+
+    from talaria.foundation.ticks import TickKind, Trade
+    from talaria.perception.cold_store import ColdReader, ColdStore
+
+    write_table = pq.write_table
+
+    def write_one_tick_per_row_group(*args, **kwargs):
+        return write_table(*args, row_group_size=1, **kwargs)
+
+    monkeypatch.setattr(pq, "write_table", write_one_tick_per_row_group)
+    spec = CRYPTO_PERP_PACK.instrument(INSTRUMENT)
+    arrivals = (MIDNIGHT + 1, NOON + 1)
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish_ticks(spec, TickKind.TRADES, [
+            Trade(
+                instrument_id=spec.instrument_id, trade_id=UUID(int=i), side="Buy", price=Decimal(100),
+                size=Decimal(1), ts_event=MIDNIGHT, ts_available=at, ts_ingested=at, ts_committed=at,
+            )
+            for i, at in enumerate(arrivals, 1)
+        ])
+
+    read_table = pq.read_table
+    decoded = []
+
+    def observe_parquet_reads(*args, **kwargs):
+        rows = read_table(*args, **kwargs)
+        decoded.append(len(rows))
+        return rows
+
+    monkeypatch.setattr(pq, "read_table", observe_parquet_reads)
+    rows = ColdReader(tmp_path).tick_arrivals(spec, MIDNIGHT, NOON + 1)
+    assert next(rows).ts_available == arrivals[0]
+    assert decoded == [1]
+    assert [row.ts_available for row in rows] == [arrivals[1]]
+    assert decoded == [1, 1]

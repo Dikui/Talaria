@@ -30,9 +30,10 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 from enum import StrEnum
+from heapq import heappop, heappush
 from itertools import groupby, pairwise
 from pathlib import Path
-from typing import Callable, Collection, Iterable, Sequence
+from typing import Callable, Collection, Iterable, Iterator, Sequence
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -45,7 +46,7 @@ from talaria.foundation.derivatives import (
 from talaria.foundation.errors import ColdStoreError, ColdStoreIntegrityError, ColdStoreQualityError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.revisions import latest_visible_revisions
-from talaria.foundation.ticks import Quote, TickKind, Trade, tick_identity
+from talaria.foundation.ticks import Quote, TickKind, Trade, relative_tick_order_known, tick_identity, tick_order
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.foundation.types import PrecisionTier
 from talaria.perception.raw_store import bar_record
@@ -709,42 +710,6 @@ def partition_day(ts_event: int) -> str:
     return datetime.fromtimestamp(ts_event // 1000, tz=UTC).date().isoformat()
 
 
-def _tick_order(row: Trade | Quote) -> tuple:
-    if isinstance(row, Trade):
-        trade_order = (
-            row.availability,
-            row.archive_day if row.archive_day is not None else -1,
-            row.archive_index if row.archive_index is not None else -1,
-            row.sequence if row.sequence is not None else -1,
-            (row.packet_id or row.trade_id).bytes,
-            row.packet_index if row.packet_index is not None else -1,
-            row.trade_id.bytes,
-        )
-        return row.ts_event, trade_order, row.revision, row.ts_ingested
-    quote_order = (
-        row.connection_id.bytes if row.connection_id is not None else b"",
-        row.update_id if row.update_id is not None else -1,
-    )
-    return row.ts_event, quote_order, row.revision, row.ts_ingested
-
-
-def _relative_tick_order_known(first: Trade | Quote, second: Trade | Quote) -> bool:
-    if isinstance(first, Quote) and isinstance(second, Quote):
-        return (first.connection_id is not None and first.connection_id == second.connection_id
-                and first.update_id is not None and second.update_id is not None
-                and first.update_id != second.update_id)
-    if not isinstance(first, Trade) or not isinstance(second, Trade) or first.availability != second.availability:
-        return False
-    if first.availability == "inferred":
-        return (first.archive_day is not None and second.archive_day is not None
-                and first.archive_index is not None and second.archive_index is not None
-                and (first.archive_day, first.archive_index) < (second.archive_day, second.archive_index))
-    if first.packet_id is not None and first.packet_id == second.packet_id:
-        return (first.packet_index is not None and second.packet_index is not None
-                and first.packet_index < second.packet_index)
-    return first.sequence is not None and second.sequence is not None and first.sequence < second.sequence
-
-
 def tick_column_scales(instrument: InstrumentSpec, kind: TickKind) -> dict[str, int]:
     return {
         column: instrument.price_precision if column.endswith("price") else instrument.qty_precision
@@ -783,7 +748,7 @@ def _validate_ticks(batch: TickBatch) -> None:
     previous = None
     for row in batch.rows:
         validate_tick(row, batch.instrument, batch.kind, scales)
-        order = _tick_order(row)
+        order = tick_order(row)
         if previous is not None and order < previous:
             raise ColdStoreQualityError("行情批次未按事件时间排序")
         previous = order
@@ -857,6 +822,20 @@ def _read_tick_parquet(
         else:
             rows.append(Quote(instrument_id=instrument_id, **values))
     return rows
+
+
+def _tick_arrival_ranges(path: Path, start: int, end: int) -> list[tuple[int, int]]:
+    with pq.ParquetFile(path) as parquet:
+        column = parquet.schema_arrow.get_field_index("ts_available")
+        ranges = []
+        for index in range(parquet.num_row_groups):
+            stats = parquet.metadata.row_group(index).column(column).statistics
+            if stats is None or not stats.has_min_max:
+                return [(start, end)]
+            first, last = max(start, stats.min), min(end, stats.max)
+            if first <= last:
+                ranges.append((first, last))
+    return ranges
 
 
 def _read_matching_trades(path: Path, instrument_id: str, expression: ds.Expression) -> list[Trade | Quote]:
@@ -977,10 +956,7 @@ class ColdReader:
                     derivatives.extend(_select_generations(db, instrument, kind.value, end_ts=end))
                 if instrument.instrument_id in tick_instruments:
                     for kind in TickKind:
-                        # 成交 ID 的另一来源可能存在于事件时间上界之外。
-                        ticks.extend(_select_generations(
-                            db, instrument, kind.value, end_ts=end if kind is TickKind.QUOTES else None,
-                        ))
+                        ticks.extend(_select_generations(db, instrument, kind.value, end_ts=end))
         return ColdSnapshot(
             ColdManifest(version, tuple(bars)), ColdManifest(version, tuple(derivatives)),
             ColdManifest(version, tuple(ticks)) if tick_instruments else None,
@@ -1098,6 +1074,49 @@ class ColdReader:
         )
         return rows
 
+    def tick_arrivals(
+        self, instrument: InstrumentSpec, start: int, end: int,
+    ) -> Iterator[Trade | Quote]:
+        """按可获取时间读取有数据的页，包含事件时间落在页外的迟到记录。"""
+        if end < start:
+            return
+        pending = []
+        available = ds.field("ts_available")
+
+        def spans(generations: Sequence[ColdGeneration]) -> list[tuple[int, int, ColdGeneration]]:
+            return [
+                (first, last, generation)
+                for generation in generations
+                for first, last in _tick_arrival_ranges(
+                    _path_under_root(self._data_dir, generation.parquet_path), max(start, generation.first_ts), end,
+                )
+            ]
+
+        for kind in TickKind:
+            _, ranges = self._read_generations(instrument, kind.value, spans, start_ts=None, end_ts=end)
+            for first, last, generation in ranges:
+                pending.append((first, last, kind, len(pending), generation))
+        pending.sort(reverse=True)
+        active = []
+        while pending or active:
+            opening = max(start, pending[-1][0]) if not active else opening + _TICK_REPLAY_PAGE_MS
+            if opening > end:
+                break
+            close = min(end, opening + _TICK_REPLAY_PAGE_MS - 1)
+            while pending and pending[-1][0] <= close:
+                _, last, kind, index, generation = pending.pop()
+                heappush(active, (last, index, kind, generation))
+            expression = (available >= opening) & (available <= close)
+            generations = {(kind, generation) for _, _, kind, generation in active}
+            rows = [
+                row for kind, generation in generations for row in _read_tick_parquet(
+                    self._verify_tick_file(generation), instrument.instrument_id, kind, expression=expression,
+                )
+            ]
+            yield from sorted(rows, key=lambda row: row.ts_available)
+            while active and active[0][0] <= close:
+                heappop(active)
+
     def read_trade_revisions_by_id(self, instrument: InstrumentSpec, ids: set[bytes]) -> list[Trade]:
         expression = _trade_id_filter(ids)
 
@@ -1182,7 +1201,7 @@ class ColdReader:
         else:
             rows = self.read_tick_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
         visible = latest_visible_revisions(
-            sorted(rows, key=_tick_order), as_of=as_of, identity=tick_identity,
+            sorted(rows, key=tick_order), as_of=as_of, identity=tick_identity,
             ingested=lambda row: row.ts_ingested,
         )
         in_range = [
@@ -1190,9 +1209,9 @@ class ColdReader:
             if (start_ts is None or row.ts_event >= start_ts) and (end_ts is None or row.ts_event <= end_ts)
         ]
         ordered = []
-        for _, group in groupby(sorted(in_range, key=_tick_order), key=lambda row: row.ts_event):
+        for _, group in groupby(sorted(in_range, key=tick_order), key=lambda row: row.ts_event):
             ties = list(group)
-            if any(not _relative_tick_order_known(first, second) for first, second in pairwise(ties)):
+            if any(not relative_tick_order_known(first, second) for first, second in pairwise(ties)):
                 ties = [replace(row, order_uncertain=True) for row in ties]
             ordered.extend(ties)
         return ordered
@@ -1340,7 +1359,7 @@ class ColdStore:
         """原子发布一个 UTC 日内的行情批次。"""
         with self._lock:
             self._ensure_open()
-            batch = TickBatch(instrument, kind, sorted(rows, key=_tick_order))
+            batch = TickBatch(instrument, kind, sorted(rows, key=tick_order))
             if not batch.rows or partition_day(batch.rows[0].ts_event) != partition_day(batch.rows[-1].ts_event):
                 raise ColdStoreQualityError("行情批次必须属于同一 UTC 日且非空")
             _validate_ticks(batch)
@@ -1460,7 +1479,7 @@ class ColdStore:
                 _verify_generation_file(self._data_dir, item), instrument.instrument_id, kind,
             )
         ]
-        rows.sort(key=_tick_order)
+        rows.sort(key=tick_order)
         archive = "".join(
             json.dumps({"source_sha256": item.content_sha256}) + "\n" for item in group
         ).encode("utf-8")

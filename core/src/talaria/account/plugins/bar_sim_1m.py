@@ -24,7 +24,6 @@ from talaria.foundation.bars import RangeBar
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint, latest_visible_derivatives
 from talaria.foundation.margin import MarginPortfolio, MarginPosition
 from talaria.foundation.market import InstrumentSpec, MarginTrait
-from talaria.foundation.ticks import Quote, Trade
 from talaria.foundation.types import ContractModel, decimal_from_finite_fraction as decimal_exact
 from talaria.packs import DEFAULT_PACK, get_market_pack
 
@@ -537,14 +536,14 @@ class BarSim1m:
 
     def _exit(
         self, executor: PositionExecutor, qty: Fraction, reference: Decimal, reason: str,
-        *, maker: bool = False, liquidated: bool = False,
+        *, maker: bool = False, liquidated: bool = False, liquidation_price: tuple[Decimal, FillTier | None] | None = None,
     ) -> None:
         before = executor.exposure()
         assert 0 < qty <= executor.quantity
         if qty == executor.quantity:
             self._begin_exit(executor, reason)
         if liquidated:
-            price, tier = self._liquidation_price(executor, reference)
+            price, tier = liquidation_price or self._liquidation_price(executor, reference)
         else:
             price = reference if maker else self._taker_price(executor, reference, -executor.side)
             tier = self._fill_tier(executor, -executor.side, maker=maker)
@@ -578,7 +577,9 @@ class BarSim1m:
             self._emit(executor, "ROUND_LIQUIDATED", reason=reason)
         executor.assert_reduced(before)
 
-    def _exit_quantity(self, executor: PositionExecutor, liquidity: _BarLiquidity, quantity: Fraction) -> Fraction:
+    def _exit_quantity(
+        self, executor: PositionExecutor, liquidity: _BarLiquidity, quantity: Fraction, *, maker: bool = False,
+    ) -> Fraction:
         step = Fraction(executor.instrument.qty_step)
         return floor(min(liquidity.exit, quantity) / step) * step
 
@@ -602,7 +603,7 @@ class BarSim1m:
         held = executor.exitable_at(self._event_time)
         if not held:
             return False
-        qty = self._exit_quantity(executor, liquidity, held)
+        qty = self._exit_quantity(executor, liquidity, held, maker=maker)
         if not maker and held == executor.quantity:
             executor.reduction = _Reduction(held, self._event_time, reason)
             self._begin_exit(executor, reason)
@@ -616,11 +617,16 @@ class BarSim1m:
                 executor.reduction = _Reduction(request.quantity - qty, request.requested_at, request.reason)
         return bool(qty) or not maker
 
+    def _entry_quantity(
+        self, executor: PositionExecutor, liquidity: _BarLiquidity, entry: _Entry, *, maker: bool,
+    ) -> Fraction:
+        step = Fraction(executor.instrument.qty_step)
+        return floor(min(liquidity.entry, entry.remaining) / step) * step
+
     def _match_entries(
         self, executor: PositionExecutor, slot: int, liquidity: _BarLiquidity,
         match_order: Callable[[_Entry], tuple[Decimal, str] | None], *, one_per_slot: bool = True,
     ) -> Iterator[tuple[DerivativePoint, ...]]:
-        step = Fraction(executor.instrument.qty_step)
         for entry in tuple(executor.entries.values()):
             if (
                 entry.plan.plan_id not in executor.entries or slot < entry.ready_at
@@ -633,8 +639,10 @@ class BarSim1m:
             match = match_order(entry)
             if entry.plan.plan_id not in executor.entries:
                 yield ()
-            qty = floor(min(liquidity.entry, entry.remaining) / step) * step
-            if match is not None and qty >= Fraction(executor.instrument.min_qty):
+            if match is None:
+                continue
+            qty = self._entry_quantity(executor, liquidity, entry, maker=match[1] == "MAKER")
+            if qty >= Fraction(executor.instrument.min_qty):
                 self._fill_entry(executor, entry, *match, qty)
                 entry.last_fill_slot = slot
                 liquidity.entry -= qty
@@ -882,8 +890,13 @@ class BarSim1m:
             for executor in breached:
                 qty = executor.exitable_at(at)
                 if qty:
-                    self._exit(executor, qty, marks[executor.round_id], "MARGIN_LIQUIDATION", liquidated=True)
-                    yield ()
+                    yield from self._liquidate(executor, qty, marks[executor.round_id])
+
+    def _liquidate(
+        self, executor: PositionExecutor, qty: Fraction, mark: Decimal,
+    ) -> Iterator[tuple[DerivativePoint, ...]]:
+        self._exit(executor, qty, mark, "MARGIN_LIQUIDATION", liquidated=True)
+        yield ()
 
     def _isolated_breached(self, executor: PositionExecutor, mark: Decimal, valuation: MarginValuation) -> bool:
         position = executor.margin_position()
@@ -929,7 +942,7 @@ class BarSim1m:
 
     def _matching_timeline(
         self, event: MarketEvent, bar: RangeBar | None,
-    ) -> Iterable[tuple[int, str | Trade | Quote]]:
+    ) -> Iterable[tuple[int, str | MarketEvent]]:
         if bar is not None:
             # OHLC 不含逐笔时点。盘中阶段用开盘后的有序时间槽表示。
             return (
@@ -940,8 +953,11 @@ class BarSim1m:
             )
         return ()
 
-    def _tick_actions(self, tick: Trade | Quote) -> Iterator[tuple[DerivativePoint, ...]]:
+    def _tick_actions(self, event: MarketEvent) -> Iterator[tuple[DerivativePoint, ...]]:
         return iter(())
+
+    def _observation_step(self, event: MarketEvent, point: DerivativePoint) -> int:
+        return point.observation_time
 
     def market_steps(
         self, event: MarketEvent, valuation: MarginValuation | None, *, balances: BalanceReader | None = None,
@@ -971,7 +987,7 @@ class BarSim1m:
             (point for point in points if point.kind == DerivativeKind.MARK_PRICE or point.is_funding_settlement),
             key=lambda point: (point.observation_time, point.ts_available, point.revision),
         ))
-        timeline = sorted(((point.observation_time, point) for point in observations), key=lambda step: step[0])
+        timeline = sorted(((self._observation_step(event, point), point) for point in observations), key=lambda step: step[0])
         if bar is not None:
             volume = Fraction(bar.volume)
             liquidity = _BarLiquidity(

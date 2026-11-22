@@ -2,6 +2,7 @@
 
 from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from functools import partial
 from heapq import merge
 from itertools import groupby
@@ -14,7 +15,9 @@ from talaria import sdk
 from talaria.account.contracts import MarketData, MarketEvent
 from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParams, SchemeError, Slot, SlotPlugin
 from talaria.components.runtime import confirmed_bars
+from talaria.foundation.bars import RangeBar
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
+from talaria.foundation.ticks import Quote, TickKind, Trade, trade_version
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.foundation.types import ContractModel
 from talaria.packs import DEFAULT_PACK, get_market_pack
@@ -61,11 +64,84 @@ class ReplayMarkAvailability(MarketEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ReplayTickWindow(MarketEvent):
-    """没有确认柱的撮合时间窗，两个事件时间边界均包含。"""
+class TickMarketEvent(MarketEvent):
+    """同一可获取时刻的行情。空批次表示订单延迟届满。"""
 
-    start: int
-    end: int
+    ticks: tuple[Trade | Quote, ...] = ()
+    fallback_slots: frozenset[int] = frozenset()
+    seed: bool = False
+
+
+def tick_market_order(event: MarketEvent) -> tuple[int, int]:
+    if isinstance(event, TickMarketEvent):
+        priority = 0 if event.seed else 3
+    elif event.derivative_points:
+        priority = 1
+    else:
+        priority = 2 if event.source is None and event.ctx is None else 4
+    return event.as_of, priority
+
+
+class TickReplay:
+    def __init__(self, reader: ColdReader, instrument: str, bars: Iterable[RangeBar]) -> None:
+        self._reader = reader
+        self._spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
+        self._minute = timeframe_ms("1m")
+        self._bars = {
+            bar.ts_event: bar for bar in bars
+            if bar.confirmed and bar.volume > 0
+            and 0 < bar.low <= min(bar.open, bar.close) <= max(bar.open, bar.close) <= bar.high
+        }
+        self._coverage: dict[int, bool] = {}
+        self._page = -1
+
+    def covers(self, opening: int) -> bool:
+        if opening not in self._bars:
+            return False
+        width = 5 * self._minute
+        page = opening // width * width
+        if self._page != page:
+            end = min(page + width - 1, 2**63 - 1)
+            rows = self._reader.read_tick_revisions(
+                self._spec, TickKind.TRADES, start_ts=page, end_ts=end, as_of=end,
+            )
+            # 固定清单只为 1m 档位判定覆盖。成交时仍按可获取时间逐条选版。
+            first = {}
+            for row in rows:
+                previous = first.get(row.trade_id)
+                if previous is None or row.ts_available < previous.ts_available or (
+                    row.ts_available == previous.ts_available and trade_version(row) > trade_version(previous)
+                ):
+                    first[row.trade_id] = row
+            slots: dict[int, list[Trade]] = {}
+            for row in first.values():
+                slot = row.ts_event // self._minute * self._minute
+                if row.ts_available < slot + self._minute:
+                    slots.setdefault(slot, []).append(row)
+            self._coverage = {}
+            for slot, trades in slots.items():
+                bar = self._bars.get(slot)
+                if bar is not None:
+                    self._coverage[slot] = (
+                        min(row.price for row in trades) == bar.low
+                        and max(row.price for row in trades) == bar.high
+                        and sum(Fraction(row.size) for row in trades) == Fraction(bar.volume)
+                    )
+            self._page = page
+        return self._coverage.get(opening, False)
+
+    def events(self, start: int, end: int, *, seed_from: int | None = None) -> Iterator[TickMarketEvent]:
+        rows = self._reader.tick_arrivals(self._spec, start if seed_from is None else seed_from, end)
+        for at, group in groupby(rows, key=lambda row: row.ts_available):
+            ticks = tuple(group)
+            slots = {
+                row.ts_event // self._minute * self._minute for row in ticks
+                if isinstance(row, Trade) and at < (row.ts_event // self._minute + 1) * self._minute
+            }
+            yield TickMarketEvent(
+                max(start, at), self._spec.instrument_id, "1m", None, ticks=ticks, seed=at < start,
+                fallback_slots=frozenset(slot for slot in slots if slot in self._bars and not self.covers(slot)),
+            )
 
 
 class ParquetReplay:
@@ -77,7 +153,7 @@ class ParquetReplay:
         self._reader.check_snapshot_files()
         self._mark_age = max((config.mark_max_age_ms for config in context.account_risk.values()), default=900_000)
 
-    def events(self, *, execution: bool = False, tick_windows: bool = False) -> Iterator[MarketEvent]:
+    def events(self, *, execution: bool = False, quote_max_age_ms: int | None = None) -> Iterator[MarketEvent]:
         params = self._params
         strategy = self._bars(params.timeframe, strategy=True)
         if not execution:
@@ -88,6 +164,16 @@ class ParquetReplay:
             [replace(event, source=None) for event in signals]
             if params.timeframe == "1m" else list(self._bars("1m", strategy=False))
         )
+        if quote_max_age_ms is not None:
+            replay = TickReplay(self._reader, params.instrument, (event.bar for event in bars))
+            ticks = replay.events(
+                params.start, params.end, seed_from=max(0, params.start - max(quote_max_age_ms, timeframe_ms("1m"))),
+            )
+            for event in merge(ticks, self._derivatives(), bars, signals, key=tick_market_order):
+                if event.bar is not None and event.source is None and replay.covers(event.bar.ts_event):
+                    continue
+                yield event
+            return
         marks: list[tuple[int, DerivativePoint]] = []
         settlements: list[DerivativePoint] = []
         estimates = []
@@ -109,7 +195,7 @@ class ParquetReplay:
                 ))
             if projected:
                 estimates.append(replace(event, derivative_points=tuple(projected)))
-        execution, late_settlements = self._execution_events(bars, marks, settlements, tick_windows=tick_windows)
+        execution, late_settlements = self._execution_events(bars, marks, settlements)
         yield from merge(visible_marks, execution, late_settlements, estimates, signals, key=lambda event: event.as_of)
 
     def end_event(self) -> MarketEvent:
@@ -118,7 +204,7 @@ class ParquetReplay:
 
     def _execution_events(
         self, bars: list[MarketEvent], marks: list[tuple[int, DerivativePoint]],
-        settlements: list[DerivativePoint], *, tick_windows: bool,
+        settlements: list[DerivativePoint],
     ) -> tuple[list[MarketEvent], list[MarketEvent]]:
         """迟到确认会推迟后续撮合，策略信号仍按各自的可获取时间交付。"""
         marks.sort(key=lambda item: (item[1].observation_time, item[1].revision, item[0]))
@@ -127,12 +213,9 @@ class ParquetReplay:
         late = []
         mark_index = settlement_index = 0
         ready = self._params.start
-        for event in self._execution_windows(bars, tick_windows=tick_windows):
-            if isinstance(event, ReplayTickWindow):
-                opening, close = event.start, event.as_of
-            else:
-                opening = event.bar.ts_event
-                close = opening + timeframe_ms("1m")
+        for event in sorted(bars, key=lambda item: item.bar.ts_event):
+            opening = event.bar.ts_event
+            close = opening + timeframe_ms("1m")
             while mark_index < len(marks) and marks[mark_index][1].observation_time <= opening:
                 arrived, point = marks[mark_index]
                 ready = max(ready, arrived)
@@ -162,26 +245,6 @@ class ParquetReplay:
             for point in sorted(late, key=lambda point: (point.ts_available, point.ts_event, point.revision))
         ]
         return execution, arrivals
-
-    def _execution_windows(self, bars: list[MarketEvent], *, tick_windows: bool) -> Iterator[MarketEvent]:
-        minute = timeframe_ms("1m")
-
-        def gap(start: int, stop: int) -> Iterator[ReplayTickWindow]:
-            for opening in range(start, stop, minute):
-                close = min(opening + minute, stop)
-                yield ReplayTickWindow(
-                    min(close, self._params.end), self._params.instrument, "1m", None, start=opening, end=close - 1,
-                )
-
-        through = self._params.start
-        for event in sorted(bars, key=lambda item: item.bar.ts_event):
-            opening = event.bar.ts_event
-            if tick_windows:
-                yield from gap(through, opening)
-            yield event
-            through = opening + minute
-        if tick_windows:
-            yield from gap(through, self._params.end + 1)
 
     def _bars(self, timeframe: str, *, strategy: bool) -> Iterator[MarketEvent]:
         params = self._params

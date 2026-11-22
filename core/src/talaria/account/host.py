@@ -37,7 +37,7 @@ from talaria.account.parameters import validate_parameters
 from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
 from talaria.account.plugins.l1_trade_sim import L1TradeSim, l1_trade_sim
 from talaria.account.plugins.parquet import (
-    ParquetReplay, ReplayMarkAvailability, ReplayParams, ReplayTickWindow, capture_replay_snapshot, parquet_replay,
+    ParquetReplay, ReplayMarkAvailability, ReplayParams, TickMarketEvent, capture_replay_snapshot, parquet_replay,
 )
 from talaria.account.plugins.r_unit import RUnitSizer, r_unit
 from talaria.account.plugins.seven_step import SevenStepRisk, seven_step
@@ -316,18 +316,23 @@ class AccountProcess:
         now = 0
         data = plugins.data
         execution_replay = default_fill and isinstance(data, ParquetReplay)
+        tick_replay = execution_replay and isinstance(plugins.fill, L1TradeSim)
+        tick_step_options = {"tick_stream": True} if tick_replay else {}
         execution_through = 0
         signal_bars = 0
 
         def read_events() -> Iterator[MarketEvent]:
             if execution_replay:
-                return data.events(execution=True, tick_windows=isinstance(plugins.fill, L1TradeSim))
+                age = plugins.fill.quote_max_age_ms if tick_replay else None
+                return data.events(execution=True, quote_max_age_ms=age)
             return data.events()
 
         markets = (
             plugins.strategy.market_events(read_events)
             if isinstance(plugins.strategy, IsolatedStrategy) else read_events()
         )
+        if tick_replay:
+            markets = plugins.fill.clock_events(markets, end=data.end_event())
         for market in markets:
             with guard():
                 pass
@@ -351,8 +356,6 @@ class AccountProcess:
                 execution_bar = None
             elif execution_replay and execution_bar is not None:
                 execution_through = execution_bar.ts_event + timeframe_ms(market.timeframe)
-            elif isinstance(market, ReplayTickWindow):
-                execution_through = market.end
             fill_market = replace(
                 market, bar=execution_bar.model_copy() if execution_bar is not None else None, ctx=None, source=None,
                 derivative_points=tuple(point.model_copy() for point in visible),
@@ -363,8 +366,8 @@ class AccountProcess:
                     gate.observe_marks_for_approval(now, visible)
                 for points in plugins.fill.market_steps(
                     fill_market, valuation, balances=ledger.balances,
-                    execution_through=execution_through if execution_replay else None,
-                    pricing_only=pricing_only,
+                    execution_through=execution_through if execution_replay and not tick_replay else None,
+                    pricing_only=pricing_only, **tick_step_options,
                 ):
                     gate.poll_events(now, points=points)
             else:
@@ -389,7 +392,7 @@ class AccountProcess:
                     for rejection in rejected:
                         gate.record_host_event(rejection)
                 signal_bars += 1
-        if execution_replay:
+        if execution_replay and not tick_replay:
             end = data.end_event()
             self._clock.advance(end.as_of)
             for points in plugins.fill.market_steps(end, valuation, balances=ledger.balances):
@@ -424,7 +427,7 @@ class AccountProcess:
             raise AccountProcessError(f"数据入口使用了未知周期 {market.timeframe}")
         bar = market.bar
         if bar is None and market.source is None and market.ctx is None and (
-            market.derivative_points or isinstance(market, ReplayTickWindow)
+            market.derivative_points or isinstance(market, TickMarketEvent)
         ):
             return now, None
         if not isinstance(bar, RangeBar):
