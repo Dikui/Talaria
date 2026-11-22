@@ -17,7 +17,7 @@ from talaria.foundation.feed import FeedTransport
 from talaria.foundation.key_levels import KeyLevel
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotRequest
-from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, TIMEFRAME_MS
+from talaria.foundation.timeframes import TIMEFRAME_MS
 from talaria.packs import get_market_pack
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.backfill import BackfillPolicy
@@ -107,18 +107,25 @@ async def build_runtime(
         instruments = pack.instruments()
         instruments_by_id = {spec.instrument_id: spec for spec in instruments}
 
+        policy = BackfillPolicy(target_bars=settings.backfill_bars, max_pages=settings.max_pages)
         cold_store: ColdStore | None = None
-        cold_publishers: dict[tuple[str, str], ColdPublisher] | None = None
+        cold_publisher: ColdPublisher | None = None
         if features.cold_store:
-            cold_store = ColdStore(settings.data_dir)
-            resources.callback(cold_store.close)
-            cold_publishers = {
-                (instrument.instrument_id, timeframe): ColdPublisher(
-                    cold_store, instrument=instrument, timeframe=timeframe
+            try:
+                cold_store = ColdStore(settings.data_dir)
+            except Exception as exc:
+                logger.warning("冷库初始化失败：%s", exc)
+            else:
+                resources.callback(cold_store.close)
+                cold_publisher = ColdPublisher(
+                    cold_store, instruments=instruments, connector=connector,
+                    policy=policy, now_ms=settings.now_ms,
                 )
-                for instrument in instruments
-                for timeframe in SUPPORTED_TIMEFRAMES
-            }
+                resources.push_async_callback(cold_publisher.close)
+                compactor = asyncio.create_task(
+                    cold_publisher.compact_periodically(), name="talaria-cold-compaction",
+                )
+                resources.push_async_callback(_stop_task, compactor)
         snapshot_store = SnapshotStore(settings.data_dir)
         resources.callback(snapshot_store.close)
         stream: FeedTransport | None = None
@@ -136,6 +143,11 @@ async def build_runtime(
                 instruments=instruments,
                 now_ms=settings.now_ms,
                 stale_after_ms=settings.stale_after_ms,
+                on_bar_close=cold_publisher.record_close if cold_publisher else None,
+                on_subscribe=(
+                    cold_publisher.backfill_subscription
+                    if cold_publisher is not None and settings.replay_events is None else None
+                ),
             )
             resources.push_async_callback(supervisor.stop)
 
@@ -150,13 +162,9 @@ async def build_runtime(
             connector=connector,
             raw_store=raw_store,
             snapshot_store=snapshot_store,
-            policy=BackfillPolicy(
-                target_bars=settings.backfill_bars,
-                max_pages=settings.max_pages,
-            ),
+            policy=policy,
             now_ms=settings.now_ms,
             hot_bars=hot_buffer,
-            cold_publishers=cold_publishers,
         )
         workbench = WorkbenchService(
             pack=pack,
@@ -164,6 +172,7 @@ async def build_runtime(
             data_dir=settings.data_dir,
             snapshot_store=snapshot_store,
             builder=builder,
+            cold_publisher=cold_publisher,
             feed_mode=stream.feed_mode if stream is not None else None,
         )
         desk = DeskBroadcast()

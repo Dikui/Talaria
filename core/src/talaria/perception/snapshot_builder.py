@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Sequence
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
@@ -15,23 +14,19 @@ from talaria.foundation.derivatives import (
     DerivativePoint,
     RawDerivativePoint,
 )
-from talaria.foundation.errors import ColdStoreError, FeatureDisabledError, FeedUnavailableError
+from talaria.foundation.errors import FeatureDisabledError, FeedUnavailableError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
 from talaria.perception.backfill import BackfillPolicy, ensure_history
-from talaria.perception.cold_publisher import ColdBarPublisher
-from talaria.perception.cold_store import latest_visible_bars
 from talaria.perception.compaction import compact_series
 from talaria.perception.hot_buffer import HotBarProvider
-from talaria.perception.raw_store import RawStore
+from talaria.perception.raw_store import RawStore, latest_visible_bars
 from talaria.perception.snapshot_store import (
     SnapshotBar,
     SnapshotStore,
     write_derivative_parquet,
     write_snapshot_parquet,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def _snapshot_entries(
@@ -65,7 +60,6 @@ class SnapshotBuilder:
         policy: BackfillPolicy,
         now_ms: Callable[[], int],
         hot_bars: HotBarProvider | None = None,
-        cold_publishers: Mapping[tuple[str, str], ColdBarPublisher] | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._connector = connector
@@ -74,7 +68,6 @@ class SnapshotBuilder:
         self._policy = policy
         self._now_ms = now_ms
         self._hot_bars = hot_bars
-        self._cold_publishers = cold_publishers
 
     def build(
         self,
@@ -114,12 +107,6 @@ class SnapshotBuilder:
                     f"行情采集已在 service.json 中关闭，缺少本地历史："
                     f"{instrument.instrument_id} {timeframe}（截至 {cutoff}）"
                 )
-            self._publish_cold(
-                instrument=instrument,
-                timeframe=timeframe,
-                raw_bars=revisions,
-                cutoff_ts=cutoff,
-            )
             compact = compact_series(raw_bars, timeframe=timeframe, cutoff_ts=cutoff)
             entries = _snapshot_entries(compact, raw_bars, cutoff_ts=cutoff)
             frames.append((timeframe, entries))
@@ -280,34 +267,3 @@ class SnapshotBuilder:
             if len(batch) < page_limit:
                 break
         return [collected[key] for key in sorted(collected)]
-
-    def _publish_cold(
-        self,
-        *,
-        instrument: InstrumentSpec,
-        timeframe: str,
-        raw_bars: Iterable[RawBar],
-        cutoff_ts: int,
-    ) -> None:
-        """尽力把快照可见柱增量写入冷库；冷库故障绝不阻塞快照主路径。"""
-
-        if self._cold_publishers is None:
-            return
-        publisher = self._cold_publishers.get((instrument.instrument_id, timeframe))
-        if publisher is None:
-            return
-        visible = sorted(
-            (bar for bar in raw_bars if bar.ts_available <= cutoff_ts),
-            key=lambda bar: (bar.ts_event, bar.revision),
-        )
-        if not visible:
-            return
-        try:
-            publisher.publish_snapshot_bars(visible)
-        except ColdStoreError as exc:
-            logger.warning(
-                "冷库发布失败，快照继续（%s %s）：%s",
-                instrument.instrument_id,
-                timeframe,
-                exc,
-            )

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from dataclasses import replace
 from decimal import Decimal
@@ -23,10 +24,14 @@ from talaria.foundation.errors import (
 )
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.perception.cold_store import (
+    ARCHIVE_SUBDIR,
     MANIFEST_DB,
+    RETENTION_MS,
     ColdBatch,
     ColdPhase,
+    ColdReader,
     ColdStore,
+    instrument_spec_version,
 )
 
 pytestmark = [pytest.mark.medium, pytest.mark.spec]
@@ -121,7 +126,8 @@ def test_publish_commits_generation_and_preserves_committed_time(
 
     assert generation.content_sha256 == store.archive(_batch(bars)).sha256
     assert generation.parquet_path == (
-        Path("data") / "cold" / "bybit" / "BTCUSDT" / TIMEFRAME / f"{generation.generation_id}.parquet"
+        Path("data") / "cold" / "bybit" / "BTCUSDT" / TIMEFRAME
+        / "2025-11" / f"tail-{instrument_spec_version(INSTRUMENT)}-{generation.generation_id}.parquet"
     )
     assert generation.first_ts == BASE
     assert generation.last_ts == BASE + 2 * MINUTE
@@ -147,19 +153,111 @@ def test_duplicate_batch_is_idempotent(store: ColdStore) -> None:
     assert len(store.generations(INSTRUMENT, TIMEFRAME)) == 1
 
 
-def test_publish_rejects_older_or_overlapping_batch(store: ColdStore) -> None:
-    first = store.publish(_batch(_bars(3)))
-    baseline = store.cursor(INSTRUMENT, TIMEFRAME)
-    assert baseline is not None
+# data-access/02: earlier missing bars can be filled after the live tail.
+def test_publish_accepts_older_missing_bar(store: ColdStore) -> None:
+    store.publish(_batch(_bars(2, start=BASE + MINUTE)))
+    store.publish(_batch(_bars(1)))
 
-    with pytest.raises(ColdStoreQualityError, match="append-only"):
-        store.publish(_batch(_bars(2)))
-    with pytest.raises(ColdStoreQualityError, match="append-only"):
-        store.publish(_batch(_bars(3, start=BASE + MINUTE)))
-
-    assert store.generations(INSTRUMENT, TIMEFRAME) == [first]
     assert store.read_bars(INSTRUMENT, TIMEFRAME) == _bars(3)
-    assert store.cursor(INSTRUMENT, TIMEFRAME) == baseline
+
+
+# ADR-0018: a reader can query both revisions while the manifest switches.
+def test_compaction_preserves_as_of_for_concurrent_and_offline_readers(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import closing
+    from threading import Event
+
+    switching = Event()
+    prepared = Event()
+    proceed = Event()
+
+    def pause_before_manifest(phase: ColdPhase) -> None:
+        if phase == ColdPhase.MANIFEST_BEFORE and switching.is_set():
+            prepared.set()
+            assert proceed.wait(5)
+
+    original = _bar(BASE)
+    revised = replace(original, close=Decimal("101"), revision=1,
+                      ts_available=BASE + 2 * MINUTE)
+    reader = ColdReader(tmp_path)
+
+    def versions():
+        return tuple(
+            reader.read_bars(INSTRUMENT, TIMEFRAME, as_of=cutoff)[0].close
+            for cutoff in (BASE + MINUTE, BASE + 2 * MINUTE)
+        )
+
+    with closing(ColdStore(tmp_path, fault_hook=pause_before_manifest)) as cold:
+        first = cold.publish(_batch([original]))
+        second = cold.publish(_batch([revised]))
+        assert versions() == (Decimal("100.5"), Decimal("101"))
+        switching.set()
+        with ThreadPoolExecutor() as executor:
+            compaction = executor.submit(cold.compact, [INSTRUMENT])
+            try:
+                assert prepared.wait(5)
+                assert versions() == (Decimal("100.5"), Decimal("101"))
+            finally:
+                proceed.set()
+            compaction.result(timeout=5)
+        active, = cold.generations(INSTRUMENT, TIMEFRAME)
+        assert active.bars == 2
+        archive = tmp_path / ARCHIVE_SUBDIR / f"{active.content_sha256}.jsonl"
+        assert [json.loads(line) for line in archive.read_text().splitlines()] == [
+            {"source_sha256": first.content_sha256}, {"source_sha256": second.content_sha256},
+        ]
+        assert all((tmp_path / item.parquet_path).is_file() for item in (first, second))
+        assert versions() == (Decimal("100.5"), Decimal("101"))
+
+    assert versions() == (Decimal("100.5"), Decimal("101"))
+
+
+# ADR-0018: files survive both the minimum time and the retained manifest versions.
+def test_compaction_reclaims_only_after_both_retention_limits(store, tmp_path) -> None:
+    first = store.publish(_batch([_bar(BASE)]))
+    store.publish(_batch([_bar(BASE + MINUTE)]))
+    store.compact([INSTRUMENT], now_ms=BASE)
+    replaced = tmp_path / first.parquet_path
+
+    store.compact([INSTRUMENT], now_ms=BASE + RETENTION_MS)
+    assert replaced.is_file()
+
+    for offset in (2, 3, 4):
+        store.publish(_batch([_bar(BASE + offset * MINUTE)]))
+    store.compact([INSTRUMENT], now_ms=BASE + RETENTION_MS - 1)
+    assert replaced.is_file()
+
+    store.compact([INSTRUMENT], now_ms=BASE + RETENTION_MS)
+    assert not replaced.exists()
+    assert store.read_bars(INSTRUMENT, TIMEFRAME) == _bars(5)
+
+
+# ADR-0018: simulate a paused reader losing its file between manifest and open.
+def test_reader_restarts_query_when_a_replaced_file_disappears(store, tmp_path, monkeypatch) -> None:
+    store.publish(_batch([_bar(BASE)]))
+    retiring = store.publish(_batch([_bar(BASE + MINUTE)]))
+    target = tmp_path / retiring.parquet_path
+    original_open = Path.open
+
+    def open_after_replacement(path, *args, **kwargs):
+        if path == target:
+            monkeypatch.setattr(Path, "open", original_open)
+            store.compact([INSTRUMENT])
+            target.unlink()
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_after_replacement)
+    assert ColdReader(tmp_path).read_bars(INSTRUMENT, TIMEFRAME) == _bars(2)
+    assert not target.exists()
+
+
+# ADR-0018: loss on both attempts is reported as an integrity error.
+def test_reader_reports_file_missing_from_latest_manifest(store, tmp_path) -> None:
+    published = store.publish(_batch())
+    (tmp_path / published.parquet_path).unlink()
+
+    with pytest.raises(ColdStoreIntegrityError, match="文件缺失"):
+        ColdReader(tmp_path).read_bars(INSTRUMENT, TIMEFRAME)
 
 
 def test_archive_rejects_corrupted_content(tmp_path: Path) -> None:

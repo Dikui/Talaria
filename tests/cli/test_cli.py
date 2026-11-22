@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import signal
 import socket
 import subprocess
@@ -116,6 +117,87 @@ def test_up_rejects_non_positive_replay_speed(capsys, tmp_path, speed: str) -> N
     replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
     assert main(["up", "--solo", "--replay-events", str(replay), "--replay-speed", speed]) == 2
     assert "回放速度必须为正数" in capsys.readouterr().err
+
+# data-access/02: protected directories cannot be modified by replay.
+@pytest.mark.spec
+def test_replay_requires_explicit_isolated_data_dir(tmp_path, monkeypatch, capsys) -> None:
+    import importlib
+
+    cli = importlib.import_module("talaria.cli.main")
+    daily = tmp_path / "daily"
+    daily.mkdir()
+    sentinel = daily / "keep"
+    sentinel.write_bytes(b"daily data")
+    alias = tmp_path / "alias"
+    alias.symlink_to(daily, target_is_directory=True)
+    monkeypatch.setenv("TALARIA_DATA_DIR", str(daily))
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+    args = ["up", "--solo", "--replay-events", str(replay)]
+
+    def fake_run_up(args, *, settings, **kwargs):
+        if settings.data_dir != tmp_path / "isolated":
+            return 99
+        (settings.data_dir / "recorded").write_bytes(b"replay output")
+        return 0
+
+    monkeypatch.setattr(cli, "_run_up", fake_run_up)
+    assert main(args) == 2
+    assert "显式指定 --data-dir" in capsys.readouterr().err
+    for protected in (daily, alias, daily / "nested"):
+        assert main([*args, "--data-dir", str(protected)]) == 2
+        assert "日常数据目录" in capsys.readouterr().err
+    assert main([*args, f"--data-dir={tmp_path / 'isolated'}"]) == 0
+    assert (tmp_path / "isolated" / "recorded").read_bytes() == b"replay output"
+    assert list(daily.iterdir()) == [sentinel]
+    assert sentinel.read_bytes() == b"daily data"
+
+
+# data-access/02: an installed launchd directory is protected even if the job is stopped.
+@pytest.mark.spec
+def test_replay_rejects_default_and_launchd_data_dir(tmp_path, monkeypatch, capsys) -> None:
+    from talaria.cli.service import DEFAULT_SERVICE_LABEL
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TALARIA_DATA_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / f"{DEFAULT_SERVICE_LABEL}.plist").write_bytes(plistlib.dumps({
+        "ProgramArguments": ["/bin/talaria", "up", "--data-dir=resident"],
+        "WorkingDirectory": str(tmp_path),
+    }))
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+    monkeypatch.setattr("talaria.cli.main._run_up", lambda *args, **kwargs: 99)
+    for protected in (".talaria", "resident"):
+        assert main(["up", "--solo", "--replay-events", str(replay), "--data-dir", protected]) == 2
+        assert "日常数据目录" in capsys.readouterr().err
+        assert not (tmp_path / protected).exists()
+
+
+# data-access/02: the loaded job may still point to a previous service directory.
+@pytest.mark.spec
+def test_replay_protects_data_dir_of_loaded_launchd_job(tmp_path, monkeypatch, capsys) -> None:
+    daily = tmp_path / "service-root"
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+    launchctl = (
+        f"working directory = {tmp_path}\n"
+        "arguments = {\n\t/bin/talaria\n\tup\n\t--data-dir\n\tservice-root\n}\n"
+    )
+    monkeypatch.setattr(
+        "talaria.cli.main._run_launchctl",
+        lambda args: subprocess.CompletedProcess(args, 0, launchctl, ""),
+    )
+    monkeypatch.setattr("talaria.cli.main._run_up", lambda *args, **kwargs: 99)
+
+    assert main([
+        "up", "--solo", "--replay-events", str(replay), "--data-dir", str(daily),
+    ]) == 2
+    assert "日常数据目录" in capsys.readouterr().err
+    assert not daily.exists()
+
 
 
 def _free_port() -> int:

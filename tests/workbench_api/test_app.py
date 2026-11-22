@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
-from talaria.perception.cold_store import ColdStore
+from talaria.perception.cold_store import ColdReader, ColdStore
 from talaria.workbench_api.app import create_app
 from talaria.workbench_api.settings import AppSettings
 
@@ -319,38 +320,43 @@ def test_validation_error_is_wrapped_in_error_response(client) -> None:
     assert "instrument_id" in payload["message"]
 
 
-def test_daemon_snapshot_publishes_cold_bars_and_restart_reads(
+# data-access/02: a chart request fills cold history independently of snapshot creation.
+def test_chart_history_is_readable_from_cold_store_after_shutdown(
     tmp_path, fixture_dir, dist_dir
 ) -> None:
     settings = _app_settings(tmp_path, fixture_dir, dist=dist_dir)
     instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
-    assert instrument is not None
+    reader = ColdReader(settings.data_dir)
     app = create_app(settings)
     with TestClient(app) as client:
-        first = _create(client)
-        assert first.status_code == 200
-        cold = app.state.runtime.cold_store
-        generations = cold.generations(instrument, "1m")
-        assert len(generations) == 1
-        assert generations[0].bars > 0
+        snapshot = _create(client)
+        assert snapshot.status_code == 200
+        snapshot_id = snapshot.json()["snapshot_id"]
+        assert reader.read_bars(instrument, "1m") == []
 
-        second = _create(client)
-        assert second.status_code == 200
-        assert cold.generations(instrument, "1m") == generations
+        page = client.get(f"/api/snapshots/{snapshot_id}/bars?timeframe=1m&limit=10")
+        assert page.status_code == 200
+        expected = [(bar["timestamp"], Decimal(bar["close"])) for bar in page.json()["bars"]]
+        assert len(expected) == 10
 
-    assert (settings.data_dir / "data" / "data_manifest.sqlite").is_file()
-    assert not list(settings.data_dir.rglob("*-wal"))
+    bars = reader.read_bars(instrument, "1m")
+    assert [(bar.ts_event, bar.close) for bar in bars] == expected
 
-    reopened = ColdStore(settings.data_dir)
-    try:
-        assert reopened.generations(instrument, "1m") == generations
-        bars = reopened.read_bars(instrument, "1m")
-        assert bars
-        assert bars[-1].ts_event == generations[0].last_ts
-    finally:
-        reopened.close()
+    with TestClient(create_app(settings)) as client:
+        assert client.get(f"/api/snapshots/{snapshot_id}").status_code == 200
 
-    restarted = create_app(settings)
-    with TestClient(restarted) as client:
-        response = client.get(f"/api/snapshots/{first.json()['snapshot_id']}")
-        assert response.status_code == 200
+
+# data-access/02: inject a disk failure at the cold writer boundary.
+@pytest.mark.regression
+def test_cold_disk_failure_does_not_fail_chart(tmp_path, fixture_dir, dist_dir, monkeypatch, caplog):
+    def disk_full(self, batch):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ColdStore, "publish", disk_full)
+    with TestClient(create_app(_app_settings(tmp_path, fixture_dir, dist=dist_dir))) as client:
+        frame = _create(client).json()["snapshot_id"]
+        page = client.get(f"/api/snapshots/{frame}/bars?timeframe=1m&limit=10")
+        assert page.status_code == 200
+        assert len(page.json()["bars"]) == 10
+
+    assert "冷库发布失败" in caplog.text and "disk full" in caplog.text

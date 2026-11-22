@@ -311,7 +311,7 @@ class BybitPublicStream:
             return []
         try:
             start = int(data["start"])
-            end = int(data["end"])
+            end = int(data["end"]) + 1
             open_ = _decimal(data["open"])
             high = _decimal(data["high"])
             low = _decimal(data["low"])
@@ -324,6 +324,7 @@ class BybitPublicStream:
         status = classify_flat_bar(
             open=open_, high=high, low=low, close=close, volume=volume
         )
+        confirmed = bool(data.get("confirm"))
         bar = CompactBar(
             timestamp=start,
             open=open_,
@@ -333,7 +334,8 @@ class BybitPublicStream:
             volume=volume,
             turnover=turnover,
             status=status,
-            ts_available=end,
+            # 传输层记录接收时刻，supervisor 按首个收盘或修订确定可获取时刻。
+            ts_available=self._now_ms() if confirmed else end,
             precision=PrecisionTier.SECOND_VERIFIED,
         )
         return [
@@ -341,7 +343,7 @@ class BybitPublicStream:
                 instrument_id=instrument_id,
                 timeframe=timeframe,
                 bar=bar,
-                confirmed=bool(data.get("confirm")),
+                confirmed=confirmed,
                 revision=0,
             )
         ]
