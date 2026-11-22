@@ -39,6 +39,7 @@ from talaria.cli.service import (
     DEFAULT_SERVICE_LABEL,
     ServiceInstallError,
     ServiceStatus,
+    ServiceUninstallError,
     install_service,
     service_status,
     uninstall_service,
@@ -763,7 +764,7 @@ def _cmd_service(args: argparse.Namespace) -> int:
                 launch_agents_dir=launch_agents_dir,
                 label=label,
             )
-        except (ValueError, OSError) as exc:
+        except (ServiceUninstallError, ValueError, OSError) as exc:
             print(str(exc), file=sys.stderr)
             return 2
         if result.removed:

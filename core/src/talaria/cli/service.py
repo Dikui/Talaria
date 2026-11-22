@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import errno
 import os
 import subprocess
 import tempfile
@@ -33,6 +33,10 @@ LaunchctlRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 class ServiceInstallError(RuntimeError):
     """plist 已写入但 ``launchctl bootstrap`` 失败。"""
+
+
+class ServiceUninstallError(RuntimeError):
+    """``launchctl bootout`` 失败，plist 已保留。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,7 +215,13 @@ def uninstall_service(
     if not target.exists():
         return ServiceUninstallResult(plist_path=target, removed=False)
     launchctl = runner or _run_launchctl
-    launchctl(["bootout", f"{_domain(uid)}/{label}"])
+    result = launchctl(["bootout", f"{_domain(uid)}/{label}"])
+    if result.returncode not in (0, errno.ESRCH):
+        detail = (result.stderr or result.stdout).strip() or "无输出"
+        raise ServiceUninstallError(
+            f"launchctl bootout 失败（退出码 {result.returncode}）：{detail}\n"
+            f"plist 已保留：{target}"
+        )
     target.unlink()
     return ServiceUninstallResult(plist_path=target, removed=True)
 

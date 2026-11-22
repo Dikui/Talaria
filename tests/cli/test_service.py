@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from talaria.cli import service as service_module
 from talaria.cli.main import main
 from talaria.cli.service import (
     DEFAULT_SERVICE_LABEL,
@@ -234,6 +235,48 @@ def test_uninstall_boots_out_and_removes_plist_idempotently(tmp_path):
     )
     assert second.removed is False
     assert runner.calls == []
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize(
+    ("returncode", "diagnostic", "expected_exit"),
+    [
+        (3, "No such process", 0),
+        (5, "Input/output error", 2),
+        (1, "Operation not permitted", 2),
+    ],
+)
+def test_uninstall_cli_preserves_plist_on_bootout_failure(
+    tmp_path, monkeypatch, capsys, returncode, diagnostic, expected_exit
+):
+    # platform/01: bootout 失败时保留作业定义以便重试。
+    launch_agents = tmp_path / "LaunchAgents"
+    installed = install_service(
+        data_dir=tmp_path / "data",
+        port=8765,
+        pack="crypto_perp",
+        program="/opt/talaria/bin/talaria",
+        launch_agents_dir=launch_agents,
+        runner=FakeRunner(),
+    )
+    runner = FakeRunner({"bootout": _completed(["bootout"], returncode, stderr=diagnostic)})
+    monkeypatch.setattr(service_module, "_run_launchctl", runner)
+
+    code = main([
+        "service", "uninstall", "--data-dir", str(tmp_path / "data"),
+        "--launch-agents-dir", str(launch_agents),
+    ])
+
+    assert code == expected_exit
+    output = capsys.readouterr()
+    if expected_exit:
+        assert installed.plist_path.is_file()
+        assert diagnostic in output.err
+        assert str(installed.plist_path) in output.err
+        assert "已卸载" not in output.out
+    else:
+        assert not installed.plist_path.exists()
+        assert "已卸载" in output.out
 
 
 def test_status_reports_running_service_and_features(tmp_path):
