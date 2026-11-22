@@ -12,7 +12,7 @@ from talaria.components.contracts import (
     StrategyDecision,
 )
 from talaria.components.rules import CompiledRule, compile_rule
-from talaria.components.runtime import Ctx, Evaluation, run_history
+from talaria.components.runtime import Ctx, Evaluation, RuleState, run_history
 
 __all__ = [
     "CompiledRule",
@@ -22,6 +22,7 @@ __all__ = [
     "Ctx",
     "Evaluation",
     "Indicator",
+    "RuleState",
     "Series",
     "Signal",
     "SignalEvent",

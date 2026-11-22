@@ -7,18 +7,17 @@
 from __future__ import annotations
 
 import logging
-from bisect import bisect_left
-from collections import deque
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from uuid import uuid4
 
-from talaria.components import CompiledRule, Ctx, compile_rule
-from talaria.components.rules import RuleObservation, RuleState, level_bounds
+from talaria.components import CompiledRule, Ctx, RuleState, compile_rule
+from talaria.components.rules import DEFAULT_RULE_HISTORY, RuleObservation, event_visible_at, level_bounds
 from talaria.foundation.alerts.contracts import AlertRecord, AlertStatus, AlertTriggerKind, AlertTriggerRecord
 from talaria.foundation.bars import CompactBar
-from talaria.foundation.derivatives import DerivativeKind, DerivativePoint, OI_TIMEFRAME_BY_TIMEFRAME
+from talaria.foundation.derivatives import DerivativePoint
+from talaria.perception.rule_derivatives import RuleDerivatives
 from talaria.foundation.drawings import DrawingKind, DrawingRecord
 from talaria.foundation.feed import (
     DerivativeTickEvent,
@@ -26,13 +25,13 @@ from talaria.foundation.feed import (
     FeedHealthEvent,
     FeedHealthStatus,
     KlineEvent,
-    ReceivedKlineEvent,
 )
 from talaria.foundation.key_levels import KeyLevel, compute_key_levels
-from talaria.foundation.operators import spec_from_params
+from talaria.foundation.operators import MAX_PERIOD, spec_from_params
+from talaria.perception.confirmed_history import ConfirmedHistory
 from talaria.foundation.rules import (
     AlertDirection, AlertLevelEvent, AlertMetric, AlertOverlayMode,
-    RuleComparison, RuleConstant, RuleEvent, RuleIndicator, RuleLevelEvent, RuleOverlay,
+    RuleComparison, RuleConstant, RuleDrawingPrice, RuleEvent, RuleIndicator, RuleLevelEvent, RuleLevelPrice, RuleOverlay,
 )
 from talaria.foundation.timeframes import TIMEFRAME_MS
 
@@ -73,8 +72,9 @@ class _Runtime:
     """单条规则的求值状态；不持久化，重启后从最近柱重建基线。"""
 
     condition_true: bool | None = None
-    baseline_pending: bool = True
+    baseline_pending: bool = False
     last_bar_key: tuple[int, int] | None = None
+    partial_inputs: set[frozenset[int]] = field(default_factory=set)
     last_cross_ts: int | None = None
     rule_state: RuleState = field(default_factory=RuleState)
 
@@ -91,7 +91,7 @@ class AlertEngine:
         key_level_provider: KeyLevelProvider | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
         on_trigger: Callable[[AlertTriggerRecord, AlertRecord], None] | None = None,
-        bar_limit: int = 600,
+        bar_limit: int = DEFAULT_RULE_HISTORY,
     ) -> None:
         self._now_ms = now_ms
         self._overlay_geometry = overlay_geometry
@@ -101,10 +101,10 @@ class AlertEngine:
         self._on_trigger = on_trigger
         self._bar_limit = max(bar_limit, 32)
         self._compiled: dict[str, CompiledRule] = {}
-        self._derivatives: dict[str, deque[DerivativeTickEvent]] = {}
+        self._derivatives = RuleDerivatives(self._bar_limit)
         self._alerts: dict[str, AlertRecord] = {}
         self._runtimes: dict[str, _Runtime] = {}
-        self._windows: dict[tuple[str, str], deque[CompactBar]] = {}
+        self._windows: dict[tuple[str, str], ConfirmedHistory] = {}
         self._session_history: dict[tuple[str, str], tuple[CompactBar, ...]] = {}
         self._seeded: set[tuple[str, str]] = set()
         self._drawings: dict[str, DrawingRecord] = {}
@@ -124,8 +124,8 @@ class AlertEngine:
             self._runtimes[alert.alert_id] = _Runtime()
         self._alerts[alert.alert_id] = alert
         self._ensure_window(alert.instrument_id, alert.timeframe)
-        for node in alert.condition.nodes():
-            if isinstance(node, RuleOverlay):
+        for node in alert.condition.references():
+            if isinstance(node, (RuleOverlay, RuleDrawingPrice)):
                 self._warm_drawing(node.drawing_id)
 
     def remove(self, alert_id: str) -> None:
@@ -153,8 +153,8 @@ class AlertEngine:
             dict.fromkeys(
                 node.drawing_id
                 for alert in self._alerts.values()
-                for node in alert.condition.nodes()
-                if isinstance(node, RuleOverlay)
+                for node in alert.condition.references()
+                if isinstance(node, (RuleOverlay, RuleDrawingPrice))
             )
         )
 
@@ -175,8 +175,11 @@ class AlertEngine:
         key = (instrument_id, timeframe)
         window = self._window_for(key)
         for bar in bars:
-            self._merge_bar(window, bar)
+            window.put(bar)
         self._seeded.add(key)
+
+    def seed_derivatives(self, points: Iterable[DerivativePoint]) -> None:
+        self._derivatives.seed(points)
 
     def seed_session_bars(
         self, instrument_id: str, timeframe: str, bars: Sequence[CompactBar]
@@ -193,22 +196,17 @@ class AlertEngine:
             self._handle_health(event)
             return []
         if isinstance(event, DerivativeTickEvent):
-            self._derivatives.setdefault(event.instrument_id, deque(maxlen=self._bar_limit)).append(event)
+            self._derivatives.handle_tick(event)
         self._store_event_bars(event)
         instrument_id = event.instrument_id
-        now = self._now_ms()
+        now = max(self._now_ms(), event_visible_at(event))
         alerts = [
             alert for alert in self.list_alerts()
             if alert.instrument_id == instrument_id and (instrument_id, alert.timeframe) not in self._stale
         ]
-        levels: dict[str, KeyLevel] = {}
-        if isinstance(event, KlineEvent) and any(
-            alert.timeframe == event.timeframe
-            and any(isinstance(node, RuleLevelEvent) for node in alert.condition.nodes())
-            and alert.status in {AlertStatus.ARMED, AlertStatus.COOLDOWN}
-            for alert in alerts
-        ):
-            levels = {level.level_id: level for level in self._levels_for_event(event, now)}
+        contexts = {}
+        versions = {}
+        pending = []
         changed: dict[str, AlertRecord] = {}
         for alert in alerts:
             if self._advance(alert, now):
@@ -219,7 +217,30 @@ class AlertEngine:
                 (instrument_id, event.timeframe), -1
             ):
                 continue
-            if self._evaluate(alert, event, now, levels):
+            if isinstance(event, KlineEvent) and event.timeframe != alert.timeframe:
+                continue
+            if alert.condition.timing == "bar_close" and (not isinstance(event, KlineEvent) or not event.confirmed):
+                continue
+            key = (alert.timeframe, alert.condition.timing)
+            if key not in contexts:
+                contexts[key] = self._context(alert, event, now)
+            ctx = contexts[key]
+            if ctx is None:
+                continue
+            levels = {}
+            if any(isinstance(ref, (RuleLevelEvent, RuleLevelPrice)) for ref in alert.condition.references()):
+                level_ts = ctx.now
+                if isinstance(event, KlineEvent) and event.confirmed:
+                    slot = ctx._bar_ts if alert.condition.timing == "bar_close" else event.bar.timestamp
+                    level_ts = slot + TIMEFRAME_MS[alert.timeframe]
+                version_key = (alert.timeframe, level_ts)
+                if version_key not in versions:
+                    versions[version_key] = {lv.level_id: lv for lv in self._levels_at(ctx, level_ts)}
+                levels = versions[version_key]
+            pending.append((alert, ctx, levels))
+
+        for alert, ctx, levels in pending:
+            if self._evaluate(alert, ctx, event, now, levels):
                 # 触发后的规则由回调持久化，避免同一事件写两次。
                 changed.pop(alert.alert_id, None)
         return list(changed.values())
@@ -236,30 +257,10 @@ class AlertEngine:
 
     # ----------------------------------------------------------------- 内部
 
-    @staticmethod
-    def _merge_bar(window: deque[CompactBar], bar: CompactBar) -> None:
-        if not window or bar.timestamp > window[-1].timestamp:
-            window.append(bar)
-            return
-        timestamps = [item.timestamp for item in window]
-        index = bisect_left(timestamps, bar.timestamp)
-        if index < len(window) and window[index].timestamp == bar.timestamp:
-            window[index] = bar
-        else:
-            if len(window) == window.maxlen:
-                if index == 0:
-                    return
-                window.popleft()
-                index -= 1
-            window.insert(index, bar)
-
-    def _window_for(self, key: tuple[str, str]) -> deque[CompactBar]:
-        # A UTC day of aligned bars and one preceding bar expose the first anchor.
-        day_ms = TIMEFRAME_MS["1d"]
-        session_size = day_ms // TIMEFRAME_MS.get(key[1], day_ms) + 1
-        return self._windows.setdefault(
-            key, deque(maxlen=max(self._bar_limit, session_size))
-        )
+    def _window_for(self, key: tuple[str, str]) -> ConfirmedHistory:
+        if key not in self._windows:
+            self._windows[key] = ConfirmedHistory(TIMEFRAME_MS[key[1]], max(MAX_PERIOD + 2, self._bar_limit))
+        return self._windows[key]
 
     def _ensure_window(self, instrument_id: str, timeframe: str) -> None:
         key = (instrument_id, timeframe)
@@ -273,7 +274,7 @@ class AlertEngine:
             logger.exception("载入预警历史柱失败：%s %s", instrument_id, timeframe)
             return
         for bar in bars:
-            self._merge_bar(window, bar)
+            window.put(bar)
 
     def _warm_drawing(self, drawing_id: str | None) -> None:
         if drawing_id is None or drawing_id in self._drawings:
@@ -312,6 +313,7 @@ class AlertEngine:
                         runtime.baseline_pending = True
                         runtime.condition_true = None
                         runtime.rule_state = RuleState()
+                        runtime.partial_inputs.clear()
             return
         self.suspend_channel(key)
 
@@ -322,7 +324,7 @@ class AlertEngine:
         window = self._windows.get(key)
         if window is None:
             return
-        self._merge_bar(window, event.bar)
+        window.put(event.bar, event.revision, visible_at=event_visible_at(event))
 
     def _runtime_for(self, alert: AlertRecord) -> _Runtime:
         runtime = self._runtimes.get(alert.alert_id)
@@ -350,18 +352,16 @@ class AlertEngine:
             runtime.baseline_pending = True
             runtime.condition_true = None
             runtime.rule_state = RuleState()
+            runtime.partial_inputs.clear()
             changed = True
         if changed:
             alert.updated_ts = now
         return changed
 
     def _evaluate(
-        self, alert: AlertRecord, event: FeedEvent, now: int, levels: dict[str, KeyLevel]
+        self, alert: AlertRecord, ctx: Ctx, event: FeedEvent, now: int, levels: dict[str, KeyLevel]
     ) -> bool:
         runtime = self._runtime_for(alert)
-
-        if isinstance(event, KlineEvent) and event.timeframe != alert.timeframe:
-            return False
 
         if isinstance(event, KlineEvent):
             bar_key = (event.bar.timestamp, event.revision)
@@ -369,54 +369,55 @@ class AlertEngine:
                 return False
 
         compiled = self._compiled[alert.alert_id]
-        if compiled.rule.timing == "bar_close" and (
-            not isinstance(event, KlineEvent) or not event.confirmed
-        ):
-            return False
-        observation = compiled.observe(
-            self._context(alert, event, now), event=event, drawing=self._drawing_for,
-            levels=levels, state=runtime.rule_state, consume_retests=False,
-        )
+        ctx = replace(ctx, drawing=self._drawing_for, levels=levels, rule_state=runtime.rule_state,
+                      event=event if compiled.rule.timing == "event" else None)
+        observation = compiled.observe(ctx)
+        inputs = frozenset(runtime.rule_state.known_inputs)
         if observation is None:
+            if compiled.rule.timing == "event" and inputs and not runtime.baseline_pending:
+                runtime.partial_inputs.add(inputs)
             return False
         if isinstance(event, KlineEvent):
             runtime.last_bar_key = (event.bar.timestamp, event.revision)
 
         previous = runtime.condition_true if not runtime.baseline_pending else None
+        if inputs in runtime.partial_inputs:
+            previous = False
+        runtime.partial_inputs.clear()
+        initial_cross = (
+            previous is None and not runtime.baseline_pending
+            and observation.crossed_at is not None and compiled.prior_root_false(ctx)
+        )
         runtime.baseline_pending = False
         runtime.condition_true = observation.matched
-        if not observation.matched:
+        if not observation.matched or (previous is not False and not initial_cross):
             return False
         if observation.crossed_at is not None:
             if runtime.last_cross_ts == observation.crossed_at:
                 return False
             runtime.last_cross_ts = observation.crossed_at
-        elif previous is not False:
-            return False
 
-        self._trigger(alert, observation, now)
-        runtime.rule_state.consume_matches()
+        self._trigger(alert, observation, now, ctx.now)
         return True
 
-    def _context(self, alert: AlertRecord, event: FeedEvent, now: int) -> Ctx:
+    def _context(self, alert: AlertRecord, event: FeedEvent, now: int) -> Ctx | None:
         key = (alert.instrument_id, alert.timeframe)
-        bars = list(self._windows[key])
-        cutoff = now
+        cutoff = event_visible_at(event)
+        history = self._windows[key]
         bar_ts = None
         if isinstance(event, KlineEvent):
-            if event.confirmed:
-                bar_ts = event.bar.timestamp
-                cutoff = max(event.bar.ts_available, bar_ts + TIMEFRAME_MS[alert.timeframe])
-                if event.revision > 0 and bars and bars[-1].timestamp > bar_ts:
-                    # A received revision to an earlier slot can update the latest indicator.
-                    cutoff = max(cutoff, getattr(event, "ts_ingested", now))
-                    bar_ts = None
-            else:
-                cutoff = max(event.bar.timestamp, getattr(event, "ts_ingested", now))
-                # Even a delayed open update cannot expose the bar it belongs to.
-                bar_ts = event.bar.timestamp - TIMEFRAME_MS[alert.timeframe]
-        elif not isinstance(event, FeedHealthEvent):
-            cutoff = event.ts_ingested
+            bar_ts = event.bar.timestamp
+            if not event.confirmed:
+                cutoff = max(cutoff, getattr(event, "ts_ingested", now))
+                bar_ts -= TIMEFRAME_MS[alert.timeframe]
+            elif alert.condition.timing == "bar_close":
+                receipt = max(cutoff, getattr(event, "ts_ingested", now))
+                latest = history.latest_slot(receipt)
+                if latest is not None and latest > bar_ts:
+                    if event.revision == 0:
+                        return None
+                    cutoff, bar_ts = receipt, latest
+        bars = history.visible(cutoff, through=bar_ts)
 
         prefix = self._session_history.get(key, ())
         if bars and prefix:
@@ -434,57 +435,33 @@ class AlertEngine:
                 )
 
         def read_derivatives(instrument, kind, *, start, end, as_of):
-            timeframe = {
-                DerivativeKind.FUNDING_RATE: None,
-                DerivativeKind.MARK_PRICE: alert.timeframe,
-                DerivativeKind.OPEN_INTEREST: OI_TIMEFRAME_BY_TIMEFRAME[alert.timeframe],
-            }[kind]
-            return [
-                DerivativePoint(
-                    instrument_id=instrument, kind=kind, timeframe=timeframe, value=value,
-                    ts_event=tick.ts_event, ts_available=max(tick.ts_event, tick.ts_ingested),
-                    ts_ingested=tick.ts_ingested, ts_committed=tick.ts_ingested,
-                )
-                for tick in self._derivatives.get(instrument, ())
-                if start <= tick.ts_event <= end and max(tick.ts_event, tick.ts_ingested) <= as_of
-                and (value := getattr(tick, kind.value)) is not None
-            ]
+            return [p for p in self._derivatives.points(instrument, alert.timeframe) if p.kind is kind]
 
         return Ctx(
             *key, 0, cutoff, _bar_ts=bar_ts, _indicator_defaults={}, _confirmed_compact=bars,
             _indicator_history_limit=self._bar_limit, _read_derivatives=read_derivatives, _session_prefix=prefix,
         )
 
-    def _levels_for_event(self, event: KlineEvent, now: int) -> Sequence[KeyLevel]:
-        instrument_id, timeframe = event.instrument_id, event.timeframe
-        if event.confirmed:
-            cutoff_ts = event.bar.timestamp + TIMEFRAME_MS[timeframe]
-        else:
-            cutoff_ts = event.ts_ingested if isinstance(event, ReceivedKlineEvent) else now
-        provider = self._key_level_provider
-        if provider is not None:
-            return provider(instrument_id, timeframe, cutoff_ts)
-        window = self._windows.get((instrument_id, timeframe))
-        if not window:
-            return []
-        if not event.confirmed:
-            cutoff_ts = min(cutoff_ts, event.bar.timestamp)
+    def _levels_at(self, ctx: Ctx, cutoff_ts: int) -> Sequence[KeyLevel]:
+        instrument_id, timeframe = ctx.instrument, ctx.timeframe
+        if self._key_level_provider is not None:
+            return self._key_level_provider(instrument_id, timeframe, cutoff_ts)
         try:
             return compute_key_levels(
                 instrument_id=instrument_id,
                 timeframe=timeframe,
-                bars=list(window)[-self._bar_limit:],
+                bars=self._windows[(instrument_id, timeframe)].visible(cutoff_ts, through=ctx._bar_ts)[-self._bar_limit:],
                 cutoff_ts=cutoff_ts,
             )
         except Exception:
             logger.exception("重算关键位失败：%s %s", instrument_id, timeframe)
             return []
 
-    def _trigger(self, alert: AlertRecord, observation: RuleObservation, now: int) -> None:
+    def _trigger(self, alert: AlertRecord, observation: RuleObservation, now: int, as_of: int) -> None:
         snapshot_id = ""
         if self._freeze_snapshot is not None:
             try:
-                snapshot_id = self._freeze_snapshot(alert, now)
+                snapshot_id = self._freeze_snapshot(alert, as_of)
             except Exception:
                 logger.exception("冻结触发证据快照失败：%s", alert.alert_id)
         trigger = AlertTriggerRecord(

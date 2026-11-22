@@ -132,6 +132,8 @@ from talaria.foundation.rules import (
     RuleComparison,
     RuleConstant,
     RuleDerivative,
+    RuleDrawingPrice,
+    RuleLevelPrice,
     RuleEvent,
     RuleGroup,
     RuleIndicator,
@@ -297,7 +299,7 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
 
 RULE_NODE_TYPES = (
     RuleGroup, RuleComparison, RuleConstant, RuleBar, RuleDerivative,
-    RuleEvent, RuleIndicator, RuleIndicatorParams, RuleLevelEvent, RuleOverlay,
+    RuleEvent, RuleIndicator, RuleIndicatorParams, RuleLevelEvent, RuleOverlay, RuleDrawingPrice, RuleLevelPrice,
 )
 
 #: 枚举的固定输出顺序。

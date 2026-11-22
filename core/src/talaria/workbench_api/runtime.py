@@ -12,6 +12,7 @@ from talaria.feed.supervisor import FeedSupervisor
 from talaria.foundation.alerts import AlertRecord
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
+from talaria.foundation.derivatives import DerivativePoint
 from talaria.foundation.errors import FeatureDisabledError, TalariaError
 from talaria.foundation.feed import FeedEvent, FeedTransport, KlineEvent
 from talaria.foundation.market import InstrumentSpec
@@ -216,6 +217,15 @@ async def build_runtime(
             )
             resources.push_async_callback(supervisor.stop)
 
+        alerts: AlertService | None = None
+        scanner: ScannerService | None = None
+
+        def seed_derivatives(instrument_id: str, points: Sequence[DerivativePoint]) -> None:
+            if alerts is not None:
+                alerts.engine.seed_derivatives(points)
+            if scanner is not None:
+                scanner.seed_derivatives(instrument_id, points)
+
         raw_store = RawStore(settings.data_dir, raw_archive_id=pack.raw_archive_id)
         builder = SnapshotBuilder(
             data_dir=settings.data_dir,
@@ -225,6 +235,9 @@ async def build_runtime(
             policy=policy,
             now_ms=settings.now_ms,
             hot_bars=hot_buffer,
+            on_derivatives=lambda instrument_id, points: loop.call_soon_threadsafe(
+                seed_derivatives, instrument_id, points
+            ),
         )
         desk = DeskBroadcast()
         key_levels = KeyLevelRegistry(now_ms=settings.now_ms, on_latest=desk.project_levels)
@@ -273,7 +286,6 @@ async def build_runtime(
             state_writer=state_writer, drawings=drawings, now_ms=settings.now_ms
         )
         indicator_defaults = IndicatorDefaultsService(state_writer)
-        alerts: AlertService | None = None
 
         def subscription_denied(owner: tuple[str, str, tuple[str, str]]) -> None:
             if owner[0] == "alert" and alerts is not None:
@@ -360,7 +372,6 @@ async def build_runtime(
             now_ms=settings.now_ms,
             active_alerts=alerts.active_realtime_alerts if alerts is not None else None,
         )
-        scanner: ScannerService | None = None
         if features.scanner:
             scanner = ScannerService(
                 state_writer=state_writer,
@@ -374,7 +385,7 @@ async def build_runtime(
             )
             resources.callback(scanner.close)
             if isinstance(connector, FixtureConnector) and stream is None:
-                _seed_fixture_scanner(scanner, connector, instruments)
+                _seed_fixture_scanner(scanner, connector, instruments, seed_derivatives)
             if supervisor is not None:
                 resources.callback(supervisor.add_listener(scanner.handle_event))
             scanner_ticker = asyncio.create_task(
@@ -468,6 +479,7 @@ def _seed_fixture_scanner(
     scanner: ScannerService,
     connector: FixtureConnector,
     instruments: Sequence[InstrumentSpec],
+    seed_derivatives: Callable[[str, Sequence[DerivativePoint]], None],
 ) -> None:
     """离线样本没有实时流；预先回填一轮供演示与验收回看异动。"""
     for spec in instruments:
@@ -490,7 +502,7 @@ def _seed_fixture_scanner(
         except Exception:
             logger.warning("扫描器回填持仓量失败：%s", spec.instrument_id)
         if points:
-            scanner.seed_derivatives(
+            seed_derivatives(
                 spec.instrument_id,
                 [point.to_point(spec.instrument_id) for point in points],
             )

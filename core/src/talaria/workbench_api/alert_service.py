@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -29,17 +29,15 @@ from talaria.foundation.errors import (
 )
 from talaria.foundation.feed import FeedEvent
 from talaria.foundation.market import InstrumentSpec
-from talaria.foundation.indicators import IndicatorParams
-from talaria.foundation.operators import IndicatorName
 from talaria.foundation.rules import (
-    Rule, RuleComparison, RuleGroup, RuleIndicator,
-    RuleExpression, RuleIndicatorParams, RuleLevelEvent, RuleOverlay,
+    Rule, RuleComparison, RuleIndicator,
+    RuleDrawingPrice, RuleLevelEvent, RuleLevelPrice, RuleOverlay,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.alerts import AlertEngine
 from talaria.perception.alerts.engine import KeyLevelProvider
 from talaria.workbench_api.drawing_service import DrawingService
-from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
+from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService, pin_rule_indicator_params
 from talaria.workbench_api.state_store import StateStore, StateWriterQueue
 
 logger = logging.getLogger(__name__)
@@ -50,30 +48,7 @@ _ALERT_PARAMS_V1_KEY = "alerts.explicit_params.v1"
 
 
 def _has_level_rule(record: AlertRecord) -> bool:
-    return any(isinstance(node, RuleLevelEvent) for node in record.condition.nodes())
-
-
-def _pin_indicator_params(
-    node: RuleExpression,
-    previous: RuleExpression | None,
-    defaults: Mapping[IndicatorName, IndicatorParams],
-) -> None:
-    if isinstance(node, RuleGroup):
-        previous_args = previous.args if isinstance(previous, RuleGroup) and previous.op == node.op else ()
-        for index, child in enumerate(node.args):
-            old_child = previous_args[index] if index < len(previous_args) else None
-            _pin_indicator_params(child, old_child, defaults)
-    elif isinstance(node, RuleComparison):
-        for side in ("left", "right"):
-            operand = getattr(node, side)
-            if not isinstance(operand, RuleIndicator):
-                continue
-            explicit = operand.params.model_dump(exclude_none=True)
-            old = getattr(previous, side, None)
-            if isinstance(old, RuleIndicator) and old.name == operand.name and old.params.std_dev is not None:
-                explicit.setdefault("std_dev", old.params.std_dev)
-            params = defaults[operand.indicator_name].model_dump(exclude_none=True) | explicit
-            operand.params = RuleIndicatorParams.model_validate(params)
+    return any(isinstance(node, (RuleLevelPrice, RuleLevelEvent)) for node in record.condition.references())
 
 
 class AlertService:
@@ -98,6 +73,7 @@ class AlertService:
         self._indicator_defaults = indicator_defaults or IndicatorDefaultsService(
             state_writer
         )
+        self._key_level_provider = key_level_provider
         self._drawings = drawings
         self._session_history = session_history
         self._session_history_seeded: set[tuple[str, str]] = set()
@@ -191,7 +167,7 @@ class AlertService:
         if payload.expires_at is not None and payload.expires_at <= self._now_ms():
             raise InvalidRequestError("expires_at 必须晚于当前时间")
         condition = await self._validate_rule(
-            payload.condition, payload.instrument_id
+            payload.condition, payload.instrument_id, payload.timeframe
         )
         now = self._now_ms()
         record = AlertRecord(
@@ -237,7 +213,7 @@ class AlertService:
         normalized = None
         if patch.condition is not None:
             normalized = await self._validate_rule(
-                patch.condition, record.instrument_id, previous=record.condition
+                patch.condition, record.instrument_id, record.timeframe, previous=record.condition
             )
         if patch.expires_at is not None and patch.expires_at <= self._now_ms():
             raise InvalidRequestError("expires_at 必须晚于当前时间")
@@ -397,27 +373,36 @@ class AlertService:
             raise InvalidRequestError(f"不支持的周期：{timeframe}")
 
     async def _validate_rule(
-        self, rule: Rule, instrument_id: str, *, previous: Rule | None = None,
+        self, rule: Rule, instrument_id: str, timeframe: str, *, previous: Rule | None = None,
     ) -> Rule:
         # 固定保存时的参数，使之后修改工作台默认值不会改变已启用的规则。
         result = rule.model_copy(deep=True)
         defaults = None
-        for node in result.nodes():
-            if isinstance(node, RuleOverlay):
+        levels = None
+        for node in result.references():
+            if isinstance(node, (RuleLevelEvent, RuleLevelPrice)):
+                if levels is None:
+                    provider = self._key_level_provider
+                    levels = {lv.level_id: lv for lv in provider(instrument_id, timeframe, self._now_ms())} if provider else {}
+                level = levels.get(node.level_id)
+                if level is None or (node.level_kind is not None and node.level_kind != level.kind):
+                    raise InvalidRequestError("关键位在当前版本中不存在或类型不匹配")
+            else:
                 await self._validate_overlay(node, instrument_id)
-            elif isinstance(node, RuleComparison) and any(
+        for node in result.nodes():
+            if isinstance(node, RuleComparison) and any(
                 isinstance(operand, RuleIndicator) for operand in (node.left, node.right)
             ):
                 if defaults is None:
                     defaults = await self._indicator_defaults.effective()
         try:
             if defaults is not None:
-                _pin_indicator_params(result.expression, previous.expression if previous is not None else None, defaults)
+                pin_rule_indicator_params(result.expression, previous.expression if previous is not None else None, defaults)
             return Rule.model_validate(result.model_dump())
         except ValueError as exc:
             raise InvalidRequestError(str(exc)) from exc
 
-    async def _validate_overlay(self, node: RuleOverlay, instrument_id: str) -> None:
+    async def _validate_overlay(self, node: RuleOverlay | RuleDrawingPrice, instrument_id: str) -> None:
         drawing = await self._drawings.get_drawing(node.drawing_id, after_pending_writes=True)
         if drawing.deleted_at is not None:
             raise InvalidRequestError("画线已删除，无法挂载预警")

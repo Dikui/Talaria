@@ -191,6 +191,8 @@ const BAR_FIELDS = {
 function operandSummary(operand: RuleComparison["left"]): string {
   switch (operand.source) {
     case "constant": return operand.value;
+    case "drawing_price": return `画线 ${operand.drawing_id} ${operand.edge === "lower" ? "下沿" : "上沿"}`;
+    case "level_price": return `关键位 ${operand.level_id} ${operand.edge === "lower" ? "下沿" : "上沿"}`;
     case "bar": return BAR_FIELDS[operand.field];
     case "event": return METRIC_LABELS[operand.metric];
     case "derivative": return METRIC_LABELS[operand.kind];

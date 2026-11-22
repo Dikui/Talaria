@@ -471,3 +471,104 @@ def test_manual_scan_evaluates_a_composite_rule_only_on_visible_confirmed_bars()
     assert hits[0].snapshot_id == "snap_scanner"
     assert freezer.calls == [(instrument, "1m", current.ts_available)]
     assert engine.scan([instrument], now=current.ts_available, rule=rule) == []
+
+
+def _rule(expression):
+    from talaria.foundation.rules import Rule
+
+    return Rule.model_validate(dict(version="1", timing="bar_close", expression=expression))
+
+
+def _scan(engine, rule, now):
+    return engine.scan(["BTC-USDT-PERP"], now=now, rule=rule)
+
+
+def test_late_scan_bar_uses_levels_at_close():
+    current = _bar(BASE_TS).model_copy(update={"ts_available": BASE_TS + 3 * MINUTE})
+    def levels(instrument, timeframe, cutoff):
+        return [_key_level()] if cutoff == BASE_TS + MINUTE else []
+    engine = ScannerEngine(now_ms=lambda: current.ts_available, freeze_snapshot=Freezer(), rule_levels_at=levels)
+    _seed(engine, [current])
+    rule = _rule(dict(op="level_event", event="TOUCH", level_id="lvl_test"))
+    assert len(_scan(engine, rule, current.ts_available)) == 1
+
+
+def test_scanner_replay_consumes_the_first_completed_retest():
+    engine, _ = _engine(Freezer(), key_levels=lambda **_: [
+        _key_level().model_copy(update={"status": KeyLevelStatus.BROKEN})
+    ], config=ScannerConfig(cooldown_ms=1))
+    rule = _rule(dict(op="level_event", level_id="lvl_test", event="RETEST"))
+    _seed(engine, [_bar(BASE_TS, close=101, low=101)])
+    counts = []
+    for offset in [1, 2, 3]:
+        bar = _bar(BASE_TS + offset * MINUTE, close=101, low=99)
+        engine.handle_event(_kline(bar))
+        counts.append(len(_scan(engine, rule, bar.ts_available)))
+    assert counts == [1, 0, 0]
+
+
+@pytest.mark.parametrize("scenario", ["gap", "period", "revision"])
+def test_scan_indicators_use_visible_history_including_warmup(scenario):
+    engine, _ = _engine(Freezer())
+    period = 650 if scenario == "period" else 2
+    rule = _rule(dict(op="compare", test="eq", left=dict(source="indicator", name="SMA", params={"period": period}),
+                      right=dict(source="constant", value="100")))
+    bars = [_bar(BASE_TS + i * MINUTE) for i in range(period)]
+    if scenario == "gap":
+        bars.insert(1, _bar(BASE_TS + MINUTE, status=BarStatus.FEED_GAP))
+        bars[-1] = _bar(BASE_TS + 2 * MINUTE)
+    _seed(engine, bars)
+    if scenario == "revision":
+        revised = _bar(BASE_TS, close=500).model_copy(update={"ts_available": BASE_TS + 3 * MINUTE})
+        engine.handle_event(_kline(revised).model_copy(update={"revision": 1}))
+    assert bool(_scan(engine, rule, bars[-1].ts_available + MINUTE)) == (scenario != "gap")
+
+
+@pytest.mark.parametrize("kind", ["mark_price", "open_interest"])
+def test_price_and_oi_rules_read_visible_ticker(kind):
+    engine, _ = _engine(Freezer())
+    _seed(engine, [_bar(BASE_TS)])
+    for delay, value in [(0, "110"), (2 * MINUTE, "80")]:
+        engine.handle_event(DerivativeTickEvent(instrument_id="BTC-USDT-PERP", **{kind: value},
+                                                ts_event=BASE_TS + delay, ts_ingested=BASE_TS + delay))
+    rule = _rule(dict(op="compare", test="gt", left=dict(source="derivative", kind=kind),
+                      right=dict(source="constant", value="100")))
+    assert len(_scan(engine, rule, BASE_TS + 3 * MINUTE)) == 1
+
+
+def test_manual_scan_freezes_the_as_of_used_to_evaluate_the_rule():
+    engine, freezer = _engine(Freezer())
+    bar = _bar(BASE_TS)
+    _seed(engine, [bar])
+    rule = _rule(dict(op="compare", test="eq", left=dict(source="bar", field="close"),
+                      right=dict(source="constant", value="100")))
+    hit, = _scan(engine, rule, bar.ts_available + 4 * MINUTE)
+    assert hit.snapshot_id == freezer.snapshot_id
+    assert freezer.calls == [("BTC-USDT-PERP", "1m", bar.ts_available)]
+
+
+def test_mark_quotes_do_not_evict_oi_gate_history():
+    engine, _ = _engine(Freezer(), config=ScannerConfig(max_bars=5))
+    _seed(engine, [_bar(BASE_TS + i * MINUTE, close=100 - i*2) for i in range(5)])
+    start = (BASE_TS // (5 * MINUTE) + 1) * 5 * MINUTE
+    for i in range(4):
+        ts = start + i * 5 * MINUTE
+        engine.handle_event(DerivativeTickEvent(instrument_id="BTC-USDT-PERP", open_interest=str(1000 + i*100),
+                                                ts_event=ts, ts_ingested=ts))
+        for offset in range(1, 26):
+            engine.handle_event(DerivativeTickEvent(instrument_id="BTC-USDT-PERP", mark_price="95",
+                                                    ts_event=ts+offset, ts_ingested=ts+offset))
+    hits = engine.scan(["BTC-USDT-PERP"], now=BASE_TS + 30 * MINUTE)
+    assert ScannerConditionKind.OI_DIVERGENCE in [hit.kind for hit in hits]
+
+
+def test_retest_replay_observes_a_breakout_revision_before_the_pullback():
+    engine, _ = _engine(Freezer(), key_levels=lambda **_: [
+        _key_level().model_copy(update={"status": KeyLevelStatus.BROKEN})
+    ])
+    _seed(engine, [_bar(BASE_TS, close=100)])
+    revised = _bar(BASE_TS, close=102, low=101).model_copy(update={"ts_available": BASE_TS + MINUTE + 1})
+    engine.handle_event(_kline(revised).model_copy(update={"revision": 1}))
+    _seed(engine, [_bar(BASE_TS + MINUTE, close=102, low=99)])
+    rule = _rule(dict(op="level_event", level_id="lvl_test", event="RETEST"))
+    assert len(_scan(engine, rule, BASE_TS + 2 * MINUTE)) == 1

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
+from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import BeforeValidator, Field, model_validator
 
 from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.key_levels.contracts import KeyLevelKind
 from talaria.foundation.operators import CHANNELS, MAX_PERIOD, IndicatorName, spec_from_params
-from talaria.foundation.types import ContractModel, DecimalStr
+from talaria.foundation.types import DECIMAL_PATTERN, ContractModel, DecimalStr
 
 MAX_RULE_DEPTH = 5
 MAX_RULE_NODES = 64
@@ -42,9 +44,20 @@ class AlertLevelEvent(StrEnum):
     RETEST = "RETEST"
 
 
+def _decimal_input(value: object) -> Decimal | str:
+    if isinstance(value, Decimal):
+        return value
+    if not isinstance(value, str) or not re.fullmatch(DECIMAL_PATTERN, value, re.ASCII):
+        raise ValueError("规则数值必须为十进制字符串")
+    return value
+
+
+RuleDecimal = Annotated[DecimalStr, BeforeValidator(_decimal_input)]
+
+
 class RuleConstant(ContractModel):
     source: Literal["constant"]
-    value: DecimalStr
+    value: RuleDecimal
 
 
 class RuleBar(ContractModel):
@@ -65,7 +78,7 @@ class RuleDerivative(ContractModel):
 class RuleIndicatorParams(ContractModel):
     period: int | None = Field(default=None, strict=True, ge=1, le=MAX_PERIOD)
     anchor: Literal["snapshot", "session"] | None = None
-    std_dev: DecimalStr | None = Field(default=None, gt=0)
+    std_dev: RuleDecimal | None = Field(default=None, gt=0)
 
 
 class RuleIndicator(ContractModel):
@@ -88,8 +101,22 @@ class RuleIndicator(ContractModel):
         return self
 
 
+class RuleDrawingPrice(ContractModel):
+    source: Literal["drawing_price"]
+    drawing_id: str = Field(min_length=1, max_length=64)
+    edge: Literal["lower", "upper"] = "upper"
+    ratio: RuleDecimal | None = Field(default=None, ge=0, le=1)
+
+
+class RuleLevelPrice(ContractModel):
+    source: Literal["level_price"]
+    level_id: str = Field(min_length=1, max_length=64)
+    level_kind: KeyLevelKind | None = None
+    edge: Literal["lower", "upper"] = "upper"
+
+
 RuleOperand = Annotated[
-    RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator,
+    RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice,
     Field(discriminator="source"),
 ]
 
@@ -106,12 +133,12 @@ class RuleOverlay(ContractModel):
     drawing_id: str = Field(max_length=64)
     mode: AlertOverlayMode
     direction: AlertDirection
-    ratio: DecimalStr | None = Field(default=None, ge=0, le=1)
+    ratio: RuleDecimal | None = Field(default=None, ge=0, le=1)
 
 
 class RuleLevelEvent(ContractModel):
     op: Literal["level_event"]
-    level_id: str = Field(max_length=64)
+    level_id: str = Field(min_length=1, max_length=64)
     event: AlertLevelEvent
     level_kind: KeyLevelKind | None = None
 
@@ -136,7 +163,12 @@ def _walk(expression: RuleExpression, depth: int = 1) -> Iterator[tuple[RuleExpr
 
 
 class Rule(ContractModel):
-    """bar_close 只读确认柱。event 比较必须引用本次行情事件。"""
+    """bar_close 只读确认柱，event 比较引用本次行情。缺值为未知。
+
+    any 遇真为真、全假为假，all 遇假为假、全真为真，其余为未知。
+    not 保留未知。未知不能命中。事件预警在相同可用分支上从部分观察变为
+    确定命中时识别边沿，始终只用本次事件的值判断根条件。
+    """
 
     version: Literal["1"]
     timing: Literal["bar_close", "event"]
@@ -144,6 +176,15 @@ class Rule(ContractModel):
 
     def nodes(self) -> Iterator[RuleExpression]:
         return (node for node, _ in _walk(self.expression))
+
+    def references(self) -> Iterator[RuleOverlay | RuleDrawingPrice | RuleLevelEvent | RuleLevelPrice]:
+        for node in self.nodes():
+            if isinstance(node, (RuleOverlay, RuleLevelEvent)):
+                yield node
+            elif isinstance(node, RuleComparison):
+                for operand in (node.left, node.right):
+                    if isinstance(operand, (RuleDrawingPrice, RuleLevelPrice)):
+                        yield operand
 
     @model_validator(mode="after")
     def _validate_timing(self) -> Rule:
@@ -162,7 +203,7 @@ class Rule(ContractModel):
                     node.test.startswith("cross_")
                     or any(isinstance(item, (RuleBar, RuleDerivative)) for item in operands)
                 ):
-                    raise ValueError("事件驱动比较只允许当前行情、常量与已收盘的组件输出")
+                    raise ValueError("事件驱动比较只允许当前行情、常量、画线、关键位与已收盘的组件输出")
             if event_driven and (
                 isinstance(node, RuleOverlay) and node.mode is AlertOverlayMode.CLOSE_BREAK
                 or isinstance(node, RuleLevelEvent) and node.event is not AlertLevelEvent.TOUCH

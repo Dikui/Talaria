@@ -11,7 +11,7 @@ from talaria.foundation.briefings import (
     BriefingResultRequest,
     ScannerBriefing,
 )
-from talaria.foundation.rules import RuleOverlay
+from talaria.foundation.rules import RuleDrawingPrice, RuleOverlay
 from talaria.foundation.scanner import (
     ScannerConditionKind,
     ScannerFocusResponse,
@@ -134,7 +134,7 @@ async def scan_now(
         drawings = {}
         if rule is not None:
             for drawing_id in dict.fromkeys(
-                node.drawing_id for node in rule.nodes() if isinstance(node, RuleOverlay)
+                node.drawing_id for node in rule.references() if isinstance(node, (RuleOverlay, RuleDrawingPrice))
             ):
                 drawings[drawing_id] = await runtime.drawings.get_drawing(drawing_id)
         triggers = await scanner.scan(requested, rule=rule, drawing=drawings.get)

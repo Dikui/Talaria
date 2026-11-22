@@ -6,7 +6,7 @@
     "properties": {
       "condition": {
         "additionalProperties": false,
-        "description": "bar_close 只读确认柱。event 比较必须引用本次行情事件。",
+        "description": "bar_close 只读确认柱，event 比较引用本次行情。缺值为未知。\n\nany 遇真为真、全假为假，all 遇假为假、全真为真，其余为未知。\nnot 保留未知。未知不能命中。事件预警在相同可用分支上从部分观察变为\n确定命中时识别边沿，始终只用本次事件的值判断根条件。",
         "properties": {
           "expression": {
             "oneOf": [
@@ -224,6 +224,108 @@
                           "name"
                         ],
                         "title": "RuleIndicator",
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "drawing_id": {
+                            "title": "Drawing Id",
+                            "type": "string"
+                          },
+                          "edge": {
+                            "default": "upper",
+                            "enum": [
+                              "lower",
+                              "upper"
+                            ],
+                            "title": "Edge",
+                            "type": "string"
+                          },
+                          "ratio": {
+                            "default": null,
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Ratio"
+                          },
+                          "source": {
+                            "const": "drawing_price",
+                            "title": "Source",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "drawing_id"
+                        ],
+                        "title": "RuleDrawingPrice",
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "edge": {
+                            "default": "upper",
+                            "enum": [
+                              "lower",
+                              "upper"
+                            ],
+                            "title": "Edge",
+                            "type": "string"
+                          },
+                          "level_id": {
+                            "title": "Level Id",
+                            "type": "string"
+                          },
+                          "level_kind": {
+                            "default": null,
+                            "oneOf": [
+                              {
+                                "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                "enum": [
+                                  "SWING_HIGH",
+                                  "SWING_LOW",
+                                  "PREV_DAY_HIGH",
+                                  "PREV_DAY_LOW",
+                                  "PREV_DAY_CLOSE",
+                                  "WEEK_OPEN",
+                                  "MONTH_OPEN",
+                                  "OPENING_RANGE",
+                                  "SESSION_HIGH",
+                                  "SESSION_LOW",
+                                  "GAP",
+                                  "ROUND_NUMBER",
+                                  "POC",
+                                  "VAH",
+                                  "VAL",
+                                  "ANCHORED_VWAP",
+                                  "LIQUIDATION_ZONE"
+                                ],
+                                "title": "KeyLevelKind",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "source": {
+                            "const": "level_price",
+                            "title": "Source",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "level_id"
+                        ],
+                        "title": "RuleLevelPrice",
                         "type": "object"
                       }
                     ],
@@ -445,6 +547,108 @@
                           "name"
                         ],
                         "title": "RuleIndicator",
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "drawing_id": {
+                            "title": "Drawing Id",
+                            "type": "string"
+                          },
+                          "edge": {
+                            "default": "upper",
+                            "enum": [
+                              "lower",
+                              "upper"
+                            ],
+                            "title": "Edge",
+                            "type": "string"
+                          },
+                          "ratio": {
+                            "default": null,
+                            "oneOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Ratio"
+                          },
+                          "source": {
+                            "const": "drawing_price",
+                            "title": "Source",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "drawing_id"
+                        ],
+                        "title": "RuleDrawingPrice",
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "edge": {
+                            "default": "upper",
+                            "enum": [
+                              "lower",
+                              "upper"
+                            ],
+                            "title": "Edge",
+                            "type": "string"
+                          },
+                          "level_id": {
+                            "title": "Level Id",
+                            "type": "string"
+                          },
+                          "level_kind": {
+                            "default": null,
+                            "oneOf": [
+                              {
+                                "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                "enum": [
+                                  "SWING_HIGH",
+                                  "SWING_LOW",
+                                  "PREV_DAY_HIGH",
+                                  "PREV_DAY_LOW",
+                                  "PREV_DAY_CLOSE",
+                                  "WEEK_OPEN",
+                                  "MONTH_OPEN",
+                                  "OPENING_RANGE",
+                                  "SESSION_HIGH",
+                                  "SESSION_LOW",
+                                  "GAP",
+                                  "ROUND_NUMBER",
+                                  "POC",
+                                  "VAH",
+                                  "VAL",
+                                  "ANCHORED_VWAP",
+                                  "LIQUIDATION_ZONE"
+                                ],
+                                "title": "KeyLevelKind",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "source": {
+                            "const": "level_price",
+                            "title": "Source",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "level_id"
+                        ],
+                        "title": "RuleLevelPrice",
                         "type": "object"
                       }
                     ],
@@ -806,6 +1010,108 @@
                                   ],
                                   "title": "RuleIndicator",
                                   "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "drawing_id": {
+                                      "title": "Drawing Id",
+                                      "type": "string"
+                                    },
+                                    "edge": {
+                                      "default": "upper",
+                                      "enum": [
+                                        "lower",
+                                        "upper"
+                                      ],
+                                      "title": "Edge",
+                                      "type": "string"
+                                    },
+                                    "ratio": {
+                                      "default": null,
+                                      "oneOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "title": "Ratio"
+                                    },
+                                    "source": {
+                                      "const": "drawing_price",
+                                      "title": "Source",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "drawing_id"
+                                  ],
+                                  "title": "RuleDrawingPrice",
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "edge": {
+                                      "default": "upper",
+                                      "enum": [
+                                        "lower",
+                                        "upper"
+                                      ],
+                                      "title": "Edge",
+                                      "type": "string"
+                                    },
+                                    "level_id": {
+                                      "title": "Level Id",
+                                      "type": "string"
+                                    },
+                                    "level_kind": {
+                                      "default": null,
+                                      "oneOf": [
+                                        {
+                                          "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                          "enum": [
+                                            "SWING_HIGH",
+                                            "SWING_LOW",
+                                            "PREV_DAY_HIGH",
+                                            "PREV_DAY_LOW",
+                                            "PREV_DAY_CLOSE",
+                                            "WEEK_OPEN",
+                                            "MONTH_OPEN",
+                                            "OPENING_RANGE",
+                                            "SESSION_HIGH",
+                                            "SESSION_LOW",
+                                            "GAP",
+                                            "ROUND_NUMBER",
+                                            "POC",
+                                            "VAH",
+                                            "VAL",
+                                            "ANCHORED_VWAP",
+                                            "LIQUIDATION_ZONE"
+                                          ],
+                                          "title": "KeyLevelKind",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "source": {
+                                      "const": "level_price",
+                                      "title": "Source",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "level_id"
+                                  ],
+                                  "title": "RuleLevelPrice",
+                                  "type": "object"
                                 }
                               ],
                               "title": "Left"
@@ -1026,6 +1332,108 @@
                                     "name"
                                   ],
                                   "title": "RuleIndicator",
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "drawing_id": {
+                                      "title": "Drawing Id",
+                                      "type": "string"
+                                    },
+                                    "edge": {
+                                      "default": "upper",
+                                      "enum": [
+                                        "lower",
+                                        "upper"
+                                      ],
+                                      "title": "Edge",
+                                      "type": "string"
+                                    },
+                                    "ratio": {
+                                      "default": null,
+                                      "oneOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "title": "Ratio"
+                                    },
+                                    "source": {
+                                      "const": "drawing_price",
+                                      "title": "Source",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "drawing_id"
+                                  ],
+                                  "title": "RuleDrawingPrice",
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "edge": {
+                                      "default": "upper",
+                                      "enum": [
+                                        "lower",
+                                        "upper"
+                                      ],
+                                      "title": "Edge",
+                                      "type": "string"
+                                    },
+                                    "level_id": {
+                                      "title": "Level Id",
+                                      "type": "string"
+                                    },
+                                    "level_kind": {
+                                      "default": null,
+                                      "oneOf": [
+                                        {
+                                          "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                          "enum": [
+                                            "SWING_HIGH",
+                                            "SWING_LOW",
+                                            "PREV_DAY_HIGH",
+                                            "PREV_DAY_LOW",
+                                            "PREV_DAY_CLOSE",
+                                            "WEEK_OPEN",
+                                            "MONTH_OPEN",
+                                            "OPENING_RANGE",
+                                            "SESSION_HIGH",
+                                            "SESSION_LOW",
+                                            "GAP",
+                                            "ROUND_NUMBER",
+                                            "POC",
+                                            "VAH",
+                                            "VAL",
+                                            "ANCHORED_VWAP",
+                                            "LIQUIDATION_ZONE"
+                                          ],
+                                          "title": "KeyLevelKind",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "source": {
+                                      "const": "level_price",
+                                      "title": "Source",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "level_id"
+                                  ],
+                                  "title": "RuleLevelPrice",
                                   "type": "object"
                                 }
                               ],
@@ -1387,6 +1795,108 @@
                                             ],
                                             "title": "RuleIndicator",
                                             "type": "object"
+                                          },
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "drawing_id": {
+                                                "title": "Drawing Id",
+                                                "type": "string"
+                                              },
+                                              "edge": {
+                                                "default": "upper",
+                                                "enum": [
+                                                  "lower",
+                                                  "upper"
+                                                ],
+                                                "title": "Edge",
+                                                "type": "string"
+                                              },
+                                              "ratio": {
+                                                "default": null,
+                                                "oneOf": [
+                                                  {
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ],
+                                                "title": "Ratio"
+                                              },
+                                              "source": {
+                                                "const": "drawing_price",
+                                                "title": "Source",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "source",
+                                              "drawing_id"
+                                            ],
+                                            "title": "RuleDrawingPrice",
+                                            "type": "object"
+                                          },
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "edge": {
+                                                "default": "upper",
+                                                "enum": [
+                                                  "lower",
+                                                  "upper"
+                                                ],
+                                                "title": "Edge",
+                                                "type": "string"
+                                              },
+                                              "level_id": {
+                                                "title": "Level Id",
+                                                "type": "string"
+                                              },
+                                              "level_kind": {
+                                                "default": null,
+                                                "oneOf": [
+                                                  {
+                                                    "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                                    "enum": [
+                                                      "SWING_HIGH",
+                                                      "SWING_LOW",
+                                                      "PREV_DAY_HIGH",
+                                                      "PREV_DAY_LOW",
+                                                      "PREV_DAY_CLOSE",
+                                                      "WEEK_OPEN",
+                                                      "MONTH_OPEN",
+                                                      "OPENING_RANGE",
+                                                      "SESSION_HIGH",
+                                                      "SESSION_LOW",
+                                                      "GAP",
+                                                      "ROUND_NUMBER",
+                                                      "POC",
+                                                      "VAH",
+                                                      "VAL",
+                                                      "ANCHORED_VWAP",
+                                                      "LIQUIDATION_ZONE"
+                                                    ],
+                                                    "title": "KeyLevelKind",
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "source": {
+                                                "const": "level_price",
+                                                "title": "Source",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "source",
+                                              "level_id"
+                                            ],
+                                            "title": "RuleLevelPrice",
+                                            "type": "object"
                                           }
                                         ],
                                         "title": "Left"
@@ -1607,6 +2117,108 @@
                                               "name"
                                             ],
                                             "title": "RuleIndicator",
+                                            "type": "object"
+                                          },
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "drawing_id": {
+                                                "title": "Drawing Id",
+                                                "type": "string"
+                                              },
+                                              "edge": {
+                                                "default": "upper",
+                                                "enum": [
+                                                  "lower",
+                                                  "upper"
+                                                ],
+                                                "title": "Edge",
+                                                "type": "string"
+                                              },
+                                              "ratio": {
+                                                "default": null,
+                                                "oneOf": [
+                                                  {
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ],
+                                                "title": "Ratio"
+                                              },
+                                              "source": {
+                                                "const": "drawing_price",
+                                                "title": "Source",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "source",
+                                              "drawing_id"
+                                            ],
+                                            "title": "RuleDrawingPrice",
+                                            "type": "object"
+                                          },
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "edge": {
+                                                "default": "upper",
+                                                "enum": [
+                                                  "lower",
+                                                  "upper"
+                                                ],
+                                                "title": "Edge",
+                                                "type": "string"
+                                              },
+                                              "level_id": {
+                                                "title": "Level Id",
+                                                "type": "string"
+                                              },
+                                              "level_kind": {
+                                                "default": null,
+                                                "oneOf": [
+                                                  {
+                                                    "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                                    "enum": [
+                                                      "SWING_HIGH",
+                                                      "SWING_LOW",
+                                                      "PREV_DAY_HIGH",
+                                                      "PREV_DAY_LOW",
+                                                      "PREV_DAY_CLOSE",
+                                                      "WEEK_OPEN",
+                                                      "MONTH_OPEN",
+                                                      "OPENING_RANGE",
+                                                      "SESSION_HIGH",
+                                                      "SESSION_LOW",
+                                                      "GAP",
+                                                      "ROUND_NUMBER",
+                                                      "POC",
+                                                      "VAH",
+                                                      "VAL",
+                                                      "ANCHORED_VWAP",
+                                                      "LIQUIDATION_ZONE"
+                                                    ],
+                                                    "title": "KeyLevelKind",
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "source": {
+                                                "const": "level_price",
+                                                "title": "Source",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "source",
+                                              "level_id"
+                                            ],
+                                            "title": "RuleLevelPrice",
                                             "type": "object"
                                           }
                                         ],
@@ -1968,6 +2580,108 @@
                                                       ],
                                                       "title": "RuleIndicator",
                                                       "type": "object"
+                                                    },
+                                                    {
+                                                      "additionalProperties": false,
+                                                      "properties": {
+                                                        "drawing_id": {
+                                                          "title": "Drawing Id",
+                                                          "type": "string"
+                                                        },
+                                                        "edge": {
+                                                          "default": "upper",
+                                                          "enum": [
+                                                            "lower",
+                                                            "upper"
+                                                          ],
+                                                          "title": "Edge",
+                                                          "type": "string"
+                                                        },
+                                                        "ratio": {
+                                                          "default": null,
+                                                          "oneOf": [
+                                                            {
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "type": "null"
+                                                            }
+                                                          ],
+                                                          "title": "Ratio"
+                                                        },
+                                                        "source": {
+                                                          "const": "drawing_price",
+                                                          "title": "Source",
+                                                          "type": "string"
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "source",
+                                                        "drawing_id"
+                                                      ],
+                                                      "title": "RuleDrawingPrice",
+                                                      "type": "object"
+                                                    },
+                                                    {
+                                                      "additionalProperties": false,
+                                                      "properties": {
+                                                        "edge": {
+                                                          "default": "upper",
+                                                          "enum": [
+                                                            "lower",
+                                                            "upper"
+                                                          ],
+                                                          "title": "Edge",
+                                                          "type": "string"
+                                                        },
+                                                        "level_id": {
+                                                          "title": "Level Id",
+                                                          "type": "string"
+                                                        },
+                                                        "level_kind": {
+                                                          "default": null,
+                                                          "oneOf": [
+                                                            {
+                                                              "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                                              "enum": [
+                                                                "SWING_HIGH",
+                                                                "SWING_LOW",
+                                                                "PREV_DAY_HIGH",
+                                                                "PREV_DAY_LOW",
+                                                                "PREV_DAY_CLOSE",
+                                                                "WEEK_OPEN",
+                                                                "MONTH_OPEN",
+                                                                "OPENING_RANGE",
+                                                                "SESSION_HIGH",
+                                                                "SESSION_LOW",
+                                                                "GAP",
+                                                                "ROUND_NUMBER",
+                                                                "POC",
+                                                                "VAH",
+                                                                "VAL",
+                                                                "ANCHORED_VWAP",
+                                                                "LIQUIDATION_ZONE"
+                                                              ],
+                                                              "title": "KeyLevelKind",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "type": "null"
+                                                            }
+                                                          ]
+                                                        },
+                                                        "source": {
+                                                          "const": "level_price",
+                                                          "title": "Source",
+                                                          "type": "string"
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "source",
+                                                        "level_id"
+                                                      ],
+                                                      "title": "RuleLevelPrice",
+                                                      "type": "object"
                                                     }
                                                   ],
                                                   "title": "Left"
@@ -2188,6 +2902,108 @@
                                                         "name"
                                                       ],
                                                       "title": "RuleIndicator",
+                                                      "type": "object"
+                                                    },
+                                                    {
+                                                      "additionalProperties": false,
+                                                      "properties": {
+                                                        "drawing_id": {
+                                                          "title": "Drawing Id",
+                                                          "type": "string"
+                                                        },
+                                                        "edge": {
+                                                          "default": "upper",
+                                                          "enum": [
+                                                            "lower",
+                                                            "upper"
+                                                          ],
+                                                          "title": "Edge",
+                                                          "type": "string"
+                                                        },
+                                                        "ratio": {
+                                                          "default": null,
+                                                          "oneOf": [
+                                                            {
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "type": "null"
+                                                            }
+                                                          ],
+                                                          "title": "Ratio"
+                                                        },
+                                                        "source": {
+                                                          "const": "drawing_price",
+                                                          "title": "Source",
+                                                          "type": "string"
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "source",
+                                                        "drawing_id"
+                                                      ],
+                                                      "title": "RuleDrawingPrice",
+                                                      "type": "object"
+                                                    },
+                                                    {
+                                                      "additionalProperties": false,
+                                                      "properties": {
+                                                        "edge": {
+                                                          "default": "upper",
+                                                          "enum": [
+                                                            "lower",
+                                                            "upper"
+                                                          ],
+                                                          "title": "Edge",
+                                                          "type": "string"
+                                                        },
+                                                        "level_id": {
+                                                          "title": "Level Id",
+                                                          "type": "string"
+                                                        },
+                                                        "level_kind": {
+                                                          "default": null,
+                                                          "oneOf": [
+                                                            {
+                                                              "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                                              "enum": [
+                                                                "SWING_HIGH",
+                                                                "SWING_LOW",
+                                                                "PREV_DAY_HIGH",
+                                                                "PREV_DAY_LOW",
+                                                                "PREV_DAY_CLOSE",
+                                                                "WEEK_OPEN",
+                                                                "MONTH_OPEN",
+                                                                "OPENING_RANGE",
+                                                                "SESSION_HIGH",
+                                                                "SESSION_LOW",
+                                                                "GAP",
+                                                                "ROUND_NUMBER",
+                                                                "POC",
+                                                                "VAH",
+                                                                "VAL",
+                                                                "ANCHORED_VWAP",
+                                                                "LIQUIDATION_ZONE"
+                                                              ],
+                                                              "title": "KeyLevelKind",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "type": "null"
+                                                            }
+                                                          ]
+                                                        },
+                                                        "source": {
+                                                          "const": "level_price",
+                                                          "title": "Source",
+                                                          "type": "string"
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "source",
+                                                        "level_id"
+                                                      ],
+                                                      "title": "RuleLevelPrice",
                                                       "type": "object"
                                                     }
                                                   ],
@@ -2549,6 +3365,108 @@
                                                                 ],
                                                                 "title": "RuleIndicator",
                                                                 "type": "object"
+                                                              },
+                                                              {
+                                                                "additionalProperties": false,
+                                                                "properties": {
+                                                                  "drawing_id": {
+                                                                    "title": "Drawing Id",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "edge": {
+                                                                    "default": "upper",
+                                                                    "enum": [
+                                                                      "lower",
+                                                                      "upper"
+                                                                    ],
+                                                                    "title": "Edge",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "ratio": {
+                                                                    "default": null,
+                                                                    "oneOf": [
+                                                                      {
+                                                                        "type": "string"
+                                                                      },
+                                                                      {
+                                                                        "type": "null"
+                                                                      }
+                                                                    ],
+                                                                    "title": "Ratio"
+                                                                  },
+                                                                  "source": {
+                                                                    "const": "drawing_price",
+                                                                    "title": "Source",
+                                                                    "type": "string"
+                                                                  }
+                                                                },
+                                                                "required": [
+                                                                  "source",
+                                                                  "drawing_id"
+                                                                ],
+                                                                "title": "RuleDrawingPrice",
+                                                                "type": "object"
+                                                              },
+                                                              {
+                                                                "additionalProperties": false,
+                                                                "properties": {
+                                                                  "edge": {
+                                                                    "default": "upper",
+                                                                    "enum": [
+                                                                      "lower",
+                                                                      "upper"
+                                                                    ],
+                                                                    "title": "Edge",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "level_id": {
+                                                                    "title": "Level Id",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "level_kind": {
+                                                                    "default": null,
+                                                                    "oneOf": [
+                                                                      {
+                                                                        "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                                                        "enum": [
+                                                                          "SWING_HIGH",
+                                                                          "SWING_LOW",
+                                                                          "PREV_DAY_HIGH",
+                                                                          "PREV_DAY_LOW",
+                                                                          "PREV_DAY_CLOSE",
+                                                                          "WEEK_OPEN",
+                                                                          "MONTH_OPEN",
+                                                                          "OPENING_RANGE",
+                                                                          "SESSION_HIGH",
+                                                                          "SESSION_LOW",
+                                                                          "GAP",
+                                                                          "ROUND_NUMBER",
+                                                                          "POC",
+                                                                          "VAH",
+                                                                          "VAL",
+                                                                          "ANCHORED_VWAP",
+                                                                          "LIQUIDATION_ZONE"
+                                                                        ],
+                                                                        "title": "KeyLevelKind",
+                                                                        "type": "string"
+                                                                      },
+                                                                      {
+                                                                        "type": "null"
+                                                                      }
+                                                                    ]
+                                                                  },
+                                                                  "source": {
+                                                                    "const": "level_price",
+                                                                    "title": "Source",
+                                                                    "type": "string"
+                                                                  }
+                                                                },
+                                                                "required": [
+                                                                  "source",
+                                                                  "level_id"
+                                                                ],
+                                                                "title": "RuleLevelPrice",
+                                                                "type": "object"
                                                               }
                                                             ],
                                                             "title": "Left"
@@ -2769,6 +3687,108 @@
                                                                   "name"
                                                                 ],
                                                                 "title": "RuleIndicator",
+                                                                "type": "object"
+                                                              },
+                                                              {
+                                                                "additionalProperties": false,
+                                                                "properties": {
+                                                                  "drawing_id": {
+                                                                    "title": "Drawing Id",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "edge": {
+                                                                    "default": "upper",
+                                                                    "enum": [
+                                                                      "lower",
+                                                                      "upper"
+                                                                    ],
+                                                                    "title": "Edge",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "ratio": {
+                                                                    "default": null,
+                                                                    "oneOf": [
+                                                                      {
+                                                                        "type": "string"
+                                                                      },
+                                                                      {
+                                                                        "type": "null"
+                                                                      }
+                                                                    ],
+                                                                    "title": "Ratio"
+                                                                  },
+                                                                  "source": {
+                                                                    "const": "drawing_price",
+                                                                    "title": "Source",
+                                                                    "type": "string"
+                                                                  }
+                                                                },
+                                                                "required": [
+                                                                  "source",
+                                                                  "drawing_id"
+                                                                ],
+                                                                "title": "RuleDrawingPrice",
+                                                                "type": "object"
+                                                              },
+                                                              {
+                                                                "additionalProperties": false,
+                                                                "properties": {
+                                                                  "edge": {
+                                                                    "default": "upper",
+                                                                    "enum": [
+                                                                      "lower",
+                                                                      "upper"
+                                                                    ],
+                                                                    "title": "Edge",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "level_id": {
+                                                                    "title": "Level Id",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "level_kind": {
+                                                                    "default": null,
+                                                                    "oneOf": [
+                                                                      {
+                                                                        "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+                                                                        "enum": [
+                                                                          "SWING_HIGH",
+                                                                          "SWING_LOW",
+                                                                          "PREV_DAY_HIGH",
+                                                                          "PREV_DAY_LOW",
+                                                                          "PREV_DAY_CLOSE",
+                                                                          "WEEK_OPEN",
+                                                                          "MONTH_OPEN",
+                                                                          "OPENING_RANGE",
+                                                                          "SESSION_HIGH",
+                                                                          "SESSION_LOW",
+                                                                          "GAP",
+                                                                          "ROUND_NUMBER",
+                                                                          "POC",
+                                                                          "VAH",
+                                                                          "VAL",
+                                                                          "ANCHORED_VWAP",
+                                                                          "LIQUIDATION_ZONE"
+                                                                        ],
+                                                                        "title": "KeyLevelKind",
+                                                                        "type": "string"
+                                                                      },
+                                                                      {
+                                                                        "type": "null"
+                                                                      }
+                                                                    ]
+                                                                  },
+                                                                  "source": {
+                                                                    "const": "level_price",
+                                                                    "title": "Source",
+                                                                    "type": "string"
+                                                                  }
+                                                                },
+                                                                "required": [
+                                                                  "source",
+                                                                  "level_id"
+                                                                ],
+                                                                "title": "RuleLevelPrice",
                                                                 "type": "object"
                                                               }
                                                             ],

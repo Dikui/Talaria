@@ -245,3 +245,33 @@ def test_scanner_has_no_model_client_dependency() -> None:
     assert ScannerConditionKind.KEY_LEVEL_EVENT in {
         kind for kind in ScannerConditionKind
     }
+
+
+def test_manual_rule_only_offers_original_gate_hits(tmp_path):
+    from talaria.foundation.rules import Rule
+
+    async def scenario():
+        channel = SpyChannel()
+        service, clock, writer = await _run_service(tmp_path, routing=TriggerRoutingPolicy(
+            co_pilot=channel, co_pilot_enabled=True))
+        try:
+            spec = _instrument()
+            rule = Rule.model_validate(dict(version="1", timing="bar_close", expression=dict(
+                op="compare", test="gt", left=dict(source="bar", field="close"),
+                right=dict(source="constant", value="0"))))
+            # 前一根无成交额异常。最后一根已预灌，下一分钟才可见。
+            clock.now -= MINUTE
+            first, = await service.scan([spec.instrument_id], rule=rule)
+            assert first.route is ScannerTriggerRoute.LOCAL
+            assert not channel.offers
+            assert first in service.list_triggers()
+            clock.now += MINUTE
+            # 换一条同样命中的规则，正常门禁仍只接收一次。
+            rule.expression.right.value = Decimal("1")
+            await service.scan([spec.instrument_id], rule=rule)
+            assert [t.kind for t in channel.offers] == [ScannerConditionKind.LIQUIDITY_ANOMALY]
+            await service.scan([spec.instrument_id])
+            assert len(channel.offers) == 1
+        finally:
+            await writer.close()
+    asyncio.run(scenario())

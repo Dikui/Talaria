@@ -450,3 +450,25 @@ def test_replay_keeps_only_the_highest_visible_confirmed_revision_from_an_altern
         (START + MINUTE, (original,)),
         (START + 2 * MINUTE, (revised, current)),
     ]
+
+
+def test_standard_signal_receives_historical_geometry_and_confirmed_event():
+    from talaria.components import compile_rule, run_history
+    from talaria.foundation.drawings import DrawingRecord
+    from talaria.foundation.rules import Rule
+
+    drawing = DrawingRecord(drawing_id="line", kind="HORIZONTAL_LINE", instrument_id=INSTRUMENT.instrument_id,
+                            visible_timeframes=["1m"], points=[dict(ts=START, price="100")],
+                            created_ts=START, updated_ts=START, version=1, text="", style={})
+    rule = Rule.model_validate(dict(version="1", timing="bar_close", expression=dict(
+        op="overlay", drawing_id="line", direction="ABOVE", mode="CLOSE_BREAK")))
+    bars = [RangeBar.model_validate(_bar(START + i * MINUTE, price), from_attributes=True)
+            for i, price in enumerate(["99", "101"])]
+    def drawing_at(drawing_id, as_of):
+        return drawing if drawing_id == "line" and as_of >= drawing.created_ts else None
+    def run(ctx):
+        assert ctx.event.bar.timestamp + MINUTE == ctx.now
+        return compile_rule(rule).evaluate(ctx)
+    results = list(run_history(run, INSTRUMENT.instrument_id, "1m", start=START, end=START + 2 * MINUTE,
+                               read_bars=lambda *a, **kw: bars, drawing_at=drawing_at))
+    assert [bool(step.output) for step in results] == [False, True]

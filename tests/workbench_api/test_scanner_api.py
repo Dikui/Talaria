@@ -193,4 +193,16 @@ def test_manual_json_rule_scan_returns_a_frozen_hit(client: TestClient) -> None:
     [trigger] = response.json()["triggers"]
     assert trigger["kind"] == "RULE" and trigger["snapshot_id"]
     assert trigger["evidence"][0]["value"] == "128"
-    assert client.get("/api/scanner/focus").json()["items"][0]["kinds"] == ["RULE"]
+    kinds = client.get("/api/scanner/focus").json()["items"][0]["kinds"]
+    assert "RULE" in kinds and "LIQUIDITY_ANOMALY" in kinds
+
+
+def test_scan_uses_workbench_sma_period(client):
+    assert client.put("/api/indicator-defaults/SMA", json={"period": 1}, headers=AUTH).status_code == 200
+    _seed_spike(client)
+    rule = dict(version="1", timing="bar_close", expression=dict(
+        op="compare", test="eq", left=dict(source="indicator", name="SMA"),
+        right=dict(source="constant", value="128")))
+    response = client.post("/api/scanner/scan", json={"instrument_ids": [INSTRUMENT], "rule": rule}, headers=AUTH)
+    assert response.status_code == 200, response.text
+    assert len(response.json()["triggers"]) == 1

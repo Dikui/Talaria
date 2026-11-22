@@ -220,7 +220,7 @@ def test_cooldown_expiry_and_delete_release_alert_tier(tmp_path: Path) -> None:
 
             cooling = await service.get_alert(record.alert_id)
             assert cooling.status is AlertStatus.COOLDOWN
-            assert cooling.next_arm_ts == NOW_MS + 10_000
+            assert cooling.next_arm_ts == NOW_MS + 2 * MINUTE + 10_000
             assert service.active_instrument_ids() == ()
 
             clock.now = cooling.next_arm_ts
@@ -736,4 +736,34 @@ def test_migrated_intrabar_touch_replay_freezes_at_the_legacy_event(tmp_path: Pa
         finally:
             await _shutdown(writer, service)
 
+    asyncio.run(scenario())
+
+
+def test_alert_service_reads_actual_funding_settlements_without_scanner(tmp_path, fixture_dir):
+    from talaria.foundation.snapshot import SnapshotRequest
+    from talaria.workbench_api.runtime import build_runtime
+    from talaria.workbench_api.service_config import FeatureToggles
+    from talaria.workbench_api.settings import AppSettings
+
+    async def scenario():
+        runtime = await build_runtime(AppSettings(
+            data_dir=tmp_path, dist_dir=tmp_path / "dist", fixture_dir=fixture_dir,
+            now_ms=lambda: NOW_MS, features=FeatureToggles(scanner=False)))
+        try:
+            service = runtime.require_alerts()
+            runtime.workbench.create_snapshot(SnapshotRequest(instrument_id=INSTRUMENT,
+                                                             timeframes=["1m"], cutoff_ts=NOW_MS))
+            alert = await service.create_alert(AlertCreate.model_validate({
+                "instrument_id": INSTRUMENT, "timeframe": "1m", "condition": {
+                    "version": "1", "timing": "bar_close", "expression": {"op": "all", "args": [
+                        {"op": "compare", "test": "gt", "left": {"source": "bar", "field": "close"},
+                         "right": {"source": "constant", "value": "100"}},
+                        {"op": "compare", "test": "eq", "left": {"source": "derivative", "kind": "funding_rate"},
+                         "right": {"source": "constant", "value": "-0.0002"}},
+                    ]}}}))
+            for i, price in enumerate(["90", "105"]):
+                service.handle_event(_kline(NOW_MS - (2-i)*MINUTE, price))
+            assert len(await service.list_triggers(alert_id=alert.alert_id)) == 1
+        finally:
+            await runtime.aclose()
     asyncio.run(scenario())

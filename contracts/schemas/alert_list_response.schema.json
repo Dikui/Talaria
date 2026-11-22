@@ -200,7 +200,7 @@
     },
     "Rule": {
       "additionalProperties": false,
-      "description": "bar_close 只读确认柱。event 比较必须引用本次行情事件。",
+      "description": "bar_close 只读确认柱，event 比较引用本次行情。缺值为未知。\n\nany 遇真为真、全假为假，all 遇假为假、全真为真，其余为未知。\nnot 保留未知。未知不能命中。事件预警在相同可用分支上从部分观察变为\n确定命中时识别边沿，始终只用本次事件的值判断根条件。",
       "properties": {
         "expression": {
           "discriminator": {
@@ -289,8 +289,10 @@
               "bar": "#/$defs/RuleBar",
               "constant": "#/$defs/RuleConstant",
               "derivative": "#/$defs/RuleDerivative",
+              "drawing_price": "#/$defs/RuleDrawingPrice",
               "event": "#/$defs/RuleEvent",
-              "indicator": "#/$defs/RuleIndicator"
+              "indicator": "#/$defs/RuleIndicator",
+              "level_price": "#/$defs/RuleLevelPrice"
             },
             "propertyName": "source"
           },
@@ -309,6 +311,12 @@
             },
             {
               "$ref": "#/$defs/RuleIndicator"
+            },
+            {
+              "$ref": "#/$defs/RuleDrawingPrice"
+            },
+            {
+              "$ref": "#/$defs/RuleLevelPrice"
             }
           ],
           "title": "Left"
@@ -324,8 +332,10 @@
               "bar": "#/$defs/RuleBar",
               "constant": "#/$defs/RuleConstant",
               "derivative": "#/$defs/RuleDerivative",
+              "drawing_price": "#/$defs/RuleDrawingPrice",
               "event": "#/$defs/RuleEvent",
-              "indicator": "#/$defs/RuleIndicator"
+              "indicator": "#/$defs/RuleIndicator",
+              "level_price": "#/$defs/RuleLevelPrice"
             },
             "propertyName": "source"
           },
@@ -344,6 +354,12 @@
             },
             {
               "$ref": "#/$defs/RuleIndicator"
+            },
+            {
+              "$ref": "#/$defs/RuleDrawingPrice"
+            },
+            {
+              "$ref": "#/$defs/RuleLevelPrice"
             }
           ],
           "title": "Right"
@@ -409,6 +425,52 @@
         "kind"
       ],
       "title": "RuleDerivative",
+      "type": "object"
+    },
+    "RuleDrawingPrice": {
+      "additionalProperties": false,
+      "properties": {
+        "drawing_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Drawing Id",
+          "type": "string"
+        },
+        "edge": {
+          "default": "upper",
+          "enum": [
+            "lower",
+            "upper"
+          ],
+          "title": "Edge",
+          "type": "string"
+        },
+        "ratio": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "le": 1,
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ratio"
+        },
+        "source": {
+          "const": "drawing_price",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "drawing_id"
+      ],
+      "title": "RuleDrawingPrice",
       "type": "object"
     },
     "RuleEvent": {
@@ -571,6 +633,7 @@
         "std_dev": {
           "anyOf": [
             {
+              "gt": 0,
               "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
               "type": "string"
             },
@@ -593,6 +656,7 @@
         },
         "level_id": {
           "maxLength": 64,
+          "minLength": 1,
           "title": "Level Id",
           "type": "string"
         },
@@ -621,6 +685,48 @@
       "title": "RuleLevelEvent",
       "type": "object"
     },
+    "RuleLevelPrice": {
+      "additionalProperties": false,
+      "properties": {
+        "edge": {
+          "default": "upper",
+          "enum": [
+            "lower",
+            "upper"
+          ],
+          "title": "Edge",
+          "type": "string"
+        },
+        "level_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Level Id",
+          "type": "string"
+        },
+        "level_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeyLevelKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "const": "level_price",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "level_id"
+      ],
+      "title": "RuleLevelPrice",
+      "type": "object"
+    },
     "RuleOverlay": {
       "additionalProperties": false,
       "properties": {
@@ -643,6 +749,8 @@
         "ratio": {
           "anyOf": [
             {
+              "ge": 0,
+              "le": 1,
               "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
               "type": "string"
             },

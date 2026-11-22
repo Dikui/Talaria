@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from operator import eq, ge, gt, le, lt
 
 from talaria.components.contracts import ComponentMeta, SignalEvent
 from talaria.components.operators import OPERATORS
-from talaria.components.runtime import Ctx
-from talaria.foundation.alerts.overlay import overlay_bounds
+from talaria.components.runtime import Ctx, RuleState
+from talaria.foundation.alerts.overlay import OverlayBounds, overlay_bounds
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.derivatives import OI_TIMEFRAME_BY_TIMEFRAME, DerivativeKind
 from talaria.foundation.drawings import DrawingKind, DrawingRecord
-from talaria.foundation.feed import DerivativeTickEvent, FeedEvent, KlineEvent, OrderBookEvent
+from talaria.foundation.feed import DerivativeTickEvent, FeedEvent, FeedHealthEvent, KlineEvent, OrderBookEvent
 from talaria.foundation.key_levels import KeyLevel, KeyLevelStatus
 from talaria.foundation.operators import CHANNELS
 from talaria.foundation.rules import (
@@ -27,6 +27,8 @@ from talaria.foundation.rules import (
     RuleComparison,
     RuleConstant,
     RuleDerivative,
+    RuleDrawingPrice,
+    RuleLevelPrice,
     RuleEvent,
     RuleExpression,
     RuleGroup,
@@ -36,6 +38,9 @@ from talaria.foundation.rules import (
     RuleOverlay,
 )
 from talaria.foundation.timeframes import timeframe_ms
+
+# 迁移前的预警窗口。长周期算子的预热和 session VWAP 起点由 Ctx 单独处理。
+DEFAULT_RULE_HISTORY = 600
 
 _COMPARISONS = {
     "lt": lt, "lte": le, "gt": gt, "gte": ge, "eq": eq,
@@ -53,19 +58,6 @@ class RuleObservation:
     level_event: AlertLevelEvent | None = None
     level_direction: str | None = None
     crossed_at: int | None = None
-
-
-@dataclass(slots=True)
-class RuleState:
-    """宿主持有的求值状态，每个回踩节点独立跟踪突破。"""
-
-    breakouts: dict[int, tuple[str, int]] = field(default_factory=dict)
-    matched_retests: list[int] = field(default_factory=list)
-
-    def consume_matches(self) -> None:
-        for key in self.matched_retests:
-            self.breakouts.pop(key, None)
-        self.matched_retests.clear()
 
 
 @dataclass(slots=True)
@@ -96,13 +88,30 @@ class _Evaluation:
                 point.value for point in reversed(ctx.derivatives(operand.kind))
                 if point.timeframe == target and point.ts_available <= cutoff
             ), None)
+        if isinstance(operand, RuleLevelPrice):
+            level = self._visible_level(operand)
+            if level is None:
+                return None
+            bounds = level_bounds(level)
+            if bounds is None:
+                return None
+            return bounds[1] if operand.edge == "upper" else bounds[0]
+        if isinstance(operand, RuleDrawingPrice):
+            bar = self._previous_bar() if previous else self.bar
+            timestamp = bar.timestamp if bar is not None else getattr(self.event, "ts_event", None)
+            if timestamp is None:
+                return None
+            geometry = self._drawing_bounds(operand, timestamp)
+            return getattr(geometry[1], operand.edge) if geometry else None
         if isinstance(operand, RuleBar):
             if not previous:
                 return getattr(self.bar, operand.field, None)
             return getattr(self._previous_bar(), operand.field, None)
         channel = operand.channel or CHANNELS[operand.indicator_name][0]
         points = ctx.indicator(
-            operand.name, version=operand.version, **operand.params.model_dump(exclude_none=True)
+            operand.name, version=operand.version,
+            _history_limit=ctx._indicator_history_limit or DEFAULT_RULE_HISTORY,
+            **operand.params.model_dump(exclude_none=True),
         )
         if previous:
             bar = self._previous_bar()
@@ -138,13 +147,16 @@ class _Evaluation:
                 return next((result for result in matched if result.crossed_at is not None), matched[0])
             return failed if len(known) == len(results) else None
         if isinstance(node, RuleComparison):
-            return self._compare(node)
-        geometry_bar = self.event.bar if isinstance(self.event, KlineEvent) else self.bar
-        if geometry_bar is None:
+            result = self._compare(node)
+        elif self.bar is None:
             return None
-        if isinstance(node, RuleOverlay):
-            return self._overlay(node, geometry_bar)
-        return self._level(node, geometry_bar)
+        elif isinstance(node, RuleOverlay):
+            result = self._overlay(node, self.bar)
+        else:
+            result = self._level(node, self.bar)
+        if result is not None:
+            self.state.known_inputs.add(id(node))
+        return result
 
     def _compare(self, node: RuleComparison) -> RuleObservation | None:
         left, right = self.operand(node.left), self.operand(node.right)
@@ -153,6 +165,8 @@ class _Evaluation:
         test = _COMPARISONS[node.test]
         matched = test(left, right)
         if node.test.startswith("cross_"):
+            if not matched:
+                return RuleObservation(False, left, right)
             if self.bar is None or self._previous_bar() is None:
                 return None
             previous_left = self.operand(node.left, previous=True)
@@ -163,15 +177,21 @@ class _Evaluation:
             return RuleObservation(matched, left, right, crossed_at=self.bar.timestamp if matched else None)
         return RuleObservation(matched, left, right)
 
-    def _overlay(self, node: RuleOverlay, bar: CompactBar) -> RuleObservation | None:
+    def _drawing_bounds(self, node: RuleOverlay | RuleDrawingPrice, timestamp: int) -> tuple[DrawingRecord, OverlayBounds] | None:
         drawing = self.drawing(node.drawing_id) if self.drawing is not None else None
-        if drawing is None or drawing.deleted_at is not None or drawing.instrument_id != self.ctx.instrument:
+        if (drawing is None or drawing.deleted_at is not None or drawing.instrument_id != self.ctx.instrument
+                or drawing.updated_ts > self.ctx.now):
             return None
         bounds = overlay_bounds(
-            drawing, bar.timestamp, ratio=Decimal("0.5") if node.ratio is None else node.ratio,
+            drawing, timestamp, ratio=Decimal("0.5") if node.ratio is None else node.ratio,
         )
-        if bounds is None:
+        return (drawing, bounds) if bounds is not None else None
+
+    def _overlay(self, node: RuleOverlay, bar: CompactBar) -> RuleObservation | None:
+        geometry = self._drawing_bounds(node, bar.timestamp)
+        if geometry is None:
             return None
+        drawing, bounds = geometry
         above = node.direction is AlertDirection.ABOVE
         threshold = bounds.upper if above else bounds.lower
         if node.mode is AlertOverlayMode.TOUCH:
@@ -184,9 +204,17 @@ class _Evaluation:
             return None
         return RuleObservation(test(price, threshold), bar.close, threshold, drawing_kind=drawing.kind)
 
+    def _visible_level(self, ref: RuleLevelPrice | RuleLevelEvent) -> KeyLevel | None:
+        level = self.levels.get(ref.level_id)
+        if level is None or level.instrument_id != self.ctx.instrument or level.ts_available > self.ctx.now:
+            return None
+        if ref.level_kind is not None and level.kind is not ref.level_kind:
+            return None
+        return level
+
     def _level(self, node: RuleLevelEvent, bar: CompactBar) -> RuleObservation | None:
-        level = self.levels.get(node.level_id)
-        if level is None or (node.level_kind is not None and level.kind is not node.level_kind):
+        level = self._visible_level(node)
+        if level is None:
             return None
         bounds = level_bounds(level)
         if bounds is None or bar.close is None or bar.high is None or bar.low is None:
@@ -210,7 +238,9 @@ class _Evaluation:
 
         key = id(node)
         direction, breakout_ts = self.state.breakouts.get(key, (None, None))
-        if side is not None and direction != side:
+        if self.state.consumed_sides.get(key) != side:
+            self.state.consumed_sides.pop(key, None)
+        if side is not None and direction != side and key not in self.state.consumed_sides:
             direction, breakout_ts = self.state.breakouts[key] = (side, bar.timestamp)
         threshold = upper if (direction == "UP" or direction is None and close >= upper) else lower
         matched = False
@@ -221,6 +251,17 @@ class _Evaluation:
         return RuleObservation(
             matched, close, threshold, level=level, level_event=node.event, level_direction=direction,
         )
+
+
+def event_visible_at(event: FeedEvent) -> int:
+    if isinstance(event, KlineEvent):
+        received = getattr(event, "ts_ingested", event.bar.timestamp)
+        if event.confirmed:
+            return max(received, event.bar.ts_available, event.bar.timestamp + timeframe_ms(event.timeframe))
+        return max(event.bar.timestamp, received)
+    if isinstance(event, FeedHealthEvent):
+        return event.ts
+    return max(event.ts_event, event.ts_ingested)
 
 
 def _event_value(metric: AlertMetric, event: FeedEvent | None) -> Decimal | None:
@@ -256,11 +297,22 @@ class CompiledRule:
         consume_retests: bool = True,
     ) -> RuleObservation | None:
         """在盘中事件或确认柱上求值。None 表示输入不可用。"""
-        if event is not None and event.instrument_id != ctx.instrument:
+        event = ctx.event if event is None else event
+        state = ctx.rule_state if state is None else state
+        drawing = ctx.drawing if drawing is None else drawing
+        levels = ctx.levels if levels is None else levels
+        state.known_inputs.clear()
+        if event is not None and (event.instrument_id != ctx.instrument or event_visible_at(event) > ctx.now):
             return None
         kline = event if isinstance(event, KlineEvent) else None
         if kline is not None and kline.timeframe != ctx.timeframe:
             return None
+        if kline is not None:
+            slot = kline.bar.timestamp
+            if not kline.confirmed:
+                slot -= timeframe_ms(ctx.timeframe)
+            if ctx._bar_ts is None or ctx._bar_ts > slot:
+                ctx = replace(ctx, _bar_ts=slot)
         if self.rule.timing == "event":
             if event is None:
                 return None
@@ -272,12 +324,25 @@ class CompiledRule:
             if not bars or bars[-1].status is BarStatus.FEED_GAP:
                 return None
             bar = bars[-1]
-        evaluation = _Evaluation(ctx, bar, event, drawing, levels or {}, state or RuleState())
+            if ctx._bar_ts is not None and bar.timestamp != ctx._bar_ts:
+                return None
+        evaluation = _Evaluation(ctx, bar, event, drawing, levels, state)
         evaluation.state.matched_retests.clear()
         result = evaluation.evaluate(self.rule.expression)
         if consume_retests and result is not None and result.matched:
             evaluation.state.consume_matches()
         return result
+
+    def prior_root_false(self, ctx: Ctx) -> bool:
+        """显式穿越可用上一根确认柱证明首次观察前的根条件。"""
+        bars = ctx.compact_bars()
+        if len(bars) < 2:
+            return False
+        prior = bars[-2]
+        previous = replace(ctx, now=max(prior.ts_available, prior.timestamp + timeframe_ms(ctx.timeframe)),
+                           _bar_ts=prior.timestamp, event=None, rule_state=RuleState())
+        result = self.observe(previous)
+        return result is not None and not result.matched
 
     def evaluate(self, ctx: Ctx) -> list[SignalEvent]:
         result = self.observe(ctx)

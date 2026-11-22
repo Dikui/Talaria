@@ -358,3 +358,20 @@ def test_long_note_and_single_shot_expiry_fields_are_preserved(client) -> None:
         "/api/alerts", json=_metric_body(note="x" * 501), headers=AUTH
     )
     assert too_long.status_code == 422
+
+
+@pytest.mark.parametrize("invalid", ["empty", "absent", "kind"])
+def test_level_reference_must_resolve_in_current_version(client, invalid):
+    runtime = client.app.state.runtime
+    from talaria.foundation.snapshot import SnapshotRequest
+    snapshot = runtime.workbench.create_snapshot(SnapshotRequest(
+        instrument_id=INSTRUMENT, timeframes=["1m"], cutoff_ts=NOW_MS))
+    level = runtime.workbench.get_key_levels(snapshot.snapshot_id, timeframe="1m").levels[0]
+    expression = {"op": "level_event", "event": "TOUCH", "level_id": level.level_id}
+    if invalid == "kind":
+        expression["level_kind"] = "GAP" if level.kind != "GAP" else "POC"
+    else:
+        expression["level_id"] = "" if invalid == "empty" else "missing"
+    response = client.post("/api/alerts", headers=AUTH, json=_metric_body(
+        condition=dict(version="1", timing="event", expression=expression)))
+    assert response.status_code == 422, response.text

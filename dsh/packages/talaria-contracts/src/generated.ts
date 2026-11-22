@@ -812,8 +812,8 @@ export interface RuleGroup {
 export interface RuleComparison {
   op: "compare";
   test: "lt" | "lte" | "gt" | "gte" | "eq" | "cross_above" | "cross_below";
-  left: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator;
-  right: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator;
+  left: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice;
+  right: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice;
 }
 export interface RuleConstant {
   source: "constant";
@@ -855,4 +855,16 @@ export interface RuleOverlay {
   mode: AlertOverlayMode;
   direction: AlertDirection;
   ratio?: DecimalString | null;
+}
+export interface RuleDrawingPrice {
+  source: "drawing_price";
+  drawing_id: string;
+  edge?: "lower" | "upper";
+  ratio?: DecimalString | null;
+}
+export interface RuleLevelPrice {
+  source: "level_price";
+  level_id: string;
+  level_kind?: KeyLevelKind | null;
+  edge?: "lower" | "upper";
 }

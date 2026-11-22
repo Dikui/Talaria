@@ -83,3 +83,53 @@ def test_event_comparison_uses_only_the_latest_confirmed_operator_output() -> No
     match = compiled.observe(ctx, event=event)
     assert match is not None and match.matched
     assert (match.observed, match.threshold) == (Decimal("120"), Decimal("100"))
+
+
+def test_shared_evaluator_cannot_read_a_future_book():
+    from talaria.components import Ctx, compile_rule
+    from talaria.foundation.feed import OrderBookEvent
+    from talaria.foundation.rules import Rule
+
+    rule = Rule.model_validate(dict(version="1", timing="event", expression=dict(
+        op="compare", test="gt", left=dict(source="event", metric="bid_price"),
+        right=dict(source="constant", value="1"),
+    )))
+    event = OrderBookEvent(instrument_id="BTC", bid_price="2", bid_size="1", ask_price="3",
+                           ask_size="1", ts_event=10, ts_ingested=20)
+    assert compile_rule(rule).observe(Ctx("BTC", "1m", 0, 19, _indicator_defaults={}), event=event) is None
+
+
+@pytest.mark.parametrize("field,value", [
+    ("value", 1), ("value", 0.123456789), ("value", "1e2"), ("std_dev", 2.0), ("ratio", 0.5)
+])
+def test_rule_decimal_fields_reject_non_decimal_strings(field, value):
+    from talaria.foundation.rules import Rule
+
+    expression = dict(op="compare", test="gt", left=dict(source="bar", field="close"),
+                      right=dict(source="constant", value=value))
+    if field == "std_dev":
+        expression["right"] = dict(source="indicator", name="BOLL", params={"std_dev": value})
+    if field == "ratio":
+        expression = dict(op="overlay", drawing_id="line", mode="TOUCH", direction="ABOVE", ratio=value)
+    with pytest.raises(ValidationError):
+        Rule.model_validate(dict(version="1", timing="bar_close", expression=expression))
+
+
+def test_event_signal_caps_indicator_history_before_the_open_update():
+    from talaria.components import Ctx, compile_rule
+    from talaria.foundation.bars import CompactBar
+    from talaria.foundation.feed import ReceivedKlineEvent
+    from talaria.foundation.rules import Rule
+
+    def bar(slot, price):
+        return CompactBar(timestamp=slot, open=price, high=price, low=price, close=price, volume="1",
+                          turnover=price, status="NORMAL", ts_available=slot+60_000, precision="SECOND_VERIFIED")
+    event = ReceivedKlineEvent(instrument_id="BTC", timeframe="1m", confirmed=False, revision=1,
+                               bar=bar(60_000, "110"), ts_ingested=180_000)
+    ctx = Ctx("BTC", "1m", 0, 180_000, event=event, _indicator_defaults={},
+              _confirmed_compact=[bar(0, "100"), bar(60_000, "200")])
+    rule = Rule.model_validate(dict(version="1", timing="event", expression=dict(
+        op="compare", test="gt", left=dict(source="event", metric="last_price"),
+        right=dict(source="indicator", name="SMA", params={"period": 1}))))
+    hit, = compile_rule(rule).evaluate(ctx)
+    assert hit.values["threshold"] == 100
