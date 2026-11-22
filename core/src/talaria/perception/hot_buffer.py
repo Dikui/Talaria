@@ -12,6 +12,7 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Protocol
+from uuid import uuid4
 
 from talaria.foundation.bars import BarStatus
 from talaria.foundation.connector import RawBar
@@ -61,6 +62,8 @@ class HotStreamBuffer:
         self._now_ms = now_ms
         self._max_bars = max_bars_per_series
         self._series: dict[tuple[str, str], dict[int, HotSlot]] = {}
+        self._epoch = uuid4().hex
+        self._series_versions: dict[tuple[str, str], int] = {}
         self._lock = threading.Lock()
 
     def ingest(self, event: FeedEvent) -> RawBar | None:
@@ -109,7 +112,13 @@ class HotStreamBuffer:
             series[raw.ts_event] = slot
             while len(series) > self._max_bars:
                 series.pop(next(iter(series)))
+            self._series_versions[key] = self._series_versions.get(key, 0) + 1
         return raw
+
+    def series_version(self, key: tuple[str, str]) -> str:
+        """读取序列的热端版本，缓冲重建后使用新的 epoch。"""
+        with self._lock:
+            return f"{self._epoch}:{self._series_versions.get(key, 0)}"
 
     def recent_bars(self, *, instrument_id: str, timeframe: str) -> list[RawBar]:
         """快照中，已收盘时间槽的下一次修订从实际接收后才可见。"""

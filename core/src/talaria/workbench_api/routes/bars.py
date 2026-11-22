@@ -20,8 +20,14 @@ from talaria.foundation.errors import (
 from talaria.foundation.snapshot import ErrorResponse
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
 from talaria.perception.bar_range import range_visible_bars, read_bar_range, revision_window
-from talaria.perception.cold_store import ColdReader
-from talaria.service_endpoint import BARS_MANIFEST_HEADER, DATA_DIR_HEADER, data_dir_id
+from talaria.perception.cold_store import ColdManifest, ColdReader
+from talaria.service_endpoint import (
+    BARS_HOT_REVISION_HEADER,
+    BARS_HOT_REVISION_UNSTABLE,
+    BARS_MANIFEST_HEADER,
+    DATA_DIR_HEADER,
+    data_dir_id,
+)
 from talaria.workbench_api.routes import get_runtime
 
 router = APIRouter()
@@ -35,6 +41,10 @@ RANGE_LIMIT_MESSAGE = f"一次最多查询 {MAX_RANGE_BARS:,} 根 K 线，请分
         200: {"headers": {
             DATA_DIR_HEADER: {"description": "数据目录标识", "schema": {"type": "string"}},
             BARS_MANIFEST_HEADER: {"description": "补尾响应所用的范围清单指纹", "schema": {"type": "string"}},
+            BARS_HOT_REVISION_HEADER: {
+                "description": "补尾序列的热端版本，读取期间有变动时为 unstable",
+                "schema": {"type": "string"},
+            },
         }},
         400: {"model": ErrorResponse, "description": "K 线范围超过单次请求上限"},
         503: {"model": ErrorResponse, "description": "范围重取不完整，可以重试"},
@@ -65,11 +75,24 @@ async def get_range_bars(query: Annotated[BarsQuery, Query()], request: Request,
         history_start = max(start, (query.resync_from + interval - 1) // interval * interval)
     if (end - history_start) // interval + 1 > MAX_RANGE_BARS:
         raise BarsRangeTooLargeError(RANGE_LIMIT_MESSAGE)
-    read_range = partial(
-        read_bar_range, ColdReader(settings.data_dir), runtime.hot_buffer,
+    hot_buffer = runtime.hot_buffer
+    read_snapshot = partial(
+        read_bar_range, ColdReader(settings.data_dir), hot_buffer,
         instrument, query.timeframe, query.start, end,
     )
-    manifest, cold, hot = await asyncio.to_thread(read_range)
+
+    def read_range() -> tuple[ColdManifest, list[RawBar], list[RawBar], str]:
+        if not query.tail_only or hot_buffer is None:
+            return (*read_snapshot(), "none")
+        key = (instrument.instrument_id, query.timeframe)
+        version = hot_buffer.series_version(key)
+        snapshot = read_snapshot()
+        # 热缓冲与清单读取重叠时发生变动，合并前后的热版本不能代表单一视图。
+        if version != hot_buffer.series_version(key):
+            version = BARS_HOT_REVISION_UNSTABLE
+        return (*snapshot, version)
+
+    manifest, cold, hot, hot_revision = await asyncio.to_thread(read_range)
     publisher = runtime.cold_publisher
     has_rest = publisher is not None and (settings.replay_events is None or settings.fixture_dir is not None)
     cutoff = now if query.as_of is None else min(now, query.as_of)
@@ -109,7 +132,7 @@ async def get_range_bars(query: Annotated[BarsQuery, Query()], request: Request,
             )
         except TimeoutError as exc:
             raise BarsBackfillTimeoutError("等待 K 线历史回填超时，请重试") from exc
-        manifest, cold, hot = await asyncio.to_thread(read_range)
+        manifest, cold, hot, hot_revision = await asyncio.to_thread(read_range)
 
     def select() -> tuple[BarsResponse, str | None]:
         if query.resync_from is not None:
@@ -140,4 +163,5 @@ async def get_range_bars(query: Annotated[BarsQuery, Query()], request: Request,
     response.headers[DATA_DIR_HEADER] = data_dir_id(settings.data_dir)
     if fingerprint is not None:
         response.headers[BARS_MANIFEST_HEADER] = fingerprint
+        response.headers[BARS_HOT_REVISION_HEADER] = hot_revision
     return payload

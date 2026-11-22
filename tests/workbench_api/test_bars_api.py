@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -142,7 +142,7 @@ def test_sdk_matches_range_with_unpublished_correction_and_excludes_open_bar(
             response = client.send(request)
             if request.url.path == "/api/bars":
                 assert [bar["ts_event"] for bar in response.json()["bars"]] == (
-                    [START] if request.url.params.get("as_of") is None else []
+                    [START] if int(request.url.params.get("as_of", market.now)) == market.now else []
                 )
             return response
 
@@ -301,6 +301,39 @@ def test_sdk_reports_retryable_error_when_target_manifest_keeps_changing(tmp_pat
 
 
 @pytest.mark.regression
+@pytest.mark.parametrize("keeps_changing", [False, True], ids=["stable-after-retry", "retry-exhausted"])
+def test_sdk_requires_one_hot_revision_across_segments(tmp_path, monkeypatch, keeps_changing):
+    # data-access/09: A is corrected before B, so A0 and B1 never coexist.
+    market = Market(tmp_path, None)
+    second = START + MAX_RANGE_BARS * MINUTE
+    first = second - MINUTE
+    market.now = second + MINUTE + 1_000
+    monkeypatch.setattr(ColdStore, "publish", _disk_full)
+    with _published_endpoint(market), TestClient(market.app) as client:
+        market.ingest(client, _event(first, "100", confirmed=True), _event(second, "200", confirmed=True))
+        corrections = iter(range(1, 3 if keeps_changing else 2))
+
+        def serve_sdk_request(transport, request):
+            response = client.send(request)
+            if request.url.path == "/api/bars" and int(request.url.params["start"]) == START:
+                revision = next(corrections, None)
+                if revision is not None:
+                    market.ingest(
+                        client, _event(first, str(100 + revision), confirmed=True),
+                        _event(second, str(200 + revision), confirmed=True),
+                    )
+            return response
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", serve_sdk_request)
+        with pytest.raises(sdk.BarsConsistencyError, match="请重试") if keeps_changing else nullcontext():
+            result = sdk.bars(INSTRUMENT.instrument_id, TIMEFRAME, START, second, data_dir=market.settings.data_dir)
+            assert result.tail_completed
+            assert [(bar.ts_event, bar.close, bar.revision) for bar in result] == [
+                (first, Decimal("101"), 1), (second, Decimal("201"), 1),
+            ]
+
+
+@pytest.mark.regression
 @pytest.mark.parametrize("at_close", [True, False], ids=["as-of-close", "latest"])
 def test_sdk_selects_visible_revisions_across_segments_with_different_manifests(tmp_path, monkeypatch, at_close):
     # data-access/09: publish into the second segment after the first segment's real HTTP response.
@@ -411,6 +444,49 @@ def test_online_sdk_default_end_uses_service_clock(tmp_path, fixture_dir, monkey
 
     assert result.tail_completed
     assert [bar.ts_event for bar in result] == [START]
+
+
+@pytest.mark.regression
+def test_online_sdk_defaults_to_service_clock_for_cold_revisions(tmp_path, monkeypatch):
+    # data-access/09: the later cold revision is visible one millisecond after the service clock.
+    market = Market(tmp_path, None)
+    market.now = 130_000
+    market.archive(_raw(MINUTE, "100"), _raw(MINUTE, "101", revision=1, available=130_001))
+    with _published_endpoint(market), TestClient(market.app) as client:
+        expected = _get(client, MINUTE, MINUTE)
+        assert [bar["revision"] for bar in expected] == [0]
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda _, request: client.send(request))
+        result = sdk.bars(INSTRUMENT.instrument_id, TIMEFRAME, MINUTE, MINUTE, data_dir=market.settings.data_dir)
+
+    assert result.tail_completed
+    assert [bar.model_dump(mode="json") for bar in result] == expected
+
+
+@pytest.mark.regression
+def test_online_sdk_keeps_same_visibility_cutoff_across_segments(tmp_path, monkeypatch):
+    # data-access/09: the service clock crosses a revision's visibility time between segments.
+    market = Market(tmp_path, None)
+    second = START + MAX_RANGE_BARS * MINUTE
+    cutoff = second + MINUTE
+    monkeypatch.setattr(ColdStore, "publish", _disk_full)
+    with _published_endpoint(market), TestClient(market.app) as client:
+        market.now = cutoff
+        market.ingest(client, _event(second, "100", confirmed=True))
+        market.now = cutoff + 1
+        market.ingest(client, _event(second, "101", confirmed=True))
+        market.now = cutoff
+
+        def serve_sdk_request(transport, request):
+            response = client.send(request)
+            if request.url.path == "/api/bars":
+                market.now = cutoff + 1
+            return response
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", serve_sdk_request)
+        result = sdk.bars(INSTRUMENT.instrument_id, TIMEFRAME, START, second, data_dir=market.settings.data_dir)
+
+    assert result.tail_completed
+    assert [(bar.ts_event, bar.close, bar.revision) for bar in result] == [(second, Decimal("100"), 0)]
 
 
 def test_as_of_selects_confirmed_revision_after_visibility_cutoff(tmp_path, fixture_dir):

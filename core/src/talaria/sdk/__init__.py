@@ -28,6 +28,8 @@ from talaria.perception.indicator_defaults import read_indicator_defaults
 from talaria.perception.raw_store import latest_visible_bars
 from talaria.sdk._subscription import StrategyBarEvent, SubscriptionRejectedError, subscribe
 from talaria.service_endpoint import (
+    BARS_HOT_REVISION_HEADER,
+    BARS_HOT_REVISION_UNSTABLE,
     BARS_MANIFEST_HEADER,
     DATA_DIR_HEADER,
     NOW_MS_HEADER,
@@ -142,6 +144,7 @@ class _TailSegment:
     end: int
     generation: int
     fingerprint: str | None
+    hot_revision: str | None
 
     def matches(self, manifest: ColdManifest) -> bool:
         if self.fingerprint is None:  # 兼容未返回范围指纹的旧服务。
@@ -151,12 +154,12 @@ class _TailSegment:
 
 def _fetch_tail(
     base_url: str, query: BarsQuery, directory_id: str,
-) -> tuple[int, list[_TailSegment], list[RangeBar]] | None:
+) -> tuple[int, int, list[_TailSegment], list[RangeBar]] | None:
     interval = timeframe_ms(query.timeframe)
     span = MAX_RANGE_BARS * interval
     tail: list[RangeBar] = []
     segments: list[_TailSegment] = []
-    params = query.model_dump(exclude_none=True, exclude={"start", "end"})
+    params = query.model_dump(exclude_none=True, exclude={"start", "end", "as_of"})
     timeout = httpx.Timeout(35, connect=1)
     try:
         # 服务等待历史回填最多 30 秒。连接失效时尽快使用本地数据。
@@ -164,16 +167,17 @@ def _fetch_tail(
             health = client.get("/api/health", timeout=1)
             if not health.is_success or health.headers.get(DATA_DIR_HEADER) != directory_id:
                 return None
-            end = query.end
-            if end is None:
+            end, cutoff = query.end, query.as_of
+            if end is None or cutoff is None:
                 try:
-                    now = int(health.headers.get(NOW_MS_HEADER, ""))
-                except ValueError:
+                    now = int(health.headers[NOW_MS_HEADER])
+                except (KeyError, ValueError):
                     return None
-                end = last_closed_bar_start(now, interval)
+                end = last_closed_bar_start(now, interval) if end is None else end
+                cutoff = now if cutoff is None else cutoff
             for start in range(query.start, end + 1, span):
                 segment_end = min(end, start + span - 1)
-                chunk = dict(params, start=start, end=segment_end)
+                chunk = dict(params, start=start, end=segment_end, as_of=cutoff)
                 response = client.get("/api/bars", params=chunk)
                 response.raise_for_status()
                 if response.headers.get(DATA_DIR_HEADER) != directory_id:
@@ -183,11 +187,12 @@ def _fetch_tail(
                     raise ValueError("服务返回的标的或周期与请求不一致")
                 segments.append(_TailSegment(
                     start, segment_end, payload.generation, response.headers.get(BARS_MANIFEST_HEADER),
+                    response.headers.get(BARS_HOT_REVISION_HEADER),
                 ))
                 tail.extend(payload.bars)
     except httpx.TransportError:
         return None
-    return end, segments, tail
+    return end, cutoff, segments, tail
 
 
 def bars(
@@ -203,6 +208,7 @@ def bars(
     """读取指定范围内已确认的 K 线，两个事件时间边界均包含。
 
     整数采用 UTC 毫秒，无时区的 ISO 日期时间采用 UTC。省略 ``end`` 时取最后一根已收盘柱。
+    在线查询省略 ``as_of`` 时，直读和补尾共用服务时钟给出的截点。
     数据目录优先使用
     ``data_dir``，其次为 ``TALARIA_DATA_DIR``，默认 ``./.talaria``。
     ``offline=True`` 时直接读取本地清单。
@@ -234,28 +240,33 @@ def bars(
     reader = ColdReader(root)
     if endpoint is not None:
         directory_id = data_dir_id(root)
-        # 各分段的补尾必须与直读时所选的范围文件一致。
+        # 各分段必须来自同一热端版本，并与直读时所选的范围文件一致。
         for _ in range(2):
             response = _fetch_tail(endpoint, query, directory_id)
             if response is None:
                 break
-            end_ts, segments, tail = response
+            end_ts, cutoff, segments, tail = response
             if end_ts < query.start:
                 return BarsResult((), tail_completed=True)
+            hot_revision = segments[0].hot_revision
+            if hot_revision == BARS_HOT_REVISION_UNSTABLE or (len(segments) > 1 and not hot_revision):
+                continue
+            if any(segment.hot_revision != hot_revision for segment in segments):
+                continue
             manifest, cold = reader.read_manifest_snapshot(
                 spec, query.timeframe, start_ts=query.start, end_ts=end_ts,
             )
             if all(segment.matches(manifest) for segment in segments):
                 archived = (
                     RangeBar.model_validate(bar, from_attributes=True)
-                    for bar in latest_visible_bars(cold, as_of=query.as_of)
+                    for bar in latest_visible_bars(cold, as_of=cutoff)
                 )
                 visible = latest_visible_bars(
-                    chain(archived, (bar for bar in tail if bar.confirmed)), as_of=query.as_of,
+                    chain(archived, (bar for bar in tail if bar.confirmed)), as_of=cutoff,
                 )
                 return BarsResult(tuple(visible), tail_completed=True)
         else:
-            raise BarsConsistencyError("K 线补尾与冷库清单持续变化，未能取得一致视图，请重试")
+            raise BarsConsistencyError("K 线补尾或冷库清单变化，未能取得一致视图，请重试")
 
     end_ts = query.end
     if end_ts is None:
