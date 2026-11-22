@@ -26,6 +26,8 @@ uv run talaria service install
 uv run talaria open
 ```
 
+`talaria dsh-install` 构建插件并更新 `~/.dsh/profiles/desktop/cordis.patch.yml` 中带标记的 Talaria 段。每次改写前，原文件会备份到 `~/.dsh/profiles-backup/desktop-<时间戳>/`。升级插件后重新运行安装命令即可。需要移除桌面插件时，退出桌面应用并运行 `uv run talaria dsh-uninstall`。
+
 日常用 `talaria open` 打开桌面应用，从侧边栏进入图表、预警、扫描和关键位。未安装桌面应用时会打开常驻服务托管的 `/desk`。用 `talaria service status` 查看常驻服务、桌面应用与 Talaria 插件状态。升级已安装的常驻服务时，再运行一次 `talaria service install` 更新 launchd 作业。
 
 如果常驻服务使用自定义数据目录，给 `dsh-install`、`service install` 和 `open` 传入同一个 `--data-dir`。省略时，`dsh-install` 和 `open` 依次读取 `TALARIA_DATA_DIR`、默认 launchd 作业及 `./.talaria`。

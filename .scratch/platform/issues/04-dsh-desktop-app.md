@@ -80,3 +80,15 @@ DSH 插件同样有 9 项被拒绝绑定，包括 `test/bridge.test.mjs` 中 7 �
 #### 提交状态
 
 `git diff --check` 通过。`git diff main...HEAD` 无已提交的任务差异，实际改动按工作区相对 HEAD 复核。逐路径暂存时，沙箱拒绝在主仓库的 worktree 元数据目录创建 `index.lock`。改动保留在 `ticket/platform-04` 工作区，任务单状态仍为 `ready-for-agent`。
+
+#### 本机实测修复
+
+- rc.5 的桌面自带 CLI 拒绝对 `desktop` 执行 `--dump-config` 和 `plugin add`。关闭桌面应用后用 `talaria dsh-install` 构建插件并更新 `$DSH_HOME/profiles/desktop/cordis.patch.yml`（默认 `DSH_HOME=~/.dsh`）。补丁保留可选 Talaria 预设，插件的 `name` 指向绝对 `index.js` 路径，`config` 同时包含 `credentialFile` 和 `desktop: true`。插件据此写出 `runtime/dsh-desktop.json`，供常驻服务将会诊和简报发给桌面应用。重装会补齐旧补丁缺失的 `desktop: true`。本机验收第 1 步改为比较补丁文件在两次安装前后的差异，再启动桌面应用检查预设与侧边栏。
+- 桌面安装直接使用用户补丁层。其他 profile 在 CLI 报 Electron 专属后使用同样的补丁路径，常规 profile 继续通过 `dsh plugin add` 安装。每次改写前备份原文件到 `$DSH_HOME/profiles-backup/<profile>-<时间戳>/cordis.patch.yml`，以原权限原子替换。重复执行内容相同时直接成功。`talaria dsh-uninstall` 移除标记段，`talaria service status` 识别该段。
+- 服务安装及卸载在 `bootout` 后轮询 `launchctl print`，最长约 5 秒。超时保留 plist 并报错。安装时首次 `bootstrap` 失败后短暂等待并重试一次。
+- `talaria service install` 将安装时已设置的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 及其小写写法写入 plist 的 `EnvironmentVariables`，供 launchd 启动服务时传入。含这些变量的 plist 权限为 `0600`。`talaria service status` 从已安装的 plist 读取配置，代理地址只显示主机和端口。
+- Bybit REST 遵循 HTTPX 的环境代理设置，公共 WebSocket 遵循 websockets 15 的默认代理规则，交易所客户端的回环端点、服务内部请求和 DSH 桥接在未设置 `NO_PROXY` 时也直连。
+- Bybit V5 公共 `tickers` 流按标的用 `snapshot` 重置缓存，再累积 `delta` 中变化的字段。事件使用当前报文的时间，合并后仍无衍生品读数的 `delta` 静默跳过。回归测试使用 `tickers.BTCUSDT` 的 `snapshot` 和 `delta` 报文。
+- 用临时 `DSH_HOME` 和注入的 runner 运行 `PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests/cli -q -p no:cacheprovider`，117 通过、1 跳过。沙箱拒绝回环端口绑定，5 个用例失败、1 个用例准备阶段报错。筛除这 6 项后复跑，117 通过、1 跳过。真实 `talaria-desk` 的 `dump-config` 快照在临时 DSH_HOME 下跳过。
+- 在临时工作区用 pnpm 构建前端与插件，验证补丁可解析为 YAML、Node 可导入生成配置中的 `index.js`，并验证卸载后恢复空列表。真实桌面应用加载和 launchd 带作业重装仍待本机验收。
+- 本轮运行 `PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests/cli tests/packs -q -p no:cacheprovider`，144 通过、12 失败、1 个准备阶段报错。沙箱拒绝 12 个用例绑定回环端口，并阻止真实 DSH CLI 写入现有 profile。用临时 `DSH_HOME` 筛除端口用例后复跑，144 通过、1 跳过、13 筛除（含默认排除的在线测试）。

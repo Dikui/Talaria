@@ -9,7 +9,9 @@ import threading
 import time
 import urllib.request
 from contextlib import closing
+from io import BytesIO
 from pathlib import Path
+from urllib.response import addinfourl
 
 import compression.zstd as zstd
 import pytest
@@ -150,6 +152,43 @@ def test_usage_scan_writes_through_running_service(running_service, tmp_path, ca
     assert second["recorded_turns"] == 0
     assert second["duplicate_turns"] == 1
     assert _summary(port)["summary"]["turns"] == 1
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_usage_scan_bypasses_environment_proxy_for_service(
+    tmp_path, capsys, monkeypatch, host
+):
+    # platform/04: replace the HTTP handler after urllib has selected the destination.
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("http_proxy", "http://proxy.example:8080")
+    monkeypatch.setattr(urllib.request, "_opener", None)
+    data_dir = tmp_path / "data"
+    dsh_home = tmp_path / "dsh"
+    _write_session(dsh_home)
+
+    def respond(_handler, request):
+        assert request.host == f"{host}:8765"
+        response = addinfourl(BytesIO(b'{"recorded": true}'), {}, request.full_url, 200)
+        response.msg = "OK"
+        return response
+
+    monkeypatch.setattr(urllib.request.HTTPHandler, "http_open", respond)
+    with ServiceLock(data_dir, role="service"):
+        write_service_descriptor(
+            service_descriptor_path(data_dir),
+            base_url=f"http://{host}:8765",
+            token=TOKEN,
+            pid=os.getpid(),
+            features=FeatureToggles(),
+        )
+        code = main(
+            ["usage-scan", "--dsh-home", str(dsh_home), "--data-dir", str(data_dir)]
+        )
+
+    assert code == 0, capsys.readouterr().err
+    assert json.loads(capsys.readouterr().out)["recorded_turns"] == 1
 
 
 def test_usage_scan_without_service_takes_lock_and_writes_directly(tmp_path, capsys):

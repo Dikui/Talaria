@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import gzip
 import hashlib
 import io
@@ -17,6 +18,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -27,6 +29,7 @@ import urllib.request
 from collections import deque
 from concurrent.futures import Future
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import urlsplit
@@ -40,6 +43,13 @@ DESKTOP_APP_NAME = "DeepSeek Harness"
 DESKTOP_DSH_BIN = DESKTOP_APP / "Contents/Resources/runtime/cli/bin/dsh"
 PLUGIN_NAME = "@talaria/dsh-plugin"
 
+_PROFILE_PATCH = "cordis.patch.yml"
+_PATCH_START = "# >>> talaria (added by Talaria; remove this block to uninstall)"
+_PATCH_END = "# <<< talaria"
+_PATCH_MARKER = re.compile(rf"(?m)^({re.escape(_PATCH_START)}|{_PATCH_END})[ \t]*(?:\r?\n|\Z)")
+_EMPTY_PATCH = re.compile(r"(?m)^[ \t]*\[[ \t]*\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|\Z)")
+_EMPTY_PATCH_COMMENT = "# Talaria saved the empty patch: "
+_ADDED_NEWLINE_COMMENT = "# Talaria added the preceding line break"
 _URL_PATTERN = re.compile(r"https?://[^\s]+")
 _ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _SECRET_PATTERN = re.compile(r"([?&]token=)[^\s&]+")
@@ -163,6 +173,11 @@ def desktop_running() -> bool:
 
 def desktop_plugin_installed() -> bool:
     profile = dsh_profile_dir(DESKTOP_PROFILE)
+    try:
+        if profile_has_talaria_patch(profile):
+            return True
+    except (OSError, ValueError):
+        pass
     if not (profile / "node_modules" / PLUGIN_NAME / "package.json").is_file():
         return False
     try:
@@ -173,18 +188,151 @@ def desktop_plugin_installed() -> bool:
         return False
 
 
+def _plugin_patch(source: Path, data_dir: Path, *, entry: Path | None = None) -> str:
+    patch = (source / _PROFILE_PATCH).read_text(encoding="utf-8").rstrip()
+    if entry is not None:
+        package_line = f"      name: '{PLUGIN_NAME}'"
+        if not patch.endswith(f"    - id: talaria-desk-plugin\n{package_line}"):
+            raise ValueError(f"无法在 {source / _PROFILE_PATCH} 中定位 Talaria 插件项")
+        specifier = json.dumps(str(entry), ensure_ascii=False)
+        patch = patch.removesuffix(package_line) + f"      name: {specifier}"
+    credential = json.dumps(str(bridge_descriptor_path(data_dir)), ensure_ascii=False)
+    patch += f"\n      config:\n        credentialFile: {credential}\n"
+    if entry is not None:
+        patch += "        desktop: true\n"
+    return patch
+
+
+def _talaria_patch_span(text: str) -> tuple[int, int] | None:
+    markers = list(_PATCH_MARKER.finditer(text))
+    if not markers:
+        return None
+    if [marker[1] for marker in markers] != [_PATCH_START, _PATCH_END]:
+        raise ValueError(f"{_PROFILE_PATCH} 中的 Talaria 标记不完整或重复")
+    return markers[0].start(), markers[1].end()
+
+
+def profile_has_talaria_patch(profile_dir: Path) -> bool:
+    try:
+        original = (profile_dir / _PROFILE_PATCH).read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return False
+    return _talaria_patch_span(original) is not None
+
+
+def _only_comments(text: str) -> bool:
+    return all(not line.strip() or line.lstrip().startswith("#") for line in text.splitlines())
+
+
+def _edit_talaria_patch(original: str, patch: str | None) -> str:
+    span = _talaria_patch_span(original)
+    newline = "\r\n" if "\r\n" in original else "\n"
+    saved_empty = ""
+    added_newline = False
+    has_final_newline = True
+    if span is not None:
+        start, end = span
+        block = original[start:end]
+        marker, _, body = block.partition("\n")
+        newline = "\r\n" if marker.endswith("\r") else "\n"
+        annotation = body.partition("\n")[0].removesuffix("\r")
+        saved = annotation.removeprefix(_EMPTY_PATCH_COMMENT)
+        if saved != annotation and _EMPTY_PATCH.fullmatch(saved):
+            saved_empty = saved
+        added_newline = annotation == _ADDED_NEWLINE_COMMENT
+        has_final_newline = block.endswith("\n")
+        if patch is None:
+            if added_newline and end == len(original) and original[:start].endswith(newline):
+                start -= len(newline)
+            before, after = original[:start], original[end:]
+            remaining = before + after
+            if _only_comments(remaining):
+                if saved_empty:
+                    restored = saved_empty + (newline if has_final_newline else "")
+                    return before + restored + after
+                # DSH requires an array even when the Talaria block was the only entry.
+                separator = newline if remaining and not remaining.endswith("\n") else ""
+                return remaining + separator + "[]" + newline
+            if saved_empty and "#" in saved_empty:
+                return before + "#" + saved_empty.partition("#")[2] + newline + after
+            return remaining
+    elif patch is None:
+        return original
+    else:
+        empty = _EMPTY_PATCH.search(original)
+        if empty and _only_comments(original[:empty.start()] + original[empty.end():]):
+            # DSH initializes the patch to an empty flow sequence.
+            start, end = empty.span()
+            saved_empty = empty[0].rstrip("\r\n")
+            has_final_newline = empty[0].endswith("\n")
+            if has_final_newline:
+                newline = "\r\n" if empty[0].endswith("\r\n") else "\n"
+        else:
+            added_newline = bool(original) and not original.endswith("\n")
+            if added_newline:
+                original += newline
+            start = end = len(original)
+
+    block = _PATCH_START + newline
+    if saved_empty:
+        block += _EMPTY_PATCH_COMMENT + saved_empty + newline
+    elif added_newline:
+        block += _ADDED_NEWLINE_COMMENT + newline
+    block += patch.replace("\n", newline) + _PATCH_END
+    if has_final_newline:
+        block += newline
+    return original[:start] + block + original[end:]
+
+
+def _update_talaria_patch(profile_dir: Path, patch: str | None) -> bool:
+    path = profile_dir / _PROFILE_PATCH
+    try:
+        directory_fd = os.open(profile_dir, os.O_RDONLY)
+    except FileNotFoundError:
+        if patch is None:
+            return False
+        raise
+    try:
+        # Lock the directory so concurrent Talaria commands share a stable inode.
+        fcntl.flock(directory_fd, fcntl.LOCK_EX)
+        try:
+            with path.open("rb") as handle:
+                original = handle.read()
+                mode = stat.S_IMODE(os.fstat(handle.fileno()).st_mode)
+        except FileNotFoundError:
+            if patch is None:
+                return False
+            original, mode = b"[]\n", None
+        updated = _edit_talaria_patch(original.decode("utf-8"), patch).encode("utf-8")
+        if updated == original:
+            return False
+        if mode is not None:
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+            backup_dir = profile_dir.parent.parent / "profiles-backup" / f"{profile_dir.name}-{stamp}"
+            backup_dir.mkdir(mode=0o700, parents=True)
+            _write_atomic_file(backup_dir / path.name, original, mode=mode)
+        _write_atomic_file(path, updated, mode=mode if mode is not None else 0o600)
+        return True
+    finally:
+        os.close(directory_fd)
+
+
+def install_talaria_patch(profile_dir: Path, plugin_dir: Path, data_dir: Path) -> None:
+    patch = _plugin_patch(plugin_dir, data_dir, entry=(plugin_dir / "index.js").absolute())
+    _update_talaria_patch(profile_dir, patch)
+
+
+def remove_talaria_patch(profile_dir: Path) -> bool:
+    return _update_talaria_patch(profile_dir, None)
+
+
 def build_install_bundle(
     *, repo: Path, profile: str, data_dir: Path, tool_names: Iterable[str]
 ) -> Path:
     """为目标 Profile 打包 DSH 配置及已构建的插件。"""
     source = repo / "dsh/packages/talaria-dsh-plugin"
     manifest = json.loads((source / "package.json").read_text(encoding="utf-8"))
-    patch_name = "cordis.patch.yml"
-    patch = (source / patch_name).read_text(encoding="utf-8").rstrip()
-    credential = json.dumps(str(bridge_descriptor_path(data_dir)), ensure_ascii=False)
-    patch += f"\n      config:\n        credentialFile: {credential}\n"
-    if profile == DESKTOP_PROFILE:
-        patch += "        desktop: true\n"
+    patch = _plugin_patch(source, data_dir)
     if profile == "talaria-desk":
         restrictions = repo / "dsh/profiles/talaria-desk.patch.yml"
         patch = restrictions.read_text(encoding="utf-8") + "\n" + patch
@@ -197,7 +345,7 @@ def build_install_bundle(
     tool_schema_dir = repo / "contracts/schemas/dsh-tools"
     entries = {
         "package.json": json.dumps(manifest).encode(),
-        patch_name: patch.encode(),
+        _PROFILE_PATCH: patch.encode(),
         **{name: (source / name).read_bytes() for name in runtime_files},
         **{f"{name}.tool.json": (tool_schema_dir / f"{name}.tool.json").read_bytes()
            for name in tool_names},
@@ -214,7 +362,7 @@ def build_install_bundle(
     directory.mkdir(mode=0o700, exist_ok=True)
     path = directory / f"talaria-dsh-plugin-{digest}.tgz"
     if not path.is_file():
-        _write_private_file(path, bundle)
+        _write_atomic_file(path, bundle)
     return path
 
 
@@ -267,14 +415,17 @@ def write_bridge_descriptor(
 def _write_private_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     path.parent.chmod(0o700)
-    _write_private_file(path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode())
+    _write_atomic_file(path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode())
 
 
-def _write_private_file(path: Path, payload: bytes) -> None:
+def _write_atomic_file(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(payload)
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
