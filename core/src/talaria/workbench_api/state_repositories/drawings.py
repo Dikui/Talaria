@@ -274,7 +274,7 @@ class DrawingRepository:
     def list(
         self,
         instrument_id: str,
-        timeframe: str,
+        timeframe: str | None,
         *,
         from_ts: int | None = None,
         to_ts: int | None = None,

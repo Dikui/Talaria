@@ -578,3 +578,166 @@ def test_registry_retains_256_distinct_cutoffs_per_series(caplog):
     assert registry.levels_at(INSTRUMENT, "1m", CUTOFF + 256) == []
     assert registry.latest((INSTRUMENT, "1m")) == replacement
     assert registry.latest((INSTRUMENT, "5m")) == other_pair
+
+
+def test_frozen_preview_selects_only_published_versions_and_survives_eviction(tmp_path):
+    from talaria.foundation.rules import RulePreviewRequest
+
+    now = CUTOFF
+    settings = AppSettings(data_dir=tmp_path, dist_dir=tmp_path, now_ms=lambda: now,
+                           features=FeatureToggles(market_data=False, scanner=False))
+    bars = [_bar(i) for i in range(40)]
+    store = _raw_store(settings)
+    store.append(SYMBOL, "1m", bars)
+
+    async def scenario():
+        nonlocal now
+        runtime = await build_runtime(settings)
+        try:
+            def freeze(cutoff):
+                return runtime.workbench.create_snapshot(SnapshotRequest(
+                    instrument_id=INSTRUMENT, timeframes=["1m"], cutoff_ts=cutoff))
+
+            first = freeze(now)
+            level = _round_number(runtime.workbench.get_key_levels(first.snapshot_id, timeframe="1m").levels)
+            store.append(SYMBOL, "1m", [_bar(40, "101"), _bar(41, "101"), _bar(42, "101")])
+            now += 2 * MINUTE + 10
+            # A new cutoff was published AFTER both closes. Its empty set applies to the third close.
+            runtime.key_levels.register(KeyLevelSet(
+                instrument_id=INSTRUMENT, timeframe="1m", cutoff_ts=now - 10, as_of_ts=now - 10,
+                snapshot_id="replacement", levels=[]))
+            now += MINUTE
+            snapshot = freeze(now)
+            for index in range(257):
+                now += 1
+                runtime.key_levels.register(KeyLevelSet(instrument_id=INSTRUMENT, timeframe="1m", cutoff_ts=now,
+                                            as_of_ts=now, snapshot_id=f"later-{index}", levels=[]))
+            assert runtime.key_levels.version_at((INSTRUMENT, "1m"), CUTOFF) is None
+            query = RulePreviewRequest.model_validate({
+                "timeframe": "1m", "limit": 3, "rule": {"version": "1", "timing": "bar_close",
+                "expression": {"op": "compare", "test": "gt", "left": {"source": "bar", "field": "close"},
+                               "right": {"source": "level_price", "level_id": level.level_id}}}})
+        finally:
+            await runtime.aclose()
+        reopened = await build_runtime(settings)
+        try:
+            preview = reopened.workbench.preview_rule(snapshot.snapshot_id, query, {})
+            assert [hit.timestamp for hit in preview.condition_true] == [CUTOFF, CUTOFF + MINUTE]
+            assert preview.would_trigger == []
+        finally:
+            await reopened.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_snapshot_replays_prior_bar_revisions_and_tick_derivatives_after_restart(tmp_path):
+    from dataclasses import replace
+    from talaria.foundation.feed import DerivativeTickEvent
+    from talaria.foundation.rules import RulePreviewRequest
+
+    now = CUTOFF
+    settings = AppSettings(data_dir=tmp_path, dist_dir=tmp_path, now_ms=lambda: now,
+                           features=FeatureToggles(market_data=False, scanner=False))
+    first = _bar(0, "5")
+    store = _raw_store(settings)
+    store.append(SYMBOL, "1m", [first, _bar(1, "15"), replace(_bar(0, "16"), revision=1,
+                                ts_ingested=START + 2 * MINUTE + 10, ts_available=START + 2 * MINUTE + 10)])
+    tick = DerivativeTickEvent(instrument_id=INSTRUMENT, mark_price="200", open_interest="300",
+                               ts_event=START, ts_ingested=START + 10)
+
+    with closing(ColdStore(tmp_path)) as cold:
+        for point in tick.points():
+            cold.publish_derivatives(CRYPTO_PERP_PACK.instrument(INSTRUMENT), point.kind, [point])
+
+    async def scenario():
+        runtime = await build_runtime(settings)
+        try:
+            meta = runtime.workbench.create_snapshot(SnapshotRequest(instrument_id=INSTRUMENT, timeframes=["1m"]))
+        finally:
+            await runtime.aclose()
+        reopened = await build_runtime(settings)
+        try:
+            def compare(left, threshold):
+                return {"op": "compare", "test": "gt", "left": left, "right": {"source": "constant", "value": threshold}}
+            query = RulePreviewRequest.model_validate({"timeframe": "1m", "rule": {"version": "1", "timing": "bar_close",
+                "expression": {"op": "all", "args": [compare({"source": "bar", "field": "close"}, "10"),
+                    compare({"source": "derivative", "kind": "mark_price"}, "199"),
+                    compare({"source": "derivative", "kind": "open_interest"}, "299")]}}})
+            result = reopened.workbench.preview_rule(meta.snapshot_id, query, {})
+            assert [(hit.timestamp, hit.observed_at) for hit in result.would_trigger] == [
+                (START + MINUTE, START + 2 * MINUTE)]
+        finally:
+            await reopened.aclose()
+    asyncio.run(scenario())
+
+
+def test_saved_chart_vwap_keeps_the_preview_origin_when_live_history_starts_later(tmp_path):
+    from talaria.foundation.rules import RulePreviewRequest
+
+    now = CUTOFF
+    settings = AppSettings(data_dir=tmp_path, dist_dir=tmp_path, now_ms=lambda: now,
+                           features=FeatureToggles(market_data=False, scanner=False))
+    _raw_store(settings).append(SYMBOL, "1m", [_bar(38, "100"), _bar(39, "10")])
+
+    async def scenario():
+        nonlocal now
+        runtime = await build_runtime(settings)
+        try:
+            chart = runtime.workbench.create_snapshot(SnapshotRequest(instrument_id=INSTRUMENT, timeframes=["1m"]))
+            query = RulePreviewRequest.model_validate({"timeframe": "1m", "rule": {"version": "1", "timing": "bar_close",
+                "expression": {"op": "compare", "test": "lt",
+                    "left": {"source": "indicator", "name": "VWAP", "window": "chart", "params": {"anchor": "snapshot"}},
+                    "right": {"source": "constant", "value": "45"}}}})
+            preview = runtime.workbench.preview_rule(chart.snapshot_id, query, {})
+            assert preview.indicators[0].points[-1].values["value"] == Decimal("55")
+            alerts = runtime.require_alerts()
+            saved = await alerts.create_alert(AlertCreate(instrument_id=INSTRUMENT, timeframe="1m", condition=preview.rule))
+        finally:
+            await runtime.aclose()
+        restarted = await build_runtime(settings)
+        try:
+            alerts = restarted.require_alerts()
+            for index, price in [(40, "45"), (41, "5")]:
+                bar = _bar(index, price)
+                now = bar.ts_available
+                alerts.handle_event(_event(bar))
+            # Frozen origin gives (100+10+45)/3 > 45, then 160/4 < 45.
+            hit, = await alerts.list_triggers(alert_id=saved.alert_id)
+            assert hit.observed == Decimal("40")
+        finally:
+            await restarted.aclose()
+    asyncio.run(scenario())
+
+
+def test_restart_without_published_levels_does_not_resurrect_the_previous_live_version(tmp_path):
+    from talaria.foundation.errors import InvalidRequestError
+    from talaria.foundation.rules import RulePreviewRequest
+
+    now = CUTOFF
+    settings = AppSettings(data_dir=tmp_path, dist_dir=tmp_path, now_ms=lambda: now,
+                           features=FeatureToggles(market_data=False, scanner=False))
+    store = _raw_store(settings)
+    store.append(SYMBOL, "1m", [_bar(i) for i in range(40)])
+
+    async def scenario():
+        nonlocal now
+        first = await build_runtime(settings)
+        try:
+            first.workbench.create_snapshot(SnapshotRequest(instrument_id=INSTRUMENT, timeframes=["1m"]))
+            level = _round_number(first.key_levels.latest((INSTRUMENT, "1m")).levels)
+        finally:
+            await first.aclose()
+        now += 1
+        restarted = await build_runtime(settings)
+        try:
+            store.append(SYMBOL, "1m", [_bar(40, "101")])
+            now += MINUTE
+            chart = restarted.workbench.create_snapshot(SnapshotRequest(instrument_id=INSTRUMENT, timeframes=["1m"]))
+            query = RulePreviewRequest.model_validate({"timeframe": "1m", "limit": 1, "rule": {
+                "version": "1", "timing": "bar_close",
+                "expression": {"op": "level_event", "event": "TOUCH", "level_id": level.level_id}}})
+            with pytest.raises(InvalidRequestError, match="历史版本不可用"):
+                restarted.workbench.preview_rule(chart.snapshot_id, query, {})
+        finally:
+            await restarted.aclose()
+    asyncio.run(scenario())

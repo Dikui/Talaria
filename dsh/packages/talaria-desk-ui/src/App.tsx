@@ -59,6 +59,8 @@ import {
 } from "./features/key-levels/model";
 import { useKeyLevels } from "./features/key-levels/useKeyLevels";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
+import { RuleDrafts } from "./features/rules/ruleDrafts";
+import { ChartRuleEditor, type ChartRulePreview } from "./features/rules/ChartRuleEditor";
 import { ScannerPanel } from "./features/scanner/ScannerPanel";
 import { useScanner } from "./features/scanner/useScanner";
 import { WatchlistPanel } from "./features/watchlist/WatchlistPanel";
@@ -115,7 +117,7 @@ interface ChartWorkbenchProps {
 }
 
 export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: ChartWorkbenchProps) {
-  const { instrumentId, timeframe, locateTs: snapshotCutoff } = useLinkSnapshot(link);
+  const { group, instrumentId, timeframe, locateTs: snapshotCutoff } = useLinkSnapshot(link);
   const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
   const [feedMode, setFeedMode] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SnapshotMeta | null>(null);
@@ -138,6 +140,9 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
   const [indicatorsLoading, setIndicatorsLoading] = useState(false);
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
   const [chart, setChart] = useState<Chart | null>(null);
+  const [ruleDrafts] = useState(() => new RuleDrafts());
+  const draftScope = JSON.stringify([group, instrumentId, timeframe]);
+  const [rulePreview, setRulePreview] = useState<ChartRulePreview | null>(null);
   const [drawingManagerOpen, setDrawingManagerOpen] = useState(false);
   const [keyLevelFilter, setKeyLevelFilter] = useState<KeyLevelFilter>(
     defaultKeyLevelFilter,
@@ -799,215 +804,240 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
           />
         )}
 
-        <section
-          className={`chart-panel${keyLevelPanelOpen ? "" : " key-levels-collapsed"}`}
-          aria-label="K 线主图"
-        >
-          {loading ? (
-            <div className="loading-state" data-testid="loading-state" aria-live="polite">
-              <div className="skeleton" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
+        <div className="chart-workbench">
+          <ChartRuleEditor
+            key={draftScope}
+            scope={draftScope}
+            drafts={ruleDrafts}
+            alerts={alerts.alerts}
+            instrumentId={instrumentId}
+            timeframe={timeframe}
+            snapshotId={!showEmpty && snapshot?.instrument_id === instrumentId
+                && snapshot.timeframes.includes(timeframe) ? snapshot.snapshot_id : null}
+            loadedSlots={stats.loaded + stats.gaps}
+            defaults={indicatorDefaults}
+            drawings={drawings.allDrawings}
+            levelSnapshotId={keyLevels.levelSet?.snapshot_id}
+            levels={keyLevels.levels}
+            pricePrecision={pricePrecision}
+            onPreview={setRulePreview}
+            onSaved={alerts.refresh}
+            onViewAlerts={() => {
+              setRightTab("alerts");
+              alerts.markSeen();
+            }}
+          />
+          <section
+            className={`chart-panel${keyLevelPanelOpen ? "" : " key-levels-collapsed"}`}
+            aria-label="K 线主图"
+          >
+            {loading ? (
+              <div className="loading-state" data-testid="loading-state" aria-live="polite">
+                <div className="skeleton" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <p>正在回填历史 K 线…</p>
               </div>
-              <p>正在回填历史 K 线…</p>
-            </div>
-          ) : showEmpty ? (
-            <div className="empty-state" data-testid="empty-state">
-              <div className="empty-mark" aria-hidden="true">
-                K
+            ) : showEmpty ? (
+              <div className="empty-state" data-testid="empty-state">
+                <div className="empty-mark" aria-hidden="true">
+                  K
+                </div>
+                <h2>尚未加载到历史行情</h2>
+                <p>
+                  请检查网络连接；也可以使用 <code>--fixture-dir</code>{" "}
+                  启动离线样本模式后再试。
+                </p>
+                <button type="button" className="primary-button" onClick={refresh}>
+                  重试
+                </button>
               </div>
-              <h2>尚未加载到历史行情</h2>
-              <p>
-                请检查网络连接；也可以使用 <code>--fixture-dir</code>{" "}
-                启动离线样本模式后再试。
-              </p>
-              <button type="button" className="primary-button" onClick={refresh}>
-                重试
-              </button>
-            </div>
-          ) : (
-            snapshot && snapshot.instrument_id === instrumentId &&
-            snapshot.timeframes.includes(timeframe) && (
-              <>
-                {indicatorSettings !== null && (
-                  <IndicatorToolbar
-                    settings={indicatorSettings}
-                    onChange={updateIndicator}
-                    defaults={indicatorDefaults}
-                    savingDefault={savingIndicatorDefault}
-                    onSaveDefault={(name) => void saveIndicatorDefault(name)}
-                    onResetDefault={(name) => void resetIndicatorDefault(name)}
-                    bundle={visibleIndicators}
-                    loading={indicatorsLoading}
-                    error={indicatorError}
-                  />
-                )}
-                {oiPaneEmpty && (
-                  <div
-                    className="derivative-pane-empty"
-                    data-testid="derivative-pane-empty"
-                    role="status"
-                  >
-                    该合约暂无持仓量历史，OI 背离暂不可计算。
-                  </div>
-                )}
-                {!readOnlyViewport && (
-                  <DrawingToolbar
-                    controller={drawings}
-                    managerOpen={drawingManagerOpen}
-                    onToggleManager={() => setDrawingManagerOpen((open) => !open)}
-                  />
-                )}
-                <MarketChart
-                  key={snapshot.snapshot_id}
-                  instrumentId={instrumentId}
-                  timeframe={timeframe}
-                  pricePrecision={pricePrecision}
-                  volumePrecision={volumePrecision}
-                  theme={theme}
-                  initialBars={bars}
-                  initialHasMoreForward={hasMoreForward}
-                  loadOlder={loadOlder}
-                  liveBars={snapshotCutoff === null ? stream.bars : undefined}
-                  locateTs={snapshotCutoff}
-                  crosshairLink={link}
-                  indicatorSeries={visibleIndicators?.series ?? []}
-                  onStats={setStats}
-                  onLoadError={(caught) => setError(describeError(caught))}
-                  overlay={
-                    <>
-                      <KeyLevelLayer
-                        chart={chart}
-                        levels={visibleLevels}
-                        pricePrecision={pricePrecision}
-                        rightInset={keyLevelInset}
-                      />
-                      <AnnotationLayer
-                        chart={chart}
-                        annotations={annotations.annotations}
-                        timeframe={timeframe}
-                        readOnly={readOnlyViewport}
-                        onAdopt={(annotation) => {
-                          void annotations
-                            .adopt(annotation.annotation_id)
-                            .then((record) => {
-                              if (
-                                record?.adopted_drawing_id !== null &&
-                                record?.adopted_drawing_id !== undefined
-                              ) {
-                                drawings.refresh();
-                              }
-                            });
-                        }}
-                        onDismiss={(annotation) => {
-                          void annotations.dismiss(annotation.annotation_id);
-                        }}
-                      />
-                      <DrawingOverlay chart={chart} controller={drawings} />
-                      <SelectionOverlay
-                        chart={chart}
-                        active={selecting && rightTab === "collab"}
-                        pricePrecision={pricePrecision}
-                        onSelect={(window) => {
-                          setSelection(window);
-                          setSelecting(false);
-                        }}
-                      />
-                    </>
-                  }
-                  onChartReady={setChart}
-                />
-                <ScannerPanel
-                  controller={scanner}
-                  open={scannerOpen}
-                  onToggle={() => setScannerOpen(false)}
-                  onLocate={locateTrigger}
-                  readOnly={readOnlyViewport}
-                />
-                {fullWorkbench && (keyLevelPanelOpen ? (
-                  <KeyLevelPanel
-                    levels={visibleLevels}
-                    allLevels={keyLevels.levels.filter(
-                      (level) => !keyLevels.ignoredIds.has(level.level_id),
-                    )}
-                    filter={keyLevelFilter}
-                    onFilterChange={setKeyLevelFilter}
-                    precision={pricePrecision}
-                    ignoredCount={keyLevels.ignoredIds.size}
-                    onIgnore={keyLevels.ignore}
-                    ignoringId={keyLevels.ignoringId}
-                    adoptedIds={keyLevels.adoptedIds}
-                    adoptingId={keyLevels.adoptingId}
-                    onAdopt={(level) => {
-                      void keyLevels.adopt(level).then((drawing) => {
-                        if (drawing !== null) {
-                          drawings.refresh();
-                        }
-                      });
-                    }}
-                    onAttachAlert={(level) => {
-                      setAlertSeed({
-                        nonce: Date.now(),
-                        levelId: level.level_id,
-                        levelKind: level.kind,
-                        instrumentId,
-                        timeframe,
-                      });
-                      setRightTab("alerts");
-                    }}
-                    loading={keyLevels.loading}
-                    error={keyLevels.error}
-                    readOnly={readOnlyViewport}
-                    notes={keyLevels.notes}
-                    onClose={() => setKeyLevelPanelOpen(false)}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    className="key-level-open"
-                    data-testid="key-level-open"
-                    onClick={() => setKeyLevelPanelOpen(true)}
-                  >
-                    关键位 {visibleLevels.length}
-                  </button>
-                ))}
-                {!readOnlyViewport && drawings.error !== null && (
-                  <div className="drawing-error" role="alert" data-testid="drawing-error">
-                    <span>{drawings.error}</span>
-                    <button type="button" aria-label="关闭画线错误" onClick={drawings.clearError}>
-                      ×
-                    </button>
-                  </div>
-                )}
-                {!readOnlyViewport && drawings.selected !== null && (
-                  <DrawingInspector
-                    controller={drawings}
+            ) : (
+              snapshot && snapshot.instrument_id === instrumentId &&
+              snapshot.timeframes.includes(timeframe) && (
+                <>
+                  {indicatorSettings !== null && (
+                    <IndicatorToolbar
+                      settings={indicatorSettings}
+                      onChange={updateIndicator}
+                      defaults={indicatorDefaults}
+                      savingDefault={savingIndicatorDefault}
+                      onSaveDefault={(name) => void saveIndicatorDefault(name)}
+                      onResetDefault={(name) => void resetIndicatorDefault(name)}
+                      bundle={visibleIndicators}
+                      loading={indicatorsLoading}
+                      error={indicatorError}
+                    />
+                  )}
+                  {oiPaneEmpty && (
+                    <div
+                      className="derivative-pane-empty"
+                      data-testid="derivative-pane-empty"
+                      role="status"
+                    >
+                      该合约暂无持仓量历史，OI 背离暂不可计算。
+                    </div>
+                  )}
+                  {!readOnlyViewport && (
+                    <DrawingToolbar
+                      controller={drawings}
+                      managerOpen={drawingManagerOpen}
+                      onToggleManager={() => setDrawingManagerOpen((open) => !open)}
+                    />
+                  )}
+                  <MarketChart
+                    key={snapshot.snapshot_id}
+                    instrumentId={instrumentId}
                     timeframe={timeframe}
-                    onAttachAlert={(drawing) => {
-                      setAlertSeed({
-                        nonce: Date.now(),
-                        drawingId: drawing.drawing_id,
-                        instrumentId,
-                        timeframe,
-                      });
-                      setRightTab("alerts");
-                    }}
+                    pricePrecision={pricePrecision}
+                    volumePrecision={volumePrecision}
+                    theme={theme}
+                    initialBars={bars}
+                    initialHasMoreForward={hasMoreForward}
+                    loadOlder={loadOlder}
+                    liveBars={snapshotCutoff === null ? stream.bars : undefined}
+                    locateTs={snapshotCutoff}
+                    crosshairLink={link}
+                    indicatorSeries={visibleIndicators?.series ?? []}
+                    rulePreview={rulePreview?.snapshotId === snapshot.snapshot_id ? rulePreview.response : null}
+                    onStats={setStats}
+                    onLoadError={(caught) => setError(describeError(caught))}
+                    overlay={
+                      <>
+                        <KeyLevelLayer
+                          chart={chart}
+                          levels={visibleLevels}
+                          pricePrecision={pricePrecision}
+                          rightInset={keyLevelInset}
+                        />
+                        <AnnotationLayer
+                          chart={chart}
+                          annotations={annotations.annotations}
+                          timeframe={timeframe}
+                          readOnly={readOnlyViewport}
+                          onAdopt={(annotation) => {
+                            void annotations
+                              .adopt(annotation.annotation_id)
+                              .then((record) => {
+                                if (
+                                  record?.adopted_drawing_id !== null &&
+                                  record?.adopted_drawing_id !== undefined
+                                ) {
+                                  drawings.refresh();
+                                }
+                              });
+                          }}
+                          onDismiss={(annotation) => {
+                            void annotations.dismiss(annotation.annotation_id);
+                          }}
+                        />
+                        <DrawingOverlay chart={chart} controller={drawings} />
+                        <SelectionOverlay
+                          chart={chart}
+                          active={selecting && rightTab === "collab"}
+                          pricePrecision={pricePrecision}
+                          onSelect={(window) => {
+                            setSelection(window);
+                            setSelecting(false);
+                          }}
+                        />
+                      </>
+                    }
+                    onChartReady={setChart}
                   />
-                )}
-                {!readOnlyViewport && drawingManagerOpen && (
-                  <DrawingManager
-                    controller={drawings}
-                    onClose={() => setDrawingManagerOpen(false)}
+                  <ScannerPanel
+                    controller={scanner}
+                    open={scannerOpen}
+                    onToggle={() => setScannerOpen(false)}
+                    onLocate={locateTrigger}
+                    readOnly={readOnlyViewport}
                   />
-                )}
-              </>
-            )
-          )}
-        </section>
+                  {fullWorkbench && (keyLevelPanelOpen ? (
+                    <KeyLevelPanel
+                      levels={visibleLevels}
+                      allLevels={keyLevels.levels.filter(
+                        (level) => !keyLevels.ignoredIds.has(level.level_id),
+                      )}
+                      filter={keyLevelFilter}
+                      onFilterChange={setKeyLevelFilter}
+                      precision={pricePrecision}
+                      ignoredCount={keyLevels.ignoredIds.size}
+                      onIgnore={keyLevels.ignore}
+                      ignoringId={keyLevels.ignoringId}
+                      adoptedIds={keyLevels.adoptedIds}
+                      adoptingId={keyLevels.adoptingId}
+                      onAdopt={(level) => {
+                        void keyLevels.adopt(level).then((drawing) => {
+                          if (drawing !== null) {
+                            drawings.refresh();
+                          }
+                        });
+                      }}
+                      onAttachAlert={(level) => {
+                        setAlertSeed({
+                          nonce: Date.now(),
+                          levelId: level.level_id,
+                          levelKind: level.kind,
+                          instrumentId,
+                          timeframe,
+                        });
+                        setRightTab("alerts");
+                      }}
+                      loading={keyLevels.loading}
+                      error={keyLevels.error}
+                      readOnly={readOnlyViewport}
+                      notes={keyLevels.notes}
+                      onClose={() => setKeyLevelPanelOpen(false)}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="key-level-open"
+                      data-testid="key-level-open"
+                      onClick={() => setKeyLevelPanelOpen(true)}
+                    >
+                      关键位 {visibleLevels.length}
+                    </button>
+                  ))}
+                  {!readOnlyViewport && drawings.error !== null && (
+                    <div className="drawing-error" role="alert" data-testid="drawing-error">
+                      <span>{drawings.error}</span>
+                      <button type="button" aria-label="关闭画线错误" onClick={drawings.clearError}>
+                        ×
+                      </button>
+                    </div>
+                  )}
+                  {!readOnlyViewport && drawings.selected !== null && (
+                    <DrawingInspector
+                      controller={drawings}
+                      timeframe={timeframe}
+                      onAttachAlert={(drawing) => {
+                        setAlertSeed({
+                          nonce: Date.now(),
+                          drawingId: drawing.drawing_id,
+                          instrumentId,
+                          timeframe,
+                        });
+                        setRightTab("alerts");
+                      }}
+                    />
+                  )}
+                  {!readOnlyViewport && drawingManagerOpen && (
+                    <DrawingManager
+                      controller={drawings}
+                      onClose={() => setDrawingManagerOpen(false)}
+                    />
+                  )}
+                </>
+              )
+            )}
+          </section>
+        </div>
       </main>
 
       {alerts.toast !== null && (

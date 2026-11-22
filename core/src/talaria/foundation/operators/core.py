@@ -505,6 +505,28 @@ def _push(
     return points
 
 
+class OperatorCursor:
+    """单一所有者逐柱推进，与批量计算共享递推器与缺口处理。"""
+
+    @with_operator_context
+    def __init__(self, spec: IndicatorSpec, *, legacy: bool = False):
+        self.spec = spec
+        if legacy and spec.name is IndicatorName.EMA:
+            self.engine = _EmaEngine(spec, legacy=True)
+        elif legacy and spec.name is IndicatorName.ATR:
+            self.engine = _AtrEngine(spec, legacy=True)
+        else:
+            self.engine = _new_engine(spec)
+        self.previous: list[Point] = []
+
+    @with_operator_context
+    def append(self, bars: Sequence[CompactBar], samples: Sequence[DerivativeSample] | None) -> list[Point]:
+        points = _push(self.engine, bars, self.spec, samples, previous_points=self.previous)
+        if points:
+            self.previous = points[-1:]
+        return points
+
+
 @with_operator_context
 def compute_series(
     bars: Sequence[CompactBar],

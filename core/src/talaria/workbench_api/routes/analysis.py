@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+import asyncio
+from threading import Event
+
+from fastapi import APIRouter, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from talaria.foundation.drawings import DrawingRecord
@@ -31,6 +34,9 @@ from talaria.foundation.key_levels import (
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.operators import IndicatorName
+from talaria.foundation.rules import (
+    Rule, RuleDrawingPrice, RuleLevelEvent, RuleLevelPrice, RuleOverlay, RulePreviewRequest, RulePreviewResponse,
+)
 from talaria.foundation.snapshot import (
     ChartPage,
     ErrorResponse,
@@ -38,6 +44,7 @@ from talaria.foundation.snapshot import (
     SnapshotRequest,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
+from talaria.workbench_api.indicator_defaults import pin_rule_indicator_params
 from talaria.workbench_api.routes import get_runtime
 
 router = APIRouter()
@@ -173,6 +180,75 @@ async def get_indicators(
         params=params,
         extra_bars=extra_bars,
     )
+
+
+@router.post("/api/snapshots/{snapshot_id}/rule-preview", response_model=RulePreviewResponse)
+async def preview_rule(
+    snapshot_id: str, payload: RulePreviewRequest, request: Request,
+) -> RulePreviewResponse:
+    runtime = get_runtime(request)
+    client = request.headers.get("x-preview-client")
+    active = getattr(request.app.state, "rule_previews", None)
+    if active is None:
+        active = request.app.state.rule_previews = {}
+    stopped = Event()
+    if client:
+        if previous := active.get(client):
+            previous.set()
+        active[client] = stopped
+
+    def check_cancelled() -> None:
+        if stopped.is_set():
+            raise HTTPException(499, "规则预览已取消")
+
+    async def compute() -> RulePreviewResponse:
+        meta = runtime.workbench.get_snapshot(snapshot_id)
+        if payload.timeframe not in meta.timeframes:
+            raise NotFoundError(f"快照 {snapshot_id} 不包含周期 {payload.timeframe}")
+        rule = payload.rule.model_copy(deep=True)
+        defaults = await runtime.indicator_defaults.effective()
+        try:
+            pin_rule_indicator_params(rule.expression, None, defaults)
+            rule = Rule.model_validate(rule.model_dump())
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+        references = tuple(rule.references())
+        drawings = {}
+        for drawing_id in dict.fromkeys(
+            ref.drawing_id for ref in references if isinstance(ref, (RuleDrawingPrice, RuleOverlay))
+        ):
+            history = await runtime.drawings.list_versions(drawing_id)
+            if history.versions[-1].instrument_id != meta.instrument_id:
+                raise InvalidRequestError("画线不属于该标的")
+            drawings[drawing_id] = history.versions
+        check_cancelled()
+        result = await asyncio.to_thread(
+            runtime.workbench.preview_rule, snapshot_id, payload.model_copy(update={"rule": rule}), drawings,
+            check_cancelled=check_cancelled,
+        )
+
+        refs = [ref for ref in references if isinstance(ref, (RuleLevelEvent, RuleLevelPrice))]
+        if refs:
+            levels = {lv.level_id: lv for lv in runtime.key_levels.current_levels(meta.instrument_id, payload.timeframe)}
+            result.unavailable_current_levels = list(dict.fromkeys(
+                ref.level_id for ref in refs if ref.level_id not in levels
+                or (ref.level_kind is not None and ref.level_kind != levels[ref.level_id].kind)
+            ))
+        return result
+
+    task = asyncio.create_task(compute())
+    try:
+        while not task.done():
+            if await request.is_disconnected():
+                stopped.set()
+            await asyncio.wait((task,), timeout=0.04)
+        return task.result()
+    finally:
+        stopped.set()
+        if client and active.get(client) is stopped:
+            del active[client]
+        if not task.done():
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @router.get(

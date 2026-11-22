@@ -27,7 +27,7 @@ from talaria.foundation.errors import (
     InvalidRequestError,
     TalariaError,
 )
-from talaria.foundation.feed import FeedEvent
+from talaria.foundation.feed import FeedEvent, KlineEvent
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.rules import (
     Rule, RuleComparison, RuleIndicator,
@@ -64,6 +64,7 @@ class AlertService:
         now_ms: Callable[[], int],
         bar_history: Callable[[str, str], Sequence[Any]] | None = None,
         read_archived_derivatives: ArchiveReader | None = None,
+        chart_history: Callable[[str, str, str], Sequence[KlineEvent]] | None = None,
         session_history: Callable[[str, str], Awaitable[Sequence[CompactBar]]] | None = None,
         key_level_provider: KeyLevelProvider | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
@@ -77,6 +78,7 @@ class AlertService:
         )
         self._key_level_provider = key_level_provider
         self._drawings = drawings
+        self._chart_history = chart_history
         self._session_history = session_history
         self._session_history_seeded: set[tuple[str, str]] = set()
         self._instruments = {spec.instrument_id: spec for spec in instruments}
@@ -100,8 +102,8 @@ class AlertService:
         await self._state_writer.run(self._migrate_alerts)
         records = await self._state_writer.read(lambda store: store.alerts.list())
         for record in records:
-            await self._seed_vwap_session(record)
-        self._engine.load(records)
+            await self._seed_indicator_history(record)
+            self._engine.put(record, reset=True)
         expired = self._engine.tick()
         if expired:
             await self._persist_alerts(expired)
@@ -186,7 +188,7 @@ class AlertService:
             created_ts=now,
             updated_ts=now,
         )
-        await self._seed_vwap_session(record)
+        await self._seed_indicator_history(record)
         await self._state_writer.run(lambda store: store.alerts.write(record))
         self._engine.put(record, reset=True)
         await self.refresh_overlays()
@@ -204,7 +206,7 @@ class AlertService:
         updated = record.model_copy(
             update={"status": AlertStatus.ARMED, "updated_ts": self._now_ms()}
         )
-        await self._seed_vwap_session(updated)
+        await self._seed_indicator_history(updated)
         await self._state_writer.run(lambda store: store.alerts.write(updated))
         self._engine.put(updated, reset=True)
         await self.refresh_overlays()
@@ -245,14 +247,20 @@ class AlertService:
                 updates["next_arm_ts"] = None
                 reset = True
         updated = record.model_copy(update=updates)
+        await self._seed_indicator_history(updated)
         await self._state_writer.run(lambda store: store.alerts.write(updated))
         self._engine.put(updated, reset=reset)
-        await self._seed_vwap_session(updated)
         await self.refresh_overlays()
         await self._notify_change()
         return updated
 
-    async def _seed_vwap_session(self, record: AlertRecord) -> None:
+    async def _seed_indicator_history(self, record: AlertRecord) -> None:
+        origin = record.condition.indicator_snapshot_id
+        if origin and not self._engine.has_chart_window(record.instrument_id, record.timeframe, origin):
+            if self._chart_history is None:
+                raise InvalidRequestError("图表指标起点不可用")
+            history = await asyncio.to_thread(self._chart_history, origin, record.instrument_id, record.timeframe)
+            self._engine.seed_chart_window(record.instrument_id, record.timeframe, origin, history)
         if self._session_history is None or record.status not in {
             AlertStatus.ARMED, AlertStatus.COOLDOWN,
         }:
