@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §7；ADR-0015、ADR-0007、ADR-0009。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 每次回放一个 `run_id` 目录；并发运行互不写同一文件，不占模拟盘子账户锁。
 - [ ] 汇总报告读取各账本，不重算成交。
