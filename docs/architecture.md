@@ -19,12 +19,13 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 - [ADR-0011：冷库发布由快照冻结触发](./adr/0011-cold-store-publish-on-snapshot-freeze.md)（已被 ADR-0018 取代）
 - [ADR-0012：状态库写入走专用写线程，读取用只读连接](./adr/0012-state-store-dedicated-writer-thread-and-read-only-connections.md)
 - [ADR-0013：L0 底座只放纯契约与纯计算](./adr/0013-foundation-holds-only-pure-contracts-and-computation.md)
-- [ADR-0014：一个 launchd 常驻服务 + 浏览器多页面](./adr/0014-resident-service-and-browser-multi-page.md)
+- [ADR-0014：一个 launchd 常驻服务 + 浏览器多页面](./adr/0014-resident-service-and-browser-multi-page.md)（前端一条已由 ADR-0020 取代）
 - [ADR-0015：交易流水线运行在独立的账户进程，账户进程是插件宿主](./adr/0015-account-process-as-plugin-host.md)
 - [ADR-0016：取数 SDK 按清单直读 Parquet，最新部分向常驻服务补齐](./adr/0016-sdk-reads-parquet-directly-with-service-tail.md)
 - [ADR-0017：冷库按标的、按列精度存 decimal128(18, s)](./adr/0017-cold-store-per-instrument-decimal128.md)
 - [ADR-0018：冷库在每根 K 线收盘后持续写入](./adr/0018-cold-store-continuous-publish-on-bar-close.md)
 - [ADR-0019：指标、信号、策略使用统一组件模型](./adr/0019-unified-component-model-with-runtime-context.md)
+- [ADR-0020：整个工作台放进 DSH，浏览器多页面只作离线兜底](./adr/0020-dsh-hosts-the-whole-workbench.md)
 
 调研证据存档于 [`docs/research/`](./research/)。
 
@@ -36,16 +37,17 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 
 ```mermaid
 flowchart TB
-  subgraph Front["浏览器多页面（同源 127.0.0.1，可装成 PWA）"]
+  subgraph DSH["DSH 工作台（talaria-desk Profile，日常入口）"]
     direction LR
-    PChart["图表页"]
-    PAlert["预警页"]
-    PScan["扫描页"]
-    PAcct["账户与复盘页（规划中）"]
+    PChart["图表面板"]
+    PAlert["预警面板"]
+    PScan["扫描面板"]
+    PAcct["账户与复盘面板（规划中）"]
+    Consult["会诊会话 + 右栏图表"]
     PChart <-. "BroadcastChannel 联动" .-> PAlert
   end
 
-  DSH["DSH 协同宿主（talaria-desk Profile，工作台插槽 + 会诊工具）"]
+  Front["兜底页面（服务托管 /desk 等路由，DSH 离线时用）"]
 
   subgraph Svc["常驻服务 talaria service（launchd 用户级 Agent）"]
     direction TB
@@ -70,8 +72,9 @@ flowchart TB
   Orch["编排：replay_runner、study_optimizer（批量启动账户进程）"]
   Store[("Parquet 冷库 + data_manifest.sqlite")]
 
+  DSH <-->|"面板直连 HTTP / WS 快通道"| Api
+  Consult <-->|"受控桥接工具"| Api
   Front <-->|"HTTP / WS"| Api
-  DSH <-->|"受控桥接工具"| Api
   Cold --> Store
   NB -->|"按清单直读"| Store
   NB -. "补最新几根" .-> Api
@@ -87,8 +90,8 @@ flowchart TB
 | 进程 | 职责 | 写哪些存储 | 状态 |
 |---|---|---|---|
 | 常驻服务 | 行情接入、冷库写入、快照、指标与关键位、预警、扫描、HTTP/WS；各功能按配置开关 | 冷库、快照库、协同状态库 | 已实现为 `talaria up` 前台进程；launchd 常驻、功能开关、冷库持续写入为改造中 |
-| 浏览器页面 | 每个功能一个可直接打开的路由；页面间用 `BroadcastChannel` 同步标的、周期与十字光标 | 不直接写 | 单页工作台已实现；多页面路由为改造中 |
-| DSH 协同宿主 | agent 会诊、标注、预警草案；工作台插槽 | 不直接写，经服务受控接口 | 已实现 |
+| DSH 工作台 | 日常入口（ADR-0020）：每个功能一个全局面板（`main` 插槽），面板数据直连服务快通道；agent 会诊、简报、标注、预警草案；面板间用 `BroadcastChannel` 同步标的、周期与十字光标 | 不直接写，经服务接口 | 会诊与右栏插槽已实现；功能面板为改造中 |
+| 兜底页面 | 服务托管的 `/desk` 与各功能路由，复用同一批组件；DSH 未启动或故障时使用 | 不直接写 | 单页工作台已实现；多页面路由为改造中 |
 | 账户进程 | 按交易方案装配插件，跑回测或模拟盘 | 模拟盘：持锁子账户的账本；回放：`runs/<run_id>/` | 规划中 |
 | Notebook / 脚本 | 用取数 SDK 研究；可以直接运行自己写的组件（研究模式，不隔离） | 不写 | 规划中 |
 
@@ -160,8 +163,8 @@ Talaria/
 │   └── cli/                            # up / service / dsh-install / contract-check / usage-scan / evaluate-levels
 ├── dsh/packages/
 │   ├── talaria-contracts/              # 由 Python 生成的 TypeScript 契约
-│   ├── talaria-desk-ui/                # React + KLineChart v10 前端（改造为多页面路由）
-│   └── talaria-dsh-plugin/             # DSH Web 插槽、bridge.js、守卫与工具 Schema
+│   ├── talaria-desk-ui/                # React + KLineChart v10 功能组件；同时挂 DSH 面板与兜底路由，不依赖 DSH API
+│   └── talaria-dsh-plugin/             # DSH 功能面板与右栏插槽、bridge.js、守卫与工具 Schema
 ├── tests/
 └── docs/
     ├── architecture.md                 # 本文档
@@ -516,13 +519,14 @@ class ExecutionEngine(Protocol):
 flowchart LR
   Launchd["launchd 用户级 Agent"]
   Svc["常驻服务 talaria service :8765"]
-  Browser["浏览器多页面 / PWA"]
-  DSHWeb["DSH 协同宿主 :8766"]
+  Browser["DSH Web 中的功能面板 / 兜底页面"]
+  DSHWeb["DSH 宿主 :8766（服务子进程）"]
   Acct["账户进程（每个交易方案）"]
   NB["Notebook / 脚本"]
   DSHAuto["DSH 自治 / 评估子进程（以后，stdio SDK）"]
 
   Launchd -->|"登录启动、崩溃重启"| Svc
+  Svc -->|"启停子进程"| DSHWeb
   Browser <-->|"HTTP / WS 快通道"| Svc
   Browser <-->|"DSH typert（会诊、轨迹、审批）"| DSHWeb
   DSHWeb <-->|"受控桥接工具"| Svc
@@ -533,7 +537,7 @@ flowchart LR
 
 - **运行方式**：
   1. `talaria up --pack crypto_perp`（已实现）：前台启动服务与 `dsh --profile talaria-desk --no-open --port <dsh_port>`；`--solo` 只启动服务，访问 `http://127.0.0.1:8765/desk`。双进程模式在 `<data-dir>/runtime/dsh-bridge.json`（0600）写入回环基址与 Bearer Token；DSH 缺失或启动失败时宿主标为 `offline`，快通道继续服务。
-  2. `talaria service install | uninstall | status`（规划中）：写入 launchd plist（显式 `ProcessType`、`KeepAlive`），服务常驻；功能开关由数据目录下的配置文件决定。
+  2. `talaria service install | uninstall | status`（规划中）：写入 launchd plist（显式 `ProcessType`、`KeepAlive`），服务常驻；功能开关由数据目录下的配置文件决定。服务以子进程方式启停 DSH 宿主；`talaria open`（规划中）打开带 token 的 DSH 入口，取不到 DSH 时打开兜底页面（ADR-0020）。
   3. `talaria account run <scheme.yaml> [--mode backtest|paper]`（规划中）：启动一个账户进程；`paper` 模式对方案里的每个子账户取排他锁，取不到即退出。
   4. `talaria replay` / `talaria optimize --workers N`（规划中）：批量启动账户进程。
 - **DSH 权限隔离与版本**：`talaria-desk` 提供分析查询、标注与预警草案工具；交易草案经人工确认。以后的自治子账户（`talaria-auto`）与评估（`talaria-eval`）基于 `sdk-minimal` 剔除 shell、外网与文件写权限，由 Python 经 `deepseek-harness-sdk`（stdio）调用。截至 2026-11-19，本机基线锁定 `dsh 0.2.2-rc.3` 与 `deepseek-harness-sdk 0.2.2rc2`；客户端插槽由 DSH 安装包自带。可用 `--dsh-bin` 或 `TALARIA_DSH_BIN` 指定 DSH 可执行文件。升级前须重跑 `dsh --profile <name> --dump-config` 与确定性探针。
