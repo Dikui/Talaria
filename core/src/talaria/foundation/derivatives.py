@@ -14,9 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Iterable, Protocol, Sequence, runtime_checkable
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from talaria.foundation.types import (
     ContractModel,
@@ -56,6 +56,12 @@ class DerivativePoint(ContractModel):
     precision: PrecisionTier = PrecisionTier.SECOND_VERIFIED
     ts_ingested: int
     ts_committed: int
+    revision: int = Field(default=0, ge=0)
+
+    @property
+    def is_funding_settlement(self) -> bool:
+        """结算历史有交易所结算时点，ticker 费率是当期的实时观测。"""
+        return self.kind is DerivativeKind.FUNDING_RATE and self.ts_published == self.ts_event
 
     @model_validator(mode="after")
     def _timestamps_are_ordered(self) -> DerivativePoint:
@@ -64,6 +70,30 @@ class DerivativePoint(ContractModel):
         if self.ts_committed < self.ts_ingested:
             raise ValueError("ts_committed 不能早于 ts_ingested")
         return self
+
+
+def derivative_identity(point: DerivativePoint) -> tuple[str, str, str, bool, int]:
+    return (
+        point.instrument_id, point.kind.value, point.timeframe or "",
+        point.is_funding_settlement, point.ts_event,
+    )
+
+
+def latest_visible_derivatives(
+    points: Iterable[DerivativePoint], *, as_of: int | None = None,
+) -> list[DerivativePoint]:
+    """先按可获取时间截断，再按种类、周期和事件时间选版。"""
+    selected: dict[tuple[str, str, str, bool, int], DerivativePoint] = {}
+    for point in points:
+        if as_of is not None and point.ts_available > as_of:
+            continue
+        key = derivative_identity(point)
+        previous = selected.get(key)
+        if previous is None or (
+            point.revision, point.ts_available, point.ts_ingested
+        ) >= (previous.revision, previous.ts_available, previous.ts_ingested):
+            selected[key] = point
+    return sorted(selected.values(), key=lambda point: (point.ts_event, derivative_identity(point)))
 
 
 class DerivativeSeries(ContractModel):

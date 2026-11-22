@@ -2138,6 +2138,12 @@
             "$ref": "#/components/schemas/PrecisionTier",
             "default": "SECOND_VERIFIED"
           },
+          "revision": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
           "timeframe": {
             "anyOf": [
               {

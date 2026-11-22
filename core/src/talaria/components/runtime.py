@@ -17,6 +17,7 @@ from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
     DerivativeKind,
     DerivativePoint,
+    latest_visible_derivatives,
 )
 from talaria.foundation.indicators import IndicatorParams, IndicatorPoint
 from talaria.foundation.operators import MAX_PERIOD, IndicatorName
@@ -68,6 +69,7 @@ class Ctx:
     now: int
     _read_bars: BarReader = field(default=sdk.bars, repr=False, compare=False)
     _read_derivatives: DerivativeReader | None = field(default=None, repr=False, compare=False)
+    _data_dir: str | Path | None = field(default=None, repr=False, compare=False, kw_only=True)
     _bar_ts: int | None = field(default=None, repr=False, compare=False, kw_only=True)
     _discovery_tail_completed: bool = field(default=True, repr=False, compare=False, kw_only=True)
     _indicator_defaults: Mapping[IndicatorName, IndicatorParams] = field(
@@ -120,19 +122,20 @@ class Ctx:
         return (*sorted(prior.values(), key=_DERIVATIVE_EVENT_ORDER), *in_window)
 
     def _visible_derivatives(self, kind: DerivativeKind) -> tuple[DerivativePoint, ...]:
-        if self._read_derivatives is None:
-            return ()
         if kind not in self._derivatives_by_kind:
-            rows = self._read_derivatives(
+            read = self._read_derivatives
+            if read is None:
+                read = partial(sdk.derivatives, data_dir=self._data_dir)
+            rows = read(
                 self.instrument, kind, start=0, end=self.now, as_of=self.now,
             )
-            self._derivatives_by_kind[kind] = tuple(sorted(
+            self._derivatives_by_kind[kind] = tuple(latest_visible_derivatives(
                 (
                     point for point in rows
                     if point.instrument_id == self.instrument and point.kind is kind
-                    and 0 <= point.ts_event <= self.now and point.ts_available <= self.now
+                    and 0 <= point.ts_event <= self.now
                 ),
-                key=_DERIVATIVE_EVENT_ORDER,
+                as_of=self.now,
             ))
         return self._derivatives_by_kind[kind]
 
@@ -161,9 +164,12 @@ class Ctx:
                 )
                 for kind in operator.derivative_inputs
             }
+            funding = inputs.get(DerivativeKind.FUNDING_RATE, ())
+            if self._read_derivatives is None:
+                # 内置行情取数包含 ticker 预估值，结算类算子沿用快照中的结算序列。
+                funding = tuple(point for point in funding if point.is_funding_settlement)
             samples = derivative_samples(
-                bars, inputs.get(DerivativeKind.FUNDING_RATE, ()),
-                inputs.get(DerivativeKind.OPEN_INTEREST, ()),
+                bars, funding, inputs.get(DerivativeKind.OPEN_INTEREST, ()),
                 mark_price=inputs.get(DerivativeKind.MARK_PRICE, ()),
             )
         points = operator.compute(bars, params, derivatives=samples)
@@ -227,7 +233,7 @@ def run_history[T](
     `start` 为首个开盘槽的下界，`end` 为可获取时间的上界，均包含。
     每根柱首次确认可见时求值，同一时刻按开盘槽排序。
     `history_start` 可向前扩展取数窗口用于预热。
-    `data_dir` 为默认 K 线读取器和工作台指标默认值所用的数据目录。
+    `data_dir` 为默认行情读取器和工作台指标默认值所用的数据目录。
     """
     history_start = start if history_start is None else history_start
     if not 0 <= history_start <= start <= end:
@@ -239,7 +245,7 @@ def run_history[T](
     for cutoff, slot, tail_completed in confirmations:
         ctx = Ctx(
             instrument, timeframe, history_start, cutoff,
-            _read_bars=read_bars, _read_derivatives=read_derivatives, _bar_ts=slot,
+            _read_bars=read_bars, _read_derivatives=read_derivatives, _data_dir=data_dir, _bar_ts=slot,
             _discovery_tail_completed=tail_completed, _indicator_defaults=defaults,
         )
         bars = ctx.bars()

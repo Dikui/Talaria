@@ -351,6 +351,27 @@ def test_net_odds_accepts_an_observed_zero_funding_rate():
     assert result[-1].output[-1].values["value"] == Decimal(1)
 
 
+def test_history_net_odds_does_not_treat_a_ticker_rate_as_a_settlement(tmp_path):
+    """data-access/08：实时资金费率可读，净赔率仍以结算事件计资金成本。"""
+    from talaria.components import run_history
+
+    rows = [_bar(START, "100"), _bar(START + MINUTE, "102")]
+    estimate = _derivative(START + MINUTE, START + MINUTE, "0.001")
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", rows))
+        store.publish_derivatives(INSTRUMENT, estimate.kind, [estimate])
+
+    result = list(run_history(
+        lambda ctx: (
+            ctx.derivatives("funding_rate"),
+            ctx.indicator("NET_ODDS", period=1)[-1].values["value"],
+        ),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + 2 * MINUTE, data_dir=tmp_path,
+    ))
+    assert [point.value for point in result[-1].output[0]] == [Decimal("0.001")]
+    assert result[-1].output[1] is None
+
+
 @pytest.mark.regression
 def test_funding_operator_can_use_a_reader_with_only_funding_data():
     from talaria.components import run_history

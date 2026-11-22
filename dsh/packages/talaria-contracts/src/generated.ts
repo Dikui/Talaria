@@ -161,6 +161,7 @@ export interface DerivativePoint {
   precision?: PrecisionTier;
   ts_ingested: number;
   ts_committed: number;
+  revision?: number;
 }
 export interface DerivativeSeries {
   kind: DerivativeKind;

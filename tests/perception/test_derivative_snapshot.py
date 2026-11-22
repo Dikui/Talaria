@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from talaria.foundation.snapshot import SnapshotMode, SnapshotRequest
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.backfill import BackfillPolicy
+from talaria.perception.cold_publisher import ColdPublisher
+from talaria.perception.cold_store import ColdStore
 from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import (
@@ -23,16 +26,28 @@ pytestmark = pytest.mark.medium
 CUTOFF_MS = 1_793_550_000_000
 
 
-def _builder(tmp_path, fixture_dir) -> SnapshotBuilder:
+@pytest.fixture
+def builder(tmp_path, fixture_dir):
     connector = FixtureConnector(fixture_dir)
-    return SnapshotBuilder(
+    cold = ColdStore(tmp_path)
+    snapshot_store = SnapshotStore(tmp_path)
+    policy = BackfillPolicy(target_bars=1000, max_pages=3)
+    publisher = ColdPublisher(
+        cold, instruments=CRYPTO_PERP_PACK.instruments(), connector=connector,
+        policy=policy, now_ms=lambda: CUTOFF_MS,
+    )
+    yield SnapshotBuilder(
         data_dir=tmp_path,
         connector=connector,
         raw_store=RawStore(tmp_path, raw_archive_id="test"),
-        snapshot_store=SnapshotStore(tmp_path),
-        policy=BackfillPolicy(target_bars=1000, max_pages=3),
+        snapshot_store=snapshot_store,
+        policy=policy,
         now_ms=lambda: CUTOFF_MS,
+        cold_publisher=publisher,
     )
+    asyncio.run(publisher.close())
+    snapshot_store.close()
+    cold.close()
 
 
 def _build(builder: SnapshotBuilder, instrument_id: str, timeframes: list[str]):
@@ -47,8 +62,7 @@ def _build(builder: SnapshotBuilder, instrument_id: str, timeframes: list[str]):
     )
 
 
-def test_sidecar_is_registered_and_strictly_truncated_at_available_time(tmp_path, fixture_dir) -> None:
-    builder = _builder(tmp_path, fixture_dir)
+def test_sidecar_is_registered_and_strictly_truncated_at_available_time(tmp_path, builder) -> None:
     meta = _build(builder, "BTC-USDT-PERP", ["1m"])
     record = builder._snapshot_store.get(meta.snapshot_id)
     assert record is not None
@@ -69,8 +83,7 @@ def test_sidecar_is_registered_and_strictly_truncated_at_available_time(tmp_path
     assert all(point.timeframe is None for point in funding)
 
 
-def test_sidecar_survives_restart_and_is_read_by_manifest_only(tmp_path, fixture_dir) -> None:
-    builder = _builder(tmp_path, fixture_dir)
+def test_sidecar_survives_restart_and_is_read_by_manifest_only(tmp_path, builder) -> None:
     meta = _build(builder, "BTC-USDT-PERP", ["1m"])
     before = builder._snapshot_store.get(meta.snapshot_id)
     assert before is not None and before.derivatives_path is not None
@@ -88,8 +101,7 @@ def test_sidecar_survives_restart_and_is_read_by_manifest_only(tmp_path, fixture
         reopened.close()
 
 
-def test_new_listing_without_oi_history_still_materializes_mark_price(tmp_path, fixture_dir) -> None:
-    builder = _builder(tmp_path, fixture_dir)
+def test_new_listing_without_oi_history_still_materializes_mark_price(tmp_path, builder) -> None:
     meta = _build(builder, "1000BONK-USDT-PERP", ["1m"])
     record = builder._snapshot_store.get(meta.snapshot_id)
     assert record is not None and record.derivatives_path is not None
@@ -99,8 +111,7 @@ def test_new_listing_without_oi_history_still_materializes_mark_price(tmp_path, 
     assert not any(point.kind is DerivativeKind.FUNDING_RATE for point in points)
 
 
-def test_derivative_series_respect_timeframe_mapping(tmp_path, fixture_dir) -> None:
-    builder = _builder(tmp_path, fixture_dir)
+def test_derivative_series_respect_timeframe_mapping(tmp_path, builder) -> None:
     meta = _build(builder, "BTC-USDT-PERP", ["1m"])
     record = builder._snapshot_store.get(meta.snapshot_id)
     assert record is not None and record.derivatives_path is not None

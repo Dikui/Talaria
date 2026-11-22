@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, overload
 import httpx
 
 from talaria.foundation.bars import MAX_RANGE_BARS, BarsQuery, BarsResponse, RangeBar
+from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.errors import InstrumentNotFoundError, InvalidRequestError
 from talaria.foundation.indicators import IndicatorParams
 from talaria.foundation.operators import IndicatorName
@@ -26,7 +27,10 @@ from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdReader
 from talaria.perception.indicator_defaults import read_indicator_defaults
 from talaria.perception.raw_store import latest_visible_bars
-from talaria.sdk._subscription import StrategyBarEvent, SubscriptionRejectedError, subscribe
+from talaria.sdk._derivatives import DerivativesResult
+from talaria.sdk._subscription import (
+    StrategyBarEvent, StrategyDerivativeEvent, SubscriptionRejectedError, subscribe, subscribe_derivatives,
+)
 from talaria.service_endpoint import DATA_DIR_HEADER, NOW_MS_HEADER, data_dir_id, read_service_endpoint
 
 if TYPE_CHECKING:
@@ -34,11 +38,16 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BarsResult",
+    "DerivativesResult",
     "StrategyBarEvent",
+    "StrategyDerivativeEvent",
     "SubscriptionRejectedError",
     "bars",
+    "derivatives",
+    "funding_settlements",
     "indicator_defaults",
     "subscribe",
+    "subscribe_derivatives",
 ]
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -121,6 +130,46 @@ def _data_root(data_dir: str | Path | None) -> Path:
 def indicator_defaults(*, data_dir: str | Path | None = None) -> dict[IndicatorName, IndicatorParams]:
     """读取同一数据目录下与工作台一致的指标默认值。"""
     return read_indicator_defaults(_data_root(data_dir))
+
+
+def derivatives(
+    instrument: str, kind: DerivativeKind | str, start: int | str,
+    end: int | str | None = None, as_of: int | str | None = None, *,
+    data_dir: str | Path | None = None,
+) -> DerivativesResult:
+    """按闭区间直读冷库。各周期的历史点与无周期的 ticker 读数分别选版。"""
+    return _derivative_range(instrument, DerivativeKind(kind), start, end, as_of, data_dir)
+
+
+def _derivative_range(
+    instrument: str, kind: DerivativeKind, start: int | str, end: int | str | None,
+    as_of: int | str | None, data_dir: str | Path | None, *, historical_only: bool = False,
+) -> DerivativesResult:
+    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
+    if spec is None:
+        raise InstrumentNotFoundError(f"未知标的：{instrument}")
+    exact_start = _time_ms(start)
+    exact_end = None if end is None else _time_ms(end)
+    if exact_end is not None and exact_end < exact_start:
+        raise ValueError("end 不得早于 start")
+    return DerivativesResult(ColdReader(_data_root(data_dir)).read_derivatives(
+        spec, kind, start_ts=ceil(exact_start), end_ts=None if exact_end is None else floor(exact_end),
+        as_of=None if as_of is None else floor(_time_ms(as_of)),
+        historical_only=historical_only,
+    ))
+
+
+def funding_settlements(
+    instrument: str, start: int | str, end: int | str | None = None,
+    as_of: int | str | None = None, *, data_dir: str | Path | None = None,
+) -> DerivativesResult:
+    """返回可见的资金费率结算事件，供成交插件按结算时间生成账本事件。"""
+    return DerivativesResult(
+        point for point in _derivative_range(
+            instrument, DerivativeKind.FUNDING_RATE, start, end, as_of, data_dir, historical_only=True,
+        )
+        if point.is_funding_settlement
+    )
 
 
 def _fetch_tail(

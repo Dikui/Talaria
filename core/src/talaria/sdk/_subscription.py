@@ -7,19 +7,25 @@ import json
 import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 from httpx import AsyncClient, HTTPStatusError, TransportError
 from talaria.foundation.bars import BarsResponse, RangeBar
-from talaria.foundation.errors import InvalidRequestError, TalariaError
+from talaria.foundation.derivatives import DerivativeKind
+from talaria.foundation.errors import InstrumentNotFoundError, InvalidRequestError, TalariaError
 from talaria.foundation.strategy_subscription import (
     StrategyBarEvent,
+    StrategyDerivativeEvent,
     SubscriptionCursor,
     SubscriptionReady,
     SubscriptionRequest,
+    identified_derivative_revisions,
     identified_revisions,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
+from talaria.packs import DEFAULT_PACK, get_market_pack
+from talaria.perception.cold_store import ColdReader
 from talaria.service_endpoint import DATA_DIR_HEADER, data_dir_id, read_service_connection
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -71,7 +77,7 @@ async def _range_revisions(
     return result
 
 
-async def subscribe(
+def subscribe(
     instrument: str, timeframe: str, *, data_dir: str | Path | None = None,
 ) -> AsyncGenerator[StrategyBarEvent]:
     """订阅已收盘柱修订，断线时自动重连。
@@ -82,12 +88,44 @@ async def subscribe(
     ``contextlib.aclosing`` 及时释放本次订阅。常驻服务明确拒绝时抛出
     ``SubscriptionRejectedError``。
     """
+    return cast(AsyncGenerator[StrategyBarEvent], _subscribe(instrument, timeframe, data_dir=data_dir))
+
+
+def subscribe_derivatives(
+    instrument: str, kind: DerivativeKind | str, *, data_dir: str | Path | None = None,
+) -> AsyncGenerator[StrategyDerivativeEvent]:
+    """订阅归档后的衍生品修订。日志过期后从本地清单补齐已发布的修订。"""
+    return cast(AsyncGenerator[StrategyDerivativeEvent], _subscribe(
+        instrument, "1m", data_dir=data_dir, kind=DerivativeKind(kind),
+    ))
+
+
+def _recover_derivatives(
+    root: Path, instrument: str, kind: DerivativeKind, ready: SubscriptionReady, seen: set[str],
+) -> list[StrategyDerivativeEvent]:
+    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
+    if spec is None:
+        raise InstrumentNotFoundError(f"未知标的：{instrument}")
+    points = ColdReader(root).read_derivative_revisions(spec, kind, end_ts=ready.server_ts)
+    return [
+        StrategyDerivativeEvent(epoch=ready.epoch, seq=None, point=point, content_id=identity)
+        for identity, point in identified_derivative_revisions(
+            point for point in points if point.ts_available <= ready.server_ts
+        )
+        if identity not in seen
+    ]
+
+
+async def _subscribe(
+    instrument: str, timeframe: str, *, data_dir: str | Path | None, kind: DerivativeKind | None = None,
+) -> AsyncGenerator[StrategyBarEvent | StrategyDerivativeEvent]:
     if timeframe not in SUPPORTED_TIMEFRAMES:
         raise InvalidRequestError(f"不支持的周期：{timeframe}")
     root = Path(data_dir or os.environ.get("TALARIA_DATA_DIR") or ".talaria").expanduser().resolve()
     request = SubscriptionRequest(
-        instrument=instrument, timeframe=timeframe, owner=uuid4().hex, include_baseline=True,
+        instrument=instrument, timeframe=timeframe, owner=uuid4().hex, include_baseline=True, kind=kind,
     )
+    event_model = StrategyBarEvent if kind is None else StrategyDerivativeEvent
     directory_id = data_dir_id(root)
     interval = timeframe_ms(timeframe)
     cursor: SubscriptionCursor | None = None
@@ -105,7 +143,9 @@ async def subscribe(
                     },
                     proxy=None, open_timeout=2, close_timeout=1,
                 ) as socket:
-                    await socket.send(request.model_copy(update={"after": cursor}).model_dump_json())
+                    await socket.send(request.model_copy(update={"after": cursor}).model_dump_json(
+                        exclude={"kind"} if kind is None else None,
+                    ))
                     answer = json.loads(await asyncio.wait_for(socket.recv(), timeout=10))
                     if answer.get("type") == "error":
                         raise SubscriptionRejectedError(answer["code"], answer["message"])
@@ -122,23 +162,32 @@ async def subscribe(
                     assert coverage_start is not None
                     if ready.type == "resync":
                         try:
-                            recovered = await _range_revisions(
-                                endpoint.base_url, directory_id, request, coverage_start=coverage_start,
-                                now=ready.server_ts, interval=interval, seen=seen,
-                            )
-                            for identity, bar in recovered:
-                                seen.add(identity)
-                                yield StrategyBarEvent(
-                                    instrument_id=instrument, timeframe=timeframe,
-                                    epoch=ready.epoch, seq=None, bar=bar, content_id=identity,
+                            if kind is None:
+                                revisions = await _range_revisions(
+                                    endpoint.base_url, directory_id, request, coverage_start=coverage_start,
+                                    now=ready.server_ts, interval=interval, seen=seen,
                                 )
+                                recovered = [
+                                    StrategyBarEvent(
+                                        instrument_id=instrument, timeframe=timeframe,
+                                        epoch=ready.epoch, seq=None, bar=bar, content_id=identity,
+                                    )
+                                    for identity, bar in revisions
+                                ]
+                            else:
+                                recovered = await asyncio.to_thread(
+                                    _recover_derivatives, root, instrument, kind, ready, seen,
+                                )
+                            for event in recovered:
+                                seen.add(event.content_id)
+                                yield event
                         except (HTTPStatusError, TransportError):
                             await socket.close(code=1012)
                             raise
                     cursor = SubscriptionCursor(epoch=ready.epoch, seq=ready.seq)
                     delay = 0.1
                     while True:
-                        event = StrategyBarEvent.model_validate_json(await socket.recv())
+                        event = event_model.model_validate_json(await socket.recv())
                         if event.epoch != cursor.epoch or event.seq is None or event.seq > cursor.seq + 1:
                             await socket.close(code=1012)
                             break

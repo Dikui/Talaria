@@ -12,7 +12,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from talaria.foundation.bars import BarStatus, CompactBar
-from talaria.foundation.feed import KlineEvent
+from talaria.foundation.feed import DerivativeTickEvent, KlineEvent
 from talaria.foundation.types import PrecisionTier
 from talaria.workbench_api.app import create_app
 from talaria.workbench_api.service_config import FeatureToggles
@@ -73,6 +73,74 @@ def test_strategy_socket_receives_only_confirmed_revisions_without_a_window(tmp_
         ]
         assert [event["bar"]["close"] for event in (first, second)] == ["100", "101"]
         assert [event["bar"]["revision"] for event in (first, second)] == [1, 2]
+
+
+def test_sdk_derivative_subscription_recovers_archived_revision_after_service_restart(tmp_path, monkeypatch):
+    from talaria import sdk
+
+    # data-access/08: inject only ticker input and the transport, including a service restart.
+    config = settings(tmp_path, cold_store=True)
+    monkeypatch.setattr("talaria.perception.derivative_publisher.FLUSH_SECONDS", 0.01)
+    app = create_app(config)
+    ws = None
+    first_closed = asyncio.Event()
+    reconnect = asyncio.Event()
+
+    def tick(price):
+        return DerivativeTickEvent(
+            instrument_id=BTC, mark_price=Decimal(price), ts_event=BASE, ts_ingested=BASE,
+        )
+
+    async def scenario():
+        nonlocal ws, app
+        attempts = 0
+
+        @asynccontextmanager
+        async def connect(*args, **kwargs):
+            nonlocal ws, attempts
+            attempts += 1
+            if attempts > 1:
+                await reconnect.wait()
+            async with asgi_socket(app) as socket:
+                ws = socket
+                try:
+                    yield socket
+                finally:
+                    first_closed.set()
+
+        install_sdk_transport(monkeypatch, app, connect)
+        async with aclosing(sdk.subscribe_derivatives(BTC, "mark_price", data_dir=config.data_dir)) as events:
+            async with app.router.lifespan_context(app):
+                runtime = app.state.runtime
+                first = asyncio.create_task(anext(events))
+                await wait_for_channel(runtime, "1m")
+                runtime.supervisor.ingest(tick("100.1"))
+                event = await first
+                assert event.seq == 1
+                assert event.point.value == Decimal("100.1")
+                assert ws is not None
+                await ws.disconnect()
+                recovered = asyncio.create_task(anext(events))
+                await first_closed.wait()
+                runtime.supervisor.ingest(tick("100.2"))
+            app = create_app(config)
+            async with app.router.lifespan_context(app):
+                reconnect.set()
+                event = await recovered
+                assert event.seq is None
+                assert (event.point.value, event.point.revision) == (Decimal("100.2"), 1)
+                current = asyncio.create_task(anext(events))
+                runtime = app.state.runtime
+                await wait_for_channel(runtime, "1m")
+                runtime.supervisor.ingest(tick("100.3"))
+                event = await current
+                assert (event.point.value, event.point.revision) == (Decimal("100.3"), 2)
+
+    async def run():
+        async with asyncio.timeout(10):
+            await scenario()
+
+    asyncio.run(run())
 
 
 @pytest.mark.regression
