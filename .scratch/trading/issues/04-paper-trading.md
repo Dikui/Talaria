@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0015；`docs/architecture.md` §6.1、§6.2、§5.5（`EXECUTION_BARRIER`）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 实时数据入口插件基于 data-access/06 的订阅；失去实时订阅或订阅被拒时按配置切 `REDUCING`。
 - [ ] `--mode paper` 对方案里的每个子账户取排他锁（01），并调用 06 的批准检查。
