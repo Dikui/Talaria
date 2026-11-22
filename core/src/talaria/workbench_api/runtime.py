@@ -10,17 +10,20 @@ from dataclasses import dataclass, field
 
 from talaria.feed.supervisor import FeedSupervisor
 from talaria.foundation.alerts import AlertRecord
+from talaria.foundation.bars import CompactBar
+from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.errors import FeatureDisabledError, TalariaError
 from talaria.foundation.feed import FeedTransport
 from talaria.foundation.key_levels import KeyLevel
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotRequest
-from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
+from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, TIMEFRAME_MS
 from talaria.packs import get_market_pack
 from talaria.packs.testing import FixtureConnector
 from talaria.perception.backfill import BackfillPolicy
 from talaria.perception.cold_publisher import ColdPublisher
 from talaria.perception.cold_store import ColdStore
+from talaria.perception.compaction import compact_series
 from talaria.perception.hot_buffer import HotStreamBuffer
 from talaria.perception.raw_store import RawStore
 from talaria.perception.scanner.routing import TriggerRoutingPolicy
@@ -227,6 +230,21 @@ async def build_runtime(
             assert supervisor is not None
             return supervisor.recent_bars(instrument_id=instrument_id, timeframe=timeframe)
 
+        async def session_history(instrument_id: str, timeframe: str) -> list[CompactBar]:
+            now = settings.now_ms()
+            day_ms = TIMEFRAME_MS["1d"]
+            session_start = now // day_ms * day_ms
+            live = bar_history(instrument_id, timeframe)
+            if live and live[0].timestamp < session_start <= live[-1].timestamp:
+                return []
+            return await asyncio.to_thread(
+                read_alert_session_history,
+                connector,
+                symbol=instruments_by_id[instrument_id].symbol,
+                timeframe=timeframe,
+                cutoff_ts=now,
+            )
+
         def alert_key_level(
             instrument_id: str, timeframe: str, level_id: str, cutoff_ts: int
         ) -> KeyLevel | None:
@@ -247,6 +265,11 @@ async def build_runtime(
                 instruments=instruments,
                 now_ms=settings.now_ms,
                 bar_history=bar_history if supervisor is not None else None,
+                session_history=(
+                    session_history
+                    if supervisor is not None and settings.replay_events is None
+                    else None
+                ),
                 key_level_provider=alert_key_level,
                 freeze_snapshot=freeze_alert_snapshot,
                 on_change=rebalance_watchlist,
@@ -317,6 +340,29 @@ async def build_runtime(
             desk=desk,
             _resources=resources.pop_all(),
         )
+
+
+def read_alert_session_history(
+    connector: MarketDataConnector, *, symbol: str, timeframe: str, cutoff_ts: int
+) -> list[CompactBar]:
+    """Page closed bars through the current UTC session and its preceding bar."""
+    interval = TIMEFRAME_MS[timeframe]
+    day_ms = TIMEFRAME_MS["1d"]
+    start = max(0, cutoff_ts // day_ms * day_ms - interval)
+    end = cutoff_ts - interval
+    raw: list[RawBar] = []
+    while end >= start:
+        page = connector.fetch_bars(
+            symbol=symbol,
+            timeframe=timeframe,
+            end_ts=end,
+            limit=min(1000, (end - start) // interval + 1),
+        )
+        if not page:
+            break
+        raw.extend(bar for bar in page if start <= bar.ts_event <= end)
+        end = page[0].ts_event - 1
+    return compact_series(raw, timeframe=timeframe, cutoff_ts=cutoff_ts)
 
 
 def _seed_fixture_scanner(

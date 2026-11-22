@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -95,3 +96,62 @@ def test_override_rejects_invalid_or_non_vwap_anchor(client) -> None:
         "/api/indicator-defaults/NOPE", json={"period": 2}, headers=AUTH
     )
     assert unknown.status_code == 422
+
+
+def test_dsh_can_preflight_saving_indicator_default(client) -> None:
+    origin = "http://127.0.0.1:8766"
+    response = client.options(
+        "/api/indicator-defaults/EMA",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "PUT" in response.headers["access-control-allow-methods"]
+
+
+def test_concurrent_defaults_save_and_clear_preserve_other_indicators(tmp_path) -> None:
+    from talaria.foundation.indicators import IndicatorParams
+    from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
+    from talaria.workbench_api.state_store import StateWriterQueue
+
+    async def scenario() -> None:
+        writer = StateWriterQueue(tmp_path)
+        await writer.start()
+        try:
+            defaults = IndicatorDefaultsService(writer)
+            await asyncio.gather(
+                defaults.set("EMA", IndicatorParams(period=25)),
+                defaults.set("ATR", IndicatorParams(period=17)),
+            )
+            result = await defaults.effective()
+            assert (result["EMA"].period, result["ATR"].period) == (25, 17)
+
+            await asyncio.gather(
+                defaults.clear("EMA"),
+                defaults.set("ATR", IndicatorParams(period=18)),
+            )
+            result = await defaults.effective()
+            assert (result["EMA"].period, result["ATR"].period) == (9, 18)
+        finally:
+            await writer.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("name", "params"),
+    [
+        ("EMA", {"period": True}),
+        ("EMA", {"period": "9"}),
+        ("EMA", {"period": 9, "std_dev": "2"}),
+        ("VWAP", {"period": 1, "std_dev": "2"}),
+    ],
+)
+def test_defaults_reject_non_integer_period_and_irrelevant_params(
+    client, name, params
+) -> None:
+    assert client.put(f"/api/indicator-defaults/{name}", json=params, headers=AUTH).status_code == 422

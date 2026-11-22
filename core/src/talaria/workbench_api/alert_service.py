@@ -22,6 +22,7 @@ from talaria.foundation.alerts import (
     overlay_bounds,
 )
 from talaria.foundation.alerts.contracts import AlertCondition, AlertConditionKind
+from talaria.foundation.bars import CompactBar
 from talaria.foundation.drawings import DrawingKind, DrawingRecord
 from talaria.foundation.errors import (
     AlertNotFoundError,
@@ -40,14 +41,15 @@ from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.alerts import AlertEngine
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
-from talaria.workbench_api.state_store import StateWriterQueue
+from talaria.workbench_api.state_store import StateStore, StateWriterQueue
 
 logger = logging.getLogger(__name__)
 
 _NOT_ALERTABLE_KINDS = frozenset({DrawingKind.TEXT_LABEL})
 
 #: 迁移标记；写入后不再重复改写历史规则。
-_ALERT_PARAMS_MIGRATION_KEY = "alerts.explicit_params.v1"
+_ALERT_PARAMS_V1_KEY = "alerts.explicit_params.v1"
+_ALERT_PARAMS_MIGRATION_KEY = "alerts.explicit_params.v2"
 
 #: 迁移写入的旧默认值：当时由 DEFAULT_PERIODS 隐式补齐。
 _LEGACY_ALERT_PERIODS: dict[IndicatorName, int] = {
@@ -59,11 +61,12 @@ _LEGACY_ALERT_PERIODS: dict[IndicatorName, int] = {
     IndicatorName.VWAP: 1,
 }
 
-#: 主/比较指标的名称、周期、锚点字段名。
+#: 主/比较指标的名称、周期、锚点、种子和倍数字段名。
 _INDICATOR_FIELDS = (
-    ("indicator", "indicator_period", "indicator_anchor"),
-    ("compare_indicator", "compare_period", "compare_anchor"),
+    ("indicator", "indicator_period", "indicator_anchor", "indicator_seed", "indicator_std_dev"),
+    ("compare_indicator", "compare_period", "compare_anchor", "compare_seed", "compare_std_dev"),
 )
+_SEED_VERSIONED_INDICATORS = {IndicatorName.EMA, IndicatorName.ATR}
 
 
 class AlertService:
@@ -77,6 +80,7 @@ class AlertService:
         instruments: Sequence[InstrumentSpec],
         now_ms: Callable[[], int],
         bar_history: Callable[[str, str], Sequence[Any]] | None = None,
+        session_history: Callable[[str, str], Awaitable[Sequence[CompactBar]]] | None = None,
         key_level_provider: Callable[[str, str, str, int], Any] | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
         on_change: Callable[[], Awaitable[None]] | None = None,
@@ -88,6 +92,8 @@ class AlertService:
             state_writer
         )
         self._drawings = drawings
+        self._session_history = session_history
+        self._session_history_seeded: set[tuple[str, str]] = set()
         self._instruments = {spec.instrument_id: spec for spec in instruments}
         self._now_ms = now_ms
         self._on_change = on_change
@@ -107,6 +113,8 @@ class AlertService:
     async def start(self) -> None:
         await self._migrate_legacy_parameters()
         records = await self._state_writer.read(lambda store: store.alerts.list())
+        for record in records:
+            await self._seed_vwap_session(record)
         self._engine.load(records)
         expired = self._engine.tick()
         if expired:
@@ -176,6 +184,7 @@ class AlertService:
             created_ts=now,
             updated_ts=now,
         )
+        await self._seed_vwap_session(record)
         await self._state_writer.run(lambda store: store.alerts.write(record))
         self._engine.put(record, reset=True)
         await self.refresh_overlays()
@@ -193,6 +202,7 @@ class AlertService:
         updated = record.model_copy(
             update={"status": AlertStatus.ARMED, "updated_ts": self._now_ms()}
         )
+        await self._seed_vwap_session(updated)
         await self._state_writer.run(lambda store: store.alerts.write(updated))
         self._engine.put(updated, reset=True)
         await self.refresh_overlays()
@@ -204,7 +214,7 @@ class AlertService:
         normalized = None
         if patch.condition is not None:
             normalized = await self._validate_condition(
-                patch.condition, record.instrument_id
+                patch.condition, record.instrument_id, previous=record.condition
             )
         if patch.expires_at is not None and patch.expires_at <= self._now_ms():
             raise InvalidRequestError("expires_at 必须晚于当前时间")
@@ -235,9 +245,30 @@ class AlertService:
         updated = record.model_copy(update=updates)
         await self._state_writer.run(lambda store: store.alerts.write(updated))
         self._engine.put(updated, reset=reset)
+        await self._seed_vwap_session(updated)
         await self.refresh_overlays()
         await self._notify_change()
         return updated
+
+    async def _seed_vwap_session(self, record: AlertRecord) -> None:
+        if self._session_history is None or record.status not in {
+            AlertStatus.ARMED, AlertStatus.COOLDOWN,
+        }:
+            return
+        condition = record.condition
+        if "session" not in (condition.indicator_anchor, condition.compare_anchor):
+            return
+        key = (record.instrument_id, record.timeframe)
+        if key in self._session_history_seeded:
+            return
+        try:
+            history = await self._session_history(*key)
+        except Exception:
+            logger.exception("载入 session VWAP 预警历史柱失败：%s %s", *key)
+            return
+        if history:
+            self._engine.seed_session_bars(*key, history)
+        self._session_history_seeded.add(key)
 
     async def delete_alert(self, alert_id: str) -> AlertRecord:
         record = await self._state_writer.run(
@@ -336,10 +367,11 @@ class AlertService:
             raise InvalidRequestError(f"不支持的周期：{timeframe}")
 
     async def _validate_condition(
-        self, condition: AlertCondition, instrument_id: str
+        self, condition: AlertCondition, instrument_id: str, *,
+        previous: AlertCondition | None = None,
     ) -> AlertCondition:
         if condition.kind is AlertConditionKind.INDICATOR_SIGNAL:
-            normalized = await self._normalize_indicator_condition(condition)
+            normalized = await self._normalize_indicator_condition(condition, previous)
             self._validate_indicator(normalized)
             return normalized
         if condition.kind is not AlertConditionKind.OVERLAY_CROSS:
@@ -368,14 +400,16 @@ class AlertService:
         return condition
 
     async def _normalize_indicator_condition(
-        self, condition: AlertCondition
+        self, condition: AlertCondition, previous: AlertCondition | None
     ) -> AlertCondition:
         updates: dict[str, Any] = {}
-        for name_field, period_field, anchor_field in _INDICATOR_FIELDS:
+        defaults = await self._indicator_defaults.effective()
+        for name_field, period_field, anchor_field, seed_field, std_dev_field in _INDICATOR_FIELDS:
             name = getattr(condition, name_field)
             if name is None:
                 continue
-            effective = await self._indicator_defaults.get(name)
+            effective = defaults[name]
+            same_indicator = previous is not None and getattr(previous, name_field) is name
             updates[period_field] = getattr(condition, period_field) or effective.period
             if name is IndicatorName.VWAP:
                 updates[anchor_field] = (
@@ -383,20 +417,30 @@ class AlertService:
                     or effective.anchor
                     or "session"
                 )
+            if name in _SEED_VERSIONED_INDICATORS:
+                previous_seed = getattr(previous, seed_field) if same_indicator else None
+                updates[seed_field] = previous_seed or "pine"
+            if name is IndicatorName.BOLL:
+                previous_std_dev = getattr(previous, std_dev_field) if same_indicator else None
+                updates[std_dev_field] = (
+                    getattr(condition, std_dev_field) or previous_std_dev or effective.std_dev
+                )
         return condition.model_copy(update=updates)
 
     @staticmethod
     def _validate_indicator(condition: AlertCondition) -> None:
-        for name, period, anchor in (
+        for name, period, anchor, std_dev in (
             (
                 condition.indicator,
                 condition.indicator_period,
                 condition.indicator_anchor,
+                condition.indicator_std_dev,
             ),
             (
                 condition.compare_indicator,
                 condition.compare_period,
                 condition.compare_anchor,
+                condition.compare_std_dev,
             ),
         ):
             if name is None:
@@ -408,6 +452,8 @@ class AlertService:
             params: dict[str, Any] = {"period": period}
             if name is IndicatorName.VWAP:
                 params["anchor"] = anchor or "session"
+            if std_dev is not None:
+                params["std_dev"] = std_dev
             try:
                 spec_from_params(name, params)
             except ValueError as exc:
@@ -417,36 +463,44 @@ class AlertService:
                 raise InvalidRequestError(f"{name} 不支持通道 {channel}")
 
     async def _migrate_legacy_parameters(self) -> None:
-        marker = await self._state_writer.get_meta(_ALERT_PARAMS_MIGRATION_KEY)
-        if marker == 1:
+        await self._state_writer.run(self._migrate_alerts)
+
+    @classmethod
+    def _migrate_alerts(cls, store: StateStore) -> None:
+        if store.meta.get(_ALERT_PARAMS_MIGRATION_KEY) == 1:
             return
-        records = await self._state_writer.read(lambda store: store.alerts.list())
-        updates: list[AlertRecord] = []
-        for record in records:
-            condition = self._legacy_condition(record.condition)
+        v1 = store.meta.get_with_timestamp(_ALERT_PARAMS_V1_KEY)
+        for record in store.alerts.list():
+            # v1 filled periods in place. Its timestamp distinguishes the older
+            # rules from those created after the Pine cutover.
+            predates_pine = v1 is None or record.created_ts < v1[1]
+            condition = cls._legacy_condition(record.condition, predates_pine=predates_pine)
             if condition != record.condition:
-                updates.append(record.model_copy(update={"condition": condition}))
-        if updates:
-            await self._state_writer.run(
-                lambda store: [store.alerts.write(record) for record in updates]
-            )
-        await self._state_writer.set_meta(_ALERT_PARAMS_MIGRATION_KEY, 1)
+                store.alerts.write(record.model_copy(update={"condition": condition}))
+        store.meta.set(_ALERT_PARAMS_MIGRATION_KEY, 1)
 
     @staticmethod
-    def _legacy_condition(condition: AlertCondition) -> AlertCondition:
+    def _legacy_condition(
+        condition: AlertCondition, *, predates_pine: bool
+    ) -> AlertCondition:
         if condition.kind is not AlertConditionKind.INDICATOR_SIGNAL:
             return condition
         updates: dict[str, Any] = {}
-        for name_field, period_field, anchor_field in _INDICATOR_FIELDS:
+        for name_field, period_field, anchor_field, seed_field, std_dev_field in _INDICATOR_FIELDS:
             name = getattr(condition, name_field)
             if name is None:
                 continue
-            if getattr(condition, period_field) is None:
+            missing_period = getattr(condition, period_field) is None
+            if missing_period:
                 legacy_period = _LEGACY_ALERT_PERIODS.get(name)
                 if legacy_period is not None:
                     updates[period_field] = legacy_period
             if name is IndicatorName.VWAP and getattr(condition, anchor_field) is None:
                 updates[anchor_field] = "snapshot"
+            if name in _SEED_VERSIONED_INDICATORS and getattr(condition, seed_field) is None:
+                updates[seed_field] = "legacy_sma" if predates_pine or missing_period else "pine"
+            if name is IndicatorName.BOLL and getattr(condition, std_dev_field) is None:
+                updates[std_dev_field] = Decimal(2)
         if not updates:
             return condition
         return condition.model_copy(update=updates)

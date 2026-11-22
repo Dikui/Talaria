@@ -417,10 +417,14 @@ export interface AlertCondition {
   indicator?: IndicatorName | null;
   indicator_period?: number | null;
   indicator_anchor?: "snapshot" | "session" | null;
+  indicator_seed?: "pine" | "legacy_sma" | null;
+  indicator_std_dev?: DecimalString | null;
   indicator_channel?: string | null;
   compare_indicator?: IndicatorName | null;
   compare_period?: number | null;
   compare_anchor?: "snapshot" | "session" | null;
+  compare_seed?: "pine" | "legacy_sma" | null;
+  compare_std_dev?: DecimalString | null;
   drawing_id?: string | null;
   overlay_mode?: AlertOverlayMode | null;
   overlay_ratio?: DecimalString | null;

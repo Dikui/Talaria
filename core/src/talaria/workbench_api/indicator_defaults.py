@@ -1,8 +1,7 @@
 """指标默认值：服务端按指标名保存用户的参数覆盖。
 
 覆盖值写入状态库 meta 表（键 ``indicator_defaults.v1``），未覆盖时回落到
-Pine v6 对齐的工厂默认值。所有读取都经 ``StateWriterQueue``，因此与预警
-迁移、规则写入共享同一串行写入顺序。
+Pine v6 对齐的工厂默认值。覆盖值的读改写由 ``StateWriterQueue`` 串行执行。
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from talaria.foundation.operators import (
     IndicatorSpec,
     spec_from_params,
 )
-from talaria.workbench_api.state_store import StateWriterQueue
+from talaria.workbench_api.state_store import StateStore, StateWriterQueue
 
 DEFAULTS_KEY = "indicator_defaults.v1"
 
@@ -45,42 +44,45 @@ class IndicatorDefaultsService:
         name = IndicatorName(name)
         spec = spec_from_params(name, params.model_dump(exclude_none=True))
         canonical = _params_from_spec(spec)
-        overrides = await self._overrides()
-        overrides[name] = canonical
-        await self._save(overrides)
+        await self._state_writer.run(lambda store: self._update(store, name, canonical))
         return canonical
 
     async def clear(self, name: IndicatorName) -> IndicatorParams:
         name = IndicatorName(name)
-        overrides = await self._overrides()
-        if name in overrides:
-            del overrides[name]
-            await self._save(overrides)
+        await self._state_writer.run(lambda store: self._update(store, name, None))
         return factory_defaults(name)
 
     async def _overrides(self) -> dict[IndicatorName, IndicatorParams]:
-        raw = await self._state_writer.get_meta(DEFAULTS_KEY)
-        if not isinstance(raw, dict):
-            return {}
-        overrides: dict[IndicatorName, IndicatorParams] = {}
-        for key, value in raw.items():
-            try:
-                name = IndicatorName(key)
-                params = IndicatorParams.model_validate(value)
-                spec_from_params(name, params.model_dump(exclude_none=True))
-            except (ValueError, TypeError):
-                continue
-            overrides[name] = _params_from_spec(
-                spec_from_params(name, params.model_dump(exclude_none=True))
-            )
-        return overrides
+        return _parse_overrides(await self._state_writer.get_meta(DEFAULTS_KEY))
 
-    async def _save(self, overrides: dict[IndicatorName, IndicatorParams]) -> None:
-        payload: dict[str, Any] = {
-            name.value: params.model_dump(mode="json")
-            for name, params in overrides.items()
-        }
-        await self._state_writer.set_meta(DEFAULTS_KEY, payload)
+    @staticmethod
+    def _update(
+        store: StateStore, name: IndicatorName, params: IndicatorParams | None
+    ) -> None:
+        raw = store.meta.get(DEFAULTS_KEY)
+        payload = raw if isinstance(raw, dict) else {}
+        if params is None:
+            if name.value not in payload:
+                return
+            del payload[name.value]
+        else:
+            payload[name.value] = params.model_dump(mode="json")
+        store.meta.set(DEFAULTS_KEY, payload)
+
+
+def _parse_overrides(raw: Any) -> dict[IndicatorName, IndicatorParams]:
+    if not isinstance(raw, dict):
+        return {}
+    overrides: dict[IndicatorName, IndicatorParams] = {}
+    for key, value in raw.items():
+        try:
+            name = IndicatorName(key)
+            params = IndicatorParams.model_validate(value)
+            spec = spec_from_params(name, params.model_dump(exclude_none=True))
+        except (ValueError, TypeError):
+            continue
+        overrides[name] = _params_from_spec(spec)
+    return overrides
 
 
 def factory_defaults(name: IndicatorName) -> IndicatorParams:

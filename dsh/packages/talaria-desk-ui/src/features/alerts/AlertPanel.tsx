@@ -350,12 +350,11 @@ export function AlertPanel({
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
-                        indicatorAnchor: event.target.value as
-                          | "snapshot"
-                          | "session",
+                        indicatorAnchor: event.target.value as AlertFormState["indicatorAnchor"],
                       }))
                     }
                   >
+                    <option value="">使用默认值</option>
                     <option value="session">UTC 日界</option>
                     <option value="snapshot">快照起点</option>
                   </select>
@@ -418,12 +417,11 @@ export function AlertPanel({
                     onChange={(event) =>
                       setForm((current) => ({
                         ...current,
-                        compareAnchor: event.target.value as
-                          | "snapshot"
-                          | "session",
+                        compareAnchor: event.target.value as AlertFormState["compareAnchor"],
                       }))
                     }
                   >
+                    <option value="">使用默认值</option>
                     <option value="session">UTC 日界</option>
                     <option value="snapshot">快照起点</option>
                   </select>

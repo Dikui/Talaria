@@ -290,3 +290,34 @@ def test_level_ids_are_stable_across_calls() -> None:
     first = compute_key_levels(**kwargs)
     second = compute_key_levels(**kwargs)
     assert [level.level_id for level in first] == [level.level_id for level in second]
+
+
+def test_session_vwap_levels_wait_for_utc_boundary_and_rewarm_after_gap() -> None:
+    gap = make_bar(2, "200", "1").model_copy(update=dict(
+        status=BarStatus.FEED_GAP, open=None, high=None, low=None,
+        close=None, volume=None, turnover=None,
+    ))
+    bars = [
+        make_bar(-2, "100", "1"),
+        make_bar(-1, "110", "1"),
+        make_bar(0, "200", "1"),
+        make_bar(1, "210", "1"),
+        gap,
+        make_bar(3, "250", "1"),
+        make_bar(1440, "300", "1"),
+    ]
+    expected_centers = [None, None, Decimal(200), Decimal(205), None, None, Decimal(300)]
+    for index, expected in enumerate(expected_centers):
+        levels = compute_key_levels(
+            instrument_id=INSTRUMENT, timeframe="1m", bars=bars,
+            cutoff_ts=bars[index].ts_available,
+            session_profile=SessionProfile(timezone="America/New_York"),
+            params=KeyLevelParams(vwap_anchor="SESSION"),
+        )
+        vwap = by_kind(levels, KeyLevelKind.ANCHORED_VWAP)
+        if expected is None:
+            assert vwap == []
+        else:
+            center = next(level for level in vwap if level.parameters["band_sigma"] == "0")
+            assert center.price == expected
+            assert center.formed_ts == (DAY if index < 6 else DAY + 1440 * MINUTE)

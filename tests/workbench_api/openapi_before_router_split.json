@@ -286,6 +286,33 @@
             ],
             "title": "Compare Period"
           },
+          "compare_seed": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pine",
+                  "legacy_sma"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compare Seed"
+          },
+          "compare_std_dev": {
+            "anyOf": [
+              {
+                "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compare Std Dev"
+          },
           "direction": {
             "anyOf": [
               {
@@ -357,6 +384,33 @@
               }
             ],
             "title": "Indicator Period"
+          },
+          "indicator_seed": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pine",
+                  "legacy_sma"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indicator Seed"
+          },
+          "indicator_std_dev": {
+            "anyOf": [
+              {
+                "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indicator Std Dev"
           },
           "kind": {
             "$ref": "#/components/schemas/AlertConditionKind"

@@ -472,3 +472,61 @@ def test_replay_and_live_produce_the_same_triggers(tmp_path: Path) -> None:
 
 async def _no_sleep(seconds: float) -> None:
     return None
+
+
+@pytest.mark.parametrize("seed_from_history", [False, True])
+@pytest.mark.parametrize("final_event", ["close", "revision", "gap"])
+def test_session_vwap_alert_keeps_utc_anchor_beyond_600_bars(
+    seed_from_history, final_event
+) -> None:
+    from talaria.foundation.operators import compute_series, spec_from_params
+
+    clock = Clock()
+    midnight = BASE_TS // 86_400_000 * 86_400_000
+    history = [_kline(midnight + index * MINUTE, "10") for index in range(-1, 601)]
+    if final_event == "gap":
+        gap = history[-2].bar.model_copy(
+            update=dict(
+                status=BarStatus.FEED_GAP, open=None, high=None, low=None,
+                close=None, volume=None, turnover=None,
+            )
+        )
+        history[-2] = history[-2].model_copy(update={"bar": gap})
+    triggers = []
+    engine = AlertEngine(
+        now_ms=clock,
+        history_provider=lambda *_: [event.bar for event in history] if seed_from_history else [],
+        on_trigger=lambda trigger, _: triggers.append(trigger),
+    )
+    alert = _metric_alert(threshold="12", cooldown_ms=0)
+    alert.condition = AlertCondition(
+        kind=AlertConditionKind.INDICATOR_SIGNAL,
+        direction=AlertDirection.ABOVE,
+        indicator="VWAP",
+        indicator_period=1,
+        indicator_anchor="session",
+        threshold="12",
+    )
+    engine.put(alert)
+    for event in history[-1:] if seed_from_history else history:
+        clock.now = event.bar.ts_available
+        engine.handle_event(event)
+    clock.now += MINUTE
+    if final_event == "revision":
+        event = _kline(midnight, "10000", revision=1)
+        history[1] = event
+    else:
+        event = _kline(midnight + 601 * MINUTE, "10000")
+        history.append(event)
+    engine.handle_event(event)
+
+    expected = compute_series(
+        [event.bar for event in history], spec_from_params("VWAP")
+    ).points[-1]["value"]
+    if final_event == "gap":
+        assert expected is None
+        assert triggers == []
+    else:
+        assert [(trigger.triggered_ts, trigger.observed) for trigger in triggers] == [
+            (clock.now, expected)
+        ]

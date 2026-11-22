@@ -1,4 +1,4 @@
-import type { IndicatorName, IndicatorParams } from "@talaria/contracts";
+import type { IndicatorName, IndicatorParams, OperatorRequest } from "@talaria/contracts";
 
 /** 与后端 operators/spec.py 的默认值一一对应；前端只做展示与参数收集。 */
 export const INDICATOR_ORDER: IndicatorName[] = [
@@ -10,6 +10,7 @@ export const INDICATOR_ORDER: IndicatorName[] = [
   "ATR",
   "FUNDING_QUANTILE",
   "OI_DIVERGENCE",
+  "NET_ODDS",
 ];
 
 export interface IndicatorDefaultValues {
@@ -54,18 +55,6 @@ export function defaultsFromParams(
   return defaults;
 }
 
-/** 仅替换参数，保留启用状态（用户已打开的图表实例立即跟随新默认值）。 */
-export function applyDefaults(
-  settings: IndicatorSettings,
-  defaults: IndicatorDefaults,
-): IndicatorSettings {
-  const next = {} as IndicatorSettings;
-  for (const name of INDICATOR_ORDER) {
-    next[name] = { ...settings[name], ...defaults[name] };
-  }
-  return next;
-}
-
 export const INDICATOR_CHANNELS: Record<IndicatorName, string[]> = {
   EMA: ["value"],
   SMA: ["value"],
@@ -107,15 +96,28 @@ export type IndicatorSettings = Record<IndicatorName, IndicatorSetting>;
 
 export const DEFAULT_ENABLED: IndicatorName[] = ["EMA", "RSI", "ATR"];
 
-export function defaultIndicatorSettings(): IndicatorSettings {
+export function defaultIndicatorSettings(
+  defaults: IndicatorDefaults = INDICATOR_DEFAULTS,
+): IndicatorSettings {
   const settings = {} as IndicatorSettings;
   for (const name of INDICATOR_ORDER) {
     settings[name] = {
       enabled: DEFAULT_ENABLED.includes(name),
-      ...INDICATOR_DEFAULTS[name],
+      ...defaults[name],
     };
   }
   return settings;
+}
+
+export function updateIndicatorSetting(
+  settings: IndicatorSettings,
+  defaults: IndicatorDefaults,
+  name: IndicatorName,
+  patch: Partial<IndicatorSetting>,
+): IndicatorSettings {
+  const current = settings[name];
+  const params = patch.enabled && !current.enabled ? defaults[name] : current;
+  return { ...settings, [name]: { ...current, ...params, ...patch } };
 }
 
 export function enabledIndicatorNames(
@@ -142,15 +144,6 @@ export function isDefaultParams(
   return true;
 }
 
-/** GET 只服务默认参数；任一启用指标非默认时整批走 POST compute。 */
-export function needsOperatorRequest(
-  names: IndicatorName[],
-  settings: IndicatorSettings,
-  defaults: IndicatorDefaults = INDICATOR_DEFAULTS,
-): boolean {
-  return names.some((name) => !isDefaultParams(name, settings[name], defaults));
-}
-
 export function operatorParams(
   name: IndicatorName,
   setting: IndicatorSetting,
@@ -169,19 +162,20 @@ export function anchorLabel(anchor: "snapshot" | "session"): string {
   return anchor === "session" ? "UTC 日界" : "快照起点";
 }
 
-export function settingsSignature(
-  names: IndicatorName[],
-  settings: IndicatorSettings,
-): string {
-  return names
-    .map((name) => {
-      const setting = settings[name];
-      return [
-        name,
-        setting.period,
-        name === "BOLL" ? setting.stdDev : "",
-        name === "VWAP" ? setting.anchor : "",
-      ].join(":");
-    })
-    .join("|");
+export function indicatorRequests(
+  settings: IndicatorSettings | null,
+  snapshotId: string,
+  timeframe: string,
+  limit: number,
+): OperatorRequest[] {
+  if (settings === null) {
+    return [];
+  }
+  return enabledIndicatorNames(settings).map((name) => ({
+    snapshot_id: snapshotId,
+    timeframe,
+    operator: name,
+    params: operatorParams(name, settings[name]),
+    limit,
+  }));
 }

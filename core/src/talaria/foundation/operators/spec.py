@@ -141,6 +141,8 @@ def spec_from_params(
         period = int(period)
     std_dev = raw.get("std_dev")
     if std_dev is not None:
+        if indicator is not IndicatorName.BOLL:
+            raise ValueError(f"{indicator} 不接受 std_dev 参数")
         try:
             std_dev = Decimal(str(std_dev))
         except InvalidOperation as exc:

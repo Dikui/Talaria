@@ -186,7 +186,7 @@ export function IndicatorToolbar({
                     type="button"
                     className="ghost-button"
                     disabled={!setting.enabled || savingDefault !== null}
-                    title={`清除 ${name} 的用户默认值并恢复出厂参数`}
+                    title={`让新建的 ${name} 使用出厂参数`}
                     onClick={() => onResetDefault(name)}
                   >
                     恢复出厂

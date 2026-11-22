@@ -16,6 +16,8 @@ from talaria.foundation.key_levels.contracts import KeyLevelKind
 from talaria.foundation.operators import CHANNELS, IndicatorName
 from talaria.foundation.types import ContractModel, DecimalStr
 
+IndicatorSeed = Literal["pine", "legacy_sma"]
+
 
 class AlertConditionKind(StrEnum):
     """规则条件的来源；前端不复制任何指标、几何或关键位数学。"""
@@ -79,10 +81,14 @@ class AlertCondition(ContractModel):
     indicator: IndicatorName | None = None
     indicator_period: int | None = Field(default=None, ge=1, le=5000)
     indicator_anchor: Literal["snapshot", "session"] | None = None
+    indicator_seed: IndicatorSeed | None = None
+    indicator_std_dev: DecimalStr | None = Field(default=None, gt=0)
     indicator_channel: str | None = Field(default=None, max_length=16)
     compare_indicator: IndicatorName | None = None
     compare_period: int | None = Field(default=None, ge=1, le=5000)
     compare_anchor: Literal["snapshot", "session"] | None = None
+    compare_seed: IndicatorSeed | None = None
+    compare_std_dev: DecimalStr | None = Field(default=None, gt=0)
     drawing_id: str | None = Field(default=None, max_length=64)
     overlay_mode: AlertOverlayMode | None = None
     overlay_ratio: DecimalStr | None = None
@@ -101,10 +107,14 @@ class AlertCondition(ContractModel):
                     self.indicator,
                     self.indicator_period,
                     self.indicator_anchor,
+                    self.indicator_seed,
+                    self.indicator_std_dev,
                     self.indicator_channel,
                     self.compare_indicator,
                     self.compare_period,
                     self.compare_anchor,
+                    self.compare_seed,
+                    self.compare_std_dev,
                     self.drawing_id,
                     self.overlay_mode,
                     self.overlay_ratio,
@@ -149,6 +159,14 @@ class AlertCondition(ContractModel):
                 and self.compare_indicator is not IndicatorName.VWAP
             ):
                 raise ValueError("只有 VWAP 支持 anchor 参数")
+            for name, seed, std_dev in (
+                (self.indicator, self.indicator_seed, self.indicator_std_dev),
+                (self.compare_indicator, self.compare_seed, self.compare_std_dev),
+            ):
+                if seed is not None and name not in {IndicatorName.EMA, IndicatorName.ATR}:
+                    raise ValueError("只有 EMA 和 ATR 支持 seed 参数")
+                if std_dev is not None and name is not IndicatorName.BOLL:
+                    raise ValueError("只有 BOLL 支持 std_dev 参数")
             if any(
                 value is not None
                 for value in (
@@ -177,10 +195,14 @@ class AlertCondition(ContractModel):
                     self.indicator,
                     self.indicator_period,
                     self.indicator_anchor,
+                    self.indicator_seed,
+                    self.indicator_std_dev,
                     self.indicator_channel,
                     self.compare_indicator,
                     self.compare_period,
                     self.compare_anchor,
+                    self.compare_seed,
+                    self.compare_std_dev,
                     self.drawing_id,
                     self.overlay_mode,
                     self.overlay_ratio,
@@ -203,10 +225,14 @@ class AlertCondition(ContractModel):
                 self.indicator,
                 self.indicator_period,
                 self.indicator_anchor,
+                self.indicator_seed,
+                self.indicator_std_dev,
                 self.indicator_channel,
                 self.compare_indicator,
                 self.compare_period,
                 self.compare_anchor,
+                self.compare_seed,
+                self.compare_std_dev,
             )
         ):
             raise ValueError("OVERLAY_CROSS 不接受 metric 或指标字段")

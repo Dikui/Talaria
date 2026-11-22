@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
+from starlette.concurrency import run_in_threadpool
+
 from talaria.foundation.drawings import DrawingRecord
 from talaria.foundation.errors import (
     InvalidRequestError,
@@ -142,13 +144,19 @@ async def get_indicators(
     indicators = [item.strip().upper() for item in names.split(",") if item.strip()]
     if not indicators:
         raise InvalidRequestError("names 至少要包含一个指标")
-    workbench = get_runtime(request).workbench
+    runtime = get_runtime(request)
+    workbench = runtime.workbench
+    effective = await runtime.indicator_defaults.effective()
+    params = {
+        name.value: value for name, value in effective.items() if name.value in indicators
+    }
     extra_bars = []
-    supervisor = get_runtime(request).supervisor
+    supervisor = runtime.supervisor
     if live and supervisor is not None:
         # 冻结快照的最后时间戳之后才是实时尾段；WS 同 timestamp 的修订由
         # supervisor 去重后只返回最新一版。
-        page = workbench.get_bars(
+        page = await run_in_threadpool(
+            workbench.get_bars,
             snapshot_id,
             timeframe=timeframe,
             limit=1,
@@ -160,12 +168,8 @@ async def get_indicators(
             timeframe=timeframe,
             after_ts=after_ts,
         )
-    runtime = get_runtime(request)
-    effective = await runtime.indicator_defaults.effective()
-    params = {
-        name.value: value for name, value in effective.items() if name.value in indicators
-    }
-    return workbench.get_indicators(
+    return await run_in_threadpool(
+        workbench.get_indicators,
         snapshot_id,
         timeframe=timeframe,
         names=indicators,

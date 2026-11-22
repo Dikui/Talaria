@@ -20,6 +20,7 @@ from talaria.foundation.operators.spec import (
     IndicatorName,
     IndicatorSpec,
 )
+from talaria.foundation.timeframes import TIMEFRAME_MS
 
 Point = dict[str, Decimal | None]
 _QUANTILE_QUANT = Decimal("0.00000001")
@@ -72,20 +73,32 @@ class _SmaEngine:
 
 
 class _EmaEngine:
-    def __init__(self, spec: IndicatorSpec) -> None:
+    def __init__(self, spec: IndicatorSpec, *, legacy: bool = False) -> None:
         self._period = int(spec.period)
         self._alpha = Decimal(2) / Decimal(self._period + 1)
+        self._legacy = legacy
+        self._seed: list[Decimal] = []
         self._ema: Decimal | None = None
 
     def reset(self) -> None:
+        self._seed.clear()
         self._ema = None
 
     def push(self, bar: CompactBar) -> Point:
         close = _close_of(bar)
         if self._ema is None:
-            self._ema = close
-            return {"value": self._ema}
-        self._ema = self._ema + self._alpha * (close - self._ema)
+            if self._legacy:
+                self._seed.append(close)
+                if len(self._seed) < self._period:
+                    return {"value": None}
+                self._ema = sum(self._seed) / Decimal(self._period)
+                self._seed.clear()
+            else:
+                self._ema = close
+        elif self._legacy:
+            self._ema += self._alpha * (close - self._ema)
+        else:
+            self._ema = self._alpha * close + (1 - self._alpha) * self._ema
         return {"value": self._ema}
 
 
@@ -138,8 +151,10 @@ def _wild_rsi(avg_gain: Decimal, avg_loss: Decimal) -> Decimal:
 
 
 class _AtrEngine:
-    def __init__(self, spec: IndicatorSpec) -> None:
+    def __init__(self, spec: IndicatorSpec, *, legacy: bool = False) -> None:
         self._period = int(spec.period)
+        self._alpha = Decimal(1) / Decimal(self._period)
+        self._legacy = legacy
         self._previous_close: Decimal | None = None
         self._true_ranges: list[Decimal] = []
         self._atr: Decimal | None = None
@@ -153,6 +168,8 @@ class _AtrEngine:
         close = _close_of(bar)
         previous = self._previous_close
         self._previous_close = close
+        if self._legacy and previous is None:
+            return {"value": None}
         true_range = (
             _true_range(bar, previous)
             if previous is not None
@@ -165,8 +182,10 @@ class _AtrEngine:
             self._atr = sum(self._true_ranges) / Decimal(self._period)
             self._true_ranges.clear()
             return {"value": self._atr}
-        weight = Decimal(self._period - 1)
-        self._atr = (self._atr * weight + true_range) / Decimal(self._period)
+        if self._legacy:
+            self._atr = (self._atr * (self._period - 1) + true_range) / self._period
+        else:
+            self._atr = self._alpha * true_range + (1 - self._alpha) * self._atr
         return {"value": self._atr}
 
 
@@ -204,17 +223,17 @@ class _VwapEngine:
         self._cumulative_pv = Decimal(0)
         self._cumulative_volume = Decimal(0)
         self._day: int | None = None
-        self._anchored = not self._session_anchored
+        self.anchor_ts: int | None = None
 
     def reset(self) -> None:
         self._cumulative_pv = Decimal(0)
         self._cumulative_volume = Decimal(0)
         self._day = None
-        self._anchored = not self._session_anchored
+        self.anchor_ts = None
 
     def push(self, bar: CompactBar) -> Point:
-        day = bar.timestamp // 86_400_000
         if self._session_anchored:
+            day = bar.timestamp // TIMEFRAME_MS["1d"]
             if self._day is None:
                 self._day = day
                 return {"value": None}
@@ -222,11 +241,9 @@ class _VwapEngine:
                 self._day = day
                 self._cumulative_pv = Decimal(0)
                 self._cumulative_volume = Decimal(0)
-                self._anchored = True
-            if not self._anchored:
+                self.anchor_ts = bar.timestamp
+            if self.anchor_ts is None:
                 return {"value": None}
-        else:
-            self._day = day
         volume = bar.volume or Decimal(0)
         if volume != 0:
             typical = (_high_of(bar) + _low_of(bar) + _close_of(bar)) / Decimal(3)
@@ -484,6 +501,28 @@ def compute_series(
     engine = _new_engine(spec)
     points = _push(engine, bars, spec, derivatives)
     return OperatorState(spec=spec, points=tuple(points), _engine=engine)
+
+
+def legacy_alert_points(bars: Sequence[CompactBar], spec: IndicatorSpec) -> list[Point]:
+    """复现迁移前已保存预警的 EMA / ATR（5cd280c）。"""
+    if spec.name is IndicatorName.EMA:
+        engine = _EmaEngine(spec, legacy=True)
+    elif spec.name is IndicatorName.ATR:
+        engine = _AtrEngine(spec, legacy=True)
+    else:
+        raise ValueError(f"{spec.name} 不支持旧版预警播种")
+    return _push(engine, bars, spec, None)
+
+
+def latest_session_vwap(bars: Sequence[CompactBar]) -> tuple[int, Decimal] | None:
+    """Return the current session's first contributing window timestamp and VWAP."""
+    spec = IndicatorSpec(IndicatorName.VWAP, anchor="session")
+    engine = _VwapEngine(spec)
+    points = _push(engine, bars, spec, None)
+    value = points[-1]["value"] if points else None
+    if value is None or engine.anchor_ts is None:
+        return None
+    return engine.anchor_ts, value
 
 
 def update_series(

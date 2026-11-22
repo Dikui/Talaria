@@ -7,7 +7,6 @@ import type {
   DerivativeBundle,
   IndicatorBundle,
   IndicatorName,
-  IndicatorSeries,
   InstrumentSpec,
   SnapshotMeta,
 } from "@talaria/contracts";
@@ -37,14 +36,11 @@ import { InstrumentSelect } from "./features/instruments/InstrumentSelect";
 import { IndicatorToolbar } from "./features/indicators/IndicatorToolbar";
 import {
   INDICATOR_DEFAULTS,
-  applyDefaults,
   defaultIndicatorSettings,
   defaultsFromParams,
-  enabledIndicatorNames,
-  isDefaultParams,
-  needsOperatorRequest,
+  indicatorRequests,
   operatorParams,
-  settingsSignature,
+  updateIndicatorSetting,
   type IndicatorDefaults,
   type IndicatorSetting,
   type IndicatorSettings,
@@ -132,15 +128,13 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   const [error, setError] = useState<ErrorInfo | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [theme, setTheme] = useState<Theme>(() => resolveInitialTheme());
-  const [indicatorSettings, setIndicatorSettings] = useState<IndicatorSettings>(
-    defaultIndicatorSettings,
-  );
+  const [indicatorSettings, setIndicatorSettings] =
+    useState<IndicatorSettings | null>(null);
   const [indicatorDefaults, setIndicatorDefaults] = useState<IndicatorDefaults>(
     INDICATOR_DEFAULTS,
   );
   const [savingIndicatorDefault, setSavingIndicatorDefault] =
     useState<IndicatorName | null>(null);
-  const defaultsLoaded = useRef(false);
   const [indicatorBundle, setIndicatorBundle] = useState<IndicatorBundle | null>(null);
   const [indicatorsLoading, setIndicatorsLoading] = useState(false);
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
@@ -314,42 +308,28 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
 
   const updateIndicator = useCallback(
     (name: IndicatorName, patch: Partial<IndicatorSetting>) => {
-      setIndicatorSettings((previous) => ({
-        ...previous,
-        [name]: { ...previous[name], ...patch },
-      }));
+      setIndicatorSettings((previous) =>
+        previous === null
+          ? null
+          : updateIndicatorSetting(previous, indicatorDefaults, name, patch),
+      );
     },
-    [],
+    [indicatorDefaults],
   );
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      let defaults = INDICATOR_DEFAULTS;
       try {
         const response = await api.indicatorDefaults();
-        if (cancelled) {
-          return;
-        }
-        const mapped = defaultsFromParams(response.defaults);
-        setIndicatorDefaults(mapped);
-        setIndicatorSettings((previous) => {
-          if (defaultsLoaded.current) {
-            return previous;
-          }
-          // 用户还没改过参数时，用服务端生效默认值初始化设置。
-          const touched = Object.keys(previous).some(
-            (name) =>
-              !isDefaultParams(
-                name as IndicatorName,
-                previous[name as IndicatorName],
-                INDICATOR_DEFAULTS,
-              ),
-          );
-          return touched ? previous : applyDefaults(previous, mapped);
-        });
-        defaultsLoaded.current = true;
+        defaults = defaultsFromParams(response.defaults);
       } catch {
-        // 默认值读取失败时保留出厂值，图表仍可正常使用。
+        // 默认值读取失败时，以出厂值创建指标实例。
+      }
+      if (!cancelled) {
+        setIndicatorDefaults(defaults);
+        setIndicatorSettings(defaultIndicatorSettings(defaults));
       }
     })();
     return () => {
@@ -359,6 +339,9 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
 
   const saveIndicatorDefault = useCallback(
     async (name: IndicatorName) => {
+      if (indicatorSettings === null) {
+        return;
+      }
       setSavingIndicatorDefault(name);
       try {
         const response = await api.setIndicatorDefault(
@@ -381,9 +364,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
       setSavingIndicatorDefault(name);
       try {
         const response = await api.resetIndicatorDefault(name);
-        const mapped = defaultsFromParams(response.defaults);
-        setIndicatorDefaults(mapped);
-        updateIndicator(name, { ...INDICATOR_DEFAULTS[name] });
+        setIndicatorDefaults(defaultsFromParams(response.defaults));
         setIndicatorError(null);
       } catch (caught) {
         setIndicatorError(describeError(caught).message);
@@ -391,11 +372,9 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
         setSavingIndicatorDefault(null);
       }
     },
-    [updateIndicator],
+    [],
   );
 
-  const enabledNames = enabledIndicatorNames(indicatorSettings);
-  const indicatorSignature = settingsSignature(enabledNames, indicatorSettings);
   const latestLive = stream.bars[stream.bars.length - 1];
   const liveTick =
     latestLive === undefined
@@ -409,7 +388,13 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
       setIndicatorsLoading(false);
       return;
     }
-    if (enabledNames.length === 0) {
+    const requests = indicatorRequests(
+      indicatorSettings,
+      snapshot.snapshot_id,
+      timeframe,
+      PAGE_SIZE,
+    );
+    if (requests.length === 0) {
       setIndicatorBundle(null);
       setIndicatorError(null);
       setIndicatorsLoading(false);
@@ -421,36 +406,9 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
         setIndicatorsLoading(true);
         (async () => {
           try {
-            let series: IndicatorSeries[];
-            if (
-              !needsOperatorRequest(
-                enabledNames,
-                indicatorSettings,
-                indicatorDefaults,
-              )
-            ) {
-              const bundle = await api.indicators(
-                snapshot.snapshot_id,
-                timeframe,
-                enabledNames,
-                PAGE_SIZE,
-                true,
-              );
-              series = bundle.series;
-            } else {
-              // 非默认参数只走单指标 POST；历史与指标数学仍全部在 Python。
-              series = await Promise.all(
-                enabledNames.map((name) =>
-                  api.computeOperator({
-                    snapshot_id: snapshot.snapshot_id,
-                    timeframe,
-                    operator: name,
-                    params: operatorParams(name, indicatorSettings[name]),
-                    limit: PAGE_SIZE,
-                  }, true),
-                ),
-              );
-            }
+            const series = await Promise.all(
+              requests.map((request) => api.computeOperator(request, true)),
+            );
             if (!cancelled) {
               setIndicatorBundle({
                 snapshot_id: snapshot.snapshot_id,
@@ -477,14 +435,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [
-    snapshot,
-    timeframe,
-    indicatorSignature,
-    liveTick,
-    indicatorSettings,
-    indicatorDefaults,
-  ]);
+  }, [snapshot, timeframe, liveTick, indicatorSettings]);
 
   const loadOlder = useCallback(
     async (beforeTs: number): Promise<OlderPage> => {
@@ -926,17 +877,19 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
           ) : (
             snapshot && (
               <>
-                <IndicatorToolbar
-                  settings={indicatorSettings}
-                  onChange={updateIndicator}
-                  defaults={indicatorDefaults}
-                  savingDefault={savingIndicatorDefault}
-                  onSaveDefault={(name) => void saveIndicatorDefault(name)}
-                  onResetDefault={(name) => void resetIndicatorDefault(name)}
-                  bundle={visibleIndicators}
-                  loading={indicatorsLoading}
-                  error={indicatorError}
-                />
+                {indicatorSettings !== null && (
+                  <IndicatorToolbar
+                    settings={indicatorSettings}
+                    onChange={updateIndicator}
+                    defaults={indicatorDefaults}
+                    savingDefault={savingIndicatorDefault}
+                    onSaveDefault={(name) => void saveIndicatorDefault(name)}
+                    onResetDefault={(name) => void resetIndicatorDefault(name)}
+                    bundle={visibleIndicators}
+                    loading={indicatorsLoading}
+                    error={indicatorError}
+                  />
+                )}
                 {oiPaneEmpty && (
                   <div
                     className="derivative-pane-empty"

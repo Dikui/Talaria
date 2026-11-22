@@ -29,7 +29,8 @@ from talaria.foundation.key_levels.contracts import (
     VwapAnchor,
     _parse_sigmas,
 )
-from talaria.foundation.timeframes import timeframe_ms
+from talaria.foundation.operators.core import latest_session_vwap
+from talaria.foundation.timeframes import TIMEFRAME_MS, timeframe_ms
 
 _MS = 1000
 _QUANTUM = Decimal("0.000001")
@@ -1043,28 +1044,6 @@ def _quantize(price: Decimal) -> Decimal:
     return price.quantize(_QUANTUM)
 
 
-def _vwap_anchor_ts(
-    params: KeyLevelParams,
-    bars: list[CompactBar],
-    cutoff_ts: int,
-    profile: SessionProfile,
-) -> int:
-    if params.vwap_anchor is VwapAnchor.SNAPSHOT:
-        return bars[0].timestamp if bars else cutoff_ts
-    if params.vwap_anchor is VwapAnchor.SESSION:
-        tz = _timezone(profile.timezone)
-        anchor = _day_start_ms(cutoff_ts, tz, profile.day_start)
-        if bars:
-            last_session = _day_start_ms(bars[-1].timestamp, tz, profile.day_start)
-            if last_session < anchor:
-                # 数据落后于 cutoff（回放/冻结快照）时，锚定到最新数据所在时段，
-                # 否则会产出 formed_ts 晚于 ts_available 的伪关键位。
-                anchor = last_session
-        return anchor
-    assert params.vwap_anchor_ts is not None
-    return params.vwap_anchor_ts
-
-
 def _anchored_vwap_levels(
     *,
     instrument_id: str,
@@ -1073,15 +1052,26 @@ def _anchored_vwap_levels(
     cutoff_ts: int,
     params: KeyLevelParams,
     bar_ms: int,
-    profile: SessionProfile,
 ) -> list[KeyLevel]:
     """锚定 VWAP 与 ±Nσ 带；零成交量柱不推进 VWAP 的可用时点。"""
 
-    anchor_ts = _vwap_anchor_ts(params, bars, cutoff_ts, profile)
+    vwap = None
+    if params.vwap_anchor is VwapAnchor.SESSION:
+        session = latest_session_vwap(bars)
+        if session is None:
+            return []
+        first_ts, vwap = session
+        day_ms = TIMEFRAME_MS["1d"]
+        anchor_ts = first_ts // day_ms * day_ms
+    elif params.vwap_anchor is VwapAnchor.SNAPSHOT:
+        anchor_ts = first_ts = bars[0].timestamp
+    else:
+        assert params.vwap_anchor_ts is not None
+        anchor_ts = first_ts = params.vwap_anchor_ts
     contributing = [
         bar
         for bar in bars
-        if bar.timestamp >= anchor_ts
+        if bar.timestamp >= first_ts
         and bar.volume is not None
         and bar.volume > 0
         and bar.high is not None
@@ -1098,11 +1088,13 @@ def _anchored_vwap_levels(
         assert bar.volume is not None
         typical = (bar.high + bar.low + bar.close) / Decimal(3)
         sum_volume += bar.volume
-        sum_price_volume += typical * bar.volume
+        if vwap is None:
+            sum_price_volume += typical * bar.volume
         sum_price_squared_volume += typical * typical * bar.volume
     if sum_volume <= 0:
         return []
-    vwap = sum_price_volume / sum_volume
+    if vwap is None:
+        vwap = sum_price_volume / sum_volume
     variance = sum_price_squared_volume / sum_volume - vwap * vwap
     sigma = variance.sqrt() if variance > 0 else Decimal("0")
 
@@ -1362,11 +1354,11 @@ def compute_key_levels_with_notes(
 
     params = params or KeyLevelParams()
     profile = session_profile or SessionProfile()
-    ordered = sorted(
-        (bar for bar in bars if bar.status is not BarStatus.FEED_GAP),
+    visible_with_gaps = sorted(
+        (bar for bar in bars if bar.ts_available <= cutoff_ts),
         key=lambda bar: bar.timestamp,
     )
-    visible = [bar for bar in ordered if bar.ts_available <= cutoff_ts]
+    visible = [bar for bar in visible_with_gaps if bar.status is not BarStatus.FEED_GAP]
     if not visible:
         return KeyLevelComputation(levels=[], notes=[])
     bar_ms = _bar_ms(timeframe)
@@ -1433,11 +1425,10 @@ def compute_key_levels_with_notes(
         _anchored_vwap_levels(
             instrument_id=instrument_id,
             timeframe=timeframe,
-            bars=visible,
+            bars=visible_with_gaps if params.vwap_anchor is VwapAnchor.SESSION else visible,
             cutoff_ts=cutoff_ts,
             params=params,
             bar_ms=bar_ms,
-            profile=profile,
         )
     )
     liquidation_levels, notes = _liquidation_levels(

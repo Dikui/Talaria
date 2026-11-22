@@ -230,11 +230,11 @@ export interface AlertFormState {
   direction: AlertDirection;
   indicator: IndicatorName;
   indicatorPeriod: number;
-  indicatorAnchor: "snapshot" | "session";
+  indicatorAnchor: "" | "snapshot" | "session";
   indicatorChannel: string;
   compareIndicator: IndicatorName | "";
   comparePeriod: number;
-  compareAnchor: "snapshot" | "session";
+  compareAnchor: "" | "snapshot" | "session";
   drawingId: string;
   overlayMode: AlertOverlayMode;
   levelId: string;
@@ -268,11 +268,11 @@ export function defaultAlertForm(
     direction: "ABOVE",
     indicator: "RSI",
     indicatorPeriod: 0,
-    indicatorAnchor: "session",
+    indicatorAnchor: "",
     indicatorChannel: "value",
     compareIndicator: "",
     comparePeriod: 0,
-    compareAnchor: "session",
+    compareAnchor: "",
     drawingId: options.drawingId ?? "",
     overlayMode: "CLOSE_BREAK",
     levelId: options.levelId ?? "",
@@ -355,7 +355,7 @@ export function buildAlertCondition(form: AlertFormState): AlertCondition {
       ...(form.indicatorPeriod > 0
         ? { indicator_period: form.indicatorPeriod }
         : {}),
-      ...(form.indicator === "VWAP"
+      ...(form.indicator === "VWAP" && form.indicatorAnchor
         ? { indicator_anchor: form.indicatorAnchor }
         : {}),
       indicator_channel: form.indicatorChannel,
@@ -365,7 +365,7 @@ export function buildAlertCondition(form: AlertFormState): AlertCondition {
             ...(form.comparePeriod > 0
               ? { compare_period: form.comparePeriod }
               : {}),
-            ...(form.compareIndicator === "VWAP"
+            ...(form.compareIndicator === "VWAP" && form.compareAnchor
               ? { compare_anchor: form.compareAnchor }
               : {}),
           }
