@@ -64,6 +64,31 @@ def test_agent_strategy_can_backtest_without_approval(replay, seatbelt_available
     assert main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)]) == 0
 
 
+@pytest.mark.regression
+def test_isolated_backtest_reads_pinned_derivative_history(replay, without_seatbelt, register_host_fixtures):
+    # backtest-and-research/01 与 trading/06：只有一条观测；UTC 历史跨度不能当作实际行数。
+    from talaria.account.strategy_code import StrategyCodeRegistry
+    from talaria.foundation.derivatives import DerivativePoint
+
+    scheme, data_dir = replay
+    strategy = scheme.with_name("replay_strategy.py")
+    strategy.write_text(strategy.read_text().replace(
+        "        bar = ctx.bars()[-1]", """        assert ctx.derivatives("mark_price")[-1].value == Decimal("11")
+        bar = ctx.bars()[-1]""",
+    ))
+    StrategyCodeRegistry(data_dir).register(strategy, "agent")
+    register_host_fixtures(scheme, data_dir, include_strategy=False)
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    mark = DerivativePoint(
+        instrument_id=instrument.instrument_id, kind="mark_price", value="11",
+        ts_event=START, ts_available=START, ts_ingested=START, ts_committed=START,
+    )
+    with closing(ColdStore(data_dir)) as store:
+        store.publish_derivatives(instrument, mark.kind, [mark])
+
+    assert main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)]) == 0
+
+
 def test_cli_replays_same_scheme_data_and_seed_into_equal_journals(replay, launch, capsys):
     scheme, data_dir = replay
     assert launch(scheme, data_dir) == 0
@@ -356,6 +381,8 @@ def test_strategy_same_direction_intent_adds_to_its_round_through_risk(replay, l
     ("data", "start: '1793491200000'", "start"),
 ])
 def test_account_refuses_invalid_yaml_slot_parameters(replay, launch, capsys, slot, params, field):
+    import json
+
     scheme, data_dir = replay
     content = scheme.read_text()
     if slot == "strategy":
@@ -371,7 +398,13 @@ def test_account_refuses_invalid_yaml_slot_parameters(replay, launch, capsys, sl
     assert launch(scheme, data_dir) == 2
     message = capsys.readouterr().err
     assert slot in message and field in message
-    assert not (data_dir / "runs").exists()
+    if slot == "data":
+        assert not (data_dir / "runs").exists()
+    else:
+        run, = (data_dir / "runs").iterdir()
+        status = json.loads((run / "run-status.json").read_text())
+        assert status["status"] == "failed" and field in status["error"]
+        assert not (run / "ledger.sqlite").exists()
 
 
 def test_replaying_run_config_uses_recorded_effective_indicator_defaults(replay, launch):

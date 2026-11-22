@@ -46,6 +46,7 @@ from talaria.foundation.errors import ColdStoreError, ColdStoreIntegrityError, C
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.revisions import latest_visible_revisions
 from talaria.foundation.ticks import Quote, TickKind, Trade, tick_identity
+from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.foundation.types import PrecisionTier
 from talaria.perception.raw_store import bar_record
 from talaria.perception.raw_store import latest_visible_bars as latest_visible_bars
@@ -193,6 +194,14 @@ class ColdManifest:
             if item.last_ts >= start_ts and item.first_ts <= end_ts
         ]
         return _sha256_bytes(json.dumps(files).encode("utf-8"))
+
+
+@dataclass(frozen=True, slots=True)
+class ColdSnapshot:
+    """同一读事务固定的 K 线和衍生品清单。"""
+
+    bars: ColdManifest
+    derivatives: ColdManifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -920,12 +929,52 @@ def _verify_generation_file(data_dir: Path, generation: ColdGeneration) -> Path:
     return path
 
 
+def _manifest_version(db: sqlite3.Connection) -> int:
+    versioned = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'manifest_version'"
+    ).fetchone()
+    # 旧清单及首次初始化中的空清单没有版本记录。
+    row = db.execute("SELECT version FROM manifest_version WHERE id = 1").fetchone() if versioned else None
+    return 0 if row is None else int(row[0])
+
+
 class ColdReader:
     """按一次清单查询读取不可变文件，常驻服务停止后也可用。"""
 
-    def __init__(self, data_dir: Path | str) -> None:
+    def __init__(self, data_dir: Path | str, *, snapshot: ColdSnapshot | None = None) -> None:
         self._data_dir = Path(data_dir).resolve()
         self._db_path = self._data_dir / MANIFEST_DB
+        self._snapshot = snapshot
+        self._pinned_series: dict[tuple[str, str, str], list[ColdGeneration]] = {}
+        if snapshot is not None:
+            for generation in (*snapshot.bars.generations, *snapshot.derivatives.generations):
+                key = generation.venue, generation.symbol, generation.timeframe
+                self._pinned_series.setdefault(key, []).append(generation)
+
+    def capture_snapshot(self, instruments: Iterable[tuple[InstrumentSpec, int]]) -> ColdSnapshot:
+        """固定标的截至指定事件时间的文件，保留跨周期预热和历史衍生品所需的数据。"""
+        if not self._db_path.is_file():
+            empty = ColdManifest(0, ())
+            return ColdSnapshot(empty, empty)
+        with closing(sqlite3.connect(f"{self._db_path.as_uri()}?mode=ro", uri=True)) as db:
+            db.execute("BEGIN")
+            version = _manifest_version(db)
+            bars = []
+            derivatives = []
+            for instrument, end in instruments:
+                for timeframe in SUPPORTED_TIMEFRAMES:
+                    bars.extend(_select_generations(db, instrument, timeframe, end_ts=end))
+                for kind in DerivativeKind:
+                    derivatives.extend(_select_generations(db, instrument, kind.value, end_ts=end))
+        return ColdSnapshot(ColdManifest(version, tuple(bars)), ColdManifest(version, tuple(derivatives)))
+
+    def check_snapshot_files(self) -> None:
+        if self._snapshot is None:
+            return
+        for series in self._pinned_series.values():
+            for generation in series:
+                if not _path_under_root(self._data_dir, generation.parquet_path).is_file():
+                    raise ColdStoreIntegrityError(f"回放清单文件缺失：{generation.parquet_path}")
 
     def read_bars(
         self,
@@ -1116,19 +1165,23 @@ class ColdReader:
         self, instrument: InstrumentSpec, series: str, read: Callable[[Sequence[ColdGeneration]], list[T]], *,
         start_ts: int | None, end_ts: int | None,
     ) -> tuple[ColdManifest, list[T]]:
+        if self._snapshot is not None:
+            key = instrument.venue, instrument.symbol, series
+            pinned = self._snapshot.bars if series in SUPPORTED_TIMEFRAMES else self._snapshot.derivatives
+            generations = tuple(
+                item for item in self._pinned_series.get(key, ())
+                if (start_ts is None or item.last_ts >= start_ts) and (end_ts is None or item.first_ts <= end_ts)
+            )
+            try:
+                return ColdManifest(pinned.version, generations), read(generations)
+            except FileNotFoundError as exc:
+                raise ColdStoreIntegrityError(f"回放清单文件缺失：{exc.filename or exc}") from exc
         if not self._db_path.is_file():
             return ColdManifest(0, ()), []
         for attempt in range(2):
             with closing(sqlite3.connect(f"{self._db_path.as_uri()}?mode=ro", uri=True)) as db:
                 db.execute("BEGIN")
-                versioned = db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'manifest_version'"
-                ).fetchone()
-                # 旧清单及首次初始化中的空清单没有版本记录。
-                row = None
-                if versioned:
-                    row = db.execute("SELECT version FROM manifest_version WHERE id = 1").fetchone()
-                version = 0 if row is None else int(row[0])
+                version = _manifest_version(db)
                 generations = _select_generations(
                     db, instrument, series, start_ts=start_ts, end_ts=end_ts,
                 )

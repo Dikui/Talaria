@@ -366,6 +366,7 @@ def bars(
     *,
     data_dir: str | Path | None = None,
     offline: bool = False,
+    _cold_reader: ColdReader | None = None,
 ) -> BarsResult:
     """读取指定范围内已确认的 K 线，两个事件时间边界均包含。
 
@@ -397,9 +398,14 @@ def bars(
         return BarsResult((), tail_completed=False)
     query = query.model_copy(update={"start": start_ts})
 
-    root = _data_root(data_dir)
-    endpoint = None if offline else read_service_endpoint(root)
-    reader = ColdReader(root)
+    endpoint = None
+    if _cold_reader is None:
+        root = _data_root(data_dir)
+        reader = ColdReader(root)
+        if not offline:
+            endpoint = read_service_endpoint(root)
+    else:
+        reader = _cold_reader
     if endpoint is not None:
         directory_id = data_dir_id(root)
         # 各分段必须来自同一热端版本，并与直读时所选的范围文件一致。

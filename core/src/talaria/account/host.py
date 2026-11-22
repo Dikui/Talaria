@@ -8,9 +8,12 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
+import re
 import sys
 from typing import Literal, Protocol
 from uuid import uuid4
+
+from pydantic import Field
 
 from talaria import sdk
 from talaria.account.contracts import (
@@ -32,7 +35,9 @@ from talaria.account.ledger import LedgerWriter, open_ledger
 from talaria.account.ownership import AccountOwnership, hold_sub_accounts
 from talaria.account.parameters import validate_parameters
 from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
-from talaria.account.plugins.parquet import ParquetReplay, ReplayMarkAvailability, parquet_replay
+from talaria.account.plugins.parquet import (
+    ParquetReplay, ReplayMarkAvailability, ReplayParams, capture_replay_snapshot, parquet_replay,
+)
 from talaria.account.plugins.r_unit import RUnitSizer, r_unit
 from talaria.account.plugins.seven_step import SevenStepRisk, seven_step
 from talaria.account.risk_config import AccountRiskConfig
@@ -49,7 +54,7 @@ from talaria.account.scheme import (
     load_scheme,
     python_reference,
 )
-from talaria.account.strategy_code import StrategyCodeRegistry, StrategySource
+from talaria.account.strategy_code import ContentHash, StrategyCodeRegistry, StrategySource
 from talaria.account.strategy_isolation import IsolatedStrategy, isolated_strategy_plugin
 from talaria.account.strategy_snapshot import StrategySnapshot
 from talaria.components import ComponentMeta, ControllerPatch, Ctx, Strategy
@@ -61,6 +66,14 @@ from talaria.foundation.operators import IndicatorName
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.foundation.types import ContractModel
 from talaria.packs import DEFAULT_PACK, get_market_pack
+from talaria.perception.cold_store import ColdReader, ColdSnapshot
+
+
+class RunCompletion(ContractModel):
+    run_id: str
+    status: Literal["succeeded", "failed"]
+    error: str | None = None
+    signal_bars: int | None = Field(default=None, ge=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +81,73 @@ class RunResult:
     run_id: str
     directory: Path
 
+    @classmethod
+    def new(cls, data_dir: Path) -> RunResult:
+        run_id = uuid4().hex
+        return cls(run_id, data_dir / "runs" / run_id)
 
-class _RunConfig(ContractModel):
+    @property
+    def state_dir(self) -> Path:
+        return self.directory / "state"
+
+    @property
+    def config_path(self) -> Path:
+        return self.directory / "run-config.json"
+
+    @property
+    def _status_path(self) -> Path:
+        return self.directory / "run-status.json"
+
+    def prepare(self, config: RunConfig) -> None:
+        self.directory.mkdir(parents=True)
+        try:
+            self.config_path.write_text(config.model_dump_json(indent=2) + "\n", encoding="utf-8")
+            self.state_dir.mkdir()
+        except (OSError, ValueError) as exc:
+            self.mark_failed(str(exc) or type(exc).__name__)
+            raise
+
+    def read_completion(self) -> RunCompletion:
+        completion = RunCompletion.model_validate_json(self._status_path.read_text(encoding="utf-8"))
+        if completion.run_id != self.run_id or (completion.status == "failed") != bool(completion.error):
+            raise SchemeError(f"{self.run_id}：无效的回放完成状态")
+        return completion
+
+    def mark_failed(self, error: str) -> None:
+        self._write_completion(RunCompletion(run_id=self.run_id, status="failed", error=error))
+
+    def _write_completion(self, completion: RunCompletion) -> None:
+        temporary = self._status_path.with_suffix(".tmp")
+        temporary.write_text(completion.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        temporary.replace(self._status_path)
+
+    @contextmanager
+    def track(self) -> Iterator[RunCompletion]:
+        completion = RunCompletion(run_id=self.run_id, status="succeeded")
+        try:
+            yield completion
+        except BaseException as exc:
+            self.mark_failed(str(exc) or type(exc).__name__)
+            raise
+        else:
+            self._write_completion(completion)
+
+
+class FilePluginCode(ContractModel):
+    path: Path
+    source: StrategySource
+    sha256: ContentHash
+
+
+class RunConfig(ContractModel):
     version: Literal[1]
     scheme: TradingScheme
     scheme_dir: Path
     data_dir: Path
     indicator_defaults: dict[IndicatorName, IndicatorParams]
+    deterministic_only: bool = Field(default=False, exclude_if=lambda value: not value)
+    cold_snapshot: ColdSnapshot | None = Field(default=None, exclude_if=lambda value: value is None)
+    file_plugins: dict[Slot, FilePluginCode] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class _EventClock:
@@ -211,7 +284,8 @@ class AccountProcess:
     _ownership: AccountOwnership | None
     _data_dir: Path | None = None
 
-    def run(self, ledger: AccountLedger, *, valuation: MarginValuation | None = None) -> None:
+    def run(self, ledger: AccountLedger, *, valuation: MarginValuation | None = None) -> int:
+        """运行账户流水线，返回实际完成求值的信号柱数。"""
         guard = self._ownership.guard if self._ownership is not None else nullcontext
         with guard():
             pass
@@ -241,6 +315,7 @@ class AccountProcess:
         data = plugins.data
         execution_replay = default_fill and isinstance(data, ParquetReplay)
         execution_through = 0
+        signal_bars = 0
 
         def read_events() -> Iterator[MarketEvent]:
             if execution_replay:
@@ -309,11 +384,13 @@ class AccountProcess:
                 finally:
                     for rejection in rejected:
                         gate.record_host_event(rejection)
+                signal_bars += 1
         if execution_replay:
             end = data.end_event()
             self._clock.advance(end.as_of)
             for points in plugins.fill.market_steps(end, valuation, balances=ledger.balances):
                 gate.poll_events(end.as_of, points=points)
+        return signal_bars
 
     def _initialize_risk_accounts(
         self, ledger: AccountLedger, gate: ExecutionGate, *, default_risk: bool,
@@ -356,11 +433,15 @@ class AccountProcess:
             return close, None
         if not bar.confirmed or not 0 <= source.history_start <= bar.ts_event:
             raise AccountProcessError("策略只能在已确认柱的可获取时点求值")
+        read_revisions = source.read_derivative_revisions
         ctx = Ctx(
             market.instrument_id, market.timeframe, source.history_start, now,
             _read_bars=source.read_bars, _read_derivatives=source.read_derivatives,
             _bar_ts=bar.ts_event, _discovery_tail_completed=source.tail_completed,
             _indicator_defaults=self._indicator_defaults, _data_dir=self._data_dir,
+            _read_derivative_revisions=(
+                (lambda kind: read_revisions(market.instrument_id, kind, now)) if read_revisions is not None else None
+            ),
         )
         if isinstance(self._plugins.strategy, IsolatedStrategy):
             return close, self._plugins.strategy.verify_signal_bar(ctx, bar)
@@ -369,7 +450,10 @@ class AccountProcess:
         return close, ctx
 
 
-def _prepare_files(config: _RunConfig, mode: Mode) -> dict[Slot, tuple[Path, str, StrategySource, StrategySnapshot]]:
+type _FilePlugins = dict[Slot, tuple[FilePluginCode, str, StrategySnapshot]]
+
+
+def _prepare_files(config: RunConfig, mode: Mode, *, replay: bool = False) -> _FilePlugins:
     records = StrategyCodeRegistry(config.data_dir)
     snapshots = {}
     files = {}
@@ -380,33 +464,51 @@ def _prepare_files(config: _RunConfig, mode: Mode) -> dict[Slot, tuple[Path, str
         if mode == "paper" and slot != Slot.STRATEGY:
             raise SchemeError(f"{slot}：模拟盘尚未支持从交易方案加载该插槽的 Python 插件")
         path, symbol = python_reference(reference, config.scheme_dir)
+        expected = (config.file_plugins or {}).get(slot)
+        if replay and expected is None:
+            raise SchemeError(f"{slot} 插槽 {path}：运行配置缺少策略代码哈希，无法复现回放")
         if path not in snapshots:
             snapshots[path] = records.source_for_run(path, mode)
         origin, snapshot = snapshots[path]
+        code = FilePluginCode(path=path, source=origin, sha256=snapshot.digest)
+        if expected is not None and code != expected:
+            raise SchemeError(f"{slot} 插槽 {path}：策略代码哈希、来源或路径与运行配置不符")
+        if config.deterministic_only and origin == "agent":
+            raise SchemeError(
+                f"{slot} 插槽 {path} 按 agent 来源处理。"
+                "认知成本和评估证据等级尚未纳入确定性回放。"
+            )
         if slot != Slot.STRATEGY and origin != "human":
             raise SchemeError(f"{slot} 插槽不能加载隔离策略，宿主文件插件须由交易员登记为 human：{path}")
-        files[slot] = path, symbol, origin, snapshot
+        files[slot] = code, symbol, snapshot
     return files
 
 
 @contextmanager
 def _open_process(
-    config: _RunConfig, mode: Mode, registry: PluginRegistry | None,
+    config: RunConfig, mode: Mode, registry: PluginRegistry | None, *,
+    files: _FilePlugins | None = None, run: RunResult | None = None,
 ) -> Iterator[AccountProcess]:
     scheme = config.scheme
     clock = _EventClock()
-    context = PluginContext(config.data_dir, mode, scheme.seed, clock.now, scheme.account_risk)
+    context = PluginContext(
+        run.state_dir if run is not None else config.data_dir, mode, scheme.seed, clock.now, scheme.account_risk,
+        run_id=run.run_id if run is not None else None,
+        cold_reader=ColdReader(config.data_dir, snapshot=config.cold_snapshot) if run is not None else None,
+    )
     ownership = hold_sub_accounts(config.data_dir, scheme.sub_accounts) if mode == "paper" else nullcontext()
-    files = _prepare_files(config, mode)
+    if files is None:
+        files = _prepare_files(config, mode)
     with ownership as held, ExitStack() as lifetime:
         definitions = {}
         modules = {}
-        for slot, (path, symbol, origin, snapshot) in files.items():
+        for slot, (code, symbol, snapshot) in files.items():
+            path = code.path
             try:
-                if origin == "agent":
+                if code.source == "agent":
                     entry = lifetime.enter_context(snapshot.materialize())
                     definitions[slot] = isolated_strategy_plugin(
-                        entry, path.parent, symbol, scheme.interface_version, lifetime,
+                        entry, path.parent, symbol, scheme.interface_version, lifetime, data_dir=config.data_dir,
                     )
                 else:
                     if path not in modules:
@@ -421,7 +523,11 @@ def _open_process(
         yield AccountProcess(scheme, plugins, clock, config.indicator_defaults, held, config.data_dir)
 
 
-def _resolve_config(scheme_path: Path, data_dir: Path) -> _RunConfig:
+def resolve_run_config(
+    scheme_path: Path, data_dir: Path, *, deterministic_only: bool = False,
+    indicator_defaults: dict[IndicatorName, IndicatorParams] | None = None,
+) -> RunConfig:
+    """固定交易方案和生效的指标默认值，供账户进程加载。"""
     scheme = load_scheme(scheme_path)
     if scheme.slots.selection(Slot.SIZING).reference == "r_unit" or (
         scheme.slots.selection(Slot.RISK).reference == "seven_step"
@@ -430,10 +536,23 @@ def _resolve_config(scheme_path: Path, data_dir: Path) -> _RunConfig:
             account: scheme.account_risk.get(account) or AccountRiskConfig() for account in scheme.sub_accounts
         }})
     data_dir = data_dir.expanduser().resolve()
-    return _RunConfig(
+    config = RunConfig(
         version=1, scheme=scheme, scheme_dir=scheme_path.resolve().parent, data_dir=data_dir,
-        indicator_defaults=sdk.indicator_defaults(data_dir=data_dir),
+        indicator_defaults=sdk.indicator_defaults(data_dir=data_dir) if indicator_defaults is None else indicator_defaults,
+        deterministic_only=deterministic_only,
     )
+    if deterministic_only:
+        try:
+            files = _prepare_files(config, "backtest")
+            if Slot.STRATEGY not in files:
+                default_registry().resolve(
+                    Slot.STRATEGY, scheme.slots.selection(Slot.STRATEGY).reference,
+                    scheme.interface_version, config.scheme_dir,
+                )
+        except SchemeError as exc:
+            raise SchemeError(f"{scheme_path}：仅支持确定性策略。{exc}") from exc
+        config = config.model_copy(update={"file_plugins": {slot: code for slot, (code, _, _) in files.items()}})
+    return config
 
 
 @contextmanager
@@ -443,26 +562,62 @@ def open_account_process(
     """装配账户进程，模拟盘在整个运行期间独占方案声明的子账户。"""
     if mode not in ("backtest", "paper"):
         raise SchemeError(f"不支持的账户进程模式：{mode}")
-    with _open_process(_resolve_config(scheme_path, data_dir), mode, registry) as process:
+    config = resolve_run_config(scheme_path, data_dir)
+    if mode == "paper":
+        with _open_process(config, mode, registry) as process:
+            yield process
+        return
+    config, files = _prepare_new_backtest(config)
+    run = RunResult.new(config.data_dir)
+    run.prepare(config)
+    with run.track(), _open_process(config, mode, registry, files=files, run=run) as process:
         yield process
+
+
+def _prepare_new_backtest(config: RunConfig) -> tuple[RunConfig, _FilePlugins]:
+    selection = config.scheme.slots.selection(Slot.DATA)
+    if selection.reference == "parquet_replay":
+        try:
+            params = ReplayParams.model_validate(selection.params)
+        except ValueError as exc:
+            raise SchemeError(f"data 插槽插件 parquet_replay：{exc}") from exc
+        config = config.model_copy(update={"cold_snapshot": capture_replay_snapshot(config.data_dir, (params,))})
+    files = _prepare_files(config, "backtest")
+    return config.model_copy(update={"file_plugins": {slot: code for slot, (code, _, _) in files.items()}}), files
 
 
 def run_backtest(
     scheme_path: Path, data_dir: Path | None, *, registry: PluginRegistry | None = None,
-    valuation: MarginValuation | None = None, replay: bool = False,
+    valuation: MarginValuation | None = None, replay: bool = False, run_id: str | None = None,
 ) -> RunResult:
-    """回测交易方案或运行配置产物，写入新建的 runs/<run_id>。"""
+    """回测交易方案或运行配置产物，支持由批次预先创建的运行目录。"""
+    if run_id is not None and (not replay or data_dir is not None or not re.fullmatch(r"[0-9a-f]{32}", run_id)):
+        raise SchemeError("预分配 run_id 只能用于原目录下的运行配置")
+    files = None
     if replay:
-        config = _RunConfig.model_validate_json(scheme_path.read_text(encoding="utf-8"))
+        config = RunConfig.model_validate_json(scheme_path.read_text(encoding="utf-8"))
         if data_dir is not None:
             config = config.model_copy(update={"data_dir": data_dir.expanduser().resolve()})
     else:
-        config = _resolve_config(scheme_path, data_dir if data_dir is not None else Path(".talaria"))
-    with _open_process(config, "backtest", registry) as process:
-        run_id = uuid4().hex
-        directory = config.data_dir / "runs" / run_id
-        directory.mkdir(parents=True)
-        (directory / "run-config.json").write_text(config.model_dump_json(indent=2) + "\n", encoding="utf-8")
-        with open_ledger(directory / "ledger.sqlite", run_id, process.scheme.sub_accounts) as ledger:
-            process.run(ledger, valuation=valuation)
-    return RunResult(run_id, directory)
+        config = resolve_run_config(scheme_path, data_dir if data_dir is not None else Path(".talaria"))
+        config, files = _prepare_new_backtest(config)
+    if run_id is None:
+        run = RunResult.new(config.data_dir)
+        run.prepare(config)
+    else:
+        run = RunResult(run_id, config.data_dir / "runs" / run_id)
+        if scheme_path.resolve() != run.config_path.resolve() or not run.state_dir.is_dir():
+            raise SchemeError(f"{run_id}：运行配置与预分配目录不符")
+        # 同一预分配目录只能由一个账户进程执行。
+        if run._status_path.exists():
+            raise SchemeError(f"{run_id}：回放已结束")
+        (run.directory / ".started").touch(exist_ok=False)
+    with run.track() as completion:
+        if replay:
+            if config.scheme.slots.selection(Slot.DATA).reference == "parquet_replay" and config.cold_snapshot is None:
+                raise SchemeError("运行配置缺少冷库快照，无法复现回放")
+            files = _prepare_files(config, "backtest", replay=True)
+        with _open_process(config, "backtest", registry, files=files, run=run) as process:
+            with open_ledger(run.directory / "ledger.sqlite", run.run_id, process.scheme.sub_accounts) as ledger:
+                completion.signal_bars = process.run(ledger, valuation=valuation)
+    return run
