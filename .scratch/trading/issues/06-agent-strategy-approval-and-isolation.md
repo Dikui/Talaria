@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0015（agent 生成的代码）、ADR-0019（Python 的运行位置）；`docs/architecture.md` §6.1。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 策略代码登记：来源（人工 / agent）、内容哈希、批准记录（批准人、时刻、哈希）。
 - [ ] 宿主在 `--mode paper` 启动时检查：agent 来源且未批准或哈希不符即拒绝启动并说明原因。
