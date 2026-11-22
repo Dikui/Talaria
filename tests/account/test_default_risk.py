@@ -8,11 +8,12 @@ from threading import Event
 import pytest
 
 from talaria.account.contracts import (
-    AccountState, ApprovedExecutionPlan, BarrierChangeRequest, DecisionOrigin, EntryCandidate,
+    AccountState, ApprovedExecutionPlan, BarrierChangeRequest, BarrierReceipt, DecisionOrigin, EntryCandidate,
     ExecutionEvent, ExitBarrierSpec, LedgerPosting, PlanReceipt, RoundExposure, RoundStatus,
     SizingDecision, TradingState,
 )
-from talaria.account.execution import ExecutionGate
+from talaria.account.execution import AccountProcessError, ExecutionGate
+from talaria.account.ledger import open_ledger
 from talaria.account.plugins.r_unit import RUnitSizer
 from talaria.account.plugins.seven_step import SevenStepRisk
 from talaria.account.risk_config import AccountRiskConfig, QuietWindow, TrailingStopSpec
@@ -222,22 +223,41 @@ class HoldingFill:
             return self.positions.get(round_id, position)
         return position
 
-    def entry_fill(self, plan, quantity, now):
-        cost = quantity * D(100)
+    def apply_approved_amendment(self, amendment):
+        return BarrierReceipt(accepted=True)
+
+    def entry_fill(self, plan, quantity, now, *, price=D(100), previous=D(0), stop=None):
+        cost = quantity * price
         position = RoundStatus(
             round_id=plan.round_id, sub_account_id=plan.candidate.sub_account_id,
             instrument_id=plan.candidate.instrument_id, direction=plan.candidate.direction,
-            quantity=quantity, stop=plan.barriers.stop,
+            quantity=previous + quantity, stop=plan.barriers.stop if stop is None else stop,
         )
         self.positions[plan.round_id] = position
         self.events.append(ExecutionEvent(
             kind="ENTRY_FILLED", sub_account_id=plan.candidate.sub_account_id, ts_event=now,
-            plan_id=plan.plan_id, quantity=quantity, price=100,
+            plan_id=plan.plan_id, quantity=quantity, price=price,
             position=position,
             postings=(
                 LedgerPosting(account="POSITION_COST", currency="USDT", amount=cost),
                 LedgerPosting(account="TRADE_PAYABLE", currency="USDT", amount=-cost),
             ),
+        ))
+
+    def exit_fill(self, plan, quantity, now, *, price=D(100), keep_plan_id=False):
+        position = self.positions[plan.round_id]
+        self.positions[plan.round_id] = position.model_copy(update={"quantity": position.quantity - quantity})
+        realized = (D(100) - price) * quantity
+        postings = [
+            LedgerPosting(account="POSITION_COST", currency="USDT", amount=-D(100) * quantity),
+            LedgerPosting(account="TRADE_PAYABLE", currency="USDT", amount=price * quantity),
+        ]
+        if realized:
+            postings.append(LedgerPosting(account="REALIZED_PNL", currency="USDT", amount=realized))
+        self.events.append(ExecutionEvent(
+            kind="EXIT_FILLED", sub_account_id=position.sub_account_id, ts_event=now,
+            plan_id=plan.plan_id if keep_plan_id else None, quantity=quantity, price=price,
+            position=self.positions[plan.round_id], postings=tuple(postings),
         ))
 
 
@@ -433,3 +453,208 @@ def test_peak_drawdown_survives_day_roll_and_never_reactivates_account():
     cash = D(12000)
     gate.observe_market(86_460_000, ())
     assert gate.account_state("one").trading_state == TradingState.HALTED
+
+
+def test_realized_profit_and_loss_change_sizing_equity():
+    sizer = RUnitSizer(PACK, {"one": AccountRiskConfig(friction_buffer_pct=0)})
+    for realized, expected in (("-1000", "5.5"), ("1000", "4.5")):
+        state = account(balances={
+            ("USDT", "CASH_AVAILABLE"): D(10_000), ("USDT", "REALIZED_PNL"): D(realized),
+        })
+        assert sizer.size(candidate(), state, VALUATION).quantity == D(expected)
+
+
+def test_add_on_sizing_and_preview_use_remaining_round_risk():
+    config = AccountRiskConfig(friction_buffer_pct=0)
+    sizer = RUnitSizer(PACK, {"one": config})
+    reserved = RoundExposure("active", MarginPosition(BTC, "LONG", D(3), D(100)), D(90))
+    state = open_account(quantity="4", reservations=(reserved,))
+    entry = candidate(round_id="active")
+    assert sizer.size(entry, state, VALUATION).quantity == D(3)
+    assert sizer.preview_sizing(entry, state, VALUATION).sizing.quantity == D(3)
+
+
+def test_funding_buffer_includes_the_order_validity_window():
+    now = 7 * 3_600_000
+    entry = candidate(ts_decision=now, valid_until=now + 1_800_000, take_profit=("116",))
+    state = account(as_of=now, marks={BTC: point(now=now)})
+    params = {"max_holding_ms": 1_800_001, "funding_rate_buffer": "0.004"}
+    assert evaluate(entry, state, **params).reason == "NET_REWARD_RISK_TOO_LOW"
+
+
+def test_sizing_floors_only_after_exact_risk_arithmetic():
+    from decimal import localcontext
+
+    sizer = RUnitSizer(PACK, {"one": AccountRiskConfig(friction_buffer_pct=0)})
+    state = account(balances={("USDT", "CASH_AVAILABLE"): D("9999.9999999999999999999999999")})
+    with localcontext(prec=8):
+        assert sizer.size(candidate(), state, VALUATION).quantity == D("4.999")
+
+
+def test_cross_stress_excludes_pending_gains_even_with_a_profitable_stop():
+    pending = RoundExposure("eth", MarginPosition(ETH, "LONG", D(3), D(100)), D(160))
+    state = account(
+        balances={("USDT", "CASH_AVAILABLE"): D("180.3")}, reservations=(pending,),
+        marks={BTC: point(), ETH: point(ETH, value="200")},
+    )
+    entry = candidate(invalidation_stop="10", take_profit=("250",))
+    assert evaluate(
+        entry, state, quantity="2", initial_capital="180.3", max_single_r_pct="0.999", cluster_max_r=500,
+        friction_buffer_pct=0,
+    ).reason == "MARGIN_OR_LIQUIDATION"
+
+
+def test_cross_limit_reserves_margin_at_the_worse_of_entry_and_mark():
+    state = account(
+        balances={("USDT", "CASH_AVAILABLE"): D("100.5")}, marks={BTC: point(value="99")},
+    )
+    assert evaluate(
+        state=state, quantity="1", initial_capital="100.5", leverage=1,
+        max_single_r_pct="0.5", cluster_max_r=30,
+    ).reason == "MARGIN_OR_LIQUIDATION"
+
+
+def test_short_limit_reserves_margin_at_highest_approved_entry():
+    entry = candidate(direction="SHORT", invalidation_stop="110", take_profit=("70",))
+    state = account(
+        balances={("USDT", "CASH_AVAILABLE"): D("99.5")}, marks={BTC: point(value="98")},
+    )
+    assert evaluate(
+        entry, state, quantity="1", initial_capital="99.5", leverage=1,
+        max_single_r_pct="0.5", cluster_max_r=30,
+    ).reason == "MARGIN_OR_LIQUIDATION"
+
+
+def test_isolated_stop_widening_cannot_use_a_pending_better_entry():
+    risk = SevenStepRisk(PACK, {"one": AccountRiskConfig(
+        margin_mode="ISOLATED", max_single_r_pct="0.02",
+    )})
+    pending = RoundExposure("active", MarginPosition(BTC, "LONG", D(4), D(90)), D(90))
+    request = BarrierChangeRequest(sub_account_id="one", round_id="active", stop="79")
+    result = risk.approve_barrier_widening(request, open_account(reservations=(pending,)), VALUATION)
+    assert result.reason == "MARGIN_OR_LIQUIDATION"
+
+
+def test_isolated_fill_rechecks_liquidation_against_the_widened_stop():
+    fill = HoldingFill()
+    configs = {"one": AccountRiskConfig(margin_mode="ISOLATED", max_single_r_pct="0.03", cluster_max_r=8)}
+    gate = ExecutionGate(("one",), NotionalSizer(400), SevenStepRisk(PACK, configs), fill,
+                         balances=lambda _: account().balances, valuation=VALUATION)
+    gate.observe_market(60_000, (point(),))
+    assert gate.submit_candidate(candidate(take_profit=("180",))).accepted
+    original, = fill.plans
+    fill.entry_fill(original, D(4), 60_001)
+    gate.poll_events(60_001)
+    entry = candidate(ts_decision=60_001, round_id=original.round_id, entry_low="125", entry_high="125")
+    assert gate.submit_candidate(entry).accepted
+    add_on = fill.plans[-1]
+    stop = BarrierChangeRequest(sub_account_id="one", round_id=original.round_id, stop="82")
+    assert gate.change_barrier(stop).accepted
+
+    fill.entry_fill(add_on, D(3), 60_002, price=D(125), previous=D(4), stop=stop.stop)
+    with pytest.raises(AccountProcessError, match="强平"):
+        gate.poll_events(60_002)
+    assert gate.account_state("one").rounds[original.round_id].quantity == D(4)
+
+
+def test_sizing_cannot_modify_marks_seen_by_risk():
+    class MutatingSizer(NotionalSizer):
+        def size(self, entry, state, valuation):
+            try:
+                state.marks[BTC].value = D(1)
+                state.funding_rates[BTC].value = D("0.6")
+            except ValueError:
+                pass
+            return super().size(entry, state, valuation)
+
+    fill = HoldingFill()
+    gate = ExecutionGate(("one",), MutatingSizer(400), SevenStepRisk(PACK, {}), fill,
+                         balances=lambda _: account().balances, valuation=VALUATION)
+    rate = point(value="0.0001", kind=DerivativeKind.FUNDING_RATE)
+    gate.observe_market(60_000, (point(), rate))
+    assert gate.submit_candidate(candidate()).accepted
+    assert gate.account_state("one").marks[BTC].value == D(100)
+
+
+@pytest.mark.parametrize("batched_availability", [False, True])
+def test_intermediate_mark_checks_drawdown_before_the_price_recovers(batched_availability):
+    fill = HoldingFill()
+    configs = {"one": AccountRiskConfig(daily_soft_drawdown_pct="0.005", daily_hard_drawdown_pct="0.01")}
+    gate = ExecutionGate(("one",), NotionalSizer(400), SevenStepRisk(PACK, configs), fill,
+                         balances=lambda _: account().balances, valuation=VALUATION)
+    gate.observe_market(60_000, (point(),))
+    assert gate.submit_candidate(candidate()).accepted
+    fill.entry_fill(fill.plans[0], D(4), 60_001)
+    gate.poll_events(60_001)
+    low = point(value="75", now=60_002)
+    if batched_availability:
+        low = low.model_copy(update={"ts_available": 60_003})
+    gate.observe_market(60_003, (point(value="100", now=60_003), low))
+    assert gate.account_state("one").trading_state == TradingState.HALTED
+
+
+def test_close_in_the_same_batch_precedes_a_later_mark():
+    fill = HoldingFill()
+    configs = {"one": AccountRiskConfig(daily_soft_drawdown_pct="0.005", daily_hard_drawdown_pct="0.01")}
+    gate = ExecutionGate(("one",), NotionalSizer(400), SevenStepRisk(PACK, configs), fill,
+                         balances=lambda _: account().balances, valuation=VALUATION)
+    gate.observe_market(60_000, (point(),))
+    assert gate.submit_candidate(candidate()).accepted
+    plan, = fill.plans
+    fill.entry_fill(plan, D(4), 60_001)
+    gate.poll_events(60_001)
+    fill.exit_fill(plan, D(4), 60_002)
+    gate.poll_events(60_003, points=(point(value="70", now=60_003),))
+    assert gate.account_state("one").trading_state == TradingState.ACTIVE
+    assert not gate.account_state("one").rounds
+
+
+@pytest.mark.parametrize("cancel_receipt_includes_later_fill", [False, True])
+def test_realized_loss_halts_batch_before_later_entry_but_keeps_exit(tmp_path, cancel_receipt_includes_later_fill):
+    fill = HoldingFill()
+    configs = {"one": AccountRiskConfig(daily_soft_drawdown_pct="0.005", daily_hard_drawdown_pct="0.01")}
+    with open_ledger(tmp_path / "ledger.sqlite", "review", ("one",)) as ledger:
+        gate = ExecutionGate(("one",), NotionalSizer(400), SevenStepRisk(PACK, configs), fill,
+                             balances=ledger.balances, valuation=VALUATION, record=ledger.record)
+        gate.record_host_event(ExecutionEvent(kind="ACCOUNT_FUNDED", sub_account_id="one", ts_event=0, postings=(
+            LedgerPosting(account="CASH_AVAILABLE", currency="USDT", amount="10000"),
+            LedgerPosting(account="OWNER_CAPITAL", currency="USDT", amount="-10000"),
+        )))
+        gate.observe_market(60_000, (point(), point(ETH)))
+        assert gate.submit_candidate(candidate()).accepted
+        assert gate.submit_candidate(candidate(instrument_id=ETH)).accepted
+        held, pending = fill.plans
+        fill.entry_fill(held, D(4), 60_001)
+        gate.poll_events(60_001)
+        fill.entry_fill(pending, D(1), 60_003)
+        fill.exit_fill(held, D(2), 60_002, price=D(50))
+        fill.exit_fill(held, D(2), 60_004, keep_plan_id=True)
+        if not cancel_receipt_includes_later_fill:
+            fill.positions.pop(pending.round_id)
+        with pytest.raises(AccountProcessError, match="未经风控批准|HALTED|减风险回执"):
+            gate.poll_events(60_004)
+        assert gate.account_state("one").trading_state == TradingState.HALTED
+        assert not gate.account_state("one").rounds
+        assert ledger.balances("one")[("USDT", "REALIZED_PNL")] == D(100)
+
+
+def test_midnight_values_last_known_position_before_first_change():
+    midnight = 86_400_000
+    start = midnight - 60_000
+    fill = HoldingFill()
+    configs = {"one": AccountRiskConfig(
+        daily_soft_drawdown_pct="0.005", daily_hard_drawdown_pct="0.01", mark_max_age_ms=1_000,
+    )}
+    gate = ExecutionGate(("one",), NotionalSizer(400), SevenStepRisk(PACK, configs), fill,
+                         balances=lambda _: account().balances, valuation=VALUATION)
+    gate.observe_market(start, (point(now=start),))
+    assert gate.submit_candidate(candidate(ts_decision=start)).accepted
+    fill.entry_fill(fill.plans[0], D(4), start + 1)
+    gate.poll_events(start + 1)
+    gate.observe_market(midnight + 10, (point(value="75", now=midnight + 10),))
+    assert gate.account_state("one").trading_state == TradingState.HALTED
+
+
+def test_mark_bar_age_runs_from_close():
+    mark = point(now=0).model_copy(update={"timeframe": "1m", "ts_available": 60_000})
+    assert isinstance(evaluate(state=account(marks={BTC: mark}), mark_max_age_ms=1), ApprovedExecutionPlan)

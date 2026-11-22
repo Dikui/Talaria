@@ -14,11 +14,11 @@ from talaria.account.contracts import (
     TradingState,
 )
 from talaria.account.plugins.risk_math import (
-    candidate_exposure, equity, exposure_risk, margin_allows, sign, valid_entry, visible_marks,
-    worst_entry,
+    candidate_exposure, equity, exposure_risk, isolated_stop_allows, margin_allows, sign, valid_entry,
+    visible_marks, worst_entry,
 )
 from talaria.account.risk_config import AccountRiskConfig
-from talaria.account.scheme import PluginContext, PluginParams, Slot, SlotPlugin
+from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParams, Slot, SlotPlugin
 from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.margin import MarginValuation
 from talaria.foundation.market import InstrumentSpec, MarketPack, SessionTrait, TraitBundle
@@ -86,7 +86,9 @@ class SevenStepRisk:
         reason = self._margin_check(account_state, projected, config, valuation, now)
         if reason is not None:
             return RejectedPlanRecord(reason=reason)
-        if not self._net_reward_allows(requested, barriers, traits, account_state, config, now):
+        if not self._net_reward_allows(
+            requested, barriers, traits, account_state, config, now, candidate.valid_until,
+        ):
             return RejectedPlanRecord(reason="NET_REWARD_RISK_TOO_LOW")
 
         number = next(self._ids)
@@ -128,7 +130,7 @@ class SevenStepRisk:
             return RejectedPlanRecord(reason="INVALID_STOP_GEOMETRY")
         reason = self._risk_limit(affected, projected, config, checked)
         if reason is None:
-            reason = self._margin_check(account_state, projected, config, valuation, now)
+            reason = self._margin_check(account_state, projected, config, valuation, now, widening_round=request.round_id)
         if reason is not None:
             return RejectedPlanRecord(reason=reason)
         return ApprovedBarrierAmendment(amendment_id=f"amendment-{next(self._ids)}", request=request)
@@ -149,6 +151,28 @@ class SevenStepRisk:
         if state == TradingState.REDUCING and account_state.trading_state == TradingState.ACTIVE:
             return state, False
         return None
+
+    def start_trading_day(self, account_state: AccountState, valuation: MarginValuation | None) -> None:
+        account = account_state.sub_account_id
+        config = self._accounts.get(account, _DEFAULT)
+        try:
+            opening = equity(account_state, config, valuation, account_state.as_of, require_fresh_marks=False)
+        except (KeyError, ValueError):
+            return
+        previous = self._drawdowns.get(account)
+        peak = config.initial_capital if previous is None else previous.peak
+        self._drawdowns[account] = _Drawdown(account_state.as_of // _DAY_MS, opening, max(peak, opening))
+
+    def entry_fill_allows(
+        self, account: str, exposure: RoundExposure, valuation: MarginValuation | None, now: int,
+    ) -> bool:
+        config = self._accounts.get(account, _DEFAULT)
+        if config.margin_mode != "ISOLATED":
+            return True
+        try:
+            return valuation is not None and isolated_stop_allows((exposure,), config, self._pack, valuation, now)
+        except (KeyError, ValueError):
+            return False
 
     def _check_account(
         self, state: AccountState, account: str, now: int, config: AccountRiskConfig,
@@ -208,7 +232,7 @@ class SevenStepRisk:
         clusters = config.correlation_clusters
         instrument = requested.position.instrument_id
         cluster = clusters.get(instrument, instrument)
-        single_loss = cluster_loss = _ZERO
+        single_loss = cluster_loss = Fraction(0)
         for exposure in exposures:
             position = exposure.position
             loss = exposure_risk(exposure, config, self._pack)
@@ -216,9 +240,9 @@ class SevenStepRisk:
                 single_loss += loss
             if position.direction == direction and clusters.get(position.instrument_id, position.instrument_id) == cluster:
                 cluster_loss += loss
-        if single_loss > net_equity * config.max_single_r_pct:
+        if single_loss > Fraction(net_equity) * Fraction(config.max_single_r_pct):
             return "MAX_SINGLE_R_EXCEEDED"
-        if cluster_loss > net_equity * config.r_unit_pct * config.cluster_max_r:
+        if cluster_loss > Fraction(net_equity) * Fraction(config.r_unit_pct) * Fraction(config.cluster_max_r):
             return "CLUSTER_R_EXCEEDED"
         return None
 
@@ -251,6 +275,7 @@ class SevenStepRisk:
     def _margin_check(
         self, state: AccountState, projected: tuple[RoundExposure, ...], config: AccountRiskConfig,
         valuation: MarginValuation | None, now: int,
+        *, widening_round: str | None = None,
     ) -> str | None:
         if valuation is None:
             return "MARGIN_VALUATION_UNAVAILABLE"
@@ -259,7 +284,11 @@ class SevenStepRisk:
                 trait = self._pack.traits(item.position.instrument_id).margin
                 if trait.margin_asset != config.currency or config.leverage > trait.max_leverage:
                     return "MARGIN_OR_LIQUIDATION"
-            if not margin_allows(state, projected, config, self._pack, valuation, now):
+            filled_count = len(state.positions)
+            if not margin_allows(
+                state, projected[:filled_count], projected[filled_count:], config, self._pack, valuation, now,
+                widening_round=widening_round,
+            ):
                 return "MARGIN_OR_LIQUIDATION"
         except (KeyError, ValueError):
             return "MARGIN_VALUATION_UNAVAILABLE"
@@ -268,7 +297,7 @@ class SevenStepRisk:
     @staticmethod
     def _net_reward_allows(
         requested: RoundExposure, barriers: ExitBarrierSpec, traits: TraitBundle,
-        state: AccountState, config: AccountRiskConfig, now: int,
+        state: AccountState, config: AccountRiskConfig, now: int, valid_until: int | None,
     ) -> bool:
         position = requested.position
         entry = position.entry_price
@@ -278,7 +307,11 @@ class SevenStepRisk:
         interval_hours = traits.carry.funding_interval_hours
         if interval_hours:
             period = interval_hours * _HOUR_MS
-            settlements = (now + barriers.max_holding_ms) // period - now // period
+            if valid_until is None:
+                # 无到期限制时，成交可以落在结算周期的任意相位。
+                settlements = (barriers.max_holding_ms + period - 1) // period
+            else:
+                settlements = (valid_until + barriers.max_holding_ms) // period - now // period
             point = state.funding_rates.get(position.instrument_id)
             funding_rate = config.funding_rate_buffer
             if (
@@ -331,4 +364,4 @@ def _create(context: PluginContext, params: PluginParams) -> SevenStepRisk:
     return SevenStepRisk(get_market_pack(DEFAULT_PACK), context.account_risk)
 
 
-seven_step = SlotPlugin(Slot.RISK, (1,), _create)
+seven_step = SlotPlugin(Slot.RISK, (INTERFACE_VERSION,), _create)

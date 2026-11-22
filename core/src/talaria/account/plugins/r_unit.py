@@ -5,13 +5,14 @@ from fractions import Fraction
 
 from talaria.account.contracts import AccountState, EntryCandidate, SizingDecision, SizingPreview, SizingRejected
 from talaria.account.plugins.risk_math import (
-    candidate_exposure, equity, isolated_liquidation, portfolio, sign, unit_risk, valid_entry,
+    candidate_exposure, equity, exposure_risk, isolated_liquidation, portfolio, sign, unit_risk, valid_entry,
     visible_marks, worst_entry,
 )
 from talaria.account.risk_config import AccountRiskConfig
-from talaria.account.scheme import PluginContext, PluginParams, Slot, SlotPlugin
+from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParams, Slot, SlotPlugin
 from talaria.foundation.margin import MarginValuation
 from talaria.foundation.market import MarketPack
+from talaria.foundation.types import decimal_from_finite_fraction
 from talaria.packs import DEFAULT_PACK, get_market_pack
 
 
@@ -38,17 +39,28 @@ class RUnitSizer:
             net_equity = equity(account_state, config, valuation, candidate.ts_decision)
         except (KeyError, ValueError) as exc:
             raise SizingRejected("MARGIN_VALUATION_UNAVAILABLE") from exc
-        budget = net_equity * config.r_unit_pct
+        budget = Fraction(net_equity) * Fraction(config.r_unit_pct)
+        if candidate.round_id is not None:
+            used = sum(
+                exposure_risk(item, config, self._pack)
+                for item in (*account_state.positions, *account_state.reservations)
+                if item.round_id == candidate.round_id
+            )
+            budget = min(budget, Fraction(net_equity) * Fraction(config.max_single_r_pct) - used)
         entry = worst_entry(candidate)
         multiplier = self._pack.traits(candidate.instrument_id).margin.contract_multiplier
-        per_unit = unit_risk(candidate.direction, entry, stop, config) * multiplier
-        lots = Fraction(budget) // (Fraction(per_unit) * Fraction(instrument.qty_step))
-        quantity = lots * instrument.qty_step
+        per_unit = unit_risk(candidate.direction, entry, stop, config) * Fraction(multiplier)
+        step = Fraction(instrument.qty_step)
+        lots = budget // (per_unit * step)
+        quantity = decimal_from_finite_fraction(lots * step)
         if quantity < instrument.min_qty or quantity <= 0:
             raise SizingRejected("BELOW_MIN_QUANTITY")
         return SizingDecision(
             quantity=quantity,
-            basis=f"risk_budget={budget}, worst_entry={entry}, stop={stop}, risk_per_unit={per_unit}",
+            basis=(
+                f"risk_budget={decimal_from_finite_fraction(budget)}, worst_entry={entry}, stop={stop}, "
+                f"risk_per_unit={decimal_from_finite_fraction(per_unit)}"
+            ),
         )
 
     def preview_sizing(
@@ -66,9 +78,11 @@ class RUnitSizer:
             group = [item for item in exposures if item.round_id == requested.round_id]
             price = isolated_liquidation(group, config, self._pack, valuation, draft.ts_decision)
         else:
-            holdings = portfolio(account_state, config, exposures)
+            holdings = portfolio(account_state, config, account_state.positions, (*account_state.reservations, requested))
             try:
-                marks = visible_marks(account_state, config, holdings.positions, draft.ts_decision)
+                marks = visible_marks(
+                    account_state, config, (*holdings.positions, *holdings.pending_entries), draft.ts_decision,
+                )
                 price = valuation.cross_liquidation_price(
                     holdings, marks, draft.instrument_id, as_of=draft.ts_decision,
                 )
@@ -84,4 +98,4 @@ def _create(context: PluginContext, params: PluginParams) -> RUnitSizer:
     return RUnitSizer(get_market_pack(DEFAULT_PACK), context.account_risk)
 
 
-r_unit = SlotPlugin(Slot.SIZING, (1,), _create)
+r_unit = SlotPlugin(Slot.SIZING, (INTERFACE_VERSION,), _create)

@@ -10,6 +10,7 @@ from pydantic import ConfigDict
 from talaria.foundation.types import ContractModel, DecimalStr
 
 type Direction = Literal["LONG", "SHORT"]
+MARGIN_VALUATION_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,10 +22,18 @@ class MarginPosition:
 
 
 @dataclass(frozen=True, slots=True)
+class MarginPendingEntry(MarginPosition):
+    """入场价取亏损最差值，最大入场价用于预留名义金额。"""
+
+    max_entry_price: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class MarginPortfolio:
     collateral: Decimal
     leverage: Decimal
     positions: tuple[MarginPosition, ...]
+    pending_entries: tuple[MarginPendingEntry, ...] = ()
 
 
 class MarginEstimate(ContractModel):
@@ -36,7 +45,9 @@ class MarginEstimate(ContractModel):
 
 
 class MarginValuation(Protocol):
-    """输入价格应为截止时点可见的标记价，或风控指定的压力场景价格。"""
+    """估值使用可见标记价或压力价，待成交订单只计占用及潜在亏损。"""
+
+    interface_version: int
 
     def isolated_liquidation_price(
         self, instrument_id: str, direction: Direction, quantity: Decimal,

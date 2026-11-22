@@ -39,4 +39,4 @@ def make_strategy(_context, params):
     return ReplayStrategy(**params)
 
 
-plugin = SlotPlugin(Slot.STRATEGY, (1,), make_strategy, ReplayStrategy.meta.parameters_schema)
+plugin = SlotPlugin(Slot.STRATEGY, (2,), make_strategy, ReplayStrategy.meta.parameters_schema)

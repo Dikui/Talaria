@@ -4,7 +4,7 @@ from decimal import Decimal as D
 
 import pytest
 
-from talaria.foundation.margin import MarginPortfolio, MarginPosition
+from talaria.foundation.margin import MarginPendingEntry, MarginPortfolio, MarginPosition
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 
 pytestmark = [pytest.mark.small, pytest.mark.spec]
@@ -33,3 +33,10 @@ def test_cross_margin_revalues_all_positions_at_marks():
     )
     with pytest.raises(ValueError, match=ETH):
         valuation.cross_margin(portfolio, {BTC: D("90")}, as_of=5)
+
+
+def test_cross_liquidation_preview_ignores_favorable_side_root_for_pending_long():
+    valuation = CRYPTO_PERP_PACK.margin_valuation()
+    position = MarginPendingEntry(BTC, "LONG", D(1), D(100), D(100))
+    portfolio = MarginPortfolio(D(1000), D(5), (), (position,))
+    assert valuation.cross_liquidation_price(portfolio, {BTC: D(110)}, BTC, as_of=5) is None

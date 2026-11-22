@@ -118,6 +118,7 @@ class RoundExposure:
     round_id: str
     position: MarginPosition
     stop: Decimal
+    max_entry_price: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

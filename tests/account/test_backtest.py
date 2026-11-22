@@ -207,7 +207,7 @@ class Data(ParquetReplay):
             )
             yield replace(event, ctx=ctx, source=None)
 
-plugin = SlotPlugin(Slot.DATA, (1,), Data, ReplayParams)
+plugin = SlotPlugin(Slot.DATA, (2,), Data, ReplayParams)
 """)
     scheme.write_text(scheme.read_text().replace("parquet_replay", "unfiltered_data.py:plugin"))
     strategy = scheme.parent / "replay_strategy.py"
@@ -255,7 +255,7 @@ class BatchedFill(ExampleFill):
         )
         self.events.insert(INDEX, funding)
 
-fill = SlotPlugin(Slot.FILL, (1,), lambda context, params: BatchedFill(context, **params))
+fill = SlotPlugin(Slot.FILL, (2,), lambda context, params: BatchedFill(context, **params))
 """.replace("INDEX", "1" if reverse_batch else "0"))
     assert launch(scheme, data_dir) == 0
     path, = (data_dir / "runs").glob("*/ledger.sqlite")
@@ -389,7 +389,7 @@ class ImmediateFill(ExampleFill):
         super().on_market(self.market, None)
         return receipt
 
-fill = SlotPlugin(Slot.FILL, (1,), lambda context, params: ImmediateFill(context))
+fill = SlotPlugin(Slot.FILL, (2,), lambda context, params: ImmediateFill(context))
 """)
     assert launch(scheme, data_dir) == 2
     assert "信号柱" in capsys.readouterr().err
@@ -410,7 +410,7 @@ class EarlyData(ParquetReplay):
         for event in super().events():
             yield replace(event, as_of=event.bar.ts_available - 1)
 
-plugin = SlotPlugin(Slot.DATA, (1,), EarlyData, ReplayParams)
+plugin = SlotPlugin(Slot.DATA, (2,), EarlyData, ReplayParams)
 """)
     scheme.write_text(scheme.read_text().replace("parquet_replay", "early_data.py:plugin"))
 
@@ -455,7 +455,7 @@ def test_scheme_runs_default_sizing_and_risk_with_point_in_time_marks(replay, ha
     strategy = scheme.with_name("replay_strategy.py")
     strategy.write_text(strategy.read_text().replace("take_profit=[bar.close + 2]", "take_profit=[bar.close + 10]"))
     registry = default_registry()
-    registry.register("replay_with_marks", SlotPlugin(Slot.DATA, (1,), ReplayWithMarks, ReplayParams))
+    registry.register("replay_with_marks", SlotPlugin(Slot.DATA, (2,), ReplayWithMarks, ReplayParams))
 
     first = run_backtest(scheme, data_dir, registry=registry)
     second = run_backtest(first.directory / "run-config.json", None, registry=registry, replay=True)
@@ -468,3 +468,46 @@ def test_scheme_runs_default_sizing_and_risk_with_point_in_time_marks(replay, ha
         assert (decision.kind, decision.quantity) == ("ENTRY_FILLED", Decimal("6.209"))
     else:
         assert (decision.kind, decision.reason) == ("CANDIDATE_REJECTED", "MARGIN_VALUATION_UNAVAILABLE")
+
+
+def test_v2_scheme_rejects_v1_fill_at_assembly(replay):
+    from talaria.account.host import open_account_process
+    from talaria.account.scheme import SchemeError
+
+    scheme, data_dir = replay
+    plugin = scheme.with_name("replay_plugins.py")
+    plugin.write_text(plugin.read_text().replace("Slot.FILL, (2,)", "Slot.FILL, (1,)"))
+    with pytest.raises(SchemeError, match=r"fill.*兼容接口版本.*1.*要求 2"):
+        with open_account_process(scheme, data_dir, mode="backtest"):
+            pytest.fail("v1 成交插件不能被装配到 v2 交易方案")
+
+
+def test_halted_scheme_initializes_and_blocks_even_with_custom_risk(replay):
+    from talaria.account.ledger import read_journal
+
+    scheme, data_dir = replay
+    scheme.write_text(scheme.read_text() + 'account_risk:\n  example: {trading_state: HALTED}\n')
+    assert launch(scheme, data_dir) == 0
+    path, = (data_dir / "runs").glob("*/ledger.sqlite")
+    journal = read_journal(path)
+    assert [(event.kind, event.reason) for event in journal.events] == [
+        ("ACCOUNT_FUNDED", None), ("CANDIDATE_REJECTED", "TRADING_STATE_BLOCKED"),
+    ]
+
+
+def test_initial_capital_postings_preserve_decimal_precision(replay):
+    from decimal import localcontext
+
+    from talaria.account.ledger import read_journal
+
+    scheme, data_dir = replay
+    scheme.write_text(scheme.read_text().replace(
+        "sizing: replay_plugins.py:sizing", "sizing: r_unit",
+    ) + 'account_risk:\n  example: {initial_capital: "10000.0123456789"}\n')
+    with localcontext(prec=8):
+        assert launch(scheme, data_dir) == 0
+    path, = (data_dir / "runs").glob("*/ledger.sqlite")
+    funding = read_journal(path).entries[0]
+    assert tuple(item.amount for item in funding.postings) == (
+        Decimal("10000.0123456789"), Decimal("-10000.0123456789"),
+    )

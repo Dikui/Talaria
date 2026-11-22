@@ -47,6 +47,7 @@ from talaria.components import ComponentMeta, ControllerPatch, Ctx, Strategy
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.collaboration.contracts import Abstain, SetupInsight
 from talaria.foundation.indicators import IndicatorParams
+from talaria.foundation.margin import MARGIN_VALUATION_VERSION
 from talaria.foundation.operators import IndicatorName
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.foundation.types import ContractModel
@@ -212,12 +213,13 @@ class AccountProcess:
         default_risk = isinstance(plugins.risk, SevenStepRisk) or isinstance(plugins.sizing, RUnitSizer)
         if valuation is None and default_risk:
             valuation = get_market_pack(DEFAULT_PACK).margin_valuation()
+        if valuation is not None and getattr(valuation, "interface_version", None) != MARGIN_VALUATION_VERSION:
+            raise SchemeError(f"保证金估值须兼容接口版本 {MARGIN_VALUATION_VERSION}")
         gate = ExecutionGate(
             accounts, plugins.sizing, plugins.risk, plugins.fill,
             balances=ledger.balances, valuation=valuation, record=record,
         )
-        if default_risk:
-            self._initialize_risk_accounts(ledger, gate)
+        self._initialize_risk_accounts(ledger, gate, default_risk=default_risk)
         now = 0
         for market in plugins.data.events():
             with guard():
@@ -235,15 +237,14 @@ class AccountProcess:
                 raise
 
             visible = tuple(
-                point for point in market.derivative_points if 0 <= point.ts_event <= point.ts_available <= now
+                point for point in market.derivative_points if point.visible_at(now)
             )
-            gate.observe_market(now, visible)
             fill_market = replace(
                 market, bar=market.bar.model_copy(), ctx=None, source=None,
                 derivative_points=tuple(point.model_copy() for point in visible),
             )
             plugins.fill.on_market(fill_market, valuation)
-            gate.poll_events(now)
+            gate.poll_events(now, points=visible)
             if ctx is not None:
                 rejected = []
                 decision = plugins.strategy.on_bar(ctx)
@@ -263,15 +264,23 @@ class AccountProcess:
                     for rejection in rejected:
                         gate.record_host_event(rejection)
 
-    def _initialize_risk_accounts(self, ledger: AccountLedger, gate: ExecutionGate) -> None:
+    def _initialize_risk_accounts(
+        self, ledger: AccountLedger, gate: ExecutionGate, *, default_risk: bool,
+    ) -> None:
         for account in self.scheme.sub_accounts:
-            config = self.scheme.account_risk.get(account) or AccountRiskConfig()
+            config = self.scheme.account_risk.get(account)
+            if config is None:
+                if not default_risk:
+                    continue
+                config = AccountRiskConfig()
             if not ledger.balances(account):
                 gate.record_host_event(ExecutionEvent(
                     kind="ACCOUNT_FUNDED", sub_account_id=account, ts_event=0,
                     postings=(
                         LedgerPosting(account="CASH_AVAILABLE", currency=config.currency, amount=config.initial_capital),
-                        LedgerPosting(account="OWNER_CAPITAL", currency=config.currency, amount=-config.initial_capital),
+                        LedgerPosting(
+                            account="OWNER_CAPITAL", currency=config.currency, amount=config.initial_capital.copy_negate(),
+                        ),
                     ),
                 ))
             initial_state = TradingState(config.trading_state)

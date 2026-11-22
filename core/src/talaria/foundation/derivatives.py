@@ -16,8 +16,9 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Protocol, Sequence, runtime_checkable
 
-from pydantic import model_validator
+from pydantic import ConfigDict, model_validator
 
+from talaria.foundation.timeframes import timeframe_ms
 from talaria.foundation.types import (
     ContractModel,
     DecimalStr,
@@ -46,6 +47,8 @@ class DerivativeKind(StrEnum):
 class DerivativePoint(ContractModel):
     """一个带五重时点的衍生品观测值。"""
 
+    model_config = ConfigDict(frozen=True)
+
     instrument_id: str
     kind: DerivativeKind
     timeframe: str | None = None
@@ -56,6 +59,18 @@ class DerivativePoint(ContractModel):
     precision: PrecisionTier = PrecisionTier.SECOND_VERIFIED
     ts_ingested: int
     ts_committed: int
+
+    @property
+    def observation_time(self) -> int:
+        if self.kind == DerivativeKind.MARK_PRICE and self.timeframe is not None:
+            return self.ts_event + timeframe_ms(self.timeframe)
+        return self.ts_event
+
+    def visible_at(self, as_of: int) -> bool:
+        try:
+            return 0 <= self.ts_event <= self.observation_time <= self.ts_available <= as_of
+        except KeyError:
+            return False
 
     @model_validator(mode="after")
     def _timestamps_are_ordered(self) -> DerivativePoint:
