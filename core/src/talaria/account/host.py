@@ -28,10 +28,11 @@ from talaria.account.contracts import (
     TradingState,
 )
 from talaria.account.execution import AccountProcessError, ExecutionGate
-from talaria.account.ledger import open_ledger
+from talaria.account.ledger import LedgerWriter, open_ledger
 from talaria.account.ownership import AccountOwnership, hold_sub_accounts
 from talaria.account.parameters import validate_parameters
-from talaria.account.plugins.parquet import parquet_replay
+from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
+from talaria.account.plugins.parquet import ParquetReplay, ReplayMarkAvailability, parquet_replay
 from talaria.account.plugins.r_unit import RUnitSizer, r_unit
 from talaria.account.plugins.seven_step import SevenStepRisk, seven_step
 from talaria.account.risk_config import AccountRiskConfig
@@ -107,6 +108,7 @@ def default_registry() -> PluginRegistry:
     registry.register("parquet_replay", parquet_replay)
     registry.register("r_unit", r_unit)
     registry.register("seven_step", seven_step)
+    registry.register("bar_sim_1m", bar_sim_1m)
     return registry
 
 
@@ -216,31 +218,45 @@ class AccountProcess:
 
         def record(events: Sequence[ExecutionEvent]) -> None:
             with guard():
-                ledger.record(events)
+                if default_fill and isinstance(ledger, LedgerWriter):
+                    ledger.record(events, allow_late_events=True)
+                else:
+                    ledger.record(events)
 
         plugins = self._plugins
         accounts = self.scheme.sub_accounts
         default_risk = isinstance(plugins.risk, SevenStepRisk) or isinstance(plugins.sizing, RUnitSizer)
-        if valuation is None and default_risk:
+        default_fill = isinstance(plugins.fill, BarSim1m)
+        if valuation is None and (default_risk or default_fill):
             valuation = get_market_pack(DEFAULT_PACK).margin_valuation()
         if valuation is not None and getattr(valuation, "interface_version", None) != MARGIN_VALUATION_VERSION:
             raise SchemeError(f"保证金估值须兼容接口版本 {MARGIN_VALUATION_VERSION}")
         gate = ExecutionGate(
             accounts, plugins.sizing, plugins.risk, plugins.fill,
             balances=ledger.balances, valuation=valuation, record=record,
+            allow_late_events=default_fill,
         )
-        self._initialize_risk_accounts(ledger, gate, default_risk=default_risk)
+        self._initialize_risk_accounts(ledger, gate, default_risk=default_risk or default_fill)
         now = 0
-        events = (
-            plugins.strategy.market_events(plugins.data)
-            if isinstance(plugins.strategy, IsolatedStrategy) else plugins.data.events()
+        data = plugins.data
+        execution_replay = default_fill and isinstance(data, ParquetReplay)
+        execution_through = 0
+
+        def read_events() -> Iterator[MarketEvent]:
+            if execution_replay:
+                return data.events(execution=True)
+            return data.events()
+
+        markets = (
+            plugins.strategy.market_events(read_events)
+            if isinstance(plugins.strategy, IsolatedStrategy) else read_events()
         )
-        for market in events:
+        for market in markets:
             with guard():
                 pass
             try:
-                if not isinstance(market, MarketEvent) or not isinstance(market.bar, RangeBar):
-                    raise AccountProcessError("数据入口须返回携带 RangeBar 的 MarketEvent")
+                if not isinstance(market, MarketEvent):
+                    raise AccountProcessError("数据入口须返回 MarketEvent")
                 self._clock.advance(market.as_of)
                 now = self._clock.now()
                 signal_close, ctx = self._prepare_market(market, now)
@@ -253,12 +269,28 @@ class AccountProcess:
             visible = tuple(
                 point for point in market.derivative_points if point.visible_at(now)
             )
+            execution_bar = market.bar
+            if execution_replay and ctx is not None:
+                execution_bar = None
+            elif execution_replay and execution_bar is not None:
+                execution_through = execution_bar.ts_event + timeframe_ms(market.timeframe)
             fill_market = replace(
-                market, bar=market.bar.model_copy(), ctx=None, source=None,
+                market, bar=execution_bar.model_copy() if execution_bar is not None else None, ctx=None, source=None,
                 derivative_points=tuple(point.model_copy() for point in visible),
             )
-            plugins.fill.on_market(fill_market, valuation)
-            gate.poll_events(now, points=visible)
+            if isinstance(plugins.fill, BarSim1m):
+                pricing_only = execution_replay and isinstance(market, ReplayMarkAvailability)
+                if pricing_only:
+                    gate.observe_marks_for_approval(now, visible)
+                for points in plugins.fill.market_steps(
+                    fill_market, valuation, balances=ledger.balances,
+                    execution_through=execution_through if execution_replay else None,
+                    pricing_only=pricing_only,
+                ):
+                    gate.poll_events(now, points=points)
+            else:
+                plugins.fill.on_market(fill_market, valuation)
+                gate.poll_events(now, points=visible)
             if ctx is not None:
                 rejected = []
                 decision = plugins.strategy.on_bar(ctx)
@@ -277,6 +309,11 @@ class AccountProcess:
                 finally:
                     for rejection in rejected:
                         gate.record_host_event(rejection)
+        if execution_replay:
+            end = data.end_event()
+            self._clock.advance(end.as_of)
+            for points in plugins.fill.market_steps(end, valuation, balances=ledger.balances):
+                gate.poll_events(end.as_of, points=points)
 
     def _initialize_risk_accounts(
         self, ledger: AccountLedger, gate: ExecutionGate, *, default_risk: bool,
@@ -305,6 +342,10 @@ class AccountProcess:
         if market.timeframe not in SUPPORTED_TIMEFRAMES:
             raise AccountProcessError(f"数据入口使用了未知周期 {market.timeframe}")
         bar = market.bar
+        if bar is None and market.source is None and market.ctx is None and market.derivative_points:
+            return now, None
+        if not isinstance(bar, RangeBar):
+            raise AccountProcessError("MarketEvent 须携带 RangeBar 或独立衍生品观测")
         close = bar.ts_event + timeframe_ms(market.timeframe) if bar.confirmed else bar.ts_event
         if max(close, bar.ts_available) > now:
             raise AccountProcessError("数据入口提前发布了行情")
