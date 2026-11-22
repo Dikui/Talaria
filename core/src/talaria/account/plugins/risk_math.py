@@ -1,6 +1,6 @@
 """默认定仓和风控插件共用的无副作用计算。"""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from fractions import Fraction
 
@@ -56,15 +56,19 @@ def candidate_exposure(candidate: EntryCandidate, quantity: Decimal, stop: Decim
     )
 
 
+def collateral_balance(balances: Mapping[tuple[str, str], Decimal], currency: str) -> Decimal:
+    collateral = sum((
+        Fraction(balances.get((currency, name), _ZERO)) for name in _COLLATERAL_ACCOUNTS
+    ), Fraction(0))
+    # 平仓毛利贷记 REALIZED_PNL，亏损借记，结转时不另改现金余额。
+    collateral -= Fraction(balances.get((currency, "REALIZED_PNL"), _ZERO))
+    return decimal_from_finite_fraction(collateral)
+
+
 def portfolio(
     state: AccountState, config: AccountRiskConfig, exposures: Sequence[RoundExposure],
     pending_entries: Sequence[RoundExposure] = (),
 ) -> MarginPortfolio:
-    collateral = sum((
-        Fraction(state.balances.get((config.currency, name), _ZERO)) for name in _COLLATERAL_ACCOUNTS
-    ), Fraction(0))
-    # 平仓毛利贷记 REALIZED_PNL，亏损借记，结转时不另改现金余额。
-    collateral -= Fraction(state.balances.get((config.currency, "REALIZED_PNL"), _ZERO))
     pending = tuple(
         MarginPendingEntry(
             p.instrument_id, p.direction, p.quantity, p.entry_price, item.max_entry_price or p.entry_price,
@@ -72,7 +76,8 @@ def portfolio(
         for item in pending_entries for p in (item.position,)
     )
     return MarginPortfolio(
-        decimal_from_finite_fraction(collateral), config.leverage, tuple(item.position for item in exposures), pending,
+        collateral_balance(state.balances, config.currency), config.leverage,
+        tuple(item.position for item in exposures), pending,
     )
 
 

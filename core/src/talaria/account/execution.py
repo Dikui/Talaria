@@ -241,7 +241,12 @@ class ExecutionGate:
         return receipt
 
     def change_barrier(self, request: BarrierChangeRequest) -> BarrierReceipt | RejectedPlanRecord:
-        with self._approval_lock(request.sub_account_id):
+        self._approval_lock(request.sub_account_id)
+        with self._all_accounts():
+            # 先入账旧止损下已发生的成交，再用修改回执更新当前止损。
+            now = max(self._market_as_of, self._last_execution_ts)
+            while pending := self._fill.poll_events(now):
+                self._process_batch(now, (), pending)
             state = self._account_state(request.sub_account_id)
             decision = self._change_barrier(request, state)
             if isinstance(decision, RejectedPlanRecord) or not decision.accepted:
@@ -383,8 +388,8 @@ class ExecutionGate:
     @staticmethod
     def _update_observation(observations: dict[str, DerivativePoint], point: DerivativePoint) -> None:
         previous = observations.get(point.instrument_id)
-        if previous is None or (point.observation_time, point.ts_available, point.ts_committed) >= (
-            previous.observation_time, previous.ts_available, previous.ts_committed,
+        if previous is None or (point.observation_time, point.revision, point.ts_available, point.ts_committed) >= (
+            previous.observation_time, previous.revision, previous.ts_available, previous.ts_committed,
         ):
             observations[point.instrument_id] = point.model_copy()
 

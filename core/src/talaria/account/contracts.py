@@ -104,6 +104,16 @@ class ApprovedBarrierAmendment(_Value):
     request: BarrierChangeRequest
 
 
+class RoundPhase(StrEnum):
+    PENDING_ENTRY = "PENDING_ENTRY"
+    PARTIALLY_FILLED_PROTECTED = "PARTIALLY_FILLED_PROTECTED"
+    ACTIVE_PROTECTED = "ACTIVE_PROTECTED"
+    EXITING = "EXITING"
+    CLOSED = "CLOSED"
+    CANCELLED = "CANCELLED"
+    LIQUIDATED = "LIQUIDATED"
+
+
 class RoundStatus(_Value):
     round_id: str
     sub_account_id: str
@@ -111,6 +121,7 @@ class RoundStatus(_Value):
     direction: Direction
     quantity: DecimalStr = Field(ge=0)
     stop: DecimalStr
+    phase: RoundPhase | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +192,7 @@ class ExecutionEvent(_Value):
     position: RoundStatus | None = None
     reason: str | None = None
     postings: tuple[LedgerPosting, ...] = ()
+    settlement_ts: int | None = Field(default=None, ge=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,12 +212,12 @@ class MarketData:
 
 @dataclass(frozen=True, slots=True)
 class MarketEvent:
-    """可获取时间驱动时钟。触发求值的确认柱携带原始数据源。"""
+    """可获取时间驱动时钟。触发求值的确认柱携带原始数据源，衍生品可独立推进时钟。"""
 
     as_of: int
     instrument_id: str
     timeframe: str
-    bar: RangeBar
+    bar: RangeBar | None
     ctx: Ctx | None = None  # 兼容已注册的数据入口，新插件使用 source。
     source: MarketData | None = None
     derivative_points: tuple[DerivativePoint, ...] = ()
