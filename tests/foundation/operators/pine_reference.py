@@ -5,7 +5,7 @@
 
     .venv/bin/python -m tests.foundation.operators.pine_reference --write
 
-语义依据见 ``docs/research/tradingview-reverse-engineering.md``/ADR-0010：
+语义依据见 ``docs/research/tradingview-borrowing-list.md``/ADR-0010：
 EMA 第一根有效柱用收盘价播种；ATR 首根 TR 为 high-low，种子为前 N 根 TR 的
 SMA，之后用 Wilder RMA；VWAP 按 UTC 自然日锚定，首个锚点之前为 na。
 """
@@ -79,12 +79,13 @@ def ema_series(bars: list[dict[str, object]], period: int) -> list[Decimal | Non
             continue
         close = _decimal(bar["close"])
         assert close is not None
-        ema = close if ema is None else ema + alpha * (close - ema)
+        ema = close if ema is None else alpha * close + (1 - alpha) * ema
         out.append(ema)
     return out
 
 
 def atr_series(bars: list[dict[str, object]], period: int) -> list[Decimal | None]:
+    alpha = Decimal(1) / Decimal(period)
     previous_close: Decimal | None = None
     seed: list[Decimal] = []
     atr: Decimal | None = None
@@ -114,7 +115,7 @@ def atr_series(bars: list[dict[str, object]], period: int) -> list[Decimal | Non
             seed.clear()
             out.append(atr)
             continue
-        atr = (atr * Decimal(period - 1) + true_range) / Decimal(period)
+        atr = alpha * true_range + (1 - alpha) * atr
         out.append(atr)
     return out
 
@@ -198,7 +199,7 @@ def _write(name: str, operator: str, params: dict[str, object], values: list[Dec
 
 def write_vectors() -> None:
     bars = [_bar_payload(spec) for spec in BAR_SPECS]
-    _write("ema", "EMA", {"period": 4}, ema_series(bars, 4), 0)
+    _write("ema", "EMA", {"period": 6}, ema_series(bars, 6), 0)
     _write("atr", "ATR", {"period": 3}, atr_series(bars, 3), 2)
     _write(
         "vwap",

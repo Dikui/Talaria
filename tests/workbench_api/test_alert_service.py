@@ -527,3 +527,186 @@ def test_legacy_alert_after_migration_triggers_like_explicit_legacy_period(
             await writer.close()
 
     asyncio.run(scenario())
+
+
+def _legacy_crosses(events, name, period, threshold):
+    # Independent reference for the default seeds and arithmetic at 5cd280c.
+    closes = [event.bar.close for event in events]
+    if name == "EMA":
+        source = closes
+        seed_index = period - 1
+        alpha = Decimal(2) / (period + 1)
+        recur = lambda prev, current: prev + alpha * (current - prev)
+    else:
+        # Flat OHLC, so each valid TR after bar 0 is the close-to-close move.
+        source = [abs(right - left) for left, right in zip(closes, closes[1:])]
+        seed_index = period
+        recur = lambda prev, current: (prev * (period - 1) + current) / period
+    value = sum(source[:period]) / period
+    result = []
+    for event, current in zip(events[seed_index + 1:], source[period:], strict=True):
+        new_value = recur(value, current)
+        if value < threshold <= new_value:
+            result.append((event.bar.ts_available, new_value))
+        value = new_value
+    return result
+
+
+@pytest.mark.parametrize(
+    ("name", "period", "threshold", "prices"),
+    [
+        ("EMA", 20, "12", ["10", "40"] + ["10"] * 18 + ["40", "50"]),
+        ("ATR", 14, "2", ["10"] * 14 + ["50"] * 6 + ["10", "11"]),
+    ],
+)
+def test_migrated_ema_and_atr_alerts_match_baseline_source_bars(
+    tmp_path, name, period, threshold, prices
+) -> None:
+    async def scenario() -> None:
+        clock = Clock()
+        writer = StateWriterQueue(tmp_path, now_ms=clock)
+        await writer.start()
+        service = AlertService(
+            state_writer=writer,
+            drawings=DrawingService(queue=writer, pack=CRYPTO_PERP_PACK, now_ms=clock),
+            instruments=INSTRUMENTS,
+            now_ms=clock,
+        )
+        try:
+            record = _indicator_alert("alr_historical", name, threshold=threshold)
+            await writer.run(lambda store: store.alerts.write(record))
+            await service.start()
+            events = [_kline(NOW_MS + index * MINUTE, price) for index, price in enumerate(prices)]
+            for event in events:
+                clock.now = event.bar.ts_available
+                service.handle_event(event)
+            await service.flush()
+            observed = await service.list_triggers()
+            expected = _legacy_crosses(events, name, period, Decimal(threshold))
+            assert expected  # The comparison includes a genuine crossing after warmup.
+            assert [(item.triggered_ts, item.observed) for item in reversed(observed)] == expected
+        finally:
+            await _shutdown(writer, service)
+
+    asyncio.run(scenario())
+
+
+def test_alert_migration_after_v1_preserves_seed_provenance_and_boll_default(tmp_path) -> None:
+    async def scenario() -> None:
+        clock = Clock()
+        writer = StateWriterQueue(tmp_path, now_ms=clock)
+        await writer.start()
+        service = AlertService(
+            state_writer=writer,
+            drawings=DrawingService(queue=writer, pack=CRYPTO_PERP_PACK, now_ms=clock),
+            instruments=INSTRUMENTS,
+            now_ms=clock,
+        )
+        try:
+            old = _indicator_alert("alr_old", "EMA", period=20)
+            old.condition = AlertCondition(
+                kind="INDICATOR_SIGNAL", direction="ABOVE",
+                indicator="EMA", indicator_period=20,
+                compare_indicator="ATR", compare_period=14,
+            )
+            later = _indicator_alert("alr_after_v1", "EMA", period=20)
+            later.created_ts = NOW_MS + 1
+            boll = _indicator_alert("alr_boll", "BOLL", period=20)
+            await writer.run(lambda store: [store.alerts.write(item) for item in (old, later, boll)])
+            await writer.set_meta("alerts.explicit_params.v1", 1, ts=NOW_MS + 1)
+            await service.start()
+            old = await service.get_alert(old.alert_id)
+            later = await service.get_alert(later.alert_id)
+            boll = await service.get_alert(boll.alert_id)
+            assert old.condition.indicator_seed == old.condition.compare_seed == "legacy_sma"
+            assert later.condition.indicator_seed == "pine"
+            assert boll.condition.indicator_std_dev == Decimal(2)
+        finally:
+            await _shutdown(writer, service)
+
+    asyncio.run(scenario())
+
+
+def test_new_alert_pins_boll_multiplier_and_vwap_anchor_from_user_defaults(tmp_path) -> None:
+    async def scenario() -> None:
+        clock = Clock()
+        writer, service = await _make_service(tmp_path, clock)
+        try:
+            defaults = IndicatorDefaultsService(writer)
+            await defaults.set("BOLL", IndicatorParams(period=2, std_dev="3"))
+            await defaults.set("VWAP", IndicatorParams(period=1, anchor="snapshot"))
+            main = await service.create_alert(_create(condition=AlertCondition(
+                kind="INDICATOR_SIGNAL", direction="ABOVE", indicator="BOLL",
+                indicator_channel="upper", threshold="15",
+            )))
+            comparison = await service.create_alert(_create(condition=AlertCondition(
+                kind="INDICATOR_SIGNAL", direction="ABOVE", indicator="VWAP",
+                compare_indicator="BOLL",
+            )))
+            await defaults.clear("BOLL")
+            await defaults.clear("VWAP")
+            for index, close in enumerate(("10", "10", "13")):
+                event = _kline(NOW_MS + index * MINUTE, close)
+                clock.now = event.bar.ts_available
+                service.handle_event(event)
+            await service.flush()
+            triggers = await service.list_triggers(alert_id=main.alert_id)
+            assert [trigger.observed for trigger in triggers] == [Decimal(16)]
+            assert (await service.get_alert(main.alert_id)).condition.indicator_std_dev == Decimal(3)
+            assert comparison.condition.compare_std_dev == Decimal(3)
+            assert comparison.condition.indicator_anchor == "snapshot"
+        finally:
+            await _shutdown(writer, service)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("continuous", [True, False])
+def test_session_vwap_alert_backfills_utc_boundary_on_a_fresh_start(
+    tmp_path, continuous
+) -> None:
+    async def scenario() -> None:
+        midnight = NOW_MS // 86_400_000 * 86_400_000
+        clock = Clock(midnight + 601 * MINUTE)
+        writer = StateWriterQueue(tmp_path, now_ms=clock)
+        await writer.start()
+        history_end = 600 if continuous else 599
+        history = [
+            _kline(midnight + index * MINUTE, "10").bar
+            for index in range(-1, history_end)
+        ]
+
+        async def session_history(instrument_id, timeframe):
+            assert (instrument_id, timeframe) == (INSTRUMENT, "1m")
+            return history
+
+        service = AlertService(
+            state_writer=writer,
+            drawings=DrawingService(queue=writer, pack=CRYPTO_PERP_PACK, now_ms=clock),
+            instruments=INSTRUMENTS,
+            now_ms=clock,
+            session_history=session_history,
+        )
+        try:
+            await service.start()
+            vwap = await service.create_alert(_create(condition=AlertCondition(
+                kind="INDICATOR_SIGNAL", direction="ABOVE", indicator="VWAP", threshold="12",
+            )))
+            sma = await service.create_alert(_create(condition=AlertCondition(
+                kind="INDICATOR_SIGNAL", direction="ABOVE", indicator="SMA",
+                indicator_period=3, threshold="12",
+            )))
+            service.handle_event(_kline(midnight + 600 * MINUTE, "10"))
+            clock.now += MINUTE
+            service.handle_event(_kline(midnight + 601 * MINUTE, "10000"))
+            await service.flush()
+            observed = await service.list_triggers()
+            expected = [
+                (vwap.alert_id, Decimal(16010) / Decimal(602))
+            ] if continuous else []
+            assert [(record.alert_id, record.observed) for record in observed] == expected
+            assert not await service.list_triggers(alert_id=sma.alert_id)
+        finally:
+            await _shutdown(writer, service)
+
+    asyncio.run(scenario())

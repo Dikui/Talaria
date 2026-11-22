@@ -215,7 +215,7 @@ def test_ignore_unset_keeps_audit_row(client) -> None:
 
 def test_key_levels_include_observed_volume_and_estimated_liquidation(client) -> None:
     meta = _snapshot(client)
-    payload = _levels(client, meta["snapshot_id"])
+    payload = _levels(client, meta["snapshot_id"], vwap_anchor="snapshot")
 
     by_kind = {item["kind"] for item in payload["levels"]}
     assert {"POC", "VAH", "VAL", "ANCHORED_VWAP"} <= by_kind
@@ -263,17 +263,22 @@ def test_evidence_class_filter_splits_observed_and_estimated(client) -> None:
 
 def test_vwap_anchor_is_configurable(client) -> None:
     meta = _snapshot(client)
-    session = _levels(client, meta["snapshot_id"], vwap_anchor="session")
+    # The 1m fixture starts and ends on the same UTC day. Only 5m crosses midnight.
+    same_day = _levels(client, meta["snapshot_id"], vwap_anchor="session")
+    assert all(item["kind"] != "ANCHORED_VWAP" for item in same_day["levels"])
+
+    session = _levels(client, meta["snapshot_id"], timeframe="5m", vwap_anchor="session")
     session_vwap = [
         item for item in session["levels"] if item["kind"] == "ANCHORED_VWAP"
     ]
     assert session_vwap
     anchor_ts = session_vwap[0]["formed_ts"]
-    assert anchor_ts <= meta["cutoff_ts"]
+    assert anchor_ts == 1_793_577_600_000  # 2026-11-02 00:00 UTC
 
     payload = _levels(
         client,
         meta["snapshot_id"],
+        timeframe="5m",
         vwap_anchor="timestamp",
         vwap_anchor_ts=anchor_ts,
     )

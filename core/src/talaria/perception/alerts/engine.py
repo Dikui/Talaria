@@ -23,6 +23,7 @@ from talaria.foundation.alerts.contracts import (
     AlertRecord,
     AlertStatus,
     AlertTriggerRecord,
+    IndicatorSeed,
 )
 from talaria.foundation.alerts.overlay import OverlayBounds, overlay_bounds
 from talaria.foundation.bars import BarStatus, CompactBar
@@ -48,6 +49,8 @@ from talaria.foundation.operators import (
     compute_series,
     spec_from_params,
 )
+from talaria.foundation.operators.core import legacy_alert_points
+from talaria.foundation.timeframes import TIMEFRAME_MS
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +134,7 @@ class AlertEngine:
         self._alerts: dict[str, AlertRecord] = {}
         self._runtimes: dict[str, _Runtime] = {}
         self._windows: dict[tuple[str, str], deque[CompactBar]] = {}
+        self._session_history: dict[tuple[str, str], tuple[CompactBar, ...]] = {}
         self._seeded: set[tuple[str, str]] = set()
         self._drawings: dict[str, DrawingRecord] = {}
         self._stale: set[str] = set()
@@ -193,10 +197,16 @@ class AlertEngine:
         self, instrument_id: str, timeframe: str, bars: Sequence[CompactBar]
     ) -> None:
         key = (instrument_id, timeframe)
-        window = self._windows.setdefault(key, deque(maxlen=self._bar_limit))
+        window = self._window_for(key)
         for bar in bars:
             self._merge_bar(window, bar)
         self._seeded.add(key)
+
+    def seed_session_bars(
+        self, instrument_id: str, timeframe: str, bars: Sequence[CompactBar]
+    ) -> None:
+        """Supply closed bars from before the realtime subscription began."""
+        self._session_history[(instrument_id, timeframe)] = tuple(bars)
 
     # -------------------------------------------------------------- 事件消费
 
@@ -243,22 +253,35 @@ class AlertEngine:
 
     @staticmethod
     def _merge_bar(window: deque[CompactBar], bar: CompactBar) -> None:
+        if not window or bar.timestamp > window[-1].timestamp:
+            window.append(bar)
+            return
         timestamps = [item.timestamp for item in window]
         index = bisect_left(timestamps, bar.timestamp)
         if index < len(window) and window[index].timestamp == bar.timestamp:
             window[index] = bar
-        elif index == len(window):
-            window.append(bar)
         else:
+            if len(window) == window.maxlen:
+                if index == 0:
+                    return
+                window.popleft()
+                index -= 1
             window.insert(index, bar)
+
+    def _window_for(self, key: tuple[str, str]) -> deque[CompactBar]:
+        # A UTC day of aligned bars and one preceding bar expose the first anchor.
+        day_ms = TIMEFRAME_MS["1d"]
+        session_size = day_ms // TIMEFRAME_MS.get(key[1], day_ms) + 1
+        return self._windows.setdefault(
+            key, deque(maxlen=max(self._bar_limit, session_size))
+        )
 
     def _ensure_window(self, instrument_id: str, timeframe: str) -> None:
         key = (instrument_id, timeframe)
+        window = self._window_for(key)
         if key in self._seeded or self._history_provider is None:
-            self._windows.setdefault(key, deque(maxlen=self._bar_limit))
             return
         self._seeded.add(key)
-        window = self._windows.setdefault(key, deque(maxlen=self._bar_limit))
         try:
             bars = self._history_provider(instrument_id, timeframe)
         except Exception:
@@ -569,7 +592,7 @@ class AlertEngine:
                 cached = compute_key_levels(
                     instrument_id=instrument_id,
                     timeframe=timeframe,
-                    bars=list(window),
+                    bars=list(window)[-self._bar_limit:],
                     cutoff_ts=cutoff_ts,
                 )
             except Exception:
@@ -600,7 +623,8 @@ class AlertEngine:
     def _observe_indicator(self, alert: AlertRecord, event: KlineEvent) -> _Observation | None:
         condition = alert.condition
         assert condition.indicator is not None
-        window = self._windows.get((alert.instrument_id, alert.timeframe))
+        key = (alert.instrument_id, alert.timeframe)
+        window = self._windows.get(key)
         if not window:
             return None
         bars = list(window)
@@ -608,12 +632,10 @@ class AlertEngine:
             condition.indicator,
             condition.indicator_period,
             condition.indicator_anchor,
+            condition.indicator_std_dev,
         )
         channel = condition.indicator_channel or CHANNELS[condition.indicator][0]
-        points = list(compute_series(bars, spec).points)
-        if not points:
-            return None
-        current = points[-1].get(channel)
+        current = self._latest_indicator(key, bars, spec, condition.indicator_seed).get(channel)
         if current is None:
             return None
         if condition.compare_indicator is not None:
@@ -621,10 +643,12 @@ class AlertEngine:
                 condition.compare_indicator,
                 condition.compare_period,
                 condition.compare_anchor,
+                condition.compare_std_dev,
             )
             compare_channel = CHANNELS[condition.compare_indicator][0]
-            compare_points = list(compute_series(bars, compare_spec).points)
-            compare = compare_points[-1].get(compare_channel)
+            compare = self._latest_indicator(
+                key, bars, compare_spec, condition.compare_seed
+            ).get(compare_channel)
             if compare is None:
                 return None
             comparison = (
@@ -646,15 +670,48 @@ class AlertEngine:
             threshold=condition.threshold,
         )
 
+    def _latest_indicator(
+        self,
+        key: tuple[str, str],
+        bars: list[CompactBar],
+        spec: IndicatorSpec,
+        seed: IndicatorSeed | None,
+    ) -> Point:
+        if spec.name is IndicatorName.VWAP and spec.anchor == "session":
+            history = self._session_history.get(key)
+            if history:
+                day_ms = TIMEFRAME_MS["1d"]
+                session_start = bars[-1].timestamp // day_ms * day_ms
+                if bars[0].timestamp < session_start:
+                    del self._session_history[key]
+                else:
+                    # Realtime revisions and explicit FEED_GAPs take precedence
+                    # from the first observed bar onward.
+                    first_ts = bars[0].timestamp
+                    prefix = [bar for bar in history if bar.timestamp < first_ts]
+                    interval = TIMEFRAME_MS[key[1]]
+                    if prefix and prefix[-1].timestamp + interval == first_ts:
+                        bars = prefix + bars
+        else:
+            bars = bars[-self._bar_limit:]
+        if seed == "legacy_sma":
+            return legacy_alert_points(bars, spec)[-1]
+        return compute_series(bars, spec).points[-1]
+
     @staticmethod
     def _indicator_spec(
-        name: IndicatorName, period: int | None, anchor: str | None = None
+        name: IndicatorName,
+        period: int | None,
+        anchor: str | None,
+        std_dev: Decimal | None,
     ) -> IndicatorSpec:
         if period is None:
             raise ValueError(f"{name} 预警缺少显式周期")
         params: dict[str, object] = {"period": period}
         if name is IndicatorName.VWAP:
             params["anchor"] = anchor or "session"
+        if std_dev is not None:
+            params["std_dev"] = std_dev
         return spec_from_params(name, params)
 
     def _trigger(self, alert: AlertRecord, observation: _Observation, now: int) -> None:

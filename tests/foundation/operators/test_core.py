@@ -361,3 +361,18 @@ def test_defaults_follow_tradingview_ema_and_sma_nine() -> None:
 def test_anchor_is_rejected_for_non_vwap() -> None:
     with pytest.raises(ValueError, match="不接受 anchor"):
         spec_from_params("EMA", {"anchor": "session"})
+
+
+def test_ema_uses_pine_decimal_operation_order_with_repeating_alpha() -> None:
+    bars = [bar(0, close="1"), bar(1, close="6")]
+    assert values(bars, spec_from_params("EMA", {"period": 5})) == [
+        Decimal("1"), Decimal("2.666666666666666666666666667"),
+    ]
+
+
+def test_atr_uses_pine_rma_decimal_operation_order_with_repeating_alpha() -> None:
+    bars = [bar(index, close="2", low="1", high="3") for index in range(3)]
+    bars.append(bar(3, close="2", low="1", high="2"))
+    assert values(bars, spec_from_params("ATR", {"period": 3})) == [
+        None, None, Decimal("2"), Decimal("1.666666666666666666666666666"),
+    ]

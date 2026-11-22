@@ -277,3 +277,15 @@ describe("level event alerts", () => {
     );
   });
 });
+
+it("lets the server supply both untouched VWAP anchors", () => {
+  const form = {
+    ...defaultAlertForm("BTC-USDT-PERP", "1m"),
+    kind: "INDICATOR_SIGNAL" as const,
+    indicator: "VWAP" as const,
+    compareIndicator: "VWAP" as const,
+  };
+  const condition = buildAlertCreate(form).condition;
+  expect(condition).not.toHaveProperty("indicator_anchor");
+  expect(condition).not.toHaveProperty("compare_anchor");
+});

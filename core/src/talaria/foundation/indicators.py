@@ -19,7 +19,7 @@ from talaria.foundation.types import ContractModel, DecimalStr
 class IndicatorParams(ContractModel):
     """一个指标实例的参数；BOLL 额外使用 ``std_dev``。"""
 
-    period: int = Field(ge=1, le=MAX_PERIOD)
+    period: int = Field(strict=True, ge=1, le=MAX_PERIOD)
     std_dev: DecimalStr | None = None
     anchor: Literal["snapshot", "session"] | None = None
 

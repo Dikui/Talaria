@@ -61,7 +61,11 @@ class MetaRepository:
         )
 
     def get(self, key: str) -> Any | None:
+        entry = self.get_with_timestamp(key)
+        return None if entry is None else entry[0]
+
+    def get_with_timestamp(self, key: str) -> tuple[Any, int] | None:
         row = self._connection.execute(
-            "SELECT value FROM meta WHERE key = ?", (key,)
+            "SELECT value, updated_ts FROM meta WHERE key = ?", (key,)
         ).fetchone()
-        return None if row is None else json.loads(row[0])
+        return None if row is None else (json.loads(row[0]), row[1])

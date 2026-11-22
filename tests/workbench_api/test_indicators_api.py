@@ -314,3 +314,26 @@ def test_get_indicators_uses_effective_user_defaults(client, snapshot_id) -> Non
     client.delete("/api/indicator-defaults/EMA", headers=AUTH)
     restored = _indicators(client, snapshot_id).json()["series"][0]
     assert restored["params"]["period"] == 9
+
+
+def test_indicator_get_computes_outside_the_event_loop(
+    client, snapshot_id, monkeypatch
+) -> None:
+    import asyncio
+
+    workbench = client.app.state.runtime.workbench
+    compute = workbench.get_indicators
+    on_event_loop = []
+
+    def compute_in_worker(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_event_loop.append(False)
+        else:
+            on_event_loop.append(True)
+        return compute(*args, **kwargs)
+
+    monkeypatch.setattr(workbench, "get_indicators", compute_in_worker)
+    assert _indicators(client, snapshot_id).status_code == 200
+    assert on_event_loop == [False]

@@ -97,3 +97,40 @@ RSI、BOLL（总体标准差）、SMA 算法已一致，不改。
 - 合并测试发现 `dsh/packages/talaria-dsh-plugin/create_alert.tool.json` 未随新增的 `indicator_anchor`/`compare_anchor` 更新；已从 `contracts/schemas/dsh-tools/create_alert.tool.json` 同步，`tests/cli/test_dsh_tool_schema.py` 15 passed。
 - 合并后复跑 `pytest tests/perception tests/foundation tests/workbench_api tests/cli tests/evaluation tests/feed -q --deselect tests/cli/test_talaria_desk_profile.py::test_real_dump_config_matches_permission_snapshot` → 595 passed, 1 deselected。
 - 前端 `pnpm --filter @talaria/desk-ui typecheck` 通过；`pnpm --filter @talaria/desk-ui test` → 22 files / 159 tests passed。
+
+### 验收返工（2026-11-22）
+
+| # | 确认与修复 | 回归用例及结果 |
+|---|---|---|
+| 1 | 确认。1m 窗口截掉 UTC 日界，普通收盘漏报，较旧修订还可能使 deque 插入报错。保留一个完整 UTC 日及前一柱，实盘新订阅按需分页读取闭合历史。实时修订和显式断流优先，历史与实时不连续时等待有效锚点。 | `tests/perception/test_alerts_engine.py::test_session_vwap_alert_keeps_utc_anchor_beyond_600_bars`、`tests/workbench_api/test_alert_service.py::test_session_vwap_alert_backfills_utc_boundary_on_a_fresh_start`、`tests/workbench_api/test_runtime.py::test_alert_session_history_pages_to_one_bar_before_utc_midnight` 均通过。 |
+| 2 | 确认。旧 EMA/ATR 在短历史过早出值。v2 迁移为主、对比指标分别固定种子版本，旧规则使用原始播种与 Decimal 运算顺序，新规则使用 Pine。 | `tests/workbench_api/test_alert_service.py::test_migrated_ema_and_atr_alerts_match_baseline_source_bars` 和 `::test_alert_migration_after_v1_preserves_seed_provenance_and_boll_default` 通过。独立的 5cd280c 参考实现逐柱推进时钟，触发源柱和值均一致。 |
+| 3 | 确认。DSH 跨端口 PUT 预检原返回 400。允许 PUT 后返回 200。 | `tests/workbench_api/test_indicator_defaults_api.py::test_dsh_can_preflight_saving_indicator_default` 通过。 |
+| 4 | 确认。并发更新可覆盖另一指标的值。把读取、修改和写入放在同一次 StateWriterQueue 操作中。 | `tests/workbench_api/test_indicator_defaults_api.py::test_concurrent_defaults_save_and_clear_preserve_other_indicators` 通过，覆盖并发保存及并发清除与保存。 |
+| 5 | 确认。工作台读取生效默认值后创建初始实例，启用新指标时选定参数，每次计算显式传参。“恢复出厂”只更新新实例使用的默认值。 | `features/indicators/config.test.ts` 的 `waits for defaults before requesting chart instances and pins explicit parameters`、`uses saved or cleared defaults only when enabling a new instance` 通过。 |
+| 6 | 确认。预警表单未选锚点时省略该字段。服务端分别储存主、对比 BOLL 倍数，并为历史缺值补 2。 | `features/alerts/model.test.ts` 的 `lets the server supply both untouched VWAP anchors`、`tests/workbench_api/test_alert_service.py::test_new_alert_pins_boll_multiplier_and_vwap_anchor_from_user_defaults` 通过。 |
+| 7 | 确认。Session VWAP 关键位复用算子核的 UTC 日界与断流语义。 | `tests/foundation/test_key_level_volume.py::test_session_vwap_levels_wait_for_utc_boundary_and_rewarm_after_gap`、`tests/workbench_api/test_key_levels_api.py::test_vwap_anchor_is_configurable` 通过。后者分别使用同日 1m 和跨日 5m 样本。 |
+| 8 | 确认。指标 GET 在读取默认值后，将同步快照读取和指标计算交给线程池。 | `tests/workbench_api/test_indicators_api.py::test_indicator_get_computes_outside_the_event_loop` 通过。 |
+| 9 | 确认。周期使用严格整数，非 BOLL 指标携带有效值的 `std_dev` 或非 VWAP 指标携带锚点时返回 422。 | `tests/workbench_api/test_indicator_defaults_api.py::test_defaults_reject_non_integer_period_and_irrelevant_params` 四组输入均通过。 |
+| 10 | 确认。把 NET_ODDS 接入工具栏设置和默认值映射。 | `features/indicators/config.test.ts` 的 `exposes NET_ODDS and initializes new instances from its saved period` 通过。 |
+| 11 | 确认。EMA 和 ATR 的递推改为 Pine 参考公式的乘加顺序。独立参考实现重生成 EMA、ATR 向量，VWAP 重生成后逐字节一致。 | `tests/foundation/operators/test_core.py::test_ema_uses_pine_decimal_operation_order_with_repeating_alpha`、`::test_atr_uses_pine_rma_decimal_operation_order_with_repeating_alpha` 及算子黄金向量均通过。 |
+
+**实际验证**
+
+在本工作树根目录执行，`DSH_HOME` 指向新建的临时目录。
+
+```sh
+talaria_test_dsh=$(mktemp -d /tmp/talaria-analysis-03-dsh.XXXXXX)
+DSH_HOME="$talaria_test_dsh" PYTHONPATH="$PWD/core/src" /Users/dikui/Project/Talaria/.venv/bin/pytest tests/perception tests/foundation tests/workbench_api tests/cli tests/evaluation tests/feed -q -p no:cacheprovider
+```
+
+- 全范围结果为 `6 failed, 611 passed, 1 skipped, 1 warning, 1 error in 22.52s`。6 个失败和 1 个 fixture 错误均由沙箱拒绝绑定回环套接字导致。
+- 同一命令用 `--deselect` 排除上述 7 个用例后，结果为 `611 passed, 1 skipped, 7 deselected, 1 warning in 20.96s`。排除项为 `test_host_dispatch_ignores_ambient_http_proxy`、`test_up_dual_keeps_fast_path_when_dsh_fails`、`test_up_dual_keeps_fast_path_when_dsh_binary_missing`、`test_host_starts_probes_and_stops_with_redacted_log`、`test_sigterm_shuts_down_gracefully`、`test_usage_scan_fails_closed_when_service_endpoint_is_unreachable`、`test_usage_scan_writes_through_running_service`。临时 DSH 目录下无已安装插件，实际 profile 快照测试跳过。
+- `cd dsh && pnpm --filter @talaria/desk-ui typecheck && pnpm --filter @talaria/desk-ui test` 通过，22 个文件、163 项测试。
+- `PYTHONPATH="$PWD/core/src" /Users/dikui/Project/Talaria/.venv/bin/python -m tests.foundation.operators.pine_reference --write` 已重生成向量。使用同一 `PYTHONPATH` 执行 `/Users/dikui/Project/Talaria/.venv/bin/talaria contract-check --write`，并再次运行 `contract-check` 确认零漂移。同步 DSH 工具副本和 OpenAPI 快照。
+- `git diff --check` 通过。
+
+**假设与未验证项**
+
+- v1 迁移已把缺省周期写成显式值。v2 用 v1 标记的时间戳和规则创建时点判断原规则是否早于 Pine 切换。数据库无法还原已迁移规则最初是否显式填写了周期，也无法区分后续修改与触发造成的更新时间变化。
+- 实盘补历史由合成分页连接器和预警回放覆盖。真实交易所和 DSH 浏览器交互未手工验证。
+- 首次 `git add` 被沙箱拒绝，报错为 `Unable to create '/Users/dikui/Project/Talaria/.git/worktrees/analysis-03/index.lock': Operation not permitted`。返工文件均留在 `fix/analysis-03` 工作树，且无新提交哈希。基准为 `af85480`。

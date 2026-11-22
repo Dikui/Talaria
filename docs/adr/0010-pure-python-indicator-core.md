@@ -24,7 +24,8 @@ status: accepted
 Pine v6 参考手册是 EMA、ATR、VWAP 数值语义的公开基准；实现仍是纯 Python `Decimal`，不引入 TradingView 私有接口，也不拿 TV 输出回填黄金向量。本次对齐三条语义与两处默认值：
 
 - **EMA**：`ta.ema` 以第一根 close 作种子并立即输出，之后 `alpha*src + (1-alpha)*prev`，`alpha = 2/(N+1)`；`FEED_GAP` 重预热后视为新序列起点。
-- **ATR**：`ta.atr = ta.rma(ta.tr(true), N)`；第一根 TR 取 `high - low` 并计入前 N 个 TR 的简单均值种子，之后按 RMA 递推。
+- **ATR**：`ta.atr = ta.rma(ta.tr(true), N)`。第一根 TR 取 `high - low` 并计入前 N 个 TR 的简单均值种子，之后按 `alpha*TR + (1-alpha)*prev` 递推，`alpha = 1/N`。
 - **VWAP**：默认锚点改为 `session`（UTC 日界），第一个日界之前输出空，日界处清零后从当前 bar 重新累计；`snapshot` 保留为从序列起点累计的可选锚点。
 - **默认周期**：EMA、SMA 出厂默认周期由 20 改为 9，后端 `DEFAULT_PERIODS` 与前端 `INDICATOR_DEFAULTS` 一一对应。用户覆盖值只影响新建指标/新建预警，不改变已保存预警与已打开图表的实例参数。
-- **预警参数显式化**：`AlertCondition` 增加 `indicator_anchor` / `compare_anchor`，新建预警由服务端写入显式周期与锚点；历史预警按旧默认值一次性迁移（VWAP 补 `snapshot`），评估路径不再读取 `DEFAULT_PERIODS`。
+- **预警参数显式化**。主指标和对比指标都固定生效周期、VWAP 锚点、BOLL 倍数和 EMA/ATR 种子版本。新建 EMA/ATR 预警固定为 `pine`。迁移保留旧 EMA/ATR 预警的 `legacy_sma` 语义，并为缺值的历史 BOLL 与 VWAP 预警分别补齐 `2` 和 `snapshot`。
+- **Session VWAP 消费方**。预警窗口保留 UTC 会话及其前一根柱，实盘从闭合历史补齐新订阅的起始窗口。关键位复用算子的 UTC 日界和 `FEED_GAP` 重预热规则。

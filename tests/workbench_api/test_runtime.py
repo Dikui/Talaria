@@ -70,3 +70,37 @@ def test_runtime_releases_started_resources_when_single_writer_is_taken(
             closing(SnapshotStore(settings.data_dir)),
         ):
             pass
+
+
+def test_alert_session_history_pages_to_one_bar_before_utc_midnight() -> None:
+    from decimal import Decimal
+
+    from talaria.foundation.connector import RawBar
+    from talaria.workbench_api.runtime import read_alert_session_history
+
+    minute = 60_000
+    midnight = 1_793_577_600_000
+    cutoff = midnight + 1_200 * minute
+    value = Decimal(10)
+
+    class History:
+        def fetch_bars(self, *, symbol, timeframe, end_ts, limit):
+            assert (symbol, timeframe) == ("BTCUSDT", "1m")
+            assert 1 <= limit <= 1000
+            last = min((end_ts - midnight) // minute, 1200)
+            return [
+                RawBar(
+                    symbol=symbol, timeframe=timeframe, ts_event=midnight + i * minute,
+                    open=value, high=value, low=value, close=value, volume=value,
+                    turnover=value * value, ts_available=midnight + (i + 1) * minute,
+                    ts_ingested=cutoff, ts_committed=cutoff,
+                )
+                for i in range(last - limit + 1, last + 1)
+            ]
+
+    bars = read_alert_session_history(
+        History(), symbol="BTCUSDT", timeframe="1m", cutoff_ts=cutoff,
+    )
+    assert [bar.timestamp for bar in bars] == [
+        midnight + i * minute for i in range(-1, 1200)
+    ]

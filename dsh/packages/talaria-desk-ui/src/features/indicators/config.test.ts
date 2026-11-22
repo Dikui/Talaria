@@ -3,13 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_ENABLED,
   INDICATOR_DEFAULTS,
-  applyDefaults,
   defaultIndicatorSettings,
   defaultsFromParams,
   enabledIndicatorNames,
-  needsOperatorRequest,
   operatorParams,
-  settingsSignature,
+  indicatorRequests,
+  updateIndicatorSetting,
 } from "./config";
 
 describe("indicator config", () => {
@@ -17,7 +16,6 @@ describe("indicator config", () => {
     const settings = defaultIndicatorSettings();
     expect(DEFAULT_ENABLED).toEqual(["EMA", "RSI", "ATR"]);
     expect(enabledIndicatorNames(settings)).toEqual(["EMA", "RSI", "ATR"]);
-    expect(needsOperatorRequest(enabledIndicatorNames(settings), settings)).toBe(false);
   });
 
   it("aligns EMA/SMA defaults with Pine v6 and the backend", () => {
@@ -26,9 +24,6 @@ describe("indicator config", () => {
     expect(INDICATOR_DEFAULTS.VWAP.anchor).toBe("session");
     const settings = defaultIndicatorSettings();
     expect(settings.EMA.period).toBe(9);
-    expect(needsOperatorRequest(["EMA"], settings)).toBe(false);
-    settings.EMA.period = 20;
-    expect(needsOperatorRequest(["EMA"], settings)).toBe(true);
   });
 
   it("initializes settings from effective server defaults", () => {
@@ -40,20 +35,15 @@ describe("indicator config", () => {
     expect(defaults.VWAP.anchor).toBe("session");
     expect(defaults.RSI.period).toBe(14);
 
-    const settings = applyDefaults(defaultIndicatorSettings(), defaults);
+    const settings = defaultIndicatorSettings(defaults);
     expect(settings.EMA.period).toBe(30);
     expect(settings.EMA.enabled).toBe(true);
-    expect(needsOperatorRequest(["EMA"], settings, defaults)).toBe(false);
-    settings.EMA.period = 9;
-    expect(needsOperatorRequest(["EMA"], settings, defaults)).toBe(true);
   });
 
-  it("switches to operator requests when a period or BOLL multiplier changes", () => {
+  it("sends the instance BOLL multiplier with its period", () => {
     const settings = defaultIndicatorSettings();
     settings.BOLL.enabled = true;
-    expect(needsOperatorRequest(["BOLL"], settings)).toBe(false);
     settings.BOLL.stdDev = "2.5";
-    expect(needsOperatorRequest(["BOLL"], settings)).toBe(true);
     expect(operatorParams("BOLL", settings.BOLL)).toEqual({
       period: 20,
       std_dev: "2.5",
@@ -65,22 +55,57 @@ describe("indicator config", () => {
     expect(settings.FUNDING_QUANTILE.period).toBe(30);
     expect(settings.OI_DIVERGENCE.period).toBe(30);
     settings.FUNDING_QUANTILE.enabled = true;
-    expect(needsOperatorRequest(["FUNDING_QUANTILE"], settings)).toBe(false);
     expect(operatorParams("FUNDING_QUANTILE", settings.FUNDING_QUANTILE)).toEqual({
       period: 30,
     });
   });
 
-  it("sends VWAP anchor and includes it in the refetch signature", () => {
+  it("sends the instance VWAP anchor", () => {
     const settings = defaultIndicatorSettings();
     settings.VWAP.enabled = true;
-    expect(needsOperatorRequest(["VWAP"], settings)).toBe(false);
     settings.VWAP.anchor = "snapshot";
     expect(operatorParams("VWAP", settings.VWAP)).toEqual({
       period: 1,
       anchor: "snapshot",
     });
-    expect(needsOperatorRequest(["VWAP"], settings)).toBe(true);
-    expect(settingsSignature(["VWAP"], settings)).toContain("VWAP:1::snapshot");
+  });
+});
+
+
+describe("indicator instances", () => {
+  it("waits for defaults before requesting chart instances and pins explicit parameters", () => {
+    const defaults = defaultsFromParams({ EMA: { period: 30 } });
+    const settings = defaultIndicatorSettings(defaults);
+    expect(settings.EMA.period).toBe(30);
+    expect(indicatorRequests(null, "snapshot", "1m", 300)).toEqual([]);
+    expect(indicatorRequests(settings, "snapshot", "1m", 300)[0]).toEqual({
+      snapshot_id: "snapshot",
+      timeframe: "1m",
+      operator: "EMA",
+      params: { period: 30 },
+      limit: 300,
+    });
+  });
+
+  it("uses saved or cleared defaults only when enabling a new instance", () => {
+    const open = defaultIndicatorSettings(INDICATOR_DEFAULTS);
+    const saved = defaultsFromParams({ EMA: { period: 22 }, BOLL: { period: 11, std_dev: "3" } });
+    const added = updateIndicatorSetting(open, saved, "BOLL", { enabled: true });
+    expect(operatorParams("EMA", added.EMA)).toEqual({ period: 9 });
+    expect(operatorParams("BOLL", added.BOLL)).toEqual({ period: 11, std_dev: "3" });
+
+    const off = updateIndicatorSetting(added, INDICATOR_DEFAULTS, "BOLL", { enabled: false });
+    const reopened = updateIndicatorSetting(off, INDICATOR_DEFAULTS, "BOLL", { enabled: true });
+    expect(operatorParams("BOLL", added.BOLL)).toEqual({ period: 11, std_dev: "3" });
+    expect(operatorParams("BOLL", reopened.BOLL)).toEqual({ period: 20, std_dev: "2" });
+  });
+
+  it("exposes NET_ODDS and initializes new instances from its saved period", () => {
+    const defaults = defaultsFromParams({ NET_ODDS: { period: 28 } });
+    const settings = defaultIndicatorSettings(defaults);
+    expect(settings.NET_ODDS).toEqual({ enabled: false, period: 28, stdDev: "2", anchor: "snapshot" });
+    const enabled = updateIndicatorSetting(settings, defaults, "NET_ODDS", { enabled: true });
+    expect(enabledIndicatorNames(enabled)).toContain("NET_ODDS");
+    expect(operatorParams("NET_ODDS", enabled.NET_ODDS)).toEqual({ period: 28 });
   });
 });

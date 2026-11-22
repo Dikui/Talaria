@@ -60,6 +60,34 @@
             ],
             "title": "Compare Period"
           },
+          "compare_seed": {
+            "default": null,
+            "oneOf": [
+              {
+                "enum": [
+                  "pine",
+                  "legacy_sma"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compare Seed"
+          },
+          "compare_std_dev": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compare Std Dev"
+          },
           "direction": {
             "default": null,
             "oneOf": [
@@ -152,6 +180,34 @@
               }
             ],
             "title": "Indicator Period"
+          },
+          "indicator_seed": {
+            "default": null,
+            "oneOf": [
+              {
+                "enum": [
+                  "pine",
+                  "legacy_sma"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indicator Seed"
+          },
+          "indicator_std_dev": {
+            "default": null,
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indicator Std Dev"
           },
           "kind": {
             "description": "规则条件的来源；前端不复制任何指标、几何或关键位数学。",
