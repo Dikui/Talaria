@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §6.3；ADR-0015（单一仓位回合与 `R` 定仓为默认插件规则，插槽交接）；GLOSSARY 的 Risk Unit、Position Round、Risk Reservation、Trading State。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 定仓插件 `size` 与 `preview_sizing`；风控插件 `evaluate_candidate(candidate, sizing, ...)` 与 `approve_barrier_widening`。风控只批准或拒绝定仓给出的数量，不重算。
 - [ ] `MarginValuation` 的 `crypto_perp` 实现：逐仓预估强平价、全仓账户级压力测试，按标记价估值；03 共用。
