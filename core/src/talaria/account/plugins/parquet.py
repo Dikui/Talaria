@@ -1,0 +1,58 @@
+"""用组件运行时的确认时点离线回放已发布的 Parquet 柱。"""
+
+from collections.abc import Iterator
+from functools import partial
+from typing import Annotated, Self
+
+from pydantic import Field, StrictInt, model_validator
+
+from talaria import sdk
+from talaria.account.contracts import MarketEvent
+from talaria.account.scheme import PluginContext, PluginParams, SchemeError, Slot, SlotPlugin
+from talaria.components import run_history
+from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
+from talaria.foundation.types import ContractModel
+from talaria.packs import DEFAULT_PACK, get_market_pack
+
+type Milliseconds = Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
+
+
+class ReplayParams(ContractModel):
+    instrument: str
+    timeframe: str
+    start: Milliseconds
+    end: Milliseconds
+    history_start: Milliseconds | None = None
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> Self:
+        warmup = self.start if self.history_start is None else self.history_start
+        if not warmup <= self.start <= self.end:
+            raise ValueError("须满足 0 <= history_start <= start <= end")
+        if self.timeframe not in SUPPORTED_TIMEFRAMES:
+            raise ValueError(f"不支持的周期：{self.timeframe}")
+        if get_market_pack(DEFAULT_PACK).instrument(self.instrument) is None:
+            raise ValueError(f"未知标的：{self.instrument}")
+        return self
+
+
+class ParquetReplay:
+    def __init__(self, context: PluginContext, params: PluginParams) -> None:
+        if context.mode != "backtest":
+            raise SchemeError("parquet_replay 仅支持回测")
+        self._params = ReplayParams.model_validate(params)
+        self._data_dir = context.data_dir
+
+    def events(self) -> Iterator[MarketEvent]:
+        params = self._params
+        read = partial(sdk.bars, data_dir=self._data_dir, offline=True)
+        for step in run_history(
+            lambda ctx: ctx, params.instrument, params.timeframe,
+            start=params.start, end=params.end, history_start=params.history_start,
+            read_bars=read, data_dir=self._data_dir,
+        ):
+            ctx = step.output
+            yield MarketEvent(step.as_of, ctx.instrument, ctx.timeframe, ctx.bars()[-1], ctx)
+
+
+parquet_replay = SlotPlugin(Slot.DATA, (1,), ParquetReplay)

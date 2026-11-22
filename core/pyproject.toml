@@ -5,6 +5,7 @@ description = "Talaria 确定性数据底座与本地看盘守护进程"
 requires-python = ">=3.14"
 dependencies = [
   "pydantic>=2.14,<3",
+  "pyyaml>=6.0.3,<7",
   "fastapi>=0.164,<1",
   "uvicorn>=0.54,<1",
   "httpx>=0.28,<1",
