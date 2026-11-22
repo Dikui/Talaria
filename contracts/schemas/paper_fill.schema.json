@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "title": "Event Id",
+      "type": "string"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "ENTRY_FILLED",
+        "EXIT_FILLED"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "price": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Price",
+      "type": "string"
+    },
+    "quantity": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Quantity",
+      "type": "string"
+    },
+    "round_id": {
+      "title": "Round Id",
+      "type": "string"
+    },
+    "ts_event": {
+      "title": "Ts Event",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "event_id",
+    "round_id",
+    "instrument_id",
+    "kind",
+    "ts_event",
+    "quantity",
+    "price"
+  ],
+  "title": "PaperFill",
+  "type": "object"
+}

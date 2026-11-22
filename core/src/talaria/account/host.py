@@ -9,8 +9,11 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 import sys
+from threading import RLock
 from typing import Literal, Protocol
 from uuid import uuid4
+
+import httpx
 
 from talaria import sdk
 from talaria.account.contracts import (
@@ -31,7 +34,10 @@ from talaria.account.execution import AccountProcessError, ExecutionGate
 from talaria.account.ledger import LedgerWriter, open_ledger
 from talaria.account.ownership import AccountOwnership, hold_sub_accounts
 from talaria.account.parameters import validate_parameters
+from talaria.account.paper import DraftIntake, PaperInbox
+from talaria.account.paper_ledger import PaperLedger, open_paper_ledger
 from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
+from talaria.account.plugins.live_ws import LiveWS, PaperMark, PaperPulse, live_ws
 from talaria.account.plugins.parquet import ParquetReplay, ReplayMarkAvailability, parquet_replay
 from talaria.account.plugins.r_unit import RUnitSizer, r_unit
 from talaria.account.plugins.seven_step import SevenStepRisk, seven_step
@@ -106,6 +112,7 @@ class _Plugins:
 def default_registry() -> PluginRegistry:
     registry = PluginRegistry()
     registry.register("parquet_replay", parquet_replay)
+    registry.register("live_ws", live_ws)
     registry.register("r_unit", r_unit)
     registry.register("seven_step", seven_step)
     registry.register("bar_sim_1m", bar_sim_1m)
@@ -211,7 +218,16 @@ class AccountProcess:
     _ownership: AccountOwnership | None
     _data_dir: Path | None = None
 
-    def run(self, ledger: AccountLedger, *, valuation: MarginValuation | None = None) -> None:
+    def run(
+        self, ledger: AccountLedger, *, valuation: MarginValuation | None = None, inbox: PaperInbox | None = None,
+    ) -> None:
+        with ExitStack() as resources:
+            self._run(ledger, resources, valuation=valuation, inbox=inbox)
+
+    def _run(
+        self, ledger: AccountLedger, resources: ExitStack, *,
+        valuation: MarginValuation | None, inbox: PaperInbox | None,
+    ) -> None:
         guard = self._ownership.guard if self._ownership is not None else nullcontext
         with guard():
             pass
@@ -237,15 +253,44 @@ class AccountProcess:
             allow_late_events=default_fill,
         )
         self._initialize_risk_accounts(ledger, gate, default_risk=default_risk or default_fill)
+
+        def submit_draft(candidate: EntryCandidate):
+            receipt = gate.submit_candidate(candidate)
+            gate.poll_events(candidate.ts_decision)
+            return receipt
+
+        intake = (
+            DraftIntake(inbox.freeze, submit_draft, gate.record_host_event, ledger.previous)
+            if inbox is not None and isinstance(ledger, PaperLedger) else None
+        )
         now = 0
         data = plugins.data
         execution_replay = default_fill and isinstance(data, ParquetReplay)
         execution_through = 0
+        if inbox is not None:
+            resources.callback(lambda: self._reduce_paper(gate, now, "PAPER_STOPPING"))
 
         def read_events() -> Iterator[MarketEvent]:
-            if execution_replay:
-                return data.events(execution=True)
-            return data.events()
+            events = data.events(execution=True) if execution_replay else data.events()
+            if not isinstance(data, LiveWS):
+                return events
+
+            lock = RLock()
+
+            def close() -> None:
+                with lock:
+                    events.close()
+
+            def iterate() -> Iterator[MarketEvent]:
+                while True:
+                    with lock:
+                        event = next(events, None)
+                    if event is None:
+                        return
+                    yield event
+
+            resources.callback(close)
+            return iterate()
 
         markets = (
             plugins.strategy.market_events(read_events)
@@ -259,12 +304,17 @@ class AccountProcess:
                     raise AccountProcessError("数据入口须返回 MarketEvent")
                 self._clock.advance(market.as_of)
                 now = self._clock.now()
-                signal_close, ctx = self._prepare_market(market, now)
+                if not isinstance(market, PaperPulse):
+                    signal_close, ctx = self._prepare_market(market, now)
             except AccountProcessError as exc:
                 gate.record_host_event(ExecutionEvent(
                     kind="DATA_REJECTED", sub_account_id=accounts[0], ts_event=now, reason=str(exc),
                 ))
                 raise
+
+            if isinstance(market, PaperPulse):
+                self._handle_paper_pulse(market, gate, inbox, intake, execution_through)
+                continue
 
             visible = tuple(
                 point for point in market.derivative_points if point.visible_at(now)
@@ -272,19 +322,19 @@ class AccountProcess:
             execution_bar = market.bar
             if execution_replay and ctx is not None:
                 execution_bar = None
-            elif execution_replay and execution_bar is not None:
+            elif (execution_replay or isinstance(data, LiveWS)) and execution_bar is not None and market.timeframe == "1m":
                 execution_through = execution_bar.ts_event + timeframe_ms(market.timeframe)
             fill_market = replace(
                 market, bar=execution_bar.model_copy() if execution_bar is not None else None, ctx=None, source=None,
                 derivative_points=tuple(point.model_copy() for point in visible),
             )
             if isinstance(plugins.fill, BarSim1m):
-                pricing_only = execution_replay and isinstance(market, ReplayMarkAvailability)
+                pricing_only = isinstance(market, (ReplayMarkAvailability, PaperMark))
                 if pricing_only:
                     gate.observe_marks_for_approval(now, visible)
                 for points in plugins.fill.market_steps(
                     fill_market, valuation, balances=ledger.balances,
-                    execution_through=execution_through if execution_replay else None,
+                    execution_through=execution_through if execution_replay or isinstance(data, LiveWS) else None,
                     pricing_only=pricing_only,
                 ):
                     gate.poll_events(now, points=points)
@@ -314,6 +364,33 @@ class AccountProcess:
             self._clock.advance(end.as_of)
             for points in plugins.fill.market_steps(end, valuation, balances=ledger.balances):
                 gate.poll_events(end.as_of, points=points)
+
+    def _reduce_paper(self, gate: ExecutionGate, now: int, reason: str) -> None:
+        for account in self.scheme.sub_accounts:
+            if gate.account_state(account).trading_state == TradingState.ACTIVE:
+                gate.set_trading_state(account, TradingState.REDUCING, reason)
+                gate.record_host_event(ExecutionEvent(
+                    kind="TRADING_STATE_CHANGED", sub_account_id=account, ts_event=now,
+                    reason=f"{reason}:REDUCING",
+                ))
+        gate.poll_events(now)
+
+    def _handle_paper_pulse(
+        self, market: PaperPulse, gate: ExecutionGate, inbox: PaperInbox | None,
+        intake: DraftIntake | None, execution_through: int,
+    ) -> None:
+        now = market.as_of
+        fill = self._plugins.fill
+        if market.reduce_reason:
+            self._reduce_paper(gate, now, market.reduce_reason)
+        if isinstance(fill, BarSim1m):
+            for points in fill.market_steps(market, None, execution_through=execution_through):
+                gate.poll_events(now, points=points)
+        else:
+            gate.poll_events(now)
+        if market.ready and intake is not None and inbox is not None:
+            inbox.poll(market.instrument_id, now, intake)
+            gate.poll_events(now)
 
     def _initialize_risk_accounts(
         self, ledger: AccountLedger, gate: ExecutionGate, *, default_risk: bool,
@@ -466,3 +543,17 @@ def run_backtest(
         with open_ledger(directory / "ledger.sqlite", run_id, process.scheme.sub_accounts) as ledger:
             process.run(ledger, valuation=valuation)
     return RunResult(run_id, directory)
+
+
+def run_paper(scheme_path: Path, data_dir: Path, *, registry: PluginRegistry | None = None) -> None:
+    """在同一账户宿主中运行实时行情与草案提交，按子账户追加账本。"""
+    config = _resolve_config(scheme_path, data_dir)
+    with _open_process(config, "paper", registry) as process:
+        if process._ownership is None:
+            raise AccountProcessError("模拟盘需要持有子账户排他锁")
+        with (
+            open_paper_ledger(config.data_dir, process.scheme.sub_accounts, process._ownership) as ledger,
+            httpx.Client(trust_env=False, timeout=3) as client,
+        ):
+            inbox = PaperInbox(config.data_dir, process.scheme.sub_accounts, client)
+            process.run(ledger, inbox=inbox)

@@ -19,12 +19,11 @@ from yaml.nodes import MappingNode
 
 from talaria.account.parameters import ParameterSchema
 from talaria.account.risk_config import AccountRiskConfig
+from talaria.foundation.paper import AccountId
 from talaria.foundation.types import ContractModel
 
 INTERFACE_VERSION = 2
-ACCOUNT_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 type Mode = Literal["backtest", "paper"]
-type AccountId = Annotated[str, StringConstraints(pattern=ACCOUNT_ID_PATTERN)]
 type NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 type PluginParams = Mapping[str, JsonValue]
 

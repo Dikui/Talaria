@@ -1,0 +1,98 @@
+{
+  "$defs": {
+    "Direction": {
+      "enum": [
+        "LONG",
+        "SHORT"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "consultation_id": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Consultation Id"
+    },
+    "direction": {
+      "$ref": "#/$defs/Direction"
+    },
+    "entry_high": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Entry High",
+      "type": "string"
+    },
+    "entry_low": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Entry Low",
+      "type": "string"
+    },
+    "instrument_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "invalidation_stop": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Invalidation Stop",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "sub_account_id": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "title": "Sub Account Id",
+      "type": "string"
+    },
+    "take_profit": {
+      "items": {
+        "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+        "type": "string"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Take Profit",
+      "type": "array"
+    },
+    "valid_until": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Valid Until"
+    }
+  },
+  "required": [
+    "sub_account_id",
+    "instrument_id",
+    "snapshot_id",
+    "direction",
+    "entry_low",
+    "entry_high",
+    "invalidation_stop",
+    "take_profit"
+  ],
+  "title": "DraftContent",
+  "type": "object"
+}

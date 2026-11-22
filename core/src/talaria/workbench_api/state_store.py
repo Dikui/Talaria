@@ -29,6 +29,7 @@ from talaria.workbench_api.state_repositories import (
     drawings,
     key_level_feedback,
     meta,
+    paper,
     usage,
     watchlist,
 )
@@ -80,6 +81,7 @@ class StateStore:
                 consultations.SCHEMA,
                 briefings.SCHEMA,
                 usage.SCHEMA,
+                paper.SCHEMA,
             ):
                 connection.executescript(schema)
             self._bind_repositories(connection, now_ms)
@@ -106,6 +108,7 @@ class StateStore:
         self.consultations = consultations.ConsultationRepository(connection)
         self.briefings = briefings.BriefingRepository(connection)
         self.usage = usage.UsageRepository(connection, now_ms)
+        self.paper = paper.DraftRepository(connection, now_ms)
 
     @classmethod
     def _read(

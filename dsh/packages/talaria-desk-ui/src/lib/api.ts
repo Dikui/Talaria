@@ -1,3 +1,4 @@
+import type { DraftConfirmation, DraftContent, DraftEdit, DraftRecord, PaperAccountView, PaperRound } from "@talaria/contracts";
 import type {
   AgentAnnotationRecord,
   AlertCreate,
@@ -174,6 +175,17 @@ async function deleteJson<T>(path: string): Promise<T> {
 }
 
 export const api = {
+  paperAccounts: () => getJson<string[]>("/api/paper/accounts"),
+  paperAccount: (account: string) => getJson<PaperAccountView>(`/api/paper/accounts/${encodeURIComponent(account)}`),
+  paperBarriers: (instrument: string) =>
+    getJson<PaperRound[]>(`/api/paper/barriers?instrument=${encodeURIComponent(instrument)}`),
+  paperDrafts: () => getJson<DraftRecord[]>("/api/paper/drafts"),
+  savePaperDraft: (content: DraftContent) => postJson<DraftRecord>("/api/paper/drafts", content),
+  editPaperDraft: (id: string, edit: DraftEdit) =>
+    writeJson<DraftRecord>(`/api/paper/drafts/${encodeURIComponent(id)}`, "PUT", edit),
+  confirmPaperDraft: (id: string, confirmation: DraftConfirmation) =>
+    postJson<DraftRecord>(`/api/paper/drafts/${encodeURIComponent(id)}/confirm`, confirmation),
+
   health(): Promise<HealthStatus> {
     return getJson<HealthStatus>("/api/health");
   },

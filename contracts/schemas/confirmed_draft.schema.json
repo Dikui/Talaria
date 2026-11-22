@@ -1,0 +1,150 @@
+{
+  "$defs": {
+    "Direction": {
+      "enum": [
+        "LONG",
+        "SHORT"
+      ],
+      "type": "string"
+    },
+    "DraftContent": {
+      "additionalProperties": false,
+      "properties": {
+        "consultation_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consultation Id"
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "entry_high": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Entry High",
+          "type": "string"
+        },
+        "entry_low": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Entry Low",
+          "type": "string"
+        },
+        "instrument_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "invalidation_stop": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Invalidation Stop",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "sub_account_id": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Sub Account Id",
+          "type": "string"
+        },
+        "take_profit": {
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Take Profit",
+          "type": "array"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid Until"
+        }
+      },
+      "required": [
+        "sub_account_id",
+        "instrument_id",
+        "snapshot_id",
+        "direction",
+        "entry_low",
+        "entry_high",
+        "invalidation_stop",
+        "take_profit"
+      ],
+      "title": "DraftContent",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "basis_cutoff_ts": {
+      "title": "Basis Cutoff Ts",
+      "type": "integer"
+    },
+    "confirmed_by": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Confirmed By",
+      "type": "string"
+    },
+    "confirmed_ts": {
+      "title": "Confirmed Ts",
+      "type": "integer"
+    },
+    "content": {
+      "$ref": "#/$defs/DraftContent"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "created_ts": {
+      "title": "Created Ts",
+      "type": "integer"
+    },
+    "draft_id": {
+      "title": "Draft Id",
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "content_hash",
+    "confirmed_by",
+    "draft_id",
+    "content",
+    "basis_cutoff_ts",
+    "created_ts",
+    "confirmed_ts"
+  ],
+  "title": "ConfirmedDraft",
+  "type": "object"
+}

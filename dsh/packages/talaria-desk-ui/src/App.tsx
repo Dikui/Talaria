@@ -1,3 +1,5 @@
+import { DraftForm, type DraftSeed } from "./features/paper/DraftForm";
+import { ExecutionBarrierLayer } from "./features/paper/ExecutionBarrierLayer";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { Chart } from "klinecharts";
 
@@ -137,6 +139,8 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
   const [indicatorBundle, setIndicatorBundle] = useState<IndicatorBundle | null>(null);
   const [indicatorsLoading, setIndicatorsLoading] = useState(false);
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
+  const [paperDraft, setPaperDraft] = useState<DraftSeed | null>(null);
+  const [savedPaperDraft, setSavedPaperDraft] = useState(false);
   const [chart, setChart] = useState<Chart | null>(null);
   const [drawingManagerOpen, setDrawingManagerOpen] = useState(false);
   const [keyLevelFilter, setKeyLevelFilter] = useState<KeyLevelFilter>(
@@ -686,6 +690,15 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
               </button>
             )}
             {tools}
+            {!readOnlyViewport && snapshot && (
+              <button type="button" className="ghost-button" aria-expanded={paperDraft !== null}
+                onClick={() => {
+                  setSavedPaperDraft(false);
+                  setPaperDraft(paperDraft ? null : { instrument_id: snapshot.instrument_id, snapshot_id: snapshot.snapshot_id });
+                }}>
+                模拟盘草案
+              </button>
+            )}
             <button
               type="button"
               className="primary-button"
@@ -699,6 +712,12 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
       </header>
 
       <main className="workspace">
+        {paperDraft && <DraftForm key={`${paperDraft.snapshot_id}:${paperDraft.consultation_id ?? ""}`}
+          seed={paperDraft} onClose={() => setPaperDraft(null)} onSaved={() => {
+            setSavedPaperDraft(true);
+            setPaperDraft(null);
+          }} />}
+        {savedPaperDraft && <p className="paper-draft-saved" role="status">草案已保存。请在账户页审阅并确认。</p>}
         {error !== null && (
           <div className="error-banner" role="alert" data-testid="error-banner">
             <strong>{error.code}</strong>
@@ -794,6 +813,19 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
             hostView={collaboration}
             readOnlyViewport={readOnlyViewport}
             draft={collabDraft}
+            onStageDraft={(record) => {
+              const insight = record.insight;
+              if (!insight || insight.direction === "NEUTRAL") return;
+              setSavedPaperDraft(false);
+              setPaperDraft({
+                instrument_id: record.instrument_id, snapshot_id: record.snapshot_id,
+                consultation_id: record.consultation_id, direction: insight.direction,
+                entry_low: insight.entry_low, entry_high: insight.entry_high,
+                invalidation_stop: insight.invalidation_stop, take_profit: insight.take_profit,
+                valid_until: insight.valid_until,
+              });
+              setRightTab(null);
+            }}
             tabBar={dockTabs}
             onClose={() => setRightTab(null)}
           />
@@ -907,6 +939,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                           void annotations.dismiss(annotation.annotation_id);
                         }}
                       />
+                      {snapshotCutoff === null && <ExecutionBarrierLayer chart={chart} instrument={instrumentId} />}
                       <DrawingOverlay chart={chart} controller={drawings} />
                       <SelectionOverlay
                         chart={chart}

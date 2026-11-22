@@ -7,6 +7,7 @@ from decimal import Decimal
 from fractions import Fraction
 from itertools import count
 from zoneinfo import ZoneInfo
+from uuid import uuid4
 
 from talaria.account.contracts import (
     AccountState, ApprovedBarrierAmendment, ApprovedExecutionPlan, BarrierChangeRequest,
@@ -39,10 +40,13 @@ class _Drawdown:
 
 
 class SevenStepRisk:
-    def __init__(self, pack: MarketPack, accounts: Mapping[str, AccountRiskConfig]) -> None:
+    def __init__(
+        self, pack: MarketPack, accounts: Mapping[str, AccountRiskConfig], *, paper: bool = False,
+    ) -> None:
         self._pack = pack
         self._accounts = accounts
         self._ids = count(1)
+        self._id_prefix = f"{uuid4().hex}-" if paper else ""
         self._drawdowns: dict[str, _Drawdown] = {}
 
     def evaluate_candidate(
@@ -91,7 +95,7 @@ class SevenStepRisk:
         ):
             return RejectedPlanRecord(reason="NET_REWARD_RISK_TOO_LOW")
 
-        number = next(self._ids)
+        number = f"{self._id_prefix}{next(self._ids)}"
         return ApprovedExecutionPlan(
             plan_id=f"plan-{number}", round_id=candidate.round_id or f"round-{number}",
             candidate=candidate, sizing=sizing, barriers=barriers,
@@ -133,7 +137,7 @@ class SevenStepRisk:
             reason = self._margin_check(account_state, projected, config, valuation, now, widening_round=request.round_id)
         if reason is not None:
             return RejectedPlanRecord(reason=reason)
-        return ApprovedBarrierAmendment(amendment_id=f"amendment-{next(self._ids)}", request=request)
+        return ApprovedBarrierAmendment(amendment_id=f"amendment-{self._id_prefix}{next(self._ids)}", request=request)
 
     def drawdown_transition(
         self, account_state: AccountState, valuation: MarginValuation | None,
@@ -361,7 +365,7 @@ def _session_open(session: SessionTrait, now: int) -> bool:
 
 
 def _create(context: PluginContext, params: PluginParams) -> SevenStepRisk:
-    return SevenStepRisk(get_market_pack(DEFAULT_PACK), context.account_risk)
+    return SevenStepRisk(get_market_pack(DEFAULT_PACK), context.account_risk, paper=context.mode == "paper")
 
 
 seven_step = SlotPlugin(Slot.RISK, (INTERFACE_VERSION,), _create)

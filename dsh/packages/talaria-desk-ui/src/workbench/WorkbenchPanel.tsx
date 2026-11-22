@@ -5,6 +5,7 @@ import { AlertWorkbench } from "../features/alerts/AlertWorkbench";
 import type { AlertFormSeed } from "../features/alerts/AlertPanel";
 import { KeyLevelWorkbench } from "../features/key-levels/KeyLevelWorkbench";
 import { ScannerWorkbench } from "../features/scanner/ScannerWorkbench";
+import { AccountPanel } from "../features/paper/AccountPanel";
 import { api } from "../lib/api";
 import type { Theme } from "../lib/theme";
 import type { LinkTransport, PanelLink } from "./link";
@@ -25,6 +26,14 @@ interface WorkbenchPanelProps {
 export function WorkbenchPanel({
   panel, persistenceKey, theme, embedded = false, fullWorkbench = false, transport, tools,
 }: WorkbenchPanelProps) {
+  if (panel === "accounts") return <AccountPanel theme={theme} tools={tools} />;
+  return <LinkedWorkbench panel={panel} persistenceKey={persistenceKey} theme={theme}
+    embedded={embedded} fullWorkbench={fullWorkbench} transport={transport} tools={tools} />;
+}
+
+function LinkedWorkbench({
+  panel, persistenceKey, theme, embedded = false, fullWorkbench = false, transport, tools,
+}: WorkbenchPanelProps & { panel: Exclude<PanelName, "accounts"> }) {
   const link = usePanelLink(panel, persistenceKey, transport);
   if (link === null) return <p role="status">正在打开{PANEL_LABELS[panel]}…</p>;
   if (panel === "chart") {
@@ -35,7 +44,7 @@ export function WorkbenchPanel({
 
 function FeatureWorkbench({
   panel, link, theme, tools,
-}: { panel: Exclude<PanelName, "chart">; link: PanelLink; theme: Theme; tools?: ReactNode }) {
+}: { panel: Exclude<PanelName, "chart" | "accounts">; link: PanelLink; theme: Theme; tools?: ReactNode }) {
   const { instrumentId, timeframe, locateTs } = useLinkSnapshot(link);
   const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
   const [instrumentError, setInstrumentError] = useState(false);

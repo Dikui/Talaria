@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -79,6 +79,7 @@ async def _range_revisions(
 
 def subscribe(
     instrument: str, timeframe: str, *, data_dir: str | Path | None = None,
+    on_connection: Callable[[bool], None] | None = None,
 ) -> AsyncGenerator[StrategyBarEvent]:
     """订阅已收盘柱修订，断线时自动重连。
 
@@ -88,15 +89,18 @@ def subscribe(
     ``contextlib.aclosing`` 及时释放本次订阅。常驻服务明确拒绝时抛出
     ``SubscriptionRejectedError``。
     """
-    return cast(AsyncGenerator[StrategyBarEvent], _subscribe(instrument, timeframe, data_dir=data_dir))
+    return cast(AsyncGenerator[StrategyBarEvent], _subscribe(
+        instrument, timeframe, data_dir=data_dir, on_connection=on_connection,
+    ))
 
 
 def subscribe_derivatives(
     instrument: str, kind: DerivativeKind | str, *, data_dir: str | Path | None = None,
+    on_connection: Callable[[bool], None] | None = None,
 ) -> AsyncGenerator[StrategyDerivativeEvent]:
     """订阅归档后的衍生品修订。日志过期后从本地清单补齐已发布的修订。"""
     return cast(AsyncGenerator[StrategyDerivativeEvent], _subscribe(
-        instrument, "1m", data_dir=data_dir, kind=DerivativeKind(kind),
+        instrument, "1m", data_dir=data_dir, kind=DerivativeKind(kind), on_connection=on_connection,
     ))
 
 
@@ -135,6 +139,7 @@ async def _refresh_settlements(
 
 async def _subscribe(
     instrument: str, timeframe: str, *, data_dir: str | Path | None, kind: DerivativeKind | None = None,
+    on_connection: Callable[[bool], None] | None = None,
 ) -> AsyncGenerator[StrategyBarEvent | StrategyDerivativeEvent]:
     if timeframe not in SUPPORTED_TIMEFRAMES:
         raise InvalidRequestError(f"不支持的周期：{timeframe}")
@@ -159,6 +164,7 @@ async def _subscribe(
                         "Authorization": f"Bearer {endpoint.token}", DATA_DIR_HEADER: directory_id,
                     },
                     proxy=None, open_timeout=2, close_timeout=1,
+                    **({"ping_interval": 5, "ping_timeout": 5} if on_connection else {}),
                 ) as socket:
                     await socket.send(request.model_copy(update={"after": cursor}).model_dump_json(
                         exclude={"kind"} if kind is None else None,
@@ -208,6 +214,8 @@ async def _subscribe(
                             raise
                     cursor = SubscriptionCursor(epoch=ready.epoch, seq=ready.seq)
                     delay = 0.1
+                    if on_connection is not None:
+                        on_connection(True)
                     while True:
                         event = event_model.model_validate_json(await socket.recv())
                         if event.epoch != cursor.epoch or event.seq is None or event.seq > cursor.seq + 1:
@@ -228,5 +236,7 @@ async def _subscribe(
             except InvalidStatus as exc:
                 if exc.response.status_code not in (401, 403, 502, 503, 504):
                     raise
+        if on_connection is not None:
+            on_connection(False)
         await asyncio.sleep(delay)
         delay = min(delay * 2, 5)

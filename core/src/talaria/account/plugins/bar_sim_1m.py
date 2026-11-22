@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from decimal import Context, Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 from fractions import Fraction
+import time
 from math import ceil, floor
 
 from pydantic import Field, StrictInt, field_validator
@@ -208,8 +209,13 @@ class PositionExecutor:
 
 
 class BarSim1m:
-    def __init__(self, context: PluginContext, params: PluginParams) -> None:
+    def __init__(
+        self, context: PluginContext, params: PluginParams, *,
+        now_ms=lambda: time.time_ns() // 1_000_000,
+    ) -> None:
         self._params = BarSimParams.model_validate(params)
+        self._paper = context.mode == "paper"
+        self._now_ms = now_ms
         self._pack = get_market_pack(DEFAULT_PACK)
         self._configs: Mapping[str, AccountRiskConfig] = context.account_risk
         self._now = 0
@@ -246,6 +252,8 @@ class BarSim1m:
         if plan.plan_id in self._plans:
             return PlanReceipt(accepted=False, reason="DUPLICATE_PLAN")
         ready_at = max(self._now, candidate.ts_decision + self._params.decision_latency_ms)
+        if self._paper:
+            ready_at = max(ready_at, self._now_ms())
         if candidate.valid_until is not None and ready_at > candidate.valid_until:
             return PlanReceipt(accepted=False, reason="PLAN_EXPIRED")
         executor = self._rounds.get(plan.round_id)
@@ -282,13 +290,15 @@ class BarSim1m:
             self._live_rounds[plan.round_id] = executor
         executor.entries[plan.plan_id] = _Entry(plan, ready_at, Fraction(plan.sizing.quantity))
         self._plans.add(plan.plan_id)
+        if self._paper:
+            self._emit(executor, "PLAN_SUBMITTED", plan_id=plan.plan_id)
         return PlanReceipt(accepted=True)
 
     def _emit(self, executor: PositionExecutor, kind: str, *, timestamp: int | None = None, **details) -> None:
         event = ExecutionEvent(
             kind=kind, sub_account_id=executor.account,
             ts_event=self._event_time if timestamp is None else timestamp,
-            position=executor.status(), **details,
+            position=executor.status(), take_profit=executor.barriers.take_profit, **details,
         )
         self._events.append(event)
         cash = sum((

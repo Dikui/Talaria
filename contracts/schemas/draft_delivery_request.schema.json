@@ -1,0 +1,14 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id"
+  ],
+  "title": "DraftDeliveryRequest",
+  "type": "object"
+}

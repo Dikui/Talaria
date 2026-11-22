@@ -19,6 +19,7 @@ from talaria.foundation.margin import Direction as Direction
 from talaria.foundation.margin import MarginEstimate as MarginEstimate
 from talaria.foundation.margin import MarginPosition
 from talaria.foundation.margin import MarginValuation as MarginValuation
+from talaria.foundation.paper import DraftReceipt
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
@@ -56,6 +57,8 @@ class EntryCandidate(_Value):
     round_id: str | None = None  # 有回合 ID 时为加仓。
     signal_bar_close: int | None = Field(default=None, ge=0)
     order_type: Literal["LIMIT", "MARKET", "POST_ONLY"] = "LIMIT"
+    snapshot_id: str | None = None
+    deliberation_ms: int | None = Field(default=None, ge=0)
 
 
 class SizingDecision(_Value):
@@ -193,6 +196,9 @@ class ExecutionEvent(_Value):
     reason: str | None = None
     postings: tuple[LedgerPosting, ...] = ()
     settlement_ts: int | None = Field(default=None, ge=0)
+    take_profit: tuple[DecimalStr, ...] = ()
+    draft_receipt: DraftReceipt | None = None
+    deliberation_ms: int | None = Field(default=None, ge=0)
 
 
 @dataclass(frozen=True, slots=True)

@@ -83,6 +83,88 @@ export interface InstrumentSpec {
   price_precision: number;
   qty_precision: number;
 }
+export interface ConfirmedDraft {
+  version: number;
+  content_hash: string;
+  confirmed_by: string;
+  draft_id: string;
+  content: DraftContent;
+  basis_cutoff_ts: number;
+  created_ts: number;
+  confirmed_ts: number;
+}
+export interface DraftContent {
+  sub_account_id: string;
+  instrument_id: string;
+  snapshot_id: string;
+  consultation_id?: string | null;
+  direction: "LONG" | "SHORT";
+  entry_low: DecimalString;
+  entry_high: DecimalString;
+  invalidation_stop: DecimalString;
+  take_profit: DecimalString[];
+  valid_until?: number | null;
+}
+export interface DraftEdit {
+  version: number;
+  content: DraftContent;
+}
+export interface DraftEvidence {
+  snapshot_id: string;
+  instrument_id: string;
+  cutoff_ts: number;
+  bars: CompactBar[];
+  current_bar?: CompactBar | null;
+}
+export interface DraftConfirmation {
+  version: number;
+  content_hash: string;
+  confirmed_by: string;
+}
+export interface DraftDeliveryRequest {
+  instrument_id: string;
+}
+export interface DraftReceipt {
+  draft_id: string;
+  version: number;
+  accepted: boolean;
+  reason?: string | null;
+  snapshot_id?: string | null;
+}
+export interface DraftRecord {
+  draft_id: string;
+  version: number;
+  content_hash: string;
+  content: DraftContent;
+  status: "STAGED" | "MODIFIED" | "CONFIRMED";
+  claimed: boolean;
+  receipt?: DraftReceipt | null;
+}
+export interface PaperAccountView {
+  sub_account_id: string;
+  positions: PaperRound[];
+  rounds: PaperRound[];
+  fills: PaperFill[];
+}
+export interface PaperFill {
+  event_id: string;
+  round_id: string;
+  instrument_id: string;
+  kind: "ENTRY_FILLED" | "EXIT_FILLED";
+  ts_event: number;
+  quantity: DecimalString;
+  price: DecimalString;
+}
+export interface PaperRound {
+  round_id: string;
+  sub_account_id: string;
+  instrument_id: string;
+  direction: "LONG" | "SHORT";
+  quantity: DecimalString;
+  stop: DecimalString;
+  take_profit?: DecimalString[];
+  phase?: string | null;
+}
 export interface CompactBar {
   timestamp: number;
   open: DecimalString | null;

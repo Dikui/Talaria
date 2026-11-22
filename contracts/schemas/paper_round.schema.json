@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "Direction": {
+      "enum": [
+        "LONG",
+        "SHORT"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "direction": {
+      "$ref": "#/$defs/Direction"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Phase"
+    },
+    "quantity": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Quantity",
+      "type": "string"
+    },
+    "round_id": {
+      "title": "Round Id",
+      "type": "string"
+    },
+    "stop": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Stop",
+      "type": "string"
+    },
+    "sub_account_id": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "title": "Sub Account Id",
+      "type": "string"
+    },
+    "take_profit": {
+      "default": [],
+      "items": {
+        "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+        "type": "string"
+      },
+      "title": "Take Profit",
+      "type": "array"
+    }
+  },
+  "required": [
+    "round_id",
+    "sub_account_id",
+    "instrument_id",
+    "direction",
+    "quantity",
+    "stop"
+  ],
+  "title": "PaperRound",
+  "type": "object"
+}

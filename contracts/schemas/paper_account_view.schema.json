@@ -1,0 +1,160 @@
+{
+  "$defs": {
+    "Direction": {
+      "enum": [
+        "LONG",
+        "SHORT"
+      ],
+      "type": "string"
+    },
+    "PaperFill": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "ENTRY_FILLED",
+            "EXIT_FILLED"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "quantity": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Quantity",
+          "type": "string"
+        },
+        "round_id": {
+          "title": "Round Id",
+          "type": "string"
+        },
+        "ts_event": {
+          "title": "Ts Event",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "round_id",
+        "instrument_id",
+        "kind",
+        "ts_event",
+        "quantity",
+        "price"
+      ],
+      "title": "PaperFill",
+      "type": "object"
+    },
+    "PaperRound": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "instrument_id": {
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        },
+        "quantity": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Quantity",
+          "type": "string"
+        },
+        "round_id": {
+          "title": "Round Id",
+          "type": "string"
+        },
+        "stop": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Stop",
+          "type": "string"
+        },
+        "sub_account_id": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Sub Account Id",
+          "type": "string"
+        },
+        "take_profit": {
+          "default": [],
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "title": "Take Profit",
+          "type": "array"
+        }
+      },
+      "required": [
+        "round_id",
+        "sub_account_id",
+        "instrument_id",
+        "direction",
+        "quantity",
+        "stop"
+      ],
+      "title": "PaperRound",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "fills": {
+      "items": {
+        "$ref": "#/$defs/PaperFill"
+      },
+      "title": "Fills",
+      "type": "array"
+    },
+    "positions": {
+      "items": {
+        "$ref": "#/$defs/PaperRound"
+      },
+      "title": "Positions",
+      "type": "array"
+    },
+    "rounds": {
+      "items": {
+        "$ref": "#/$defs/PaperRound"
+      },
+      "title": "Rounds",
+      "type": "array"
+    },
+    "sub_account_id": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "title": "Sub Account Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "sub_account_id",
+    "positions",
+    "rounds",
+    "fills"
+  ],
+  "title": "PaperAccountView",
+  "type": "object"
+}
