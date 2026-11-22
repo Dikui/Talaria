@@ -24,3 +24,20 @@
 - 局部回归 `pytest tests/account tests/components tests/foundation/test_import_boundaries.py -q -p no:cacheprovider --tb=short` 最终 142 通过、1 失败，另有一条既有 Starlette 弃用警告。`contract-check` 零漂移。
 - 唯一失败项为 `tests/account/test_strategy_isolation.py::test_production_worker_cannot_read_cold_parquet_or_open_network`。当前沙箱拒绝启用嵌套 Seatbelt（`Operation not permitted`），已验证启动拒绝，真实冷库和网络拒绝行为需在沙箱外 macOS 验证。测试注入层验证了真实 Python 子进程的资源限制、取数与输出边界。未连接 DSH，未运行全量测试。
 - 已检查 `git diff main...HEAD` 和工作区改动。沙箱拒绝创建 worktree 的 `index.lock`，变更保留在 `ticket/trading-06` 工作区。预定提交信息为 `feat: 增加模拟盘策略批准与隔离`。
+
+### 审查修复
+
+- 回测与模拟盘共用文件策略准入。策略进程在启用 Seatbelt 后加载模块、校验插件及组件参数 Schema、构造实例并执行回调。宿主只接受就绪信号和有界的策略输出。未登记或人工登记后内容已变的策略在回测中按 agent 隔离，模拟盘要求登记哈希匹配，agent 还须有同哈希的人工批准。
+- 本机交易员通过 `account strategy-register --source human|agent` 确认来源。运行入口仅读取登记库。回测方案显式引用的其他宿主文件插件也须将当前版本登记为 `human`，避免把同一份策略文件换到数据、定仓、风控或成交插槽后在宿主加载。宿主按名称预装的插件沿用原注册方式。
+- 快照包含入口名、策略目录内递归收集的普通 `.py` 文件的相对路径和原始字节。按路径排序、固定归档时间，对完整归档做 SHA-256。批准与按哈希存储的归档在同一 SQLite 事务写入。启动准入时核对工作目录，之后从核验过的归档复制出只读临时目录。入口或导入模块的修改都需要重新审阅，旧版单文件哈希需要重新登记、批准。
+- 登记和准入在写事务及子账户锁之前完成文件校验。读取通过目录描述符和 `os.open(O_NONBLOCK | O_NOFOLLOW)` 打开文件，用 `fstat` 检查普通文件和大小，再做有界读取。单文件上限 1 MiB，每个快照最多 256 个文件、8 MiB 源码。Seatbelt 仅读取所需标准库、当前环境的依赖、Talaria 包目录及临时快照，明确禁止读写数据目录，忽略环境中的 `PYTHONPATH`。
+- 宿主对 IPC 取数按实际底层时间范围估算，计入跨周期预热及衍生品查询所用历史，并检查实际行数和编码后的数据量。每次最多 8,192 行、4 MiB，共享 2 秒回调时限。确认信号仅查询当前柱。同步读取在可取消的专用线程执行，子进程退出或回调超时即停止等待。合作式读取器可用 `read_cancellation()` 中止阻塞等待。第三方同步调用如不响应取消，会在自行返回后退出，进程内最多保留 16 个策略 I/O 线程。
+- 每次回调使用新生成的 ID 绑定取数、错误及最终决定。宿主通过单独的同步请求确认回调结束，再将决定交给风控。缺失、过期、重复及回调外的回复均导致协议错误。等待行情期间也监测子进程，异常退出会中断事件循环并随账户上下文释放锁。宿主监测绝对 RSS（256 MiB）和策略 CPU（60 秒），CPU 基线取在可信运行时初始化完成、首次读取策略代码之前。
+- 逐项先观察失败用例，再运行对应修复后的测试。受影响测试 `PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests/account -q -rs -p no:cacheprovider` 得到 98 通过、5 跳过。`python -m talaria contract-check` 零漂移，`git diff --check` 通过。
+- 本环境禁止嵌套 Seatbelt。5 项待在沙箱外 macOS 验证，覆盖未批准回测、依赖重载、冷库与网络拒绝，以及两个模式下外部行情文件和批准库的读写权限。复跑命令如下。
+
+```sh
+PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests/account -k 'agent_strategy_can_backtest_without_approval or production_worker or seatbelt_denies' -q -rs -p no:cacheprovider
+```
+
+全量执行 `PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests -q -p no:cacheprovider`，986 项通过、15 项失败、1 项初始化错误、5 项跳过、1 项默认取消选择，另有 1 条 Starlette 弃用警告。14 项失败及 1 项初始化错误涉及沙箱禁止监听回环端口，另 1 项失败涉及 DSH 写入沙箱外的配置目录，与 trading/01 中记录的环境限制一致。调试期间曾观察到子进程退出时资源采样先于进程回收失效，已修复该竞态，最终局部与全量运行中的账户用例均通过。

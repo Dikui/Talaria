@@ -62,6 +62,13 @@ class StrategyPipe:
             raise ValueError("策略消息须为 JSON 对象")
         return message
 
+    def readable(self) -> bool:
+        if self._pending:
+            return True
+        ready = poll()
+        ready.register(self._read_fd, POLLIN)
+        return bool(ready.poll(0))
+
     @staticmethod
     def _wait(fd: int, event: int, deadline: float | None) -> None:
         timeout = None if deadline is None else ceil((deadline - monotonic()) * 1000)

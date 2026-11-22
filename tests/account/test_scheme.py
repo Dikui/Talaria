@@ -59,3 +59,11 @@ def test_slot_rejects_incompatible_plugin_before_creating_it(tmp_path):
     registry.register("example", SlotPlugin(Slot.RISK, (2,), create))
     with pytest.raises(SchemeError, match=r"risk.*example.*2.*1"):
         registry.resolve(Slot.RISK, "example", 1, tmp_path)
+
+
+def test_strategy_file_resolution_requires_account_admission(tmp_path):
+    from talaria.account.scheme import PluginRegistry, SchemeError, Slot
+
+    (tmp_path / "test_strategy.py").write_text("raise AssertionError('意外加载')")
+    with pytest.raises(SchemeError, match="账户宿主"):
+        PluginRegistry().resolve(Slot.STRATEGY, "test_strategy.py:plugin", 1, tmp_path)

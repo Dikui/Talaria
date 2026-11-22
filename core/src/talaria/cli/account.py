@@ -19,14 +19,14 @@ def add_account_command(subparsers) -> None:
     run.add_argument("--replay", action="store_true", help="使用已有回测产物中固定的交易方案和指标默认值")
     run.set_defaults(func=_run_account)
 
-    register = commands.add_parser("strategy-register", help="登记策略代码的来源和内容哈希")
+    register = commands.add_parser("strategy-register", help="由交易员确认 Python 文件插件的来源并登记代码快照哈希")
     approve = commands.add_parser("strategy-approve", help="批准已审阅的 agent 策略代码哈希")
     for command in (register, approve):
-        command.add_argument("path", type=Path, help="策略 Python 文件")
+        command.add_argument("path", type=Path, help="策略或宿主插件的 Python 入口文件")
         command.add_argument("--data-dir", type=Path, help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）")
         command.set_defaults(func=_manage_strategy_code)
     register.add_argument("--source", choices=("human", "agent"), required=True)
-    approve.add_argument("--sha256", required=True, help="交易员审阅的 SHA-256")
+    approve.add_argument("--sha256", required=True, help="交易员审阅的完整策略快照 SHA-256（由 strategy-register 输出）")
     approve.add_argument("--approved-by", required=True, help="批准人")
 
 

@@ -45,17 +45,35 @@ def replay(tmp_path):
     return scheme_dir / "scheme.yaml", data_dir
 
 
+def register_host_fixtures(scheme, data_dir, *, include_strategy=True):
+    # The test trader confirms the exact fixture versions selected by this scheme.
+    from talaria.account.scheme import Slot, load_scheme, python_reference
+    from talaria.account.strategy_code import StrategyCodeRegistry
+
+    parsed = load_scheme(scheme)
+    files = set()
+    for slot in (Slot.STRATEGY, Slot.DATA, Slot.SIZING, Slot.RISK, Slot.FILL):
+        reference = parsed.slots.selection(slot).reference
+        if ":" in reference and (include_strategy or slot != Slot.STRATEGY):
+            files.add(python_reference(reference, scheme.parent)[0])
+    records = StrategyCodeRegistry(data_dir)
+    for file in files:
+        records.register(file, "human")
+
+
 def launch(scheme, data_dir):
+    register_host_fixtures(scheme, data_dir)
     return main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)])
 
 
-def test_agent_strategy_can_backtest_without_approval(replay):
+def test_agent_strategy_can_backtest_without_approval(replay, seatbelt_available):
     from talaria.account.strategy_code import StrategyCodeRegistry
 
     scheme, data_dir = replay
     record = StrategyCodeRegistry(data_dir).register(scheme.parent / "replay_strategy.py", "agent")
     assert record.approval is None
-    assert launch(scheme, data_dir) == 0
+    register_host_fixtures(scheme, data_dir, include_strategy=False)
+    assert main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)]) == 0
 
 
 def test_cli_replays_same_scheme_data_and_seed_into_equal_journals(replay, capsys):

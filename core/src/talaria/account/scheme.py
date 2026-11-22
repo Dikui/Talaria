@@ -129,7 +129,8 @@ class SlotPlugin[T]:
 
 def python_reference(reference: str, scheme_dir: Path) -> tuple[Path, str]:
     filename, _, symbol = reference.rpartition(":")
-    path = (scheme_dir / filename).resolve()
+    path = scheme_dir / filename
+    path = path.parent.resolve() / path.name
     if path.suffix != ".py" or not symbol.isidentifier():
         raise SchemeError("Python 插件引用格式为 文件.py:导出名")
     return path, symbol
@@ -174,6 +175,8 @@ class PluginRegistry:
     ) -> SlotPlugin:
         try:
             if ":" in reference:
+                if slot == Slot.STRATEGY:
+                    raise SchemeError("Python 策略须经账户宿主校验来源与快照")
                 if mode == "paper":
                     raise SchemeError("模拟盘尚未支持从交易方案加载 Python 插件")
                 plugin = self._load_file(reference, scheme_dir)
