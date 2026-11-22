@@ -64,6 +64,7 @@ async def desk_socket(websocket: WebSocket) -> None:
     )
     scheduler = runtime.subscription_scheduler
     watchlist = runtime.watchlist
+    valid_ids = {spec.instrument_id for spec in runtime.workbench.instruments()}
     subscriptions: set[tuple[str, str]] = set()
     retainers = runtime.desk.chart_subscribers
     queue = runtime.desk.attach(subscriptions)
@@ -103,6 +104,14 @@ async def desk_socket(websocket: WebSocket) -> None:
             if op == "subscribe":
                 if key in subscriptions:
                     continue
+                if instrument_id not in valid_ids or timeframe not in SUPPORTED_TIMEFRAMES:
+                    code, message = (
+                        ("INSTRUMENT_NOT_FOUND", f"未知标的：{instrument_id}")
+                        if instrument_id not in valid_ids
+                        else ("VALIDATION_ERROR", f"不支持的周期：{timeframe}")
+                    )
+                    await websocket.send_json({"type": "error", "code": code, "message": message})
+                    continue
                 had_channel = supervisor is not None and supervisor.has_channel(
                     instrument_id, timeframe
                 )
@@ -117,30 +126,6 @@ async def desk_socket(websocket: WebSocket) -> None:
                                 "type": "error",
                                 "code": exc.code,
                                 "message": exc.message,
-                            }
-                        )
-                        continue
-                else:
-                    valid_ids = {
-                        spec.instrument_id for spec in runtime.workbench.instruments()
-                    }
-                    if instrument_id not in valid_ids:
-                        subscriptions.discard(key)
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "code": "INSTRUMENT_NOT_FOUND",
-                                "message": f"未知标的：{instrument_id}",
-                            }
-                        )
-                        continue
-                    if timeframe not in SUPPORTED_TIMEFRAMES:
-                        subscriptions.discard(key)
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "code": "VALIDATION_ERROR",
-                                "message": f"不支持的周期：{timeframe}",
                             }
                         )
                         continue

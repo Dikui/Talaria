@@ -137,8 +137,8 @@ class AlertEngine:
         self._session_history: dict[tuple[str, str], tuple[CompactBar, ...]] = {}
         self._seeded: set[tuple[str, str]] = set()
         self._drawings: dict[str, DrawingRecord] = {}
-        self._stale: set[str] = set()
-        self._skip_through: dict[str, int] = {}
+        self._stale: set[tuple[str, str]] = set()
+        self._skip_through: dict[tuple[str, str], int] = {}
 
     # ------------------------------------------------------------------ 规则集
 
@@ -218,10 +218,11 @@ class AlertEngine:
             return []
         self._store_event_bars(event)
         instrument_id = event.instrument_id
-        if instrument_id in self._stale:
-            return []
         now = self._now_ms()
-        alerts = [alert for alert in self.list_alerts() if alert.instrument_id == instrument_id]
+        alerts = [
+            alert for alert in self.list_alerts()
+            if alert.instrument_id == instrument_id and (instrument_id, alert.timeframe) not in self._stale
+        ]
         levels: dict[str, KeyLevel] = {}
         if isinstance(event, KlineEvent) and any(
             alert.timeframe == event.timeframe
@@ -237,7 +238,7 @@ class AlertEngine:
             if alert.status is not AlertStatus.ARMED:
                 continue
             if isinstance(event, KlineEvent) and event.bar.timestamp <= self._skip_through.get(
-                instrument_id, -1
+                (instrument_id, event.timeframe), -1
             ):
                 continue
             if self._evaluate(alert, event, now, levels):
@@ -317,20 +318,21 @@ class AlertEngine:
         return drawing
 
     def _handle_health(self, event: FeedHealthEvent) -> None:
+        key = (event.instrument_id, event.timeframe)
         if event.status is FeedHealthStatus.LIVE:
-            if event.instrument_id in self._stale:
-                self._stale.discard(event.instrument_id)
+            if key in self._stale:
+                self._stale.discard(key)
                 if event.last_event_ts is not None:
-                    self._skip_through[event.instrument_id] = event.last_event_ts
+                    self._skip_through[key] = event.last_event_ts
                 for alert in self.list_alerts():
-                    if alert.instrument_id == event.instrument_id:
+                    if (alert.instrument_id, alert.timeframe) == key:
                         runtime = self._runtime_for(alert)
                         runtime.baseline_pending = True
                         runtime.condition_true = None
                         runtime.level_breakout = None
                         runtime.level_breakout_ts = None
             return
-        self._stale.add(event.instrument_id)
+        self._stale.add(key)
 
     def _store_event_bars(self, event: FeedEvent) -> None:
         if not isinstance(event, KlineEvent):

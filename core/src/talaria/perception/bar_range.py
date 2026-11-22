@@ -19,6 +19,21 @@ def _values(bar: RawBar) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal, D
 
 def unpublished_revisions(cold: Sequence[RawBar], hot: Sequence[RawBar]) -> dict[int, RawBar]:
     """协调同一时间槽的修订，保留落盘编号和写盘失败留下的编号。"""
+    pending, _ = _reconcile_revisions(cold, hot)
+    return pending
+
+
+def reconciled_hot_revision(
+    cold: Sequence[RawBar], hot: Sequence[RawBar], revision: int,
+) -> RawBar | None:
+    """取一次热端发布对应的修订，允许写入已在读取前完成。"""
+    pending, published = _reconcile_revisions(cold, hot)
+    return pending.get(revision) or published.get(revision)
+
+
+def _reconcile_revisions(
+    cold: Sequence[RawBar], hot: Sequence[RawBar],
+) -> tuple[dict[int, RawBar], dict[int, RawBar]]:
     archived = sorted(cold, key=lambda bar: (bar.revision, bar.ts_available, bar.ts_ingested))
     matches: deque[tuple[int, int]] = deque()
     cursor = 0
@@ -38,6 +53,7 @@ def unpublished_revisions(cold: Sequence[RawBar], hot: Sequence[RawBar]) -> dict
     previous = archived[cursor - 1] if cursor else None
     revision = previous.revision if previous is not None else -1
     pending: dict[int, RawBar] = {}
+    published: dict[int, RawBar] = {}
     for bar in hot:
         hot_revision = bar.revision
         next_revision, next_index = matches[0] if matches else (-1, len(archived))
@@ -47,6 +63,7 @@ def unpublished_revisions(cold: Sequence[RawBar], hot: Sequence[RawBar]) -> dict
             cursor += 1
         if bar.revision == next_revision:
             previous = archived[next_index]
+            published[hot_revision] = previous
             revision = max(revision, previous.revision)
             cursor = next_index + 1
             matches.popleft()
@@ -65,13 +82,12 @@ def unpublished_revisions(cold: Sequence[RawBar], hot: Sequence[RawBar]) -> dict
         pending[hot_revision] = bar
         if bar.confirmed and not bar.history_only:
             previous = bar
-    return pending
+    return pending, published
 
 
-def range_visible_bars(
-    cold: Sequence[RawBar], hot: Sequence[RawBar], *, as_of: int | None, include_open: bool,
+def _pending_revisions(
+    cold: Sequence[RawBar], hot: Sequence[RawBar],
 ) -> list[RawBar]:
-    """按同一时点规则选版，热端输入按事件时间与修订升序。"""
     pending: list[RawBar] = []
     hot_by_event = {ts: list(group) for ts, group in groupby(hot, key=lambda bar: bar.ts_event)}
     cold_by_event: dict[int, list[RawBar]] = {}
@@ -80,6 +96,26 @@ def range_visible_bars(
             cold_by_event.setdefault(bar.ts_event, []).append(bar)
     for ts, versions in hot_by_event.items():
         pending.extend(unpublished_revisions(cold_by_event.get(ts, []), versions).values())
+    return pending
+
+
+def range_visible_revisions(
+    cold: Sequence[RawBar], hot: Sequence[RawBar], *, since: int, as_of: int | None,
+) -> list[RawBar]:
+    """重同步返回可获取窗口内的全部已确认修订。"""
+    visible = (
+        bar for bar in chain(cold, _pending_revisions(cold, hot))
+        if bar.confirmed and since <= bar.ts_available
+        and (as_of is None or bar.ts_available <= as_of)
+    )
+    return sorted(visible, key=lambda bar: (bar.ts_event, bar.revision))
+
+
+def range_visible_bars(
+    cold: Sequence[RawBar], hot: Sequence[RawBar], *, as_of: int | None, include_open: bool,
+) -> list[RawBar]:
+    """按同一时点规则选版，热端输入按事件时间与修订升序。"""
+    pending = _pending_revisions(cold, hot)
     closed = latest_visible_bars(chain(cold, (bar for bar in pending if bar.confirmed)), as_of=as_of)
     if not include_open:
         return closed

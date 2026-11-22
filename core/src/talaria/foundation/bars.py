@@ -105,11 +105,17 @@ class BarsQuery(ContractModel):
     as_of: int | None = Field(None, ge=0, le=2**63 - 1, description="可获取时间上界（含）")
     include_open: bool = Field(False, description="包含进行中的柱，无可见真实柱时可返回合成柱。")
     tail_only: bool = Field(False, description="仅返回清单中尚无的可见柱及修订，历史回填照常写入冷库。")
+    available_since: int | None = Field(
+        None, ge=0, le=2**63 - 1,
+        description="策略重同步用。按可获取时间下界（含）返回全部已确认修订，仅为该时刻附近及之后的范围补历史。",
+    )
 
     @model_validator(mode="after")
     def _check_range(self) -> Self:
         if self.end is not None and self.end < self.start:
             raise ValueError("end 不得早于 start")
+        if self.available_since is not None and self.include_open:
+            raise ValueError("策略重同步只返回已确认的修订")
         return self
 
 

@@ -103,6 +103,7 @@ export interface BarsQuery {
   as_of?: number | null;
   include_open?: boolean;
   tail_only?: boolean;
+  available_since?: number | null;
 }
 export interface RangeBar {
   ts_event: number;

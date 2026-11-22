@@ -46,7 +46,7 @@ class HotStreamBuffer:
         self._series: dict[tuple[str, str], dict[int, dict[int, RawBar]]] = {}
         self._lock = threading.Lock()
 
-    def ingest(self, event: FeedEvent) -> None:
+    def ingest(self, event: FeedEvent) -> RawBar | None:
         """订阅回调；只消化已闭合或进行中的普通柱，FEED_GAP 交由紧凑化重建。"""
 
         if not isinstance(event, KlineEvent):
@@ -90,6 +90,7 @@ class HotStreamBuffer:
             versions.setdefault(raw.revision, raw)
             while len(series) > self._max_bars:
                 series.pop(min(series))
+        return raw
 
     def recent_bars(self, *, instrument_id: str, timeframe: str) -> list[RawBar]:
         """快照中，已收盘时间槽的下一次修订从实际接收后才可见。"""

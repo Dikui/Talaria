@@ -17,7 +17,7 @@ from talaria.foundation.errors import (
 )
 from talaria.foundation.snapshot import ErrorResponse
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
-from talaria.perception.bar_range import range_visible_bars
+from talaria.perception.bar_range import range_visible_bars, range_visible_revisions
 from talaria.perception.cold_store import ColdReader
 from talaria.service_endpoint import DATA_DIR_HEADER, data_dir_id
 from talaria.workbench_api.routes import get_runtime
@@ -51,7 +51,11 @@ async def get_range_bars(query: Annotated[BarsQuery, Query()], request: Request,
     interval = timeframe_ms(query.timeframe)
     start = (query.start + interval - 1) // interval * interval
     end = last_closed_bar_start(now, interval) if query.end is None else query.end
-    if (end - start) // interval + 1 > MAX_RANGE_BARS:
+    # 迟到的修订可能在任意旧柱上。只在重同步窗口附近及之后补缺。
+    history_start = start
+    if query.available_since is not None:
+        history_start = max(start, last_closed_bar_start(query.available_since, interval))
+    if (end - history_start) // interval + 1 > MAX_RANGE_BARS:
         raise BarsRangeTooLargeError(RANGE_LIMIT_MESSAGE)
     reader = ColdReader(settings.data_dir)
 
@@ -78,15 +82,17 @@ async def get_range_bars(query: Annotated[BarsQuery, Query()], request: Request,
     if publisher is not None and (settings.replay_events is None or settings.fixture_dir is not None):
         cutoff = now if query.as_of is None else min(now, query.as_of)
         history_end = min(end, cutoff - interval)
-        if start <= history_end:
+        if history_start <= history_end:
             hot_timestamps = frozenset(
                 bar.ts_event for bar in hot
-                if bar.confirmed and not bar.synthetic and start <= bar.ts_event <= history_end
+                if bar.confirmed and not bar.synthetic and history_start <= bar.ts_event <= history_end
             )
-            covered = hot_timestamps.union(bar.ts_event for bar in cold if start <= bar.ts_event <= history_end)
-            if sum(ts % interval == 0 for ts in covered) < (history_end - start) // interval + 1:
+            covered = hot_timestamps.union(
+                bar.ts_event for bar in cold if history_start <= bar.ts_event <= history_end
+            )
+            if sum(ts % interval == 0 for ts in covered) < (history_end - history_start) // interval + 1:
                 history = publisher.request_history(
-                    instrument, query.timeframe, start_ts=start, end_ts=history_end,
+                    instrument, query.timeframe, start_ts=history_start, end_ts=history_end,
                     hot_timestamps=hot_timestamps,
                 )
                 if history is not None:
@@ -99,9 +105,12 @@ async def get_range_bars(query: Annotated[BarsQuery, Query()], request: Request,
                         raise BarsBackfillTimeoutError("等待 K 线历史回填超时，请重试") from exc
                     generation, cold, hot = await asyncio.to_thread(read_range)
 
-    visible = range_visible_bars(
-        cold, hot, as_of=query.as_of, include_open=query.include_open,
-    )
+    if query.available_since is None:
+        visible = range_visible_bars(cold, hot, as_of=query.as_of, include_open=query.include_open)
+    else:
+        visible = await asyncio.to_thread(
+            range_visible_revisions, cold, hot, since=query.available_since, as_of=query.as_of,
+        )
     if query.tail_only:
         archived = set(cold)
         visible = [bar for bar in visible if bar not in archived]

@@ -25,6 +25,7 @@ from talaria.workbench_api.routes import (
     health,
     scanner,
     static,
+    strategy_ws,
     watchlist,
 )
 from talaria.workbench_api.runtime import build_runtime
@@ -132,5 +133,6 @@ def create_app(
     app.include_router(scanner.router)
     app.include_router(collaboration.router)
     app.include_router(desk_ws.router)
+    app.include_router(strategy_ws.router)
     app.include_router(static.router)
     return app

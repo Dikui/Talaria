@@ -23,12 +23,13 @@ from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_
 from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdReader
 from talaria.perception.raw_store import latest_visible_bars
+from talaria.sdk._subscription import StrategyBarEvent, SubscriptionRejectedError, subscribe
 from talaria.service_endpoint import DATA_DIR_HEADER, NOW_MS_HEADER, data_dir_id, read_service_endpoint
 
 if TYPE_CHECKING:
     from pandas import DataFrame
 
-__all__ = ["BarsResult", "bars"]
+__all__ = ["BarsResult", "StrategyBarEvent", "SubscriptionRejectedError", "bars", "subscribe"]
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MICROSECOND = timedelta(microseconds=1)
