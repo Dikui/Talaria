@@ -6,7 +6,7 @@
 
 **Source of truth:** `docs/architecture.md` §4.1、§4.2；`docs/research/fill-simulation-and-tick-data.md`。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 行情传输层增加 `publicTrade.{symbol}` 订阅；L1 盘口沿用 `orderbook.1.{symbol}`。
 - [ ] 逐笔与买一卖一分区写入，数值格式与 01 一致；不存交易 ID 以外的冗余字段（是否存交易 ID 在实现中按体积实测决定并记录）。
