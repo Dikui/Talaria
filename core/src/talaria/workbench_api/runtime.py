@@ -12,6 +12,7 @@ from talaria.feed.supervisor import FeedSupervisor
 from talaria.foundation.alerts import AlertRecord
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
+from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.errors import FeatureDisabledError, TalariaError
 from talaria.foundation.feed import FeedEvent, FeedTransport, KlineEvent
 from talaria.foundation.market import InstrumentSpec
@@ -169,6 +170,10 @@ async def build_runtime(
             if strategy_stream is not None:
                 strategy_stream.changed(key, start, end)
 
+        def derivative_published(instrument: str, kind: DerivativeKind, start: int, end: int) -> None:
+            if strategy_stream is not None:
+                strategy_stream.derivative_changed(instrument, kind, start, end)
+
         policy = BackfillPolicy(target_bars=settings.backfill_bars, max_pages=settings.max_pages)
         supervisor: FeedSupervisor | None = None
         cold_store: ColdStore | None = None
@@ -183,10 +188,17 @@ async def build_runtime(
                 cold_publisher = ColdPublisher(
                     cold_store, instruments=instruments, connector=connector,
                     policy=policy, now_ms=settings.now_ms, hot_buffer=hot_buffer,
+                    funding_intervals_ms={
+                        spec.instrument_id: hours * 3_600_000
+                        for spec in instruments
+                        if (hours := pack.traits(spec.instrument_id).carry.funding_interval_hours) is not None
+                        and hours > 0
+                    },
                     has_channel=lambda instrument_id, timeframe: (
                         supervisor is not None and supervisor.has_channel(instrument_id, timeframe)
                     ),
                     on_publish=lambda key, start, end: loop.call_soon_threadsafe(published, key, start, end),
+                    on_derivative_publish=lambda *args: loop.call_soon_threadsafe(derivative_published, *args),
                     on_history_complete=lambda instrument_id, timeframe: loop.call_soon_threadsafe(
                         history_completed, instrument_id, timeframe
                     ),
@@ -215,6 +227,10 @@ async def build_runtime(
                 ),
             )
             resources.push_async_callback(supervisor.stop)
+            if cold_publisher is not None:
+                resources.callback(supervisor.add_listener(cold_publisher.ingest_derivatives))
+                derivative_flusher = asyncio.create_task(cold_publisher.flush_derivatives_periodically())
+                resources.push_async_callback(_stop_task, derivative_flusher)
 
         raw_store = RawStore(settings.data_dir, raw_archive_id=pack.raw_archive_id)
         builder = SnapshotBuilder(
@@ -225,6 +241,7 @@ async def build_runtime(
             policy=policy,
             now_ms=settings.now_ms,
             hot_bars=hot_buffer,
+            cold_publisher=cold_publisher,
         )
         desk = DeskBroadcast()
         key_levels = KeyLevelRegistry(now_ms=settings.now_ms, on_latest=desk.project_levels)

@@ -77,6 +77,8 @@ def _derivatives(client: TestClient, snapshot_id: str, timeframe: str = "1m"):
 
 
 def test_bundle_contains_three_series_with_decimal_strings_and_summary(client) -> None:
+    from talaria import sdk
+
     snapshot = _snapshot(client, "BTC-USDT-PERP", ["1m"])
     response = _derivatives(client, snapshot["snapshot_id"])
     assert response.status_code == 200, response.text
@@ -100,6 +102,12 @@ def test_bundle_contains_three_series_with_decimal_strings_and_summary(client) -
 
     mark = series["mark_price"]["points"][-1]
     funding = series["funding_rate"]["points"][-1]
+    # data-access/08: use the same archived settlement through the standalone SDK.
+    [archived] = sdk.funding_settlements(
+        "BTC-USDT-PERP", funding["ts_event"], funding["ts_event"], NOW_MS,
+        data_dir=client.app.state.settings.data_dir,
+    )
+    assert archived.value == Decimal(funding["value"])
     oi = series["open_interest"]["points"][-1]
     summary = body["summary"]
     assert summary["mark_price"] == mark["value"]

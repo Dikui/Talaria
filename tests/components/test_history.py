@@ -32,10 +32,11 @@ def _bar(ts, close, *, timeframe="1m", delay=0, revision=0, volume="1"):
     )
 
 
-def _derivative(ts, available, value, *, kind=DerivativeKind.FUNDING_RATE, timeframe=None):
+def _derivative(ts, available, value, *, kind=DerivativeKind.FUNDING_RATE, timeframe=None, settled=True):
     return DerivativePoint(
         instrument_id=INSTRUMENT.instrument_id, kind=kind, timeframe=timeframe,
         ts_event=ts, ts_available=available, ts_ingested=available, ts_committed=available,
+        ts_published=ts if kind is DerivativeKind.FUNDING_RATE and settled else None,
         value=Decimal(value),
     )
 
@@ -352,6 +353,30 @@ def test_net_odds_accepts_an_observed_zero_funding_rate():
 
 
 @pytest.mark.regression
+@pytest.mark.parametrize("explicit_reader", [False, True])
+def test_history_net_odds_does_not_treat_a_ticker_rate_as_a_settlement(tmp_path, explicit_reader):
+    """data-access/08：实时资金费率可读，净赔率仍以结算事件计资金成本。"""
+    from talaria.components import run_history
+
+    rows = [_bar(START, "100"), _bar(START + MINUTE, "102")]
+    estimate = _derivative(START + MINUTE, START + MINUTE, "0.001", settled=False)
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", rows))
+        store.publish_derivatives(INSTRUMENT, estimate.kind, [estimate])
+
+    result = list(run_history(
+        lambda ctx: (
+            ctx.derivatives("funding_rate"),
+            ctx.indicator("NET_ODDS", period=1)[-1].values["value"],
+        ),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + 2 * MINUTE, data_dir=tmp_path,
+        read_derivatives=partial(sdk.derivatives, data_dir=tmp_path) if explicit_reader else None,
+    ))
+    assert [point.value for point in result[-1].output[0]] == [Decimal("0.001")]
+    assert result[-1].output[1] is None
+
+
+@pytest.mark.regression
 def test_funding_operator_can_use_a_reader_with_only_funding_data():
     from talaria.components import run_history
 
@@ -450,3 +475,71 @@ def test_replay_keeps_only_the_highest_visible_confirmed_revision_from_an_altern
         (START + MINUTE, (original,)),
         (START + 2 * MINUTE, (revised, current)),
     ]
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("explicit_reader", [False, True])
+def test_indicator_uses_each_bars_first_confirmation_to_select_derivative_revisions(tmp_path, explicit_reader):
+    # data-access/08、analysis/02：后来的柱和结算修订都不会改变第一根柱的求值时点。
+    from talaria.components import run_history
+
+    original = _derivative(START, START, "0.0001")
+    revised = _derivative(START, START + MINUTE + 1, "0.0002").model_copy(update={"revision": 1})
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", [
+            _bar(START, "100"),
+            _bar(START, "101", revision=1, delay=MINUTE - 1),
+            _bar(START + MINUTE, "102"),
+        ]))
+        store.publish_derivatives(INSTRUMENT, original.kind, [original, revised])
+
+    first, second = run_history(
+        lambda ctx: ctx.indicator("FUNDING_QUANTILE", period=2),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + 2 * MINUTE, data_dir=tmp_path,
+        read_derivatives=partial(sdk.derivatives, data_dir=tmp_path) if explicit_reader else None,
+    )
+    assert [point.values["value"] for point in first.output] == [None]
+    assert [point.values["value"] for point in second.output] == [None, Decimal("0.75")]
+
+
+@pytest.mark.regression
+def test_derivatives_preserve_pre_window_settlement_and_estimate_independently(tmp_path):
+    # data-access/08：结算和 ticker 预估都供组件读取，各保留窗口前最近的一点。
+    from talaria.components import run_history
+
+    actual = _derivative(START - 2, START - 2, "0.0001")
+    estimate = _derivative(START - 1, START - 1, "0.0002", settled=False)
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", [_bar(START, "100")]))
+        store.publish_derivatives(INSTRUMENT, actual.kind, [actual, estimate])
+
+    [step] = run_history(
+        lambda ctx: ctx.derivatives("funding_rate"),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + MINUTE, data_dir=tmp_path,
+    )
+    assert [(point.is_funding_settlement, point.value) for point in step.output] == [
+        (True, actual.value), (False, estimate.value),
+    ]
+
+
+@pytest.mark.regression
+def test_net_odds_uses_the_corrected_rate_once_it_is_visible(tmp_path):
+    # data-access/08：同一结算的更正替换成本，结算身份和历史输出都保留。
+    from talaria.components import run_history
+
+    original = _derivative(START + 2 * MINUTE, START + 2 * MINUTE, "0.01")
+    revised = _derivative(START + 2 * MINUTE, START + 4 * MINUTE + 1, "0.02").model_copy(
+        update={"revision": 1},
+    )
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", [
+            _bar(START + i * MINUTE, price) for i, price in enumerate(("100", "102", "104", "106", "108"))
+        ]))
+        store.publish_derivatives(INSTRUMENT, original.kind, [original, revised])
+
+    result = list(run_history(
+        lambda ctx: ctx.indicator("NET_ODDS", period=3),
+        INSTRUMENT.instrument_id, "1m", start=START, end=START + 5 * MINUTE, data_dir=tmp_path,
+    ))
+    assert result[-2].output[-1].values["value"] == Decimal("2.47")
+    assert result[-1].output[-1].values["value"] == Decimal("1.92")

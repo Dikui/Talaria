@@ -25,6 +25,25 @@
           "$ref": "#/$defs/PrecisionTier",
           "default": "SECOND_VERIFIED"
         },
+        "revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "settled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "资金费率是否已结算。旧记录可省略。",
+          "title": "Settled"
+        },
         "timeframe": {
           "anyOf": [
             {

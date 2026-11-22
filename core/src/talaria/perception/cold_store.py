@@ -33,9 +33,13 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 import pyarrow as pa
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from talaria.foundation.connector import RawBar
+from talaria.foundation.derivatives import (
+    DerivativeKind, DerivativePoint, derivative_identity, latest_visible_derivatives,
+)
 from talaria.foundation.errors import ColdStoreError, ColdStoreIntegrityError, ColdStoreQualityError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.types import PrecisionTier
@@ -64,7 +68,7 @@ COLD_INSTRUMENT_VERSION_METADATA = b"talaria.cold.instrument_spec_sha256"
 
 #: 冷库 Parquet 数值列统一使用 precision=18；物理类型由 pyarrow 写成 INT64。
 COLD_DECIMAL_PRECISION = 18
-#: 费率类列固定 scale=8（ADR-0017）；当前 K 线冷库没有费率列，保留常量供衍生品切片。
+#: 费率类列固定 scale=8（ADR-0017）。
 RATE_COLUMN_SCALE = 8
 
 _PRICE_COLUMNS = ("open", "high", "low", "close")
@@ -98,6 +102,22 @@ class ColdBatch:
     instrument: InstrumentSpec
     timeframe: str
     bars: Sequence[RawBar]
+
+    @property
+    def rows(self) -> Sequence[RawBar]:
+        return self.bars
+
+
+@dataclass(frozen=True, slots=True)
+class DerivativeBatch:
+    instrument: InstrumentSpec
+    kind: DerivativeKind
+    rows: Sequence[DerivativePoint]
+
+    @property
+    def timeframe(self) -> str:
+        # 清单的 timeframe 是历史列名。衍生品的分区键是类别，周期留在行内。
+        return self.kind.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,6 +455,12 @@ def _write_cold_parquet(
         for bar in bars
     ]
     table = pa.Table.from_pylist(rows, schema=_cold_schema(scales))
+    _write_decimal_parquet(path, table, scales, instrument)
+
+
+def _write_decimal_parquet(
+    path: Path, table: pa.Table, scales: dict[str, int], instrument: InstrumentSpec,
+) -> None:
     metadata = {
         COLD_FORMAT_METADATA: COLD_FORMAT_DECIMAL128,
         COLD_COLUMN_SCALES_METADATA: json.dumps(
@@ -450,7 +476,9 @@ def _write_cold_parquet(
     )
 
 
-def _column_scales_from_metadata(metadata: dict[bytes, bytes]) -> dict[str, int]:
+def _column_scales_from_metadata(
+    metadata: dict[bytes, bytes], columns: Sequence[str] = _DECIMAL_COLUMNS,
+) -> dict[str, int]:
     raw = metadata.get(COLD_COLUMN_SCALES_METADATA)
     if raw is None:
         raise ColdStoreIntegrityError("decimal128 文件缺少逐列 scale 元数据")
@@ -461,7 +489,7 @@ def _column_scales_from_metadata(metadata: dict[bytes, bytes]) -> dict[str, int]
     if not isinstance(payload, dict):
         raise ColdStoreIntegrityError("decimal128 逐列 scale 元数据不是对象")
     scales: dict[str, int] = {}
-    for name in _DECIMAL_COLUMNS:
+    for name in columns:
         value = payload.get(name)
         if (
             not isinstance(value, int)
@@ -495,15 +523,26 @@ def _cold_parquet_is_decimal128(path: Path) -> bool:
     return metadata.get(COLD_FORMAT_METADATA) == COLD_FORMAT_DECIMAL128
 
 
-def _read_cold_parquet(
-    path: Path, *, start_ts: int | None = None, end_ts: int | None = None
-) -> list[RawBar]:
+def _read_range_table(
+    path: Path, start_ts: int | None, end_ts: int | None, *,
+    expression: ds.Expression | None = None,
+) -> pa.Table:
     filters = []
     if start_ts is not None:
         filters.append(("ts_event", ">=", start_ts))
     if end_ts is not None:
         filters.append(("ts_event", "<=", end_ts))
-    table = pq.read_table(path, filters=filters or None)
+    if expression is not None:
+        if filters:
+            expression = expression & pq.filters_to_expression(filters)
+        return pq.read_table(path, filters=expression)
+    return pq.read_table(path, filters=filters or None)
+
+
+def _read_cold_parquet(
+    path: Path, *, start_ts: int | None = None, end_ts: int | None = None
+) -> list[RawBar]:
+    table = _read_range_table(path, start_ts, end_ts)
     metadata = table.schema.metadata or {}
     format_marker = metadata.get(COLD_FORMAT_METADATA)
     if format_marker is not None and format_marker != COLD_FORMAT_DECIMAL128:
@@ -535,6 +574,91 @@ def _read_cold_parquet(
         )
         for row in table.to_pylist()
     ]
+
+
+def _derivative_scale(instrument: InstrumentSpec, kind: DerivativeKind) -> int:
+    return {
+        DerivativeKind.MARK_PRICE: instrument.price_precision,
+        DerivativeKind.OPEN_INTEREST: instrument.qty_precision,
+        DerivativeKind.FUNDING_RATE: RATE_COLUMN_SCALE,
+    }[kind]
+
+
+def _derivative_order(point: DerivativePoint) -> tuple:
+    return (point.ts_event, *derivative_identity(point)[:-1], point.revision)
+
+
+def _validate_derivatives(batch: DerivativeBatch, *, allow_equal_revisions: bool = False) -> None:
+    scale = _derivative_scale(batch.instrument, batch.kind)
+    if not 0 <= scale <= COLD_DECIMAL_PRECISION:
+        raise ColdStoreQualityError(f"非法衍生品精度：{scale}")
+    previous: tuple | None = None
+    for point in batch.rows:
+        if point.instrument_id != batch.instrument.instrument_id or point.kind != batch.kind:
+            raise ColdStoreQualityError("衍生品标的或类别与批次不一致")
+        order = _derivative_order(point)
+        if previous is not None and (order < previous or (order == previous and not allow_equal_revisions)):
+            raise ColdStoreQualityError(f"衍生品时间戳与修订未递增：{order}")
+        if point.revision < 0 or point.ts_available < point.ts_event or point.ts_committed < point.ts_ingested:
+            raise ColdStoreQualityError("衍生品时点或修订非法")
+        fits, reason = _fits_decimal128(point.value, scale)
+        if not fits:
+            raise ColdStoreQualityError(f"{point.kind} {reason}")
+        previous = order
+
+
+def _derivative_content(rows: Sequence[DerivativePoint]) -> bytes:
+    def record(point: DerivativePoint) -> str:
+        data = point.model_dump(mode="json", exclude={"settled"} if point.settled is None else None)
+        value = data["value"]
+        if "." in value:
+            value = value.rstrip("0").rstrip(".")
+        data["value"] = "0" if value == "-0" else value
+        return json.dumps(data, sort_keys=True)
+
+    return "".join(record(point) + "\n" for point in rows).encode("utf-8")
+
+
+def _write_derivative_cold_parquet(path: Path, batch: DerivativeBatch) -> None:
+    scale = _derivative_scale(batch.instrument, batch.kind)
+    schema = pa.schema([
+        pa.field("instrument_id", pa.string(), nullable=False),
+        pa.field("kind", pa.string(), nullable=False),
+        pa.field("timeframe", pa.string()),
+        pa.field("value", pa.decimal128(COLD_DECIMAL_PRECISION, scale), nullable=False),
+        pa.field("ts_event", pa.int64(), nullable=False),
+        pa.field("ts_published", pa.int64()),
+        pa.field("settled", pa.bool_()),
+        pa.field("ts_available", pa.int64(), nullable=False),
+        pa.field("ts_ingested", pa.int64(), nullable=False),
+        pa.field("ts_committed", pa.int64(), nullable=False),
+        pa.field("precision", pa.dictionary(pa.int8(), pa.string()), nullable=False),
+        pa.field("revision", pa.int64(), nullable=False),
+    ])
+    table = pa.Table.from_pylist([point.model_dump() for point in batch.rows], schema=schema)
+    _write_decimal_parquet(path, table, {"value": scale}, batch.instrument)
+
+
+def _read_derivative_cold_parquet(
+    path: Path, *, start_ts: int | None = None, end_ts: int | None = None,
+    historical_kind: DerivativeKind | None = None,
+) -> list[DerivativePoint]:
+    expression = None
+    if historical_kind is DerivativeKind.FUNDING_RATE:
+        legacy = ds.field("ts_published") == ds.field("ts_event")
+        if "settled" in pq.read_schema(path).names:
+            settled = ds.field("settled")
+            expression = (settled == ds.scalar(True)) | (settled.is_null() & legacy)
+        else:
+            expression = legacy
+    elif historical_kind is not None:
+        expression = ds.field("timeframe").is_valid()
+    table = _read_range_table(path, start_ts, end_ts, expression=expression)
+    metadata = table.schema.metadata or {}
+    if metadata.get(COLD_FORMAT_METADATA) != COLD_FORMAT_DECIMAL128:
+        raise ColdStoreIntegrityError(f"未知衍生品冷库数值格式：{path}")
+    _verify_decimal_schema(table.schema, _column_scales_from_metadata(metadata, ("value",)))
+    return [DerivativePoint.model_validate(row) for row in table.to_pylist()]
 
 
 def partition_month(ts_event: int) -> str:
@@ -655,6 +779,41 @@ class ColdReader:
         end_ts: int | None = None,
     ) -> tuple[ColdManifest, list[RawBar]]:
         """返回选出的清单及其修订，文件退役时整次重读一次。"""
+        return self._read_manifest(
+            instrument, timeframe, _read_cold_parquet, start_ts=start_ts, end_ts=end_ts,
+        )
+
+    def read_derivative_revisions(
+        self, instrument: InstrumentSpec, kind: DerivativeKind, *,
+        start_ts: int | None = None, end_ts: int | None = None,
+        historical_only: bool = False,
+    ) -> list[DerivativePoint]:
+        def read(path: Path, *, start_ts: int | None, end_ts: int | None) -> list[DerivativePoint]:
+            return _read_derivative_cold_parquet(
+                path, start_ts=start_ts, end_ts=end_ts, historical_kind=kind if historical_only else None,
+            )
+
+        _, rows = self._read_manifest(
+            instrument, kind.value, read, start_ts=start_ts, end_ts=end_ts,
+        )
+        return rows
+
+    def read_derivatives(
+        self, instrument: InstrumentSpec, kind: DerivativeKind, *,
+        start_ts: int | None = None, end_ts: int | None = None, as_of: int | None = None,
+        historical_only: bool = False,
+    ) -> list[DerivativePoint]:
+        return latest_visible_derivatives(
+            self.read_derivative_revisions(
+                instrument, kind, start_ts=start_ts, end_ts=end_ts, historical_only=historical_only,
+            ),
+            as_of=as_of,
+        )
+
+    def _read_manifest[T](
+        self, instrument: InstrumentSpec, series: str, read_parquet: Callable[..., list[T]], *,
+        start_ts: int | None, end_ts: int | None,
+    ) -> tuple[ColdManifest, list[T]]:
         if not self._db_path.is_file():
             return ColdManifest(0, ()), []
         for attempt in range(2):
@@ -669,13 +828,13 @@ class ColdReader:
                     row = db.execute("SELECT version FROM manifest_version WHERE id = 1").fetchone()
                 version = 0 if row is None else int(row[0])
                 generations = _select_generations(
-                    db, instrument, timeframe, start_ts=start_ts, end_ts=end_ts,
+                    db, instrument, series, start_ts=start_ts, end_ts=end_ts,
                 )
-            decoded: list[RawBar] = []
+            decoded: list[T] = []
             try:
                 for generation in generations:
                     path = _verify_generation_file(self._data_dir, generation)
-                    decoded.extend(_read_cold_parquet(path, start_ts=start_ts, end_ts=end_ts))
+                    decoded.extend(read_parquet(path, start_ts=start_ts, end_ts=end_ts))
             except FileNotFoundError as exc:
                 if attempt:
                     raise ColdStoreIntegrityError(
@@ -745,6 +904,27 @@ class ColdStore:
             self._commit_manifest(generation)
             return generation
 
+    def publish_derivatives(
+        self, instrument: InstrumentSpec, kind: DerivativeKind, rows: Sequence[DerivativePoint],
+    ) -> ColdGeneration:
+        """发布同月、同类别的衍生品修订。"""
+        batch = DerivativeBatch(instrument, kind, rows)
+        with self._lock:
+            self._ensure_open()
+            if not rows:
+                raise ColdStoreQualityError("衍生品批次为空，拒绝发布")
+            _validate_derivatives(batch)
+            if partition_month(rows[0].ts_event) != partition_month(rows[-1].ts_event):
+                raise ColdStoreQualityError("尾部批次不能跨月")
+            generation_id = _sha256_bytes(_derivative_content(rows))
+            existing = self._select_generation(batch, generation_id)
+            if existing is not None:
+                _verify_generation_file(self._data_dir, existing)
+                return existing
+            generation = self._prepare_generation(batch, generation_id)
+            self._commit_manifest(generation)
+            return generation
+
     def generations(self, instrument: InstrumentSpec, timeframe: str) -> list[ColdGeneration]:
         with self._lock:
             self._ensure_open()
@@ -769,6 +949,22 @@ class ColdStore:
     ) -> list[RawBar]:
         self._ensure_open()
         return self._reader.read_revisions(instrument, timeframe, start_ts=start_ts, end_ts=end_ts)
+
+    def read_derivative_revisions(
+        self, instrument: InstrumentSpec, kind: DerivativeKind, *, start_ts: int, end_ts: int,
+    ) -> list[DerivativePoint]:
+        self._ensure_open()
+        return self._reader.read_derivative_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
+
+    def read_derivatives(
+        self, instrument: InstrumentSpec, kind: DerivativeKind, *,
+        start_ts: int | None = None, end_ts: int | None = None, as_of: int | None = None,
+        historical_only: bool = False,
+    ) -> list[DerivativePoint]:
+        self._ensure_open()
+        return self._reader.read_derivatives(
+            instrument, kind, start_ts=start_ts, end_ts=end_ts, as_of=as_of, historical_only=historical_only,
+        )
 
     def compact(self, instruments: Sequence[InstrumentSpec], *, now_ms: int | None = None) -> None:
         """合并同月、同标的规格的文件，保留每一行。"""
@@ -806,13 +1002,22 @@ class ColdStore:
         for group in groups.values():
             if not any(item.parquet_path.name.startswith(tail_prefix) for item in group):
                 continue
-            rows = [bar for item in group for bar in self._read_generation(item)]
-            rows.sort(key=lambda bar: (bar.ts_event, bar.revision))
-            batch = ColdBatch(instrument=instrument, timeframe=timeframe, bars=rows)
+            if timeframe in DerivativeKind:
+                points = [
+                    point for item in group for point in _read_derivative_cold_parquet(
+                        _verify_generation_file(self._data_dir, item),
+                    )
+                ]
+                points.sort(key=_derivative_order)
+                batch = DerivativeBatch(instrument, DerivativeKind(timeframe), points)
+                content = _derivative_content(points)
+            else:
+                bars = [bar for item in group for bar in self._read_generation(item)]
+                bars.sort(key=lambda bar: (bar.ts_event, bar.revision))
+                batch = ColdBatch(instrument, timeframe, bars)
+                content = _content_bytes(bars, canonical_decimals=True)
             # 与尾部批次的内容标识分开，清单交换前可安全重试。
-            generation_id = _sha256_bytes(
-                b"partition\n" + _content_bytes(rows, canonical_decimals=True)
-            )
+            generation_id = _sha256_bytes(b"partition\n" + content)
             archive = "".join(
                 json.dumps({"source_sha256": item.content_sha256}) + "\n" for item in group
             ).encode("utf-8")
@@ -884,7 +1089,7 @@ class ColdStore:
     def _staging_file(self, archived: ArchivedBatch) -> Path:
         return self._data_dir / STAGING_SUBDIR / archived.sha256 / "bars.parquet"
 
-    def _write_staging(self, archived: ArchivedBatch, batch: ColdBatch) -> None:
+    def _write_staging(self, archived: ArchivedBatch, batch: ColdBatch | DerivativeBatch) -> None:
         self._hook(ColdPhase.STAGING_BEFORE)
         staging_dir = (self._data_dir / STAGING_SUBDIR) / archived.sha256
         # 上一次崩溃可能留下残片；发布永远从干净 staging 重建，绝不信任旧文件。
@@ -892,7 +1097,10 @@ class ColdStore:
             shutil.rmtree(staging_dir)
         staging_dir.mkdir(parents=True)
         temporary = staging_dir / "bars.parquet.tmp"
-        _write_cold_parquet(temporary, batch.bars, instrument=batch.instrument)
+        if isinstance(batch, DerivativeBatch):
+            _write_derivative_cold_parquet(temporary, batch)
+        else:
+            _write_cold_parquet(temporary, batch.bars, instrument=batch.instrument)
         with temporary.open("rb") as handle:
             os.fsync(handle.fileno())
         os.replace(temporary, staging_dir / "bars.parquet")
@@ -900,23 +1108,35 @@ class ColdStore:
         self._hook(ColdPhase.STAGING_AFTER)
 
     def _quality_check(
-        self, archived: ArchivedBatch, batch: ColdBatch, *, compacted: bool
+        self, archived: ArchivedBatch, batch: ColdBatch | DerivativeBatch, *, compacted: bool
     ) -> None:
         self._hook(ColdPhase.QC_BEFORE)
-        decoded = _read_cold_parquet(self._staging_file(archived))
-        _validate_bars(
-            decoded, instrument=batch.instrument, timeframe=batch.timeframe,
-            allow_equal_revisions=compacted,
-        )
-        if decoded != list(batch.bars):
+        path = self._staging_file(archived)
+        if isinstance(batch, DerivativeBatch):
+            decoded = _read_derivative_cold_parquet(path)
+            _validate_derivatives(
+                DerivativeBatch(batch.instrument, batch.kind, decoded), allow_equal_revisions=compacted,
+            )
+        else:
+            decoded = _read_cold_parquet(path)
+            _validate_bars(
+                decoded, instrument=batch.instrument, timeframe=batch.timeframe,
+                allow_equal_revisions=compacted,
+            )
+        if decoded != list(batch.rows):
             raise ColdStoreIntegrityError("staging Parquet 读回内容与输入批次不一致")
         self._hook(ColdPhase.QC_AFTER)
 
     def _prepare_generation(
-        self, batch: ColdBatch, generation_id: str, *, source_archive: bytes | None = None
+        self, batch: ColdBatch | DerivativeBatch, generation_id: str, *, source_archive: bytes | None = None
     ) -> ColdGeneration:
         compacted = source_archive is not None
-        content = _content_bytes(batch.bars) if source_archive is None else source_archive
+        if source_archive is not None:
+            content = source_archive
+        elif isinstance(batch, DerivativeBatch):
+            content = _derivative_content(batch.rows)
+        else:
+            content = _content_bytes(batch.bars)
         archived = self._archive_content(content, _sha256_bytes(content))
         self._write_staging(archived, batch)
         self._quality_check(archived, batch, compacted=compacted)
@@ -929,14 +1149,14 @@ class ColdStore:
             parquet_path=final.relative_to(self._data_dir),
             sha256=_sha256_file(final),
             content_sha256=archived.sha256,
-            first_ts=batch.bars[0].ts_event,
-            last_ts=batch.bars[-1].ts_event,
-            bars=len(batch.bars),
-            committed_ts=max(bar.ts_committed for bar in batch.bars),
+            first_ts=batch.rows[0].ts_event,
+            last_ts=batch.rows[-1].ts_event,
+            bars=len(batch.rows),
+            committed_ts=max(row.ts_committed for row in batch.rows),
         )
 
     def _promote(
-        self, archived: ArchivedBatch, batch: ColdBatch, generation_id: str, *, compacted: bool
+        self, archived: ArchivedBatch, batch: ColdBatch | DerivativeBatch, generation_id: str, *, compacted: bool
     ) -> Path:
         self._hook(ColdPhase.RENAME_BEFORE)
         kind = "partition" if compacted else "tail"
@@ -946,7 +1166,7 @@ class ColdStore:
             / _safe_path_part(batch.instrument.venue, "venue")
             / _safe_path_part(batch.instrument.symbol, "symbol")
             / _safe_path_part(batch.timeframe, "timeframe")
-            / partition_month(batch.bars[0].ts_event)
+            / partition_month(batch.rows[0].ts_event)
             / f"{kind}-{version}-{generation_id}.parquet"
         )
         final.parent.mkdir(parents=True, exist_ok=True)
@@ -1081,7 +1301,7 @@ class ColdStore:
         return None
 
     def _select_generation(
-        self, batch: ColdBatch, generation_id: str
+        self, batch: ColdBatch | DerivativeBatch, generation_id: str
     ) -> ColdGeneration | None:
         row = self._connection.execute(
             f"""

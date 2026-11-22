@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import Field
 
 from talaria.foundation.bars import RangeBar
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.types import ContractModel
 
 
@@ -22,6 +23,7 @@ class SubscriptionRequest(ContractModel):
     owner: str = Field(min_length=1, max_length=64)
     after: SubscriptionCursor | None = None
     include_baseline: bool = False
+    kind: DerivativeKind | None = None
 
 
 class SubscriptionReady(SubscriptionCursor):
@@ -41,6 +43,30 @@ class StrategyBarEvent(ContractModel):
     seq: int | None = Field(ge=1)
     bar: RangeBar
     content_id: str
+
+
+class StrategyDerivativeEvent(ContractModel):
+    """冷库发布的衍生品修订，范围重同步的修订没有实时序号。"""
+
+    type: Literal["derivative"] = "derivative"
+    epoch: str
+    seq: int | None = Field(ge=1)
+    point: DerivativePoint
+    content_id: str
+
+
+def identified_derivative_revisions(
+    points: Iterable[DerivativePoint],
+) -> Iterator[tuple[str, DerivativePoint]]:
+    for point in sorted(points, key=lambda row: (
+        row.ts_event, row.timeframe or "", row.is_funding_settlement, row.revision,
+    )):
+        # 修订在冷库中分配，合并和进程重启后保留原编号。
+        identity = ":".join((
+            point.kind.value, point.timeframe or "", str(int(point.is_funding_settlement)),
+            str(point.ts_event), str(point.revision),
+        ))
+        yield identity, point
 
 
 def identified_revisions(bars: Iterable[RangeBar]) -> Iterator[tuple[str, RangeBar]]:

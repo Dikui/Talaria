@@ -12,13 +12,16 @@ from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
     DerivativeDataConnector,
+    DerivativeKind,
     DerivativePoint,
-    RawDerivativePoint,
 )
 from talaria.foundation.errors import ColdStoreError, FeatureDisabledError, FeedUnavailableError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
-from talaria.perception.backfill import BackfillPolicy, ensure_history
+from talaria.perception.backfill import (
+    BackfillPolicy, derivative_history_pages, derivative_series, ensure_history,
+)
+from talaria.perception.cold_publisher import ColdPublisher
 from talaria.perception.cold_store import ColdReader
 from talaria.perception.compaction import compact_series
 from talaria.perception.hot_buffer import HotBarProvider
@@ -64,6 +67,7 @@ class SnapshotBuilder:
         policy: BackfillPolicy,
         now_ms: Callable[[], int],
         hot_bars: HotBarProvider | None = None,
+        cold_publisher: ColdPublisher | None = None,
     ) -> None:
         self._data_dir = data_dir
         self._connector = connector
@@ -72,6 +76,7 @@ class SnapshotBuilder:
         self._policy = policy
         self._now_ms = now_ms
         self._hot_bars = hot_bars
+        self._cold_publisher = cold_publisher
         self._cold_reader = ColdReader(data_dir)
 
     def build(
@@ -192,108 +197,46 @@ class SnapshotBuilder:
         request: SnapshotRequest,
         cutoff_ts: int,
     ) -> list[DerivativePoint]:
-        """按各接口游标语义向左回填；任何衍生品缺失都不阻塞主快照。"""
+        """物化冷库当时可见的历史序列，维持已登记快照的内容不变。"""
         connector = self._connector
-        if not isinstance(connector, DerivativeDataConnector):
-            return []
-        collected: dict[tuple[str, str | None, int], RawDerivativePoint] = {}
-
-        def collect(points: Sequence[RawDerivativePoint]) -> None:
-            for point in points:
-                if point.ts_available > cutoff_ts:
-                    continue
-                collected[(point.kind.value, point.timeframe, point.ts_event)] = point
-
-        for timeframe in request.timeframes:
-            try:
-                collect(
-                    self._pages(
-                        lambda end_ts, limit, tf=timeframe: connector.fetch_mark_price_bars(
-                            symbol=instrument.symbol,
-                            timeframe=tf,
-                            end_ts=end_ts,
-                            limit=limit,
-                        ),
-                        target=self._policy.target_bars,
-                        page_limit=min(self._policy.page_limit, 1000),
-                        cutoff_ts=cutoff_ts,
+        if self._cold_publisher is None and isinstance(connector, DerivativeDataConnector):
+            points = []
+            for kind, timeframe in derivative_series(request.timeframes):
+                try:
+                    pages = derivative_history_pages(
+                        connector, self._policy, symbol=instrument.symbol,
+                        kind=kind, timeframe=timeframe, cutoff=cutoff_ts,
                     )
-                )
-            except FeedUnavailableError as exc:
-                logger.warning("标记价回填失败，快照继续：%s", exc)
-        try:
-            collect(
-                self._pages(
-                    lambda end_ts, limit: connector.fetch_funding_settlements(
-                        symbol=instrument.symbol, end_ts=end_ts, limit=limit
-                    ),
-                    target=max(8, min(1000, self._policy.target_bars // 8)),
-                    page_limit=200,
-                    cutoff_ts=cutoff_ts,
-                )
+                    points.extend([row.to_point(instrument.instrument_id) for page in pages for row in page])
+                except FeedUnavailableError as exc:
+                    logger.warning("衍生品回填失败，快照继续（%s %s）：%s", kind, timeframe, exc)
+            return points
+        if self._cold_publisher is not None:
+            future = self._cold_publisher.request_derivative_history(
+                instrument, request.timeframes, cutoff_ts=cutoff_ts,
             )
-        except FeedUnavailableError as exc:
-            logger.warning("资金费率回填失败，快照继续：%s", exc)
-        oi_timeframes = sorted(
-            {
-                OI_TIMEFRAME_BY_TIMEFRAME[timeframe]
-                for timeframe in request.timeframes
-                if timeframe in OI_TIMEFRAME_BY_TIMEFRAME
-            }
-        )
-        for oi_timeframe in oi_timeframes:
+            if future is not None:
+                future.result()
+        timeframes = {
+            DerivativeKind.MARK_PRICE: set(request.timeframes),
+            DerivativeKind.OPEN_INTEREST: {
+                OI_TIMEFRAME_BY_TIMEFRAME[tf] for tf in request.timeframes if tf in OI_TIMEFRAME_BY_TIMEFRAME
+            },
+            DerivativeKind.FUNDING_RATE: {None},
+        }
+        points: list[DerivativePoint] = []
+        for kind, wanted in timeframes.items():
             try:
-                collect(
-                    self._pages(
-                        lambda end_ts, limit, tf=oi_timeframe: connector.fetch_open_interest(
-                            symbol=instrument.symbol,
-                            timeframe=tf,
-                            end_ts=end_ts,
-                            limit=limit,
-                        ),
-                        target=self._policy.target_bars,
-                        page_limit=200,
-                        cutoff_ts=cutoff_ts,
-                    )
+                rows = self._cold_reader.read_derivatives(
+                    instrument, kind, end_ts=cutoff_ts, as_of=cutoff_ts, historical_only=True,
                 )
-            except FeedUnavailableError as exc:
-                logger.warning("持仓量回填失败，快照继续：%s", exc)
-
-        points = [
-            point.to_point(instrument.instrument_id)
-            for point in sorted(
-                collected.values(),
-                key=lambda item: (item.kind.value, item.timeframe or "", item.ts_event),
-            )
-        ]
+            except ColdStoreError as exc:
+                logger.warning("冷库衍生品快照输入读取失败（%s %s）：%s", instrument.instrument_id, kind, exc)
+                continue
+            for timeframe in wanted:
+                series = [
+                    point for point in rows if point.timeframe == timeframe
+                    and (kind is not DerivativeKind.FUNDING_RATE or point.is_funding_settlement)
+                ]
+                points.extend(series)
         return points
-
-    def _pages(
-        self,
-        fetch,
-        *,
-        target: int,
-        page_limit: int,
-        cutoff_ts: int,
-    ) -> list[RawDerivativePoint]:
-        """复用 04 的向左游标语义：从 cutoff 开始，按最老事件继续翻页。"""
-        collected: dict[int, RawDerivativePoint] = {}
-        cursor: int | None = cutoff_ts
-        for _ in range(self._policy.max_pages):
-            batch = [
-                point
-                for point in fetch(end_ts=cursor, limit=page_limit)
-                if point.ts_available <= cutoff_ts
-            ]
-            before = len(collected)
-            for point in batch:
-                collected[point.ts_event] = point
-            if len(collected) == before or len(collected) >= target:
-                break
-            oldest = min(collected)
-            if oldest <= 0:
-                break
-            cursor = oldest - 1
-            if len(batch) < page_limit:
-                break
-        return [collected[key] for key in sorted(collected)]

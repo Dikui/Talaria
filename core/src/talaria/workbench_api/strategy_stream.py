@@ -10,10 +10,12 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from talaria.foundation.bars import RangeBar
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.feed import FeedEvent, KlineEvent
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.strategy_subscription import (
-    StrategyBarEvent, SubscriptionCursor, SubscriptionReady, identified_revisions,
+    StrategyBarEvent, StrategyDerivativeEvent, SubscriptionCursor, SubscriptionReady,
+    identified_derivative_revisions, identified_revisions,
 )
 from talaria.perception.bar_range import revision_window, read_bar_range
 from talaria.perception.cold_store import ColdReader
@@ -25,15 +27,17 @@ LOG_SIZE = 4096
 RECONNECT_LEASE_SECONDS = 30
 logger = logging.getLogger(__name__)
 type EventRange = tuple[int, int | None, HotSlot | None]
+type StrategyKey = SubscriptionKey | tuple[str, str, DerivativeKind]
+type StrategyEvent = StrategyBarEvent | StrategyDerivativeEvent
 FULL_RANGE: EventRange = (0, None, None)
 
 
 @dataclass(eq=False)
 class StrategySession:
     ready: SubscriptionReady
-    replay: tuple[StrategyBarEvent, ...]
+    replay: tuple[StrategyEvent, ...]
     baseline: tuple[str, ...] = ()
-    queue: asyncio.Queue[StrategyBarEvent] = field(
+    queue: asyncio.Queue[StrategyEvent] = field(
         default_factory=lambda: asyncio.Queue(maxsize=QUEUE_SIZE),
     )
     interrupted: asyncio.Event = field(default_factory=asyncio.Event)
@@ -41,7 +45,7 @@ class StrategySession:
 
 @dataclass
 class _Lease:
-    key: SubscriptionKey
+    key: StrategyKey
     initial: SubscriptionCursor
     started_ts: int
     baseline: tuple[str, ...]
@@ -53,7 +57,7 @@ class _Lease:
 class _Journal:
     epoch: str = field(default_factory=lambda: uuid4().hex)
     seq: int = 0
-    events: deque[StrategyBarEvent] = field(default_factory=lambda: deque(maxlen=LOG_SIZE))
+    events: deque[StrategyEvent] = field(default_factory=lambda: deque(maxlen=LOG_SIZE))
     seen: set[str] = field(default_factory=set)
     clients: set[StrategySession] = field(default_factory=set)
     dirty: dict[EventRange, None] = field(default_factory=dict)
@@ -75,7 +79,7 @@ class StrategyStream:
         self._instruments = {spec.instrument_id: spec for spec in instruments}
         self._now_ms = now_ms
         self._leases: dict[str, _Lease] = {}
-        self._journals: dict[SubscriptionKey, _Journal] = {}
+        self._journals: dict[StrategyKey, _Journal] = {}
         self._attaching = asyncio.Lock()
 
     def ingest(self, event: FeedEvent) -> None:
@@ -87,7 +91,7 @@ class StrategyStream:
                 self.changed(key, raw.ts_event, raw.ts_event, self._hot_buffer.slot(key, raw.ts_event))
 
     def changed(
-        self, key: SubscriptionKey, start: int, end: int | None, slot: HotSlot | None = None,
+        self, key: StrategyKey, start: int, end: int | None, slot: HotSlot | None = None,
     ) -> None:
         journal = self._journals.get(key)
         if journal is None:
@@ -102,10 +106,22 @@ class StrategyStream:
         if journal.worker is None or journal.worker.done():
             journal.worker = asyncio.create_task(self._drain(key, journal))
 
+    def derivative_changed(self, instrument: str, kind: DerivativeKind, start: int, end: int) -> None:
+        for key in self._journals:
+            if len(key) == 3 and key[0] == instrument and key[2] is kind:
+                self.changed(key, start, end)
+
     def _read(
-        self, key: SubscriptionKey, bounds: EventRange, now: int,
-    ) -> tuple[list[tuple[str, RangeBar]], int | None]:
+        self, key: StrategyKey, bounds: EventRange, now: int,
+    ) -> tuple[list[tuple[str, RangeBar | DerivativePoint]], int | None]:
         start, end, slot = bounds
+        if len(key) == 3:
+            points = self._reader.read_derivative_revisions(
+                self._instruments[key[0]], key[2], start_ts=start, end_ts=end,
+            )
+            future = min((point.ts_available for point in points if point.ts_available > now), default=None)
+            rows = identified_derivative_revisions(point for point in points if point.ts_available <= now)
+            return list(rows), future
         _, cold, hot = read_bar_range(
             self._reader, self._hot_buffer, self._instruments[key[0]], key[1], start, end, slot=slot,
         )
@@ -114,7 +130,7 @@ class StrategyStream:
         return list(identified_revisions(bars)), future
 
     async def _refresh(
-        self, key: SubscriptionKey, journal: _Journal, bounds: EventRange, *, baseline: bool = False,
+        self, key: StrategyKey, journal: _Journal, bounds: EventRange, *, baseline: bool = False,
     ) -> None:
         now = self._now_ms()
         rows, future = await asyncio.to_thread(self._read, key, bounds, now)
@@ -130,7 +146,7 @@ class StrategyStream:
             journal.next_available = future
             self._wait_for_visibility(key, journal, future)
 
-    def _wait_for_visibility(self, key: SubscriptionKey, journal: _Journal, due: int) -> None:
+    def _wait_for_visibility(self, key: StrategyKey, journal: _Journal, due: int) -> None:
         remaining = (due - self._now_ms()) / 1000
         if remaining <= 0:
             journal.timer = None
@@ -142,7 +158,7 @@ class StrategyStream:
                 min(.25, remaining), self._wait_for_visibility, key, journal, due,
             )
 
-    async def _drain(self, key: SubscriptionKey, journal: _Journal) -> None:
+    async def _drain(self, key: StrategyKey, journal: _Journal) -> None:
         try:
             while journal.dirty:
                 async with journal.lock:
@@ -150,7 +166,7 @@ class StrategyStream:
                     del journal.dirty[bounds]
                     await self._refresh(key, journal, bounds)
         except Exception:
-            logger.exception("读取策略订阅范围失败：%s %s", *key)
+            logger.exception("读取策略订阅范围失败：%s", key)
             self._invalidate(journal)
 
     @staticmethod
@@ -163,11 +179,12 @@ class StrategyStream:
         journal.clients.clear()
 
     async def attach(
-        self, owner: str, key: SubscriptionKey, after: SubscriptionCursor | None,
+        self, owner: str, key: StrategyKey, after: SubscriptionCursor | None,
         *, include_baseline: bool = False,
     ) -> StrategySession:
         async with self._attaching:
-            self._scheduler.check_account(owner, key)
+            upstream = (key[0], key[1])
+            self._scheduler.check_account(owner, upstream)
             journal = self._journals.get(key)
             fresh = journal is None
             if journal is None:
@@ -176,6 +193,8 @@ class StrategyStream:
             try:
                 async with journal.lock:
                     lease = self._leases.get(owner)
+                    if lease is not None and lease.key != key:
+                        raise ValueError("连接所有者已持有另一个策略订阅")
                     if lease is not None and lease.expiry is not None:
                         lease.expiry.cancel()
                         lease.expiry = None
@@ -183,7 +202,7 @@ class StrategyStream:
                         # 初次挂载以本次范围快照和对应日志序号为界。读取期间的通知已排队。
                         started_ts = self._now_ms()
                         await self._refresh(key, journal, FULL_RANGE, baseline=fresh)
-                        self._scheduler.acquire_account(owner, key)
+                        self._scheduler.acquire_account(owner, upstream)
                         initial = SubscriptionCursor(epoch=journal.epoch, seq=journal.seq)
                         baseline = tuple(journal.seen) if include_baseline and after is None else ()
                         lease = _Lease(key, initial, started_ts, baseline)
@@ -239,7 +258,7 @@ class StrategyStream:
         self._scheduler.release_account(owner)
         self._discard_unused(lease.key)
 
-    def _discard_unused(self, key: SubscriptionKey) -> None:
+    def _discard_unused(self, key: StrategyKey) -> None:
         if any(lease.key == key for lease in self._leases.values()):
             return
         journal = self._journals.get(key)
@@ -255,11 +274,19 @@ class StrategyStream:
             journal.timer.cancel()
 
     @staticmethod
-    def _publish(key: SubscriptionKey, journal: _Journal, identity: str, bar: RangeBar) -> None:
+    def _publish(
+        key: StrategyKey, journal: _Journal, identity: str, row: RangeBar | DerivativePoint,
+    ) -> None:
         journal.seq += 1
-        event = StrategyBarEvent(
-            instrument_id=key[0], timeframe=key[1], epoch=journal.epoch, seq=journal.seq, bar=bar, content_id=identity,
-        )
+        if isinstance(row, DerivativePoint):
+            event = StrategyDerivativeEvent(
+                epoch=journal.epoch, seq=journal.seq, point=row, content_id=identity,
+            )
+        else:
+            event = StrategyBarEvent(
+                instrument_id=key[0], timeframe=key[1], epoch=journal.epoch, seq=journal.seq,
+                bar=row, content_id=identity,
+            )
         journal.events.append(event)
         for session in tuple(journal.clients):
             if session.queue.full():
