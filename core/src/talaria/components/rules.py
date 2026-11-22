@@ -112,12 +112,7 @@ class _Evaluation:
                 return getattr(self.bar, operand.field, None)
             return getattr(self._previous_bar(), operand.field, None)
         channel = operand.channel or CHANNELS[operand.indicator_name][0]
-        points = ctx.indicator(
-            operand.name, version=operand.version,
-            _history_limit=ctx._indicator_history_limit or DEFAULT_RULE_HISTORY,
-            _include_ticks=True,
-            **operand.params.model_dump(exclude_none=True),
-        )
+        points = ctx._rule_indicator(operand, DEFAULT_RULE_HISTORY)
         if previous:
             bar = self._previous_bar()
             if bar is None or len(points) < 2 or points[-2].timestamp != bar.timestamp:

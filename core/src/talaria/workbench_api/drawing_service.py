@@ -84,6 +84,7 @@ class DrawingService:
         instrument_id: str,
         timeframe: str,
         *,
+        all_timeframes: bool = False,
         from_ts: int | None = None,
         to_ts: int | None = None,
     ) -> DrawingListResponse:
@@ -92,7 +93,7 @@ class DrawingService:
         _check_window(from_ts or 0, to_ts)
         drawings = await self._queue.read(
             lambda store: store.drawings.list(
-                instrument_id, timeframe, from_ts=from_ts, to_ts=to_ts
+                instrument_id, None if all_timeframes else timeframe, from_ts=from_ts, to_ts=to_ts
             )
         )
         return DrawingListResponse(

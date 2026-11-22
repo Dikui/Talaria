@@ -13,6 +13,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from talaria.components import CompiledRule, Ctx, RuleState, compile_rule
+from talaria.components.runtime import RuleIndicatorHistory
 from talaria.components.rules import DEFAULT_RULE_HISTORY, RuleObservation, event_visible_at, level_bounds
 from talaria.foundation.alerts.contracts import AlertRecord, AlertStatus, AlertTriggerKind, AlertTriggerRecord
 from talaria.foundation.bars import CompactBar
@@ -77,6 +78,7 @@ class _Runtime:
     partial_inputs: set[frozenset[int]] = field(default_factory=set)
     last_cross_ts: int | None = None
     rule_state: RuleState = field(default_factory=RuleState)
+    indicators: dict[tuple, RuleIndicatorHistory] = field(default_factory=dict)
 
 
 class AlertEngine:
@@ -92,6 +94,7 @@ class AlertEngine:
         key_level_provider: KeyLevelProvider | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
         on_trigger: Callable[[AlertTriggerRecord, AlertRecord], None] | None = None,
+        on_observation: Callable[[Ctx, RuleObservation | None], None] | None = None,
         bar_limit: int = DEFAULT_RULE_HISTORY,
     ) -> None:
         self._now_ms = now_ms
@@ -100,6 +103,8 @@ class AlertEngine:
         self._key_level_provider = key_level_provider
         self._freeze_snapshot = freeze_snapshot
         self._on_trigger = on_trigger
+        self._on_observation = on_observation
+        self._chart_windows: dict[tuple[str, str, str], ConfirmedHistory] = {}
         self._bar_limit = max(bar_limit, 32)
         self._compiled: dict[str, CompiledRule] = {}
         self._derivatives = RuleDerivatives(self._bar_limit, read_archived_derivatives)
@@ -124,15 +129,17 @@ class AlertEngine:
             self._compiled[alert.alert_id] = compile_rule(alert.condition)
             self._runtimes[alert.alert_id] = _Runtime()
         self._alerts[alert.alert_id] = alert
+        self._release_chart_window(previous)
         self._ensure_window(alert.instrument_id, alert.timeframe)
         for node in alert.condition.references():
             if isinstance(node, (RuleOverlay, RuleDrawingPrice)):
                 self._warm_drawing(node.drawing_id)
 
     def remove(self, alert_id: str) -> None:
-        self._alerts.pop(alert_id, None)
+        previous = self._alerts.pop(alert_id, None)
         self._runtimes.pop(alert_id, None)
         self._compiled.pop(alert_id, None)
+        self._release_chart_window(previous)
 
     def get(self, alert_id: str) -> AlertRecord | None:
         return self._alerts.get(alert_id)
@@ -179,6 +186,24 @@ class AlertEngine:
             window.put(bar)
         self._seeded.add(key)
 
+    def _release_chart_window(self, previous: AlertRecord | None) -> None:
+        if previous is None or not previous.condition.indicator_snapshot_id:
+            return
+        key = previous.instrument_id, previous.timeframe, previous.condition.indicator_snapshot_id
+        if all((a.instrument_id, a.timeframe, a.condition.indicator_snapshot_id) != key for a in self._alerts.values()):
+            self._chart_windows.pop(key, None)
+
+    def has_chart_window(self, instrument: str, timeframe: str, snapshot_id: str) -> bool:
+        return (instrument, timeframe, snapshot_id) in self._chart_windows
+
+    def seed_chart_window(self, instrument: str, timeframe: str, snapshot_id: str, events: Iterable[KlineEvent]) -> None:
+        """从规则固定的图表起点预热。不同快照的累积指标不能共用起点。"""
+        history = ConfirmedHistory(TIMEFRAME_MS[timeframe], limit=None)
+        for event in events:
+            if event.confirmed:
+                history.put(event.bar, event.revision, visible_at=event_visible_at(event))
+        self._chart_windows[instrument, timeframe, snapshot_id] = history
+
     def seed_derivatives(self, points: Iterable[DerivativePoint]) -> None:
         self._derivatives.seed(points)
 
@@ -212,7 +237,8 @@ class AlertEngine:
         for alert in alerts:
             if self._advance(alert, now):
                 changed[alert.alert_id] = alert
-            if alert.status is not AlertStatus.ARMED:
+            observe_cooldown = self._on_observation is not None and alert.status is AlertStatus.COOLDOWN
+            if alert.status is not AlertStatus.ARMED and not observe_cooldown:
                 continue
             if isinstance(event, KlineEvent) and event.bar.timestamp <= self._skip_through.get(
                 (instrument_id, event.timeframe), -1
@@ -222,7 +248,7 @@ class AlertEngine:
                 continue
             if alert.condition.timing == "bar_close" and (not isinstance(event, KlineEvent) or not event.confirmed):
                 continue
-            key = (alert.timeframe, alert.condition.timing)
+            key = (alert.timeframe, alert.condition.timing, alert.condition.indicator_snapshot_id)
             if key not in contexts:
                 contexts[key] = self._context(alert, event, now)
             ctx = contexts[key]
@@ -239,7 +265,7 @@ class AlertEngine:
                     versions[version_key] = {lv.level_id: lv for lv in self._levels_at(ctx, level_ts)}
                 levels = versions[version_key]
             observation = self._evaluate(alert, ctx, event, levels)
-            if observation is not None:
+            if observation is not None and not observe_cooldown:
                 pending.append((alert, observation, ctx.now))
 
         # 冻结证据可能回填冷库，等该行情事件的所有规则读取完输入再执行。
@@ -327,7 +353,11 @@ class AlertEngine:
         window = self._windows.get(key)
         if window is None:
             return
-        window.put(event.bar, event.revision, visible_at=event_visible_at(event))
+        visible_at = event_visible_at(event)
+        window.put(event.bar, event.revision, visible_at=visible_at)
+        for (symbol, timeframe, _), history in self._chart_windows.items():
+            if key == (symbol, timeframe):
+                history.put(event.bar, event.revision, visible_at=visible_at)
 
     def _runtime_for(self, alert: AlertRecord) -> _Runtime:
         runtime = self._runtimes.get(alert.alert_id)
@@ -373,8 +403,15 @@ class AlertEngine:
 
         compiled = self._compiled[alert.alert_id]
         ctx = replace(ctx, drawing=self._drawing_for, levels=levels, rule_state=runtime.rule_state,
+                      _indicator_history=runtime.indicators,
                       event=event if compiled.rule.timing == "event" else None)
         observation = compiled.observe(ctx)
+        if self._on_observation is not None:
+            self._on_observation(ctx, observation)
+        # Rearming starts a fresh baseline. Passive observations during cooldown
+        # must not change bar deduplication, cross times or trigger state.
+        if alert.status is AlertStatus.COOLDOWN:
+            return None
         inputs = frozenset(runtime.rule_state.known_inputs)
         if observation is None:
             if compiled.rule.timing == "event" and inputs and not runtime.baseline_pending:
@@ -405,7 +442,7 @@ class AlertEngine:
     def _context(self, alert: AlertRecord, event: FeedEvent, now: int) -> Ctx | None:
         key = (alert.instrument_id, alert.timeframe)
         cutoff = event_visible_at(event)
-        history = self._windows[key]
+        history = self._chart_windows.get((*key, alert.condition.indicator_snapshot_id), self._windows[key])
         bar_ts = None
         if isinstance(event, KlineEvent):
             bar_ts = event.bar.timestamp
@@ -440,7 +477,7 @@ class AlertEngine:
             *key, 0, cutoff, _bar_ts=bar_ts, _indicator_defaults={}, _confirmed_compact=bars,
             _first_confirmed_at=history.first_confirmed_at, _indicator_history_limit=self._bar_limit,
             _read_derivative_revisions=self._derivatives.observation(alert.instrument_id, cutoff),
-            _session_prefix=prefix,
+            _session_prefix=prefix if not alert.condition.indicator_snapshot_id else (),
         )
 
     def _levels_at(self, ctx: Ctx, cutoff_ts: int) -> Sequence[KeyLevel]:

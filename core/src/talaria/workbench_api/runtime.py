@@ -269,7 +269,9 @@ async def build_runtime(
             cold_publisher=cold_publisher,
         )
         desk = DeskBroadcast()
-        key_levels = KeyLevelRegistry(now_ms=settings.now_ms, on_latest=desk.project_levels)
+        snapshot_store.start_level_session(settings.now_ms())
+        key_levels = KeyLevelRegistry(now_ms=settings.now_ms, on_latest=desk.project_levels,
+                                      on_register=snapshot_store.publish_levels)
         workbench = WorkbenchService(
             pack=pack,
             connector=connector,
@@ -381,6 +383,7 @@ async def build_runtime(
                 now_ms=settings.now_ms,
                 bar_history=bar_history if supervisor is not None else None,
                 read_archived_derivatives=read_archived_derivatives,
+                chart_history=workbench.chart_rule_history,
                 session_history=(
                     session_history
                     if supervisor is not None and settings.replay_events is None

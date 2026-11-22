@@ -24,11 +24,12 @@ async def list_drawings(
     request: Request,
     instrument_id: str = Query(..., description="标的 id"),
     timeframe: str = Query(..., description="当前 K 线周期"),
+    all_timeframes: bool = False,
     from_ts: int | None = Query(None, ge=0, description="可视窗口左边界（UTC 毫秒）"),
     to_ts: int | None = Query(None, ge=0, description="可视窗口右边界（UTC 毫秒）"),
 ) -> DrawingListResponse:
     return await get_runtime(request).drawings.list_drawings(
-        instrument_id, timeframe, from_ts=from_ts, to_ts=to_ts
+        instrument_id, timeframe, from_ts=from_ts, to_ts=to_ts, all_timeframes=all_timeframes
     )
 
 

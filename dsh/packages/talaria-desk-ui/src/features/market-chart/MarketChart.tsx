@@ -16,6 +16,7 @@ import type {
   CompactBar,
   IndicatorSeries,
   KlineEvent,
+  RulePreviewResponse,
 } from "@talaria/contracts";
 
 import { toKLineData, toKLineSeries, toPeriod } from "../../lib/chartData";
@@ -29,11 +30,10 @@ import type { PanelLink } from "../../workbench/link";
 
 import { CANDLE_PANE_ID, observeLinkedCrosshair, observeLocalCrosshair } from "./crosshair";
 import { shouldDeliverLiveBar } from "./liveDelivery";
+import { OVERLAY_TEMPLATE, STUDY_TEMPLATE, ruleChartIndicators } from "../rules/ruleChart";
 
 type IndicatorRow = Record<string, number | null>;
 
-const OVERLAY_TEMPLATE = "talaria_overlay";
-const STUDY_TEMPLATE = "talaria_study";
 const INDICATOR_ID_PREFIX = "talaria-";
 
 /**
@@ -75,7 +75,6 @@ function calcFor(series: IndicatorSeries) {
 
 function indicatorCreate(
   series: IndicatorSeries,
-  existingPaneId?: string,
 ): IndicatorCreate {
   const isSub = series.pane === "sub";
   return {
@@ -84,10 +83,33 @@ function indicatorCreate(
     shortName: series.name,
     series: isSub ? "normal" : "price",
     // 主图指标覆盖在 K 线窗格；副图沿用已有窗格，首次创建交给 KLineChart 新建。
-    paneId: isSub ? existingPaneId : CANDLE_PANE_ID,
+    paneId: isSub ? undefined : CANDLE_PANE_ID,
     figures: figuresFor(series),
     calc: calcFor(series),
   };
+}
+
+function fitIndicatorPanes(chart: Chart, chartHeight: number) {
+  const subPaneIds = new Set(
+    chart.getIndicators()
+      .filter((indicator) =>
+        indicator.id.startsWith(INDICATOR_ID_PREFIX) && indicator.paneId !== CANDLE_PANE_ID,
+      )
+      .map((indicator) => indicator.paneId),
+  );
+  const count = subPaneIds.size;
+  if (count === 0) return;
+
+  const preferredHeight = count >= 4 ? 88 : count >= 3 ? 104 : 132;
+  const axisHeight = chart.getSize("x_axis_pane")?.height ?? 0;
+  const plotHeight = chartHeight - axisHeight - count * chart.getStyles().separator.size;
+  // 编辑器展开时画布至少 480px，优先给主图留出 320px。
+  const candleHeight = Math.min(320, Math.floor(plotHeight * 0.75));
+  const heightPerPane = Math.floor((plotHeight - candleHeight) / count);
+  const subHeight = Math.max(1, Math.min(preferredHeight, heightPerPane));
+  for (const id of subPaneIds) {
+    chart.setPaneOptions({ id, height: subHeight, minHeight: Math.min(30, subHeight) });
+  }
 }
 
 export interface OlderPage {
@@ -113,6 +135,7 @@ interface MarketChartProps {
   liveBars?: KlineEvent[];
   /** 后端 Python 算子产出的指标序列；只渲染，不在前端计算。 */
   indicatorSeries?: IndicatorSeries[];
+  rulePreview?: RulePreviewResponse | null;
   onStats: (stats: ChartStats) => void;
   onLoadError: (error: unknown) => void;
   /** 画线覆盖层：与 KLineChart 同尺寸的 SVG，父组件负责传入。 */
@@ -143,6 +166,7 @@ export function MarketChart({
   loadOlder,
   liveBars,
   indicatorSeries,
+  rulePreview,
   onStats,
   onLoadError,
   overlay,
@@ -279,7 +303,13 @@ export function MarketChart({
     };
     chart.setDataLoader(dataLoader);
 
+    let chartHeight = element.clientHeight;
     const observer = new ResizeObserver(() => {
+      const height = element.clientHeight;
+      if (height !== chartHeight) {
+        fitIndicatorPanes(chart, height);
+        chartHeight = height;
+      }
       chart.resize();
       cursorRef.current?.refresh();
     });
@@ -328,13 +358,16 @@ export function MarketChart({
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (chart === null) {
+    const element = containerRef.current;
+    if (!chart || !element) {
       return;
     }
-    const seriesList = indicatorSeries ?? [];
-    const activeIds = new Set(
-      seriesList.map((series) => `${INDICATOR_ID_PREFIX}${series.name}`),
-    );
+    const markerColor = getComputedStyle(element).getPropertyValue("--accent").trim();
+    const configList = [
+      ...(indicatorSeries ?? []).map(indicatorCreate),
+      ...ruleChartIndicators(rulePreview, markerColor),
+    ];
+    const activeIds = new Set(configList.map(({ id }) => id));
     for (const indicator of chart.getIndicators()) {
       if (
         indicator.id.startsWith(INDICATOR_ID_PREFIX) &&
@@ -343,39 +376,20 @@ export function MarketChart({
         chart.removeIndicator({ id: indicator.id });
       }
     }
-    for (const series of seriesList) {
-      const existing = chart.getIndicators({
-        id: `${INDICATOR_ID_PREFIX}${series.name}`,
-      });
+    for (const config of configList) {
+      const existing = chart.getIndicators({ id: config.id });
       if (existing.length === 0) {
         // 主图指标共用 candle_pane：非 stack 创建会清空该窗格已有指标，
         // 因此主图必须 isStack=true；副图各自独立窗格，保持 false。
-        chart.createIndicator(
-          indicatorCreate(series),
-          series.pane === "main",
-        );
+        chart.createIndicator(config, config.paneId === CANDLE_PANE_ID);
       } else {
         // 换新闭包，让 KLineChart 用最新后端序列重算；前端不保留旧值。
         // 副图沿用原 paneId，避免参数更新时重复创建窗格。
-        chart.overrideIndicator(indicatorCreate(series, existing[0].paneId));
+        chart.overrideIndicator({ ...config, paneId: existing[0].paneId });
       }
     }
-    const subPaneIds = new Set(
-      chart
-        .getIndicators()
-        .filter(
-          (indicator) =>
-            indicator.id.startsWith(INDICATOR_ID_PREFIX) &&
-            indicator.paneId !== CANDLE_PANE_ID,
-        )
-        .map((indicator) => indicator.paneId),
-    );
-    // 副图多于两个时压缩高度，保证主图仍有可读区域。
-    const subHeight = subPaneIds.size >= 4 ? 88 : subPaneIds.size >= 3 ? 104 : 132;
-    for (const paneId of subPaneIds) {
-      chart.setPaneOptions({ id: paneId, height: subHeight });
-    }
-  }, [indicatorSeries]);
+    fitIndicatorPanes(chart, element.clientHeight);
+  }, [indicatorSeries, rulePreview, theme]);
 
   return (
     <div className="chart-stage">
