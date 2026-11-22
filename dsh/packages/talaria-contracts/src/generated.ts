@@ -102,6 +102,7 @@ export interface BarsQuery {
   end?: number | null;
   as_of?: number | null;
   include_open?: boolean;
+  tail_only?: boolean;
 }
 export interface RangeBar {
   ts_event: number;
@@ -119,6 +120,7 @@ export interface RangeBar {
 export interface BarsResponse {
   instrument_id: string;
   timeframe: string;
+  generation: number;
   bars: RangeBar[];
 }
 export interface KlineEvent {

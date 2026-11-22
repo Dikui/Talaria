@@ -29,7 +29,7 @@
         }
       ],
       "default": null,
-      "description": "事件时间上界（含），省略时取服务当前时间。每次最多查询 10,000 根。",
+      "description": "事件时间上界（含），省略时取服务当前时刻最后一根已收盘柱。每次最多查询 10,000 根。",
       "title": "End"
     },
     "include_open": {
@@ -49,6 +49,12 @@
       "minimum": 0,
       "title": "Start",
       "type": "integer"
+    },
+    "tail_only": {
+      "default": false,
+      "description": "仅返回清单中尚无的可见柱及修订，历史回填照常写入冷库。",
+      "title": "Tail Only",
+      "type": "boolean"
     },
     "timeframe": {
       "title": "Timeframe",

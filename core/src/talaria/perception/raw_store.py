@@ -12,6 +12,7 @@ from collections.abc import Iterable, Iterator
 from decimal import Decimal
 from pathlib import Path
 
+from talaria.foundation.bars import RangeBar
 from talaria.foundation.connector import RawBar
 from talaria.foundation.types import PrecisionTier
 
@@ -55,26 +56,23 @@ def bar_from_record(record: dict[str, object]) -> RawBar:
     )
 
 
-def latest_visible_bars(
-    bars: Iterable[RawBar], *, as_of: int | None = None
-) -> list[RawBar]:
+def latest_visible_bars[Bar: RawBar | RangeBar](
+    bars: Iterable[Bar], *, as_of: int | None = None
+) -> list[Bar]:
     """先按可获取时间截断，再取每个事件的最高修订（ADR-0018）。
 
     同一修订按可获取和摄取时间取更晚者，完全相同时后出现者胜。
     """
 
-    chosen: dict[int, RawBar] = {}
+    chosen: dict[int, tuple[tuple[int, int, int], Bar]] = {}
     for bar in bars:
         if as_of is not None and bar.ts_available > as_of:
             continue
         current = chosen.get(bar.ts_event)
-        if current is None or (bar.revision, bar.ts_available, bar.ts_ingested) >= (
-            current.revision,
-            current.ts_available,
-            current.ts_ingested,
-        ):
-            chosen[bar.ts_event] = bar
-    return [chosen[ts_event] for ts_event in sorted(chosen)]
+        version = (bar.revision, bar.ts_available, bar.ts_ingested if isinstance(bar, RawBar) else 0)
+        if current is None or version >= current[0]:
+            chosen[bar.ts_event] = (version, bar)
+    return [chosen[ts_event][1] for ts_event in sorted(chosen)]
 
 
 class RawStore:

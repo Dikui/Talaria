@@ -611,10 +611,33 @@ class ColdReader:
         end_ts: int | None = None,
     ) -> list[RawBar]:
         """从同一版清单读取范围内的全部修订。"""
+        _, revisions = self.read_manifest_revisions(
+            instrument, timeframe, start_ts=start_ts, end_ts=end_ts,
+        )
+        return revisions
+
+    def read_manifest_revisions(
+        self,
+        instrument: InstrumentSpec,
+        timeframe: str,
+        *,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> tuple[int, list[RawBar]]:
+        """返回同一 SQLite 读事务选出的清单代号及对应文件中的修订。"""
         if not self._db_path.is_file():
-            return []
+            return 0, []
         for attempt in range(2):
             with closing(sqlite3.connect(f"{self._db_path.as_uri()}?mode=ro", uri=True)) as db:
+                db.execute("BEGIN")
+                versioned = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'manifest_version'"
+                ).fetchone()
+                # 旧清单及首次初始化中的空清单没有版本记录。
+                row = None
+                if versioned:
+                    row = db.execute("SELECT version FROM manifest_version WHERE id = 1").fetchone()
+                version = 0 if row is None else int(row[0])
                 generations = _select_generations(
                     db, instrument, timeframe, start_ts=start_ts, end_ts=end_ts,
                 )
@@ -629,7 +652,7 @@ class ColdReader:
                         f"generation 文件缺失：{generation.parquet_path}"
                     ) from exc
             else:
-                return decoded
+                return version, decoded
         raise AssertionError("清单读取重试结束")
 
 
