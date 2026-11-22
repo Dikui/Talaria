@@ -59,6 +59,7 @@ import {
 } from "./features/key-levels/model";
 import { useKeyLevels } from "./features/key-levels/useKeyLevels";
 import { MarketChart, type ChartStats, type OlderPage } from "./features/market-chart/MarketChart";
+import { RuleDrafts } from "./features/rules/ruleDrafts";
 import { ChartRuleEditor, type ChartRulePreview } from "./features/rules/ChartRuleEditor";
 import { ScannerPanel } from "./features/scanner/ScannerPanel";
 import { useScanner } from "./features/scanner/useScanner";
@@ -116,7 +117,7 @@ interface ChartWorkbenchProps {
 }
 
 export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: ChartWorkbenchProps) {
-  const { instrumentId, timeframe, locateTs: snapshotCutoff } = useLinkSnapshot(link);
+  const { group, instrumentId, timeframe, locateTs: snapshotCutoff } = useLinkSnapshot(link);
   const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
   const [feedMode, setFeedMode] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SnapshotMeta | null>(null);
@@ -139,6 +140,8 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
   const [indicatorsLoading, setIndicatorsLoading] = useState(false);
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
   const [chart, setChart] = useState<Chart | null>(null);
+  const [ruleDrafts] = useState(() => new RuleDrafts());
+  const draftScope = JSON.stringify([group, instrumentId, timeframe]);
   const [rulePreview, setRulePreview] = useState<ChartRulePreview | null>(null);
   const [drawingManagerOpen, setDrawingManagerOpen] = useState(false);
   const [keyLevelFilter, setKeyLevelFilter] = useState<KeyLevelFilter>(
@@ -806,18 +809,22 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
           aria-label="K 线主图"
         >
           <ChartRuleEditor
-            key={`${instrumentId}:${timeframe}`}
+            key={draftScope}
+            scope={draftScope}
+            drafts={ruleDrafts}
+            alerts={alerts.alerts}
             instrumentId={instrumentId}
             timeframe={timeframe}
             snapshotId={!showEmpty && snapshot?.instrument_id === instrumentId
                 && snapshot.timeframes.includes(timeframe) ? snapshot.snapshot_id : null}
             loadedSlots={stats.loaded + stats.gaps}
             defaults={indicatorDefaults}
-            drawings={drawings.drawings}
+            drawings={drawings.allDrawings}
+            levelSnapshotId={keyLevels.levelSet?.snapshot_id}
             levels={keyLevels.levels}
             pricePrecision={pricePrecision}
             onPreview={setRulePreview}
-            onSaved={() => void alerts.refresh()}
+            onSaved={alerts.refresh}
             onViewAlerts={() => {
               setRightTab("alerts");
               alerts.markSeen();

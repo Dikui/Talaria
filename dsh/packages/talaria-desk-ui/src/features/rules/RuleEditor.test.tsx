@@ -31,3 +31,14 @@ it("renders a three-level rule as structured controls with operator-specific par
   expect(html).toContain('value="2.25"');
   expect(html).not.toContain("<textarea");
 });
+
+it("renders focusable hit details with separate time, price and kind for observations and triggers", async () => {
+  const { RuleHits } = await import("./ChartRuleEditor");
+  const match = { timestamp: 60_000, observed_at: 120_037, price: "102.25" };
+  const html = renderToStaticMarkup(createElement(RuleHits, { conditions: [match], triggers: [match] }));
+  expect(html).toContain("条件成立");
+  expect(html).toContain("触发预警");
+  expect(html).toContain("102.25");
+  expect(html).toContain("1970-01-01T00:02:00.037Z");
+  expect(html).toMatch(/<li[^>]*tabIndex="0"/i);
+});

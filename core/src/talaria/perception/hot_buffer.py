@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import threading
+from collections import deque
+from time import monotonic_ns
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Protocol
@@ -17,6 +19,8 @@ from uuid import uuid4
 from talaria.foundation.bars import BarStatus
 from talaria.foundation.connector import RawBar
 from talaria.foundation.feed import FeedEvent, KlineEvent, ReceivedKlineEvent
+from talaria.foundation.feed import TradeEvent
+from talaria.perception.snapshot_events import SnapshotEvent
 from talaria.foundation.market import InstrumentSpec
 
 DEFAULT_MAX_BARS_PER_SERIES = 5_000
@@ -63,12 +67,21 @@ class HotStreamBuffer:
         self._max_bars = max_bars_per_series
         self._series: dict[tuple[str, str], dict[int, HotSlot]] = {}
         self._epoch = uuid4().hex
+        self._events: dict[str, deque[SnapshotEvent]] = {}
         self._series_versions: dict[tuple[str, str], int] = {}
         self._lock = threading.Lock()
 
     def ingest(self, event: FeedEvent) -> RawBar | None:
         """订阅回调；只消化已闭合或进行中的普通柱，FEED_GAP 交由紧凑化重建。"""
 
+        if isinstance(event, TradeEvent):
+            return None
+        if isinstance(event, KlineEvent) and not isinstance(event, ReceivedKlineEvent):
+            event = ReceivedKlineEvent(**event.model_dump(), ts_ingested=self._now_ms())
+        with self._lock:
+            if event.instrument_id not in self._events:
+                self._events[event.instrument_id] = deque(maxlen=self._max_bars)
+            self._events[event.instrument_id].append(SnapshotEvent(monotonic_ns(), event))
         if not isinstance(event, KlineEvent):
             return
         bar = event.bar
@@ -114,6 +127,10 @@ class HotStreamBuffer:
                 series.pop(next(iter(series)))
             self._series_versions[key] = self._series_versions.get(key, 0) + 1
         return raw
+
+    def recent_events(self, instrument_id: str) -> list[SnapshotEvent]:
+        with self._lock:
+            return list(self._events.get(instrument_id, ()))
 
     def series_version(self, key: tuple[str, str]) -> str:
         """读取序列的热端版本，缓冲重建后使用新的 epoch。"""

@@ -11,7 +11,7 @@ from typing import Protocol
 
 from talaria import sdk
 from talaria.components.contracts import Series
-from talaria.components.operators import OPERATORS
+from talaria.components.operators import OPERATORS, Operator
 from talaria.foundation.bars import CompactBar, RangeBar
 from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
@@ -24,7 +24,8 @@ from talaria.foundation.drawings import DrawingRecord
 from talaria.foundation.feed import FeedEvent, KlineEvent
 from talaria.foundation.key_levels import KeyLevel
 from talaria.foundation.indicators import IndicatorParams, IndicatorPoint
-from talaria.foundation.operators import MAX_PERIOD, IndicatorName
+from talaria.foundation.operators import MAX_PERIOD, IndicatorName, spec_from_params
+from talaria.foundation.operators.core import OperatorCursor, DerivativeSample
 from talaria.foundation.operators.inputs import derivative_samples
 from talaria.foundation.rules import RuleIndicator
 from talaria.foundation.timeframes import last_closed_bar_start, timeframe_ms
@@ -84,6 +85,23 @@ class RuleState:
         self.matched_retests.clear()
 
 
+@dataclass(slots=True)
+class RuleIndicatorHistory:
+    bars: tuple[CompactBar, ...]
+    cursor: OperatorCursor
+    tail: Series = ()
+
+    def extend(self, ctx: Ctx, bars: tuple[CompactBar, ...], operator: Operator) -> Series:
+        new = bars[len(self.bars):]
+        if new:
+            samples = ctx._operator_samples(operator, ctx.timeframe, new, include_ticks=True)
+            points = self.cursor.append(new, samples)
+            self.tail = (*self.tail, *(IndicatorPoint(timestamp=b.timestamp, values=v)
+                                      for b, v in zip(new[-2:], points[-2:], strict=True)))[-2:]
+            self.bars = bars
+        return self.tail
+
+
 @dataclass(frozen=True, slots=True)
 class Ctx:
     """当前观察的时点与输入。now 是 UTC 毫秒，event 是触发本次观察的行情。
@@ -126,6 +144,7 @@ class Ctx:
     )
     _indicator_history_limit: int | None = field(default=None, repr=False, compare=False, kw_only=True)
 
+    _indicator_history: dict[tuple, RuleIndicatorHistory] | None = field(default=None, kw_only=True, compare=False)
     _session_prefix: Sequence[CompactBar] = field(default=(), repr=False, compare=False, kw_only=True)
     _rule_indicators: dict[tuple[object, ...], Series] = field(
         default_factory=dict, init=False, repr=False, compare=False,
@@ -283,23 +302,7 @@ class Ctx:
         elif _history_limit is not None:
             period = int(params.get("period", 1))
             bars = bars[-max(_history_limit, period + 2):]
-        samples = None
-        if operator.derivative_inputs:
-            timeframes = {
-                DerivativeKind.FUNDING_RATE: None,
-                DerivativeKind.OPEN_INTEREST: OI_TIMEFRAME_BY_TIMEFRAME[requested],
-                DerivativeKind.MARK_PRICE: requested,
-            }
-            evaluations = self._bar_evaluation_times(requested, bars)
-            earliest = min(evaluations, default=self.now)
-            inputs = {
-                kind: self._indicator_derivatives(kind, timeframes[kind], earliest, include_ticks=_include_ticks)
-                for kind in operator.derivative_inputs
-            }
-            samples = derivative_samples(
-                bars, inputs.get(DerivativeKind.FUNDING_RATE, ()), inputs.get(DerivativeKind.OPEN_INTEREST, ()),
-                mark_price=inputs.get(DerivativeKind.MARK_PRICE, ()), as_of=evaluations,
-            )
+        samples = self._operator_samples(operator, requested, bars, include_ticks=_include_ticks)
         points = operator.compute(bars, params, derivatives=samples)
         if timeframe_ms(requested) > timeframe_ms(self.timeframe):
             bars, points = bars[-1:], points[-1:]
@@ -310,16 +313,56 @@ class Ctx:
             for bar, values in zip(bars, points, strict=True)
         )
 
+    def _operator_samples(self, operator: Operator, requested: str, bars: Sequence[CompactBar],
+                          *, include_ticks: bool) -> Sequence[DerivativeSample] | None:
+        if operator.derivative_inputs:
+            timeframes = {
+                DerivativeKind.FUNDING_RATE: None,
+                DerivativeKind.OPEN_INTEREST: OI_TIMEFRAME_BY_TIMEFRAME[requested],
+                DerivativeKind.MARK_PRICE: requested,
+            }
+            evaluations = self._bar_evaluation_times(requested, bars)
+            earliest = min(evaluations, default=self.now)
+            inputs = {
+                kind: self._indicator_derivatives(kind, timeframes[kind], earliest, include_ticks=include_ticks)
+                for kind in operator.derivative_inputs
+            }
+            return derivative_samples(
+                bars, inputs.get(DerivativeKind.FUNDING_RATE, ()), inputs.get(DerivativeKind.OPEN_INTEREST, ()),
+                mark_price=inputs.get(DerivativeKind.MARK_PRICE, ()), as_of=evaluations,
+            )
+        return None
+
     def _rule_indicator(self, operand: RuleIndicator, history_limit: int) -> Series:
         params = operand.params
-        key = (operand.name, operand.version, params.period, params.anchor, params.std_dev, history_limit)
-        if key not in self._rule_indicators:
+        limit = (self._indicator_history_limit or history_limit) if operand.window == "alert" else None
+        key = (operand.name, operand.version, params.period, params.anchor, params.std_dev, limit)
+        if key in self._rule_indicators:
+            return self._rule_indicators[key]
+        settings = params.model_dump(exclude_none=True)
+        if self._indicator_history is None:
             self._rule_indicators[key] = self.indicator(
-                operand.name, version=operand.version,
-                _history_limit=self._indicator_history_limit or history_limit,
-                _include_ticks=True, _output_limit=2,
-                **params.model_dump(exclude_none=True),
+                operand.name, version=operand.version, _history_limit=limit,
+                _include_ticks=True, _output_limit=2, **settings,
             )
+        else:
+            operator = OPERATORS.get(operand.name, version=operand.version)
+            defaults = self._indicator_defaults.get(operand.indicator_name)
+            if defaults is not None:
+                settings = defaults.model_dump(exclude_none=True) | settings
+            spec = spec_from_params(operand.indicator_name, settings)
+            bars = self.compact_bars()
+            if spec.name is IndicatorName.VWAP and spec.anchor == "session":
+                bars = tuple(b for b in self._session_prefix if b.ts_available <= self.now) + bars
+            elif limit and spec.name not in {IndicatorName.SMA, IndicatorName.BOLL}:
+                bars = bars[-max(limit, spec.period + 2):]
+            # Revisions, late insertions and sliding recursive windows require
+            # a new seed. Ordinary appends advance the shared operator once.
+            history = self._indicator_history.get(key)
+            if history is None or bars[:len(history.bars)] != history.bars:
+                history = RuleIndicatorHistory((), OperatorCursor(spec, legacy=operand.name.startswith("legacy_")))
+                self._indicator_history[key] = history
+            self._rule_indicators[key] = history.extend(self, bars, operator)
         return self._rule_indicators[key]
 
 

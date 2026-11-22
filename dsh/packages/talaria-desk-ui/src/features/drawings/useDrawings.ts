@@ -33,6 +33,7 @@ import type { DrawingToolDefinition } from "./tools";
 
 export interface DrawingsController {
   drawings: DrawingRecord[];
+  allDrawings: DrawingRecord[];
   selected: DrawingRecord | null;
   activeTool: DrawingToolId;
   draft: DrawingPoint[];
@@ -112,6 +113,8 @@ function samePoints(a: DrawingPoint[], b: DrawingPoint[]): boolean {
 export function useDrawings(options: UseDrawingsOptions): DrawingsController {
   const { chart, instrumentId, timeframe, pricePrecision, readOnly, link } = options;
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
+  const [allDrawings, setAllDrawings] = useState<DrawingRecord[]>([]);
+  const [catalogRevision, setCatalogRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<DrawingToolId>("select");
   const [draft, setDraft] = useState<DrawingPoint[]>([]);
@@ -199,7 +202,23 @@ export function useDrawings(options: UseDrawingsOptions): DrawingsController {
     [instrumentId, timeframe, pricePrecision],
   );
 
+  useEffect(() => {
+    let active = true;
+    if (pending === 0) {
+      api.drawings(instrumentId, timeframe, { all_timeframes: true }).then(({ drawings }) => {
+        if (active) setAllDrawings(drawings);
+      }).catch(error => {
+        if (active) {
+          setAllDrawings([]);
+          setError(describeError(error));
+        }
+      });
+    }
+    return () => { active = false; };
+  }, [instrumentId, timeframe, pending, catalogRevision]);
+
   const refresh = useCallback(() => {
+    setCatalogRevision(value => value + 1);
     const target = chartRef.current;
     if (target == null) return;
     void loadWindow(target);
@@ -669,7 +688,7 @@ export function useDrawings(options: UseDrawingsOptions): DrawingsController {
   }, [activeTool, draft.length]);
 
   return {
-    drawings,
+    drawings, allDrawings,
     selected,
     activeTool,
     draft,

@@ -86,6 +86,8 @@ class RuleIndicator(ContractModel):
     source: Literal["indicator"]
     name: IndicatorName | Literal["legacy_ema", "legacy_atr"]
     version: Literal["1"] = "1"
+    window: Literal["chart", "alert"] = "alert"
+    snapshot_id: str | None = Field(default=None, min_length=1, max_length=64, exclude_if=lambda value: value is None)
     channel: str | None = None
     params: RuleIndicatorParams = Field(default_factory=RuleIndicatorParams)
 
@@ -95,6 +97,8 @@ class RuleIndicator(ContractModel):
 
     @model_validator(mode="after")
     def _validate_operator(self) -> RuleIndicator:
+        if self.snapshot_id and self.window != "chart":
+            raise ValueError("只有图表窗口可绑定指标起点快照")
         name = self.indicator_name
         spec_from_params(name, self.params.model_dump(exclude_none=True))
         if self.channel is not None and self.channel not in CHANNELS[name]:
@@ -178,6 +182,15 @@ class Rule(ContractModel):
     def nodes(self) -> Iterator[RuleExpression]:
         return (node for node, _ in _walk(self.expression))
 
+    def indicators(self) -> Iterator[RuleIndicator]:
+        for node in self.nodes():
+            if isinstance(node, RuleComparison):
+                yield from (operand for operand in (node.left, node.right) if isinstance(operand, RuleIndicator))
+
+    @property
+    def indicator_snapshot_id(self) -> str | None:
+        return next((operand.snapshot_id for operand in self.indicators() if operand.snapshot_id), None)
+
     def references(self) -> Iterator[RuleOverlay | RuleDrawingPrice | RuleLevelEvent | RuleLevelPrice]:
         for node in self.nodes():
             if isinstance(node, (RuleOverlay, RuleLevelEvent)):
@@ -189,6 +202,8 @@ class Rule(ContractModel):
 
     @model_validator(mode="after")
     def _validate_timing(self) -> Rule:
+        if len({operand.snapshot_id for operand in self.indicators() if operand.window == "chart"}) > 1:
+            raise ValueError("同一图表规则的指标窗口必须共用快照起点")
         event_driven = self.timing == "event"
         for count, (node, depth) in enumerate(_walk(self.expression), start=1):
             if count > MAX_RULE_NODES or depth > MAX_RULE_DEPTH:
@@ -220,8 +235,11 @@ class RulePreviewRequest(ContractModel):
 
 
 class RulePreviewSignal(ContractModel):
+    """timestamp 对齐图表槽；observed_at 是本次观察或触发的毫秒时刻。"""
+
     timestamp: int
-    price: DecimalStr
+    observed_at: int
+    price: DecimalStr | None
 
 
 class RulePreviewIndicator(ContractModel):
@@ -232,5 +250,8 @@ class RulePreviewIndicator(ContractModel):
 
 class RulePreviewResponse(ContractModel):
     rule: Rule
-    signals: list[RulePreviewSignal]
+    unavailable_current_levels: list[str] = Field(default_factory=list)
+    history_incomplete: bool = False
+    condition_true: list[RulePreviewSignal]
+    would_trigger: list[RulePreviewSignal]
     indicators: list[RulePreviewIndicator]

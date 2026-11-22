@@ -479,6 +479,20 @@
         "params": {
           "$ref": "#/$defs/RuleIndicatorParams"
         },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Id"
+        },
         "source": {
           "const": "indicator",
           "title": "Source",
@@ -488,6 +502,15 @@
           "const": "1",
           "default": "1",
           "title": "Version",
+          "type": "string"
+        },
+        "window": {
+          "default": "alert",
+          "enum": [
+            "chart",
+            "alert"
+          ],
+          "title": "Window",
           "type": "string"
         }
       },

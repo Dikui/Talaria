@@ -254,7 +254,7 @@ def visible_in_price(
 def visible_in_window(
     record: DrawingRecord,
     *,
-    timeframe: str,
+    timeframe: str | None,
     from_ts: int | None,
     to_ts: int | None,
     price_min: Decimal | None = None,
@@ -262,7 +262,7 @@ def visible_in_window(
 ) -> bool:
     """组合周期、时间与价格三重可见性判定。"""
 
-    if record.visible_timeframes and timeframe not in record.visible_timeframes:
+    if timeframe is not None and record.visible_timeframes and timeframe not in record.visible_timeframes:
         return False
     return visible_in_time(
         record.kind, record.points, from_ts, to_ts

@@ -148,12 +148,14 @@ async function writeJson<T>(
   method: "POST" | "PUT" | "PATCH" | "DELETE",
   body?: unknown,
   signal?: AbortSignal,
+  headers?: Record<string, string>,
 ): Promise<T> {
   const response = await fetch(apiPath(path), {
     method,
     signal,
     headers: {
       Accept: "application/json",
+      ...headers,
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...authorizationHeader(),
     },
@@ -282,18 +284,19 @@ export const api = {
     );
   },
 
-  previewRule(snapshotId: string, payload: RulePreviewRequest, signal: AbortSignal): Promise<RulePreviewResponse> {
+  previewRule(snapshotId: string, payload: RulePreviewRequest, signal: AbortSignal, client: string): Promise<RulePreviewResponse> {
     return writeJson<RulePreviewResponse>(
-      `/api/snapshots/${encodeURIComponent(snapshotId)}/rule-preview`, "POST", payload, signal,
+      `/api/snapshots/${encodeURIComponent(snapshotId)}/rule-preview`, "POST", payload, signal, { "X-Preview-Client": client },
     );
   },
 
   drawings(
     instrumentId: string,
     timeframe: string,
-    window: { from_ts?: number; to_ts?: number } = {},
+    window: { from_ts?: number; to_ts?: number; all_timeframes?: boolean } = {},
   ): Promise<DrawingListResponse> {
     const query = new URLSearchParams({ instrument_id: instrumentId, timeframe });
+    if (window.all_timeframes) query.set("all_timeframes", "true");
     if (window.from_ts !== undefined) query.set("from_ts", String(window.from_ts));
     if (window.to_ts !== undefined) query.set("to_ts", String(window.to_ts));
     return getJson<DrawingListResponse>(`/api/drawings?${query.toString()}`);

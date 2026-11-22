@@ -7,7 +7,7 @@ from talaria.foundation.bars import CompactBar
 
 
 class ConfirmedHistory:
-    def __init__(self, interval: int, limit: int):
+    def __init__(self, interval: int, limit: int | None):
         self.interval = interval
         self.limit = limit
         self._slots: list[int] = []
@@ -23,7 +23,7 @@ class ConfirmedHistory:
         if ts not in self._versions:
             self._slots.insert(bisect_left(self._slots, ts), ts)
             self._versions[ts] = {}
-            if len(self._slots) > self.limit:
+            if self.limit is not None and len(self._slots) > self.limit:
                 del self._versions[self._slots.pop(0)]
                 if ts not in self._versions:
                     return

@@ -453,7 +453,10 @@ export interface RulePreviewRequest {
 }
 export interface RulePreviewResponse {
   rule: Rule;
-  signals: RulePreviewSignal[];
+  unavailable_current_levels?: string[];
+  history_incomplete?: boolean;
+  condition_true: RulePreviewSignal[];
+  would_trigger: RulePreviewSignal[];
   indicators: RulePreviewIndicator[];
 }
 export interface AlertCreate {
@@ -847,6 +850,8 @@ export interface RuleIndicator {
   source: "indicator";
   name: IndicatorName | "legacy_ema" | "legacy_atr";
   version?: "1";
+  window?: "chart" | "alert";
+  snapshot_id?: string | null;
   channel?: string | null;
   params?: RuleIndicatorParams;
 }
@@ -887,7 +892,8 @@ export interface RulePreviewIndicator {
 }
 export interface RulePreviewSignal {
   timestamp: number;
-  price: DecimalString;
+  observed_at: number;
+  price: DecimalString | null;
 }
 
 export const RULE_EDITOR_SCHEMA = {

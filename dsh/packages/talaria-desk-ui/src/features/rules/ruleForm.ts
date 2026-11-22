@@ -28,7 +28,7 @@ export function indicatorOperand(name: OperatorName, defaults: IndicatorDefaults
   const values = defaults[indicator];
   const parameters = operatorParams(name);
   return {
-    source: "indicator", name,
+    source: "indicator", name, window: name.startsWith("legacy_") ? "alert" : "chart",
     version: schema.operators[name].version,
     channel: schema.operators[name].channels[0],
     params: {
@@ -70,7 +70,7 @@ export function validPeriod(name: OperatorName, period: number | null | undefine
 }
 
 export function expressionComplete(
-  node: Expression, drawingIds: ReadonlySet<string>, levelIds: ReadonlySet<string>,
+  node: Expression, drawingIds: ReadonlySet<string>,
 ): boolean {
   function operandComplete(operand: Operand): boolean {
     switch (operand.source) {
@@ -79,14 +79,14 @@ export function expressionComplete(
         return validPeriod(operand.name, operand.params?.period) &&
           (!("std_dev" in operatorParams(operand.name)) || validDeviation(operand.params?.std_dev ?? ""));
       case "drawing_price": return drawingIds.has(operand.drawing_id) && validRatio(operand.ratio);
-      case "level_price": return levelIds.has(operand.level_id);
+      case "level_price": return operand.level_id.length > 0;
       default: return true;
     }
   }
-  if (isGroup(node)) return node.args.every((child) => expressionComplete(child, drawingIds, levelIds));
+  if (isGroup(node)) return node.args.every((child) => expressionComplete(child, drawingIds));
   switch (node.op) {
     case "compare": return operandComplete(node.left) && operandComplete(node.right);
     case "overlay": return drawingIds.has(node.drawing_id) && validRatio(node.ratio);
-    case "level_event": return levelIds.has(node.level_id);
+    case "level_event": return node.level_id.length > 0;
   }
 }

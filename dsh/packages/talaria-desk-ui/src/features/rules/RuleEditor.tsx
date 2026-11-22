@@ -103,7 +103,7 @@ function LevelChoice({ id, context, onSelect }: {
 }) {
   const levels = new Map(context.levels.map((level) => [level.level_id, level]));
   return (
-    <Choice label="关键位" value={id} options={[...levels.keys()]}
+    <Choice label="关键位" value={id} options={id && !levels.has(id) ? [id, ...levels.keys()] : [...levels.keys()]}
       labels={Object.fromEntries(context.levels.map((level) => [
         level.level_id, levelLabel(level, context.pricePrecision ?? 2),
       ]))}
@@ -129,6 +129,9 @@ function IndicatorFields({ operand, defaults, onChange }: {
     <>
       <Choice label="算子" value={operand.name} options={operators} labels={INDICATOR_LABELS}
         onChange={(name) => onChange(indicatorOperand(name, defaults))} />
+      {(operand.window ?? "alert") === "alert" && operand.params?.anchor !== "session" && (
+        <span>预警窗口 · 最近 {Math.max(600, (operand.params?.period ?? 1) + 2)} 根</span>
+      )}
       {channels.length > 1 && (
         <Choice label="输出通道" value={operand.channel ?? channels[0]} options={channels}
           labels={{ mid: "中轨", upper: "上轨", lower: "下轨" }}
@@ -150,7 +153,7 @@ function IndicatorFields({ operand, defaults, onChange }: {
       )}
       {"anchor" in params && (
         <Choice label="锚点" value={operand.params?.anchor ?? params.anchor.default}
-          options={params.anchor.enum} labels={{ snapshot: "快照起点", session: "UTC 日界" }}
+          options={params.anchor.enum} labels={{ snapshot: operand.window === "chart" ? "快照起点" : "预警窗口起点", session: "UTC 日界" }}
           onChange={(anchor) => setParams({ anchor })} />
       )}
     </>

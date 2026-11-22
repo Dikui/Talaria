@@ -18,7 +18,9 @@ from talaria.foundation.derivatives import (
     DerivativePoint,
     DerivativeSeries,
     DerivativeSummary,
+    latest_visible_derivatives,
 )
+from talaria.foundation.feed import KlineEvent
 from talaria.foundation.drawings import DrawingRecord
 from talaria.foundation.errors import (
     FeatureNotImplementedError,
@@ -53,7 +55,7 @@ from talaria.foundation.operators import (
     spec_from_params,
 )
 from talaria.foundation.operators.inputs import derivative_samples
-from talaria.foundation.rules import RulePreviewRequest, RulePreviewResponse
+from talaria.foundation.rules import RuleLevelEvent, RuleLevelPrice, RulePreviewRequest, RulePreviewResponse
 from talaria.foundation.snapshot import (
     ChartPage,
     SnapshotMeta,
@@ -63,7 +65,7 @@ from talaria.foundation.snapshot import (
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.perception.cold_publisher import ColdPublisher
 from talaria.perception.cold_store import ColdReader
-from talaria.perception.key_level_registry import KeyLevelRegistry
+from talaria.perception.key_level_registry import FrozenLevelHistory, KeyLevelRegistry
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import (
     SnapshotRecord,
@@ -263,17 +265,57 @@ class WorkbenchService:
             ),
         )
 
+    def chart_rule_history(self, snapshot_id: str, instrument_id: str, timeframe: str) -> list[KlineEvent]:
+        meta, bars = self._snapshot_bars(snapshot_id, timeframe)
+        if meta.instrument_id != instrument_id:
+            raise InvalidRequestError("指标起点快照不属于该标的")
+        frozen = self._snapshot_store.replay_events(snapshot_id, timeframe)
+        history = ([row.event for row in frozen if isinstance(row.event, KlineEvent) and row.event.confirmed]
+                   if frozen is not None else
+                   [KlineEvent(instrument_id=instrument_id, timeframe=timeframe, bar=bar, confirmed=True, revision=0)
+                    for bar in bars])
+        instrument = self._pack.instrument(instrument_id)
+        if instrument is not None and bars:
+            history.extend(self._builder.chart_updates(instrument, timeframe, bars[0].timestamp, meta.cutoff_ts))
+        return history
+
     def preview_rule(
         self, snapshot_id: str, request: RulePreviewRequest,
         drawings: Mapping[str, Sequence[DrawingRecord]],
-        levels_at: Callable[[int], Sequence[KeyLevel]],
+        *, check_cancelled: Callable[[], None] = lambda: None,
     ) -> RulePreviewResponse:
         record = self._snapshot_record(snapshot_id, request.timeframe)
         meta, bars = self._snapshot_bars(snapshot_id, request.timeframe)
-        return evaluate_preview(
+        request = request.model_copy(deep=True)
+        for operand in request.rule.indicators():
+            if operand.window == "chart":
+                operand.snapshot_id = snapshot_id
+        refs = [ref for ref in request.rule.references() if isinstance(ref, (RuleLevelEvent, RuleLevelPrice))]
+        level_history = None
+        if refs:
+            publications = self._snapshot_store.frozen_levels(meta, request.timeframe, check_cancelled)
+            if not any(row.version is not None for row in publications):
+                raise InvalidRequestError("关键位历史版本不可用")
+            first_slot = bars[max(0, len(bars) - request.limit)].timestamp if bars else 0
+            first_close = first_slot + (timeframe_ms(request.timeframe) if request.rule.timing == "bar_close" else 0)
+            level_history = FrozenLevelHistory(publications, snapshot_id, first_close)
+            for ref in refs:
+                if ref.level_id not in level_history.known_ids:
+                    raise InvalidRequestError(f"历史关键位 ID 不存在：{ref.level_id}")
+        check_cancelled()
+        events = self._snapshot_store.replay_events(snapshot_id, request.timeframe, check_cancelled)
+        if events is None:
+            raise InvalidRequestError("历史版本不可用：此快照未记录行情修订和接收时刻")
+        result = evaluate_preview(
             request, meta.instrument_id, meta.cutoff_ts, bars,
-            lambda: self._derivative_points(record, request.timeframe), drawings, levels_at,
+            lambda: read_derivative_points(self._data_dir, record.derivatives_path) if record.derivatives_path else (),
+            drawings, level_history.levels_at if level_history else lambda *_: (), events=events,
+            check_cancelled=check_cancelled,
         )
+        if level_history and level_history.missing and not level_history.covered:
+            raise InvalidRequestError("关键位历史版本不可用")
+        result.history_incomplete = bool(level_history and level_history.missing)
+        return result
 
     def get_indicators(
         self,
@@ -456,8 +498,8 @@ class WorkbenchService:
         cutoff = record.meta.cutoff_ts
         oi_timeframe = OI_TIMEFRAME_BY_TIMEFRAME.get(timeframe, timeframe)
         visible: list[DerivativePoint] = []
-        for point in points:
-            if point.ts_available > cutoff:
+        for point in latest_visible_derivatives(points, as_of=cutoff):
+            if point.kind is DerivativeKind.FUNDING_RATE and not point.is_funding_settlement:
                 continue
             if point.kind is DerivativeKind.MARK_PRICE:
                 if point.timeframe != timeframe:

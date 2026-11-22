@@ -11,10 +11,12 @@ import os
 import sqlite3
 import threading
 import uuid
+import zlib
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Sequence
+from time import monotonic_ns
+from collections.abc import Callable, Sequence
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -22,8 +24,11 @@ import pyarrow.parquet as pq
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.errors import SnapshotNotFoundError
+from talaria.foundation.key_levels import KeyLevelSet
 from talaria.foundation.snapshot import SnapshotMeta
 from talaria.foundation.types import PrecisionTier
+from talaria.perception.key_level_registry import LevelPublication
+from talaria.perception.snapshot_events import SnapshotEvent, decode_events, encode_events
 from talaria.perception.sqlite import (
     checkpoint_and_close,
     claim_writer,
@@ -281,6 +286,7 @@ class SnapshotStore:
         self._db_path = db_path
         self._lock = threading.Lock()
         self._closed = False
+        self._epoch = uuid.uuid4().hex
         claim_writer(db_path)
         try:
             db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,6 +321,20 @@ class SnapshotStore:
                 self._connection.execute(
                     "ALTER TABLE snapshots ADD COLUMN derivatives_path TEXT"
                 )
+            self._connection.execute("""
+                CREATE TABLE IF NOT EXISTS level_publications (
+                    seq INTEGER PRIMARY KEY, instrument TEXT, timeframe TEXT, snapshot_id TEXT,
+                    epoch TEXT, published INTEGER, event_order INTEGER, payload BLOB
+                )
+            """)
+            self._connection.execute("CREATE INDEX IF NOT EXISTS levels_by_series ON level_publications(instrument, timeframe, seq)")
+            self._connection.execute("""
+                CREATE TABLE IF NOT EXISTS snapshot_events (
+                    snapshot_id TEXT, timeframe TEXT, events BLOB, PRIMARY KEY(snapshot_id, timeframe)
+                )
+            """)
+            if "level_watermark" not in columns:
+                self._connection.execute("ALTER TABLE snapshots ADD COLUMN level_watermark INTEGER")
             self._connection.commit()
         except BaseException:
             release_writer(db_path)
@@ -327,15 +347,17 @@ class SnapshotStore:
         *,
         committed_ts: int | None = None,
         derivatives_path: Path | None = None,
+        replay: dict[str, list[SnapshotEvent]] | None = None,
     ) -> None:
-        with self._lock:
+        batches = [(meta.snapshot_id, timeframe, encode_events(events)) for timeframe, events in (replay or {}).items()]
+        with self._lock, self._connection:
             self._connection.execute(
                 """
                 INSERT INTO snapshots (
                     snapshot_id, instrument_id, timeframes, cutoff_ts,
                     created_ts, mode, bar_counts, parquet_path, committed_ts,
-                    derivatives_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    derivatives_path, level_watermark
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT coalesce(max(seq), 0) FROM level_publications))
                 """,
                 (
                     meta.snapshot_id,
@@ -350,7 +372,47 @@ class SnapshotStore:
                     None if derivatives_path is None else derivatives_path.as_posix(),
                 ),
             )
-            self._connection.commit()
+            self._connection.executemany("INSERT INTO snapshot_events VALUES (?,?,?)", batches)
+
+    def replay_events(
+        self, snapshot_id: str, timeframe: str, check_cancelled: Callable[[], None] = lambda: None,
+    ) -> list[SnapshotEvent] | None:
+        with self._lock:
+            row = self._connection.execute("SELECT events FROM snapshot_events WHERE snapshot_id=? AND timeframe=?",
+                                           (snapshot_id, timeframe)).fetchone()
+        return decode_events(row[0], check_cancelled) if row else None
+
+    def start_level_session(self, now: int) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO level_publications(epoch,published,event_order) VALUES (?,?,?)",
+                (self._epoch, now, monotonic_ns()),
+            )
+
+    def publish_levels(self, version: KeyLevelSet, published: int) -> None:
+        payload = zlib.compress(version.model_dump_json().encode())
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO level_publications(instrument,timeframe,snapshot_id,epoch,published,event_order,payload) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (version.instrument_id, version.timeframe, version.snapshot_id, self._epoch, published, monotonic_ns(), payload),
+            )
+
+    def frozen_levels(self, meta: SnapshotMeta, timeframe: str, check_cancelled: Callable[[], None]) -> list[LevelPublication]:
+        """清单水位固定可回放的发布记录；本快照生成的版本仅供 ID 校验。"""
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT epoch,published,event_order,payload FROM level_publications p JOIN snapshots s
+                   ON s.snapshot_id=? WHERE (p.instrument IS NULL OR (p.instrument=s.instrument_id AND p.timeframe=?))
+                   AND (p.seq<=s.level_watermark OR p.snapshot_id=s.snapshot_id) ORDER BY p.published,p.event_order,p.seq""",
+                (meta.snapshot_id, timeframe),
+            ).fetchall()
+        publications = []
+        for epoch, ts, order, payload in rows:
+            check_cancelled()
+            version = KeyLevelSet.model_validate_json(zlib.decompress(payload)) if payload is not None else None
+            publications.append(LevelPublication(epoch, (ts, order), version))
+        return publications
 
     def get(self, snapshot_id: str) -> SnapshotRecord | None:
         with self._lock:

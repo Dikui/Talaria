@@ -498,6 +498,20 @@
         "params": {
           "$ref": "#/$defs/RuleIndicatorParams"
         },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Id"
+        },
         "source": {
           "const": "indicator",
           "title": "Source",
@@ -507,6 +521,15 @@
           "const": "1",
           "default": "1",
           "title": "Version",
+          "type": "string"
+        },
+        "window": {
+          "default": "alert",
+          "enum": [
+            "chart",
+            "alert"
+          ],
+          "title": "Window",
           "type": "string"
         }
       },
@@ -723,11 +746,23 @@
     },
     "RulePreviewSignal": {
       "additionalProperties": false,
+      "description": "timestamp 对齐图表槽；observed_at 是本次观察或触发的毫秒时刻。",
       "properties": {
+        "observed_at": {
+          "title": "Observed At",
+          "type": "integer"
+        },
         "price": {
-          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
-          "title": "Price",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Price"
         },
         "timestamp": {
           "title": "Timestamp",
@@ -736,6 +771,7 @@
       },
       "required": [
         "timestamp",
+        "observed_at",
         "price"
       ],
       "title": "RulePreviewSignal",
@@ -744,6 +780,18 @@
   },
   "additionalProperties": false,
   "properties": {
+    "condition_true": {
+      "items": {
+        "$ref": "#/$defs/RulePreviewSignal"
+      },
+      "title": "Condition True",
+      "type": "array"
+    },
+    "history_incomplete": {
+      "default": false,
+      "title": "History Incomplete",
+      "type": "boolean"
+    },
     "indicators": {
       "items": {
         "$ref": "#/$defs/RulePreviewIndicator"
@@ -754,17 +802,25 @@
     "rule": {
       "$ref": "#/$defs/Rule"
     },
-    "signals": {
+    "unavailable_current_levels": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Unavailable Current Levels",
+      "type": "array"
+    },
+    "would_trigger": {
       "items": {
         "$ref": "#/$defs/RulePreviewSignal"
       },
-      "title": "Signals",
+      "title": "Would Trigger",
       "type": "array"
     }
   },
   "required": [
     "rule",
-    "signals",
+    "condition_true",
+    "would_trigger",
     "indicators"
   ],
   "title": "RulePreviewResponse",
