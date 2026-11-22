@@ -100,6 +100,9 @@ async def get_range_bars(query: Annotated[BarsQuery, Query()], request: Request)
     visible = range_visible_bars(
         cold, hot, as_of=query.as_of, include_open=query.include_open,
     )
+    if query.tail_only:
+        archived = set(cold)
+        visible = [bar for bar in visible if bar not in archived]
     if len(visible) > MAX_RANGE_BARS:
         raise BarsRangeTooLargeError(RANGE_LIMIT_MESSAGE)
     return BarsResponse(

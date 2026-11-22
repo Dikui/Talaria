@@ -6,10 +6,12 @@ from decimal import Decimal
 from pathlib import Path
 from threading import Event, current_thread
 
+import httpx
 import pytest
 from anyio import to_thread
 from fastapi.testclient import TestClient
 
+from talaria import sdk
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import RawBar
 from talaria.foundation.feed import KlineEvent
@@ -19,6 +21,7 @@ from talaria.perception.cold_store import ColdBatch, ColdReader, ColdStore
 from talaria.workbench_api.app import create_app
 from talaria.workbench_api.routes import bars as bars_route
 from talaria.workbench_api.service_config import FeatureToggles
+from talaria.workbench_api.service_descriptor import service_descriptor_path, write_service_descriptor
 from talaria.workbench_api.settings import AppSettings
 
 pytestmark = [pytest.mark.medium, pytest.mark.spec]
@@ -88,6 +91,13 @@ def _disk_full(*args, **kwargs):
     raise OSError("test cold write failure")
 
 
+def _publish_endpoint(market: Market) -> None:
+    write_service_descriptor(
+        service_descriptor_path(market.settings.data_dir), base_url="http://127.0.0.1:8765",
+        token="test-token", pid=1, features=market.settings.features,
+    )
+
+
 def test_bars_span_cold_and_unpublished_hot_ranges(tmp_path, fixture_dir, monkeypatch):
     # data-access/03: hold the last confirmed bar before persistence at the cold writer seam.
     market = Market(tmp_path, fixture_dir)
@@ -107,6 +117,81 @@ def test_bars_span_cold_and_unpublished_hot_ranges(tmp_path, fixture_dir, monkey
         assert all(isinstance(bar["close"], str) for bar in bars)
         assert [Decimal(bar["close"]) for bar in bars] == [Decimal("100.5"), Decimal("101.2")]
         assert _get(client, tail, tail) == bars[1:]
+
+
+def test_sdk_matches_range_with_unpublished_correction_and_excludes_open_bar(
+    tmp_path, fixture_dir, monkeypatch,
+):
+    # data-access/04: use the running HTTP app at the transport seam without binding TCP.
+    market = Market(tmp_path, fixture_dir)
+    second = START + MINUTE
+    end = second + MINUTE
+    market.archive(_raw(START, "100"), _raw(second, "101"))
+    market.now = end + 2_000
+    monkeypatch.setattr(ColdStore, "publish", _disk_full)
+    _publish_endpoint(market)
+    with TestClient(market.app) as client:
+        market.ingest(client, _event(START, "102.3", confirmed=True), _event(end, "103", confirmed=False))
+
+        def serve_sdk_request(transport, request):
+            assert request.url.host == "127.0.0.1"
+            response = client.send(request)
+            assert [bar["ts_event"] for bar in response.json()["bars"]] == (
+                [START] if request.url.params.get("as_of") is None else []
+            )
+            return response
+
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", serve_sdk_request)
+        for as_of in (None, market.now - 1):
+            options = {} if as_of is None else {"as_of": as_of}
+            expected = _get(client, START, end, **options)
+            result = sdk.bars(
+                INSTRUMENT.instrument_id, TIMEFRAME, START, end, as_of,
+                data_dir=market.settings.data_dir,
+            )
+            assert result.tail_completed
+            assert [bar.model_dump(mode="json") for bar in result] == expected
+            assert [(bar.close, bar.revision) for bar in result] == [
+                (Decimal("102.3"), 1) if as_of is None else (Decimal("100"), 0),
+                (Decimal("101"), 0),
+            ]
+        local = sdk.bars(
+            INSTRUMENT.instrument_id, TIMEFRAME, START, end, data_dir=market.settings.data_dir, offline=True,
+        )
+        assert not local.tail_completed and [bar.close for bar in local] == [Decimal("100"), Decimal("101")]
+
+
+def test_sdk_backfills_empty_cold_store_then_reads_it_after_service_stops(
+    tmp_path, fixture_dir, monkeypatch,
+):
+    # data-access/04: fixture REST runs through the service's real backfill and cold writer.
+    market = Market(tmp_path, fixture_dir)
+    end = START + MINUTE
+    market.now = end + MINUTE
+    monkeypatch.setenv("TALARIA_DATA_DIR", str(market.settings.data_dir))
+    assert not market.settings.data_dir.exists()
+    _publish_endpoint(market)
+
+    def exchange_history(connector, **kwargs):
+        return [_raw(START, "100.5"), _raw(end, "101.2")]
+
+    monkeypatch.setattr(FixtureConnector, "fetch_bars", exchange_history)
+    with TestClient(market.app) as client:
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda _, request: client.send(request))
+        online = sdk.bars(INSTRUMENT.instrument_id, TIMEFRAME, START, end)
+        assert online.tail_completed
+        expected = _get(client, START, end)
+        assert [bar.model_dump(mode="json") for bar in online] == expected
+        assert [bar.close for bar in online] == [Decimal("100.5"), Decimal("101.2")]
+
+    def service_stopped(transport, request):
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    # Simulate an ungraceful shutdown with the published descriptor still on disk.
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", service_stopped)
+    local = sdk.bars(INSTRUMENT.instrument_id, TIMEFRAME, START, end)
+    assert not local.tail_completed
+    assert tuple(local) == tuple(online)
 
 
 def test_as_of_selects_confirmed_revision_after_visibility_cutoff(tmp_path, fixture_dir):

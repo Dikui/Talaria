@@ -5662,6 +5662,18 @@
               "title": "Include Open",
               "type": "boolean"
             }
+          },
+          {
+            "description": "仅返回清单中尚无的可见柱及修订，历史回填照常写入冷库。",
+            "in": "query",
+            "name": "tail_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "仅返回清单中尚无的可见柱及修订，历史回填照常写入冷库。",
+              "title": "Tail Only",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {

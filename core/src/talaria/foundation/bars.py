@@ -104,6 +104,7 @@ class BarsQuery(ContractModel):
     )
     as_of: int | None = Field(None, ge=0, le=2**63 - 1, description="可获取时间上界（含）")
     include_open: bool = Field(False, description="包含进行中的柱，无可见真实柱时可返回合成柱。")
+    tail_only: bool = Field(False, description="仅返回清单中尚无的可见柱及修订，历史回填照常写入冷库。")
 
     @model_validator(mode="after")
     def _check_range(self) -> Self:
