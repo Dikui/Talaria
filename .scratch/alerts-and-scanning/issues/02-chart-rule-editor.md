@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0019；`docs/architecture.md` §5.2、§5.5。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 编辑器按 JSON 规则 Schema 生成表单（算子、参数、比较、逻辑组合），不提供自由文本代码。
 - [ ] 规则输出由后端计算，经 KLineChart 异步 `calc` 显示。
