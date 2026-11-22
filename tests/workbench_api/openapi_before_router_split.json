@@ -5734,6 +5734,18 @@
             },
             "description": "Successful Response",
             "headers": {
+              "X-Talaria-Bars-Hot-Revision": {
+                "description": "补尾序列的热端版本，读取期间有变动时为 unstable",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Talaria-Bars-Manifest": {
+                "description": "补尾响应所用的范围清单指纹",
+                "schema": {
+                  "type": "string"
+                }
+              },
               "X-Talaria-Data-Dir": {
                 "description": "数据目录标识",
                 "schema": {

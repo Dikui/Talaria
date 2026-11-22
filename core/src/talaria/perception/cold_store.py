@@ -127,6 +127,22 @@ class ColdGeneration:
 
 
 @dataclass(frozen=True, slots=True)
+class ColdManifest:
+    """一次清单读事务选出的不可变文件，保留读取顺序。"""
+
+    version: int
+    generations: tuple[ColdGeneration, ...]
+
+    def range_fingerprint(self, start_ts: int, end_ts: int) -> str:
+        """标识与该范围相交的文件及其内容，不受其他序列发布影响。"""
+        files = [
+            (item.parquet_path.as_posix(), item.sha256) for item in self.generations
+            if item.last_ts >= start_ts and item.first_ts <= end_ts
+        ]
+        return _sha256_bytes(json.dumps(files).encode("utf-8"))
+
+
+@dataclass(frozen=True, slots=True)
 class ColdCursor:
     """兼容旧冷库迁移工具的末尾位置。"""
 
@@ -625,8 +641,22 @@ class ColdReader:
         end_ts: int | None = None,
     ) -> tuple[int, list[RawBar]]:
         """返回同一 SQLite 读事务选出的清单代号及对应文件中的修订。"""
+        manifest, revisions = self.read_manifest_snapshot(
+            instrument, timeframe, start_ts=start_ts, end_ts=end_ts,
+        )
+        return manifest.version, revisions
+
+    def read_manifest_snapshot(
+        self,
+        instrument: InstrumentSpec,
+        timeframe: str,
+        *,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> tuple[ColdManifest, list[RawBar]]:
+        """返回选出的清单及其修订，文件退役时整次重读一次。"""
         if not self._db_path.is_file():
-            return 0, []
+            return ColdManifest(0, ()), []
         for attempt in range(2):
             with closing(sqlite3.connect(f"{self._db_path.as_uri()}?mode=ro", uri=True)) as db:
                 db.execute("BEGIN")
@@ -652,7 +682,7 @@ class ColdReader:
                         f"generation 文件缺失：{generation.parquet_path}"
                     ) from exc
             else:
-                return version, decoded
+                return ColdManifest(version, tuple(generations)), decoded
         raise AssertionError("清单读取重试结束")
 
 
