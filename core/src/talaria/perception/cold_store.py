@@ -593,7 +593,7 @@ def _validate_derivatives(batch: DerivativeBatch, *, allow_equal_revisions: bool
 
 def _derivative_content(rows: Sequence[DerivativePoint]) -> bytes:
     def record(point: DerivativePoint) -> str:
-        data = point.model_dump(mode="json")
+        data = point.model_dump(mode="json", exclude={"settled"} if point.settled is None else None)
         value = data["value"]
         if "." in value:
             value = value.rstrip("0").rstrip(".")
@@ -612,6 +612,7 @@ def _write_derivative_cold_parquet(path: Path, batch: DerivativeBatch) -> None:
         pa.field("value", pa.decimal128(COLD_DECIMAL_PRECISION, scale), nullable=False),
         pa.field("ts_event", pa.int64(), nullable=False),
         pa.field("ts_published", pa.int64()),
+        pa.field("settled", pa.bool_()),
         pa.field("ts_available", pa.int64(), nullable=False),
         pa.field("ts_ingested", pa.int64(), nullable=False),
         pa.field("ts_committed", pa.int64(), nullable=False),
@@ -624,8 +625,18 @@ def _write_derivative_cold_parquet(path: Path, batch: DerivativeBatch) -> None:
 
 def _read_derivative_cold_parquet(
     path: Path, *, start_ts: int | None = None, end_ts: int | None = None,
-    expression: ds.Expression | None = None,
+    historical_kind: DerivativeKind | None = None,
 ) -> list[DerivativePoint]:
+    expression = None
+    if historical_kind is DerivativeKind.FUNDING_RATE:
+        legacy = ds.field("ts_published") == ds.field("ts_event")
+        if "settled" in pq.read_schema(path).names:
+            settled = ds.field("settled")
+            expression = (settled == ds.scalar(True)) | (settled.is_null() & legacy)
+        else:
+            expression = legacy
+    elif historical_kind is not None:
+        expression = ds.field("timeframe").is_valid()
     table = _read_range_table(path, start_ts, end_ts, expression=expression)
     metadata = table.schema.metadata or {}
     if metadata.get(COLD_FORMAT_METADATA) != COLD_FORMAT_DECIMAL128:
@@ -747,13 +758,10 @@ class ColdReader:
         start_ts: int | None = None, end_ts: int | None = None,
         historical_only: bool = False,
     ) -> list[DerivativePoint]:
-        expression = None
-        if historical_only:
-            field = "ts_published" if kind is DerivativeKind.FUNDING_RATE else "timeframe"
-            expression = ds.field(field).is_valid()
-
         def read(path: Path, *, start_ts: int | None, end_ts: int | None) -> list[DerivativePoint]:
-            return _read_derivative_cold_parquet(path, start_ts=start_ts, end_ts=end_ts, expression=expression)
+            return _read_derivative_cold_parquet(
+                path, start_ts=start_ts, end_ts=end_ts, historical_kind=kind if historical_only else None,
+            )
 
         _, rows = self._read_manifest(
             instrument, kind.value, read, start_ts=start_ts, end_ts=end_ts,
@@ -911,6 +919,12 @@ class ColdStore:
     ) -> list[RawBar]:
         self._ensure_open()
         return self._reader.read_revisions(instrument, timeframe, start_ts=start_ts, end_ts=end_ts)
+
+    def read_derivative_revisions(
+        self, instrument: InstrumentSpec, kind: DerivativeKind, *, start_ts: int, end_ts: int,
+    ) -> list[DerivativePoint]:
+        self._ensure_open()
+        return self._reader.read_derivative_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
 
     def read_derivatives(
         self, instrument: InstrumentSpec, kind: DerivativeKind, *,

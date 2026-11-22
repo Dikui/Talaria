@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, overload
 import httpx
 
 from talaria.foundation.bars import MAX_RANGE_BARS, BarsQuery, BarsResponse, RangeBar
-from talaria.foundation.derivatives import DerivativeKind
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.errors import InstrumentNotFoundError, InvalidRequestError
 from talaria.foundation.indicators import IndicatorParams
 from talaria.foundation.operators import IndicatorName
@@ -137,7 +137,7 @@ def derivatives(
     end: int | str | None = None, as_of: int | str | None = None, *,
     data_dir: str | Path | None = None,
 ) -> DerivativesResult:
-    """按闭区间直读冷库。各周期的历史点与无周期的 ticker 读数分别选版。"""
+    """按闭区间读取衍生品。服务在线时先等待历史回填，再读取本地清单。"""
     return _derivative_range(instrument, DerivativeKind(kind), start, end, as_of, data_dir)
 
 
@@ -152,11 +152,64 @@ def _derivative_range(
     exact_end = None if end is None else _time_ms(end)
     if exact_end is not None and exact_end < exact_start:
         raise ValueError("end 不得早于 start")
-    return DerivativesResult(ColdReader(_data_root(data_dir)).read_derivatives(
-        spec, kind, start_ts=ceil(exact_start), end_ts=None if exact_end is None else floor(exact_end),
-        as_of=None if as_of is None else floor(_time_ms(as_of)),
-        historical_only=historical_only,
+    root = _data_root(data_dir)
+    start_ts = ceil(exact_start)
+    end_ts = None if exact_end is None else floor(exact_end)
+    cutoff = None if as_of is None else floor(_time_ms(as_of))
+    now = _prepare_derivative_history(root, instrument, kind, start_ts, end_ts, cutoff)
+    if now is None:
+        now = time.time_ns() // 1_000_000
+    return DerivativesResult(ColdReader(root).read_derivatives(
+        spec, kind, start_ts=start_ts, end_ts=now if end_ts is None else end_ts,
+        as_of=now if cutoff is None else cutoff, historical_only=historical_only,
     ))
+
+
+def _archived_derivative_revisions(
+    instrument: str, kind: DerivativeKind, *, end: int, data_dir: str | Path | None,
+) -> list[DerivativePoint]:
+    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
+    if spec is None:
+        raise InstrumentNotFoundError(f"未知标的：{instrument}")
+    return ColdReader(_data_root(data_dir)).read_derivative_revisions(spec, kind, start_ts=0, end_ts=end)
+
+
+def _prepare_derivative_history(
+    root: Path, instrument: str, kind: DerivativeKind, start: int, end: int | None, cutoff: int | None,
+) -> int | None:
+    endpoint = read_service_endpoint(root)
+    if endpoint is None:
+        return None
+    now = None
+    directory_id = data_dir_id(root)
+    try:
+        with httpx.Client(base_url=endpoint, trust_env=False, timeout=httpx.Timeout(35, connect=1)) as client:
+            now = _service_clock(client, directory_id)
+            if now is not None:
+                start = max(0, start)
+                stop = now if end is None else end
+                if start <= min(now, stop) and (cutoff is None or start <= cutoff):
+                    params = {"instrument": instrument, "kind": kind.value, "start": start, "end": stop}
+                    if cutoff is not None:
+                        params["as_of"] = cutoff
+                    response = client.get("/api/derivatives/backfill", params=params)
+                    if response.status_code != 404:
+                        response.raise_for_status()
+                        if response.headers.get(DATA_DIR_HEADER) != directory_id:
+                            return None
+    except httpx.TransportError:
+        pass
+    return now
+
+
+def _service_clock(client: httpx.Client, directory_id: str) -> int | None:
+    health = client.get("/api/health", timeout=1)
+    if health.is_success and health.headers.get(DATA_DIR_HEADER) == directory_id:
+        try:
+            return int(health.headers.get(NOW_MS_HEADER, ""))
+        except ValueError:
+            pass
+    return None
 
 
 def funding_settlements(

@@ -60,6 +60,7 @@ _DERIVATIVE_SCHEMA = pa.schema(
         pa.field("value", pa.string(), nullable=False),
         pa.field("ts_event", pa.int64(), nullable=False),
         pa.field("ts_published", pa.int64(), nullable=True),
+        pa.field("settled", pa.bool_(), nullable=True),
         pa.field("ts_available", pa.int64(), nullable=False),
         pa.field("precision", pa.string(), nullable=False),
         pa.field("ts_ingested", pa.int64(), nullable=False),
@@ -166,6 +167,7 @@ def write_derivative_parquet(
             "value": format(point.value, "f"),
             "ts_event": point.ts_event,
             "ts_published": point.ts_published,
+            "settled": point.settled,
             "ts_available": point.ts_available,
             "precision": point.precision.value,
             "ts_ingested": point.ts_ingested,
@@ -215,6 +217,7 @@ def read_derivative_points(
             ts_ingested=int(row["ts_ingested"]),
             ts_committed=int(row["ts_committed"]),
             revision=int(row.get("revision", 0)),
+            settled=row.get("settled"),
         )
         for row in pq.read_table(path).to_pylist()
     ]

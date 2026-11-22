@@ -61,3 +61,38 @@ PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest
 
 - 已通过 fixture 和进程内 ASGI 接线验证。沙箱限制外网与 TCP 监听，未实测真实 Bybit 结算更新、回环 WebSocket 或持续生产负载。首次策略订阅的内容基线和过期游标恢复会读取该类别在冷库中的修订，历史积累后的耗时尚未测量。
 - `git add -- .scratch/data-access/issues/08-derivatives-cold-store.md` 返回 128，沙箱禁止在主仓库的 worktree Git 元数据目录创建 `index.lock`。改动保留在当前工作区，HEAD 为 `dbe8ee1adfd44cab22da333c3f4b6640a2708669`。
+
+### 审查修复
+
+- 结算按交易标的和结算时刻选版。实时确认以收到实际费率的时刻为准，历史回填以结算时刻为准。同一费率有更早的合法可获取时间时追加修订，费率更正以收到更正的时刻写入。新增 `settled` 标识区分实际结算和 ticker 预估，旧 Parquet 仍可读取。
+- 启订回填截止到首个 ticker 之间的结算点进入确认队列。失败按结算点继续重试，每分钟独立对账并分页补齐。乱序 ticker 按字段维护事件时刻，继承字段时应用当前事件的时间上界。
+- 衍生品 SDK 省略上界时使用服务时钟，离线使用本地时钟。在线区间缺数据时，服务通过共享历史执行器回填，SDK 等待完成后直读清单。策略重同步也通过服务核对已有结算，交付更正修订。
+- `ctx` 按每根柱首次确认的时刻选取衍生品修订，衍生品事件仍对齐到开盘槽。窗口前分别保留最近结算和最近预估。内置及显式 SDK 读取器的资金成本都只使用实际结算。结算更正生效后，`NET_ODDS` 更新该笔费用。
+- 冷库写入关闭时，快照通过连接器直接取数。恢复 `main` 的翻页停止条件，保留达到目标时已取回的整页。以 `main`（`3930d8a`）的 BTC fixture 对照，1m、截止 `1793550000000`、`backfill_bars=10` 时，冷库写入开启和关闭都得到 900 条标记价、30 条结算和 196 条持仓量。
+
+#### 验证
+
+- 各审查项先复现再修复。SDK、组件、衍生品冷库及快照、策略与范围接口相关的定向回归共 245 项通过。
+- `PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests -q -p no:cacheprovider` 得到 904 项通过、16 项失败、1 项初始化错误、1 项取消选择。M1 盘面验收 `test_m1_solo_acceptance_flow` 等待流动性异常触发超时，分别在当前工作区和 `5c05aa1` 源码上单独复现。
+- `contract-check` 零漂移，`git diff --check` 通过。用 `5c05aa1` 写出的旧冷库和快照 Parquet 验证了结算读取及合并。改动留在 `ticket/data-access-08` 工作区，HEAD 为 `5c05aa1`。
+- 真实 Bybit 连线未验证。另有 1 项 DSH 测试因沙箱禁止写用户配置目录的 `cordis.yml` 失败（`test_real_dump_config_matches_permission_snapshot`）。
+
+沙箱禁止绑定回环端口的 15 个用例如下，其中 `test_usage_scan_writes_through_running_service` 在 fixture 初始化时出错。
+
+```text
+tests/acceptance/test_m1_solo.py::test_m1_solo_cli_loopback_and_token
+tests/acceptance/test_m2_copilot.py::test_m2_copilot_dual_plane_scenario
+tests/cli/test_cli.py::test_up_dual_keeps_fast_path_when_dsh_fails
+tests/cli/test_cli.py::test_up_dual_keeps_fast_path_when_dsh_binary_missing
+tests/cli/test_dsh_host.py::test_host_starts_probes_and_stops_with_redacted_log
+tests/cli/test_graceful_shutdown.py::test_sigterm_shuts_down_gracefully
+tests/cli/test_usage_scan_service.py::test_usage_scan_fails_closed_when_service_endpoint_is_unreachable
+tests/cli/test_usage_scan_service.py::test_usage_scan_writes_through_running_service
+tests/packs/test_bybit_stream.py::test_subscribe_ack_then_kline_and_orderbook
+tests/packs/test_bybit_stream.py::test_flat_zero_volume_bar_is_no_trades
+tests/packs/test_bybit_stream.py::test_rejected_subscription_raises_feed_transport_error
+tests/packs/test_bybit_stream.py::test_closed_connection_surfaces_transport_error
+tests/packs/test_bybit_stream.py::test_application_ping_and_pong_keep_connection_alive
+tests/packs/test_bybit_stream.py::test_tickers_subscription_is_shared_across_timeframes
+tests/workbench_api/test_collaboration_api.py::test_host_dispatch_ignores_ambient_http_proxy
+```

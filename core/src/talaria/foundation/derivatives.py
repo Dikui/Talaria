@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
+from operator import attrgetter
 from typing import Iterable, Protocol, Sequence, runtime_checkable
 
 from pydantic import Field, model_validator
@@ -57,11 +58,16 @@ class DerivativePoint(ContractModel):
     ts_ingested: int
     ts_committed: int
     revision: int = Field(default=0, ge=0)
+    settled: bool | None = Field(default=None, description="资金费率是否已结算。旧记录可省略。")
 
     @property
     def is_funding_settlement(self) -> bool:
-        """结算历史有交易所结算时点，ticker 费率是当期的实时观测。"""
-        return self.kind is DerivativeKind.FUNDING_RATE and self.ts_published == self.ts_event
+        if self.kind is not DerivativeKind.FUNDING_RATE:
+            return False
+        if self.settled is not None:
+            return self.settled
+        # 旧 Parquet 和快照没有单独的结算标识。
+        return self.ts_published == self.ts_event
 
     @model_validator(mode="after")
     def _timestamps_are_ordered(self) -> DerivativePoint:
@@ -79,6 +85,9 @@ def derivative_identity(point: DerivativePoint) -> tuple[str, str, str, bool, in
     )
 
 
+derivative_revision_order = attrgetter("revision", "ts_available", "ts_ingested")
+
+
 def latest_visible_derivatives(
     points: Iterable[DerivativePoint], *, as_of: int | None = None,
 ) -> list[DerivativePoint]:
@@ -89,9 +98,7 @@ def latest_visible_derivatives(
             continue
         key = derivative_identity(point)
         previous = selected.get(key)
-        if previous is None or (
-            point.revision, point.ts_available, point.ts_ingested
-        ) >= (previous.revision, previous.ts_available, previous.ts_ingested):
+        if previous is None or derivative_revision_order(point) >= derivative_revision_order(previous):
             selected[key] = point
     return sorted(selected.values(), key=lambda point: (point.ts_event, derivative_identity(point)))
 
@@ -155,6 +162,7 @@ class RawDerivativePoint:
             precision=self.precision,
             ts_ingested=self.ts_ingested,
             ts_committed=self.ts_committed,
+            settled=True if self.kind is DerivativeKind.FUNDING_RATE else None,
         )
 
 

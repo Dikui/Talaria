@@ -11,13 +11,16 @@ from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
+    DerivativeDataConnector,
     DerivativeKind,
     DerivativePoint,
 )
 from talaria.foundation.errors import ColdStoreError, FeatureDisabledError, FeedUnavailableError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
-from talaria.perception.backfill import BackfillPolicy, ensure_history
+from talaria.perception.backfill import (
+    BackfillPolicy, derivative_history_pages, derivative_series, ensure_history,
+)
 from talaria.perception.cold_publisher import ColdPublisher
 from talaria.perception.cold_store import ColdReader
 from talaria.perception.compaction import compact_series
@@ -195,6 +198,19 @@ class SnapshotBuilder:
         cutoff_ts: int,
     ) -> list[DerivativePoint]:
         """物化冷库当时可见的历史序列，维持已登记快照的内容不变。"""
+        connector = self._connector
+        if self._cold_publisher is None and isinstance(connector, DerivativeDataConnector):
+            points = []
+            for kind, timeframe in derivative_series(request.timeframes):
+                try:
+                    pages = derivative_history_pages(
+                        connector, self._policy, symbol=instrument.symbol,
+                        kind=kind, timeframe=timeframe, cutoff=cutoff_ts,
+                    )
+                    points.extend([row.to_point(instrument.instrument_id) for page in pages for row in page])
+                except FeedUnavailableError as exc:
+                    logger.warning("衍生品回填失败，快照继续（%s %s）：%s", kind, timeframe, exc)
+            return points
         if self._cold_publisher is not None:
             future = self._cold_publisher.request_derivative_history(
                 instrument, request.timeframes, cutoff_ts=cutoff_ts,
@@ -222,5 +238,5 @@ class SnapshotBuilder:
                     point for point in rows if point.timeframe == timeframe
                     and (kind is not DerivativeKind.FUNDING_RATE or point.is_funding_settlement)
                 ]
-                points.extend(series[-self._policy.target_bars:])
+                points.extend(series)
         return points

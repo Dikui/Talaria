@@ -162,6 +162,7 @@ export interface DerivativePoint {
   ts_ingested: number;
   ts_committed: number;
   revision?: number;
+  settled?: boolean | null;
 }
 export interface DerivativeSeries {
   kind: DerivativeKind;

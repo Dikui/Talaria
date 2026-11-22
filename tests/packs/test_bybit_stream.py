@@ -227,6 +227,8 @@ def test_tickers_merge_deltas_per_instrument_and_skip_empty_readings(monkeypatch
         delta("BTCUSDT", 700, lastPrice="102"),
         delta("BTCUSDT", 800, fundingRate="0"),
         delta("BTCUSDT", 900, openInterest="12346.7"),
+        delta("BTCUSDT", 750, fundingRate="0.0002"),
+        delta("BTCUSDT", 950, lastPrice="104"),
         {
             "topic": "tickers.BTCUSDT", "type": "snapshot", "ts": BASE + 1000,
             "data": {"symbol": "BTCUSDT", "markPrice": "103"},
@@ -264,13 +266,18 @@ def test_tickers_merge_deltas_per_instrument_and_skip_empty_readings(monkeypatch
 
     events = asyncio.run(scenario())
     assert [(event.instrument_id, event.ts_event - BASE) for event in events] == [
-        (INSTRUMENT, offset) for offset in (500, 700, 800, 900, 1000, 1100)
+        (INSTRUMENT, offset) for offset in (500, 700, 800, 900, 750, 950, 1000, 1100)
     ]
     assert events[1].mark_price == Decimal("101.5")
     assert events[1].funding_rate == Decimal("0.0001")
     assert events[3].funding_rate == Decimal("0")
     assert events[3].open_interest == Decimal("12346.7")
     assert events[3].next_funding_ts == BASE + 8 * 3_600_000
+    assert events[4].mark_price == Decimal("101.5")
+    assert events[4].open_interest is None
+    assert events[4].funding_rate == Decimal("0.0002")
+    assert events[5].funding_rate == Decimal("0")
+    assert events[5].open_interest == Decimal("12346.7")
     latest = events[-1]
     assert latest.mark_price == Decimal("103")
     assert (latest.funding_rate, latest.open_interest, latest.next_funding_ts) == (None, None, None)

@@ -12,11 +12,12 @@ from typing import Protocol
 from talaria import sdk
 from talaria.components.contracts import Series
 from talaria.components.operators import OPERATORS
-from talaria.foundation.bars import RangeBar
+from talaria.foundation.bars import CompactBar, RangeBar
 from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
     DerivativeKind,
     DerivativePoint,
+    derivative_identity,
     latest_visible_derivatives,
 )
 from talaria.foundation.indicators import IndicatorParams, IndicatorPoint
@@ -112,32 +113,76 @@ class Ctx:
 
     def derivatives(self, kind: DerivativeKind | str) -> tuple[DerivativePoint, ...]:
         """按事件时间返回可获取的衍生品点，含每个序列窗口前最近一点。"""
-        prior: dict[str | None, DerivativePoint] = {}
+        prior: dict[tuple[str | None, bool], DerivativePoint] = {}
         in_window = []
-        for point in self._visible_derivatives(DerivativeKind(kind)):
+        for point in latest_visible_derivatives(self._derivative_revisions(DerivativeKind(kind)), as_of=self.now):
             if point.ts_event < self.start:
-                prior[point.timeframe] = point
+                prior[point.timeframe, point.is_funding_settlement] = point
             else:
                 in_window.append(point)
         return (*sorted(prior.values(), key=_DERIVATIVE_EVENT_ORDER), *in_window)
 
-    def _visible_derivatives(self, kind: DerivativeKind) -> tuple[DerivativePoint, ...]:
+    def _derivative_revisions(self, kind: DerivativeKind) -> tuple[DerivativePoint, ...]:
         if kind not in self._derivatives_by_kind:
-            read = self._read_derivatives
-            if read is None:
-                read = partial(sdk.derivatives, data_dir=self._data_dir)
-            rows = read(
-                self.instrument, kind, start=0, end=self.now, as_of=self.now,
+            if self._read_derivatives is None:
+                rows = sdk._archived_derivative_revisions(
+                    self.instrument, kind, end=self.now, data_dir=self._data_dir,
+                )
+            else:
+                rows = self._read_derivatives(self.instrument, kind, start=0, end=self.now, as_of=self.now)
+            self._derivatives_by_kind[kind] = tuple(
+                point for point in rows
+                if point.instrument_id == self.instrument and point.kind is kind
+                and 0 <= point.ts_event <= self.now and point.ts_available <= self.now
             )
-            self._derivatives_by_kind[kind] = tuple(latest_visible_derivatives(
-                (
-                    point for point in rows
-                    if point.instrument_id == self.instrument and point.kind is kind
-                    and 0 <= point.ts_event <= self.now
-                ),
-                as_of=self.now,
-            ))
         return self._derivatives_by_kind[kind]
+
+    def _indicator_derivatives(
+        self, kind: DerivativeKind, timeframe: str | None, earliest_cutoff: int,
+    ) -> list[DerivativePoint]:
+        def matches(point: DerivativePoint) -> bool:
+            return point.timeframe == timeframe and (
+                kind is not DerivativeKind.FUNDING_RATE or point.is_funding_settlement
+            )
+
+        points = [point for point in self._derivative_revisions(kind) if matches(point)]
+        read = self._read_derivatives
+        if read is not None:
+            # sdk.derivatives 等读取器每次只返回最高可见修订，按需回查被遮住的版本。
+            for latest in latest_visible_derivatives(points):
+                identity = derivative_identity(latest)
+                point = latest
+                while point.revision > 0 and point.ts_available > earliest_cutoff:
+                    cutoff = point.ts_available - 1
+                    earlier = latest_visible_derivatives(
+                        (prior for prior in read(
+                            self.instrument, kind, start=point.ts_event, end=point.ts_event, as_of=cutoff,
+                        ) if derivative_identity(prior) == identity),
+                        as_of=cutoff,
+                    )
+                    if not earlier:
+                        break
+                    point = earlier[0]
+                    points.append(point)
+        return points
+
+    def _bar_evaluation_times(self, timeframe: str, bars: Sequence[CompactBar]) -> list[int]:
+        interval = timeframe_ms(timeframe)
+        closed = self._closed_bars(timeframe)
+        rows = {row.ts_event: row for row in closed}
+        tail_completed = closed.tail_completed
+        times = []
+        for bar in bars:
+            row = rows.get(bar.timestamp)
+            if row is None:
+                times.append(bar.ts_available)
+                continue
+            cutoff, complete = _first_confirmation(self._read_bars, self.instrument, timeframe, row, interval)
+            tail_completed &= complete
+            times.append(cutoff)
+        if closed.tail_completed and not tail_completed:
+            self._bars_by_timeframe[timeframe] = sdk.BarsResult(tuple(closed), tail_completed=False)
+        return times
 
     def indicator(
         self, name: str, *, timeframe: str | None = None, version: str = "1", **params: object,
@@ -157,20 +202,15 @@ class Ctx:
                 DerivativeKind.OPEN_INTEREST: OI_TIMEFRAME_BY_TIMEFRAME[requested],
                 DerivativeKind.MARK_PRICE: requested,
             }
+            evaluations = self._bar_evaluation_times(requested, bars)
+            earliest = min(evaluations, default=self.now)
             inputs = {
-                kind: tuple(
-                    point for point in self._visible_derivatives(kind)
-                    if point.timeframe == timeframes[kind]
-                )
+                kind: self._indicator_derivatives(kind, timeframes[kind], earliest)
                 for kind in operator.derivative_inputs
             }
-            funding = inputs.get(DerivativeKind.FUNDING_RATE, ())
-            if self._read_derivatives is None:
-                # 内置行情取数包含 ticker 预估值，结算类算子沿用快照中的结算序列。
-                funding = tuple(point for point in funding if point.is_funding_settlement)
             samples = derivative_samples(
-                bars, funding, inputs.get(DerivativeKind.OPEN_INTEREST, ()),
-                mark_price=inputs.get(DerivativeKind.MARK_PRICE, ()),
+                bars, inputs.get(DerivativeKind.FUNDING_RATE, ()), inputs.get(DerivativeKind.OPEN_INTEREST, ()),
+                mark_price=inputs.get(DerivativeKind.MARK_PRICE, ()), as_of=evaluations,
             )
         points = operator.compute(bars, params, derivatives=samples)
         if timeframe_ms(requested) > timeframe_ms(self.timeframe):
@@ -190,6 +230,24 @@ class Evaluation[T]:
     tail_completed: bool = True
 
 
+def _first_confirmation(
+    read: BarReader, instrument: str, timeframe: str, bar: RangeBar, interval: int,
+) -> tuple[int, bool]:
+    slot = bar.ts_event
+    close = slot + interval
+    tail_completed = True
+    while bar.ts_available > close:
+        # 读取器只返回最高可见修订。退到它可见前，找出首次确认时点。
+        earlier = _read_closed_bars(
+            read, instrument, timeframe, start=slot, end=slot, as_of=bar.ts_available - 1,
+        )
+        tail_completed &= earlier.tail_completed
+        if not earlier:
+            break
+        bar = earlier[0]
+    return max(close, bar.ts_available), tail_completed
+
+
 def _confirmation_times(
     read: BarReader, instrument: str, timeframe: str, *, start: int, end: int,
 ) -> list[tuple[int, int, bool]]:
@@ -200,19 +258,8 @@ def _confirmation_times(
     )
     times = []
     for bar in latest:
-        slot = bar.ts_event
-        close = slot + interval
-        tail_completed = latest.tail_completed
-        while bar.ts_available > close:
-            # 读取器只返回最高可见修订。退到它可见前，找出首次确认时点。
-            earlier = _read_closed_bars(
-                read, instrument, timeframe, start=slot, end=slot, as_of=bar.ts_available - 1,
-            )
-            tail_completed &= earlier.tail_completed
-            if not earlier:
-                break
-            bar = earlier[0]
-        times.append((max(close, bar.ts_available), slot, tail_completed))
+        cutoff, complete = _first_confirmation(read, instrument, timeframe, bar, interval)
+        times.append((cutoff, bar.ts_event, complete and latest.tail_completed))
     return sorted(times)
 
 

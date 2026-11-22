@@ -188,6 +188,12 @@ async def build_runtime(
                 cold_publisher = ColdPublisher(
                     cold_store, instruments=instruments, connector=connector,
                     policy=policy, now_ms=settings.now_ms, hot_buffer=hot_buffer,
+                    funding_intervals_ms={
+                        spec.instrument_id: hours * 3_600_000
+                        for spec in instruments
+                        if (hours := pack.traits(spec.instrument_id).carry.funding_interval_hours) is not None
+                        and hours > 0
+                    },
                     has_channel=lambda instrument_id, timeframe: (
                         supervisor is not None and supervisor.has_channel(instrument_id, timeframe)
                     ),

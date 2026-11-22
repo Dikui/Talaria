@@ -26,7 +26,7 @@ from talaria.foundation.strategy_subscription import (
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
 from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdReader
-from talaria.service_endpoint import DATA_DIR_HEADER, data_dir_id, read_service_connection
+from talaria.service_endpoint import DATA_DIR_HEADER, NOW_MS_HEADER, data_dir_id, read_service_connection
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
@@ -101,19 +101,36 @@ def subscribe_derivatives(
 
 
 def _recover_derivatives(
-    root: Path, instrument: str, kind: DerivativeKind, ready: SubscriptionReady, seen: set[str],
+    root: Path, instrument: str, kind: DerivativeKind, ready: SubscriptionReady, seen: set[str], *, as_of: int,
 ) -> list[StrategyDerivativeEvent]:
     spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
     if spec is None:
         raise InstrumentNotFoundError(f"未知标的：{instrument}")
-    points = ColdReader(root).read_derivative_revisions(spec, kind, end_ts=ready.server_ts)
+    points = ColdReader(root).read_derivative_revisions(spec, kind, end_ts=as_of)
     return [
         StrategyDerivativeEvent(epoch=ready.epoch, seq=None, point=point, content_id=identity)
         for identity, point in identified_derivative_revisions(
-            point for point in points if point.ts_available <= ready.server_ts
+            point for point in points if point.ts_available <= as_of
         )
         if identity not in seen
     ]
+
+
+async def _refresh_settlements(
+    base_url: str, directory_id: str, instrument: str, start: int, end: int,
+) -> int:
+    async with AsyncClient(base_url=base_url, trust_env=False, timeout=35) as client:
+        response = await client.get("/api/derivatives/backfill", params={
+            "instrument": instrument, "kind": DerivativeKind.FUNDING_RATE.value,
+            "start": max(0, start), "end": end, "refresh": "true",
+        })
+    response.raise_for_status()
+    if response.headers.get(DATA_DIR_HEADER) != directory_id:
+        raise TransportError("衍生品重同步响应的数据目录与订阅不一致")
+    try:
+        return int(response.headers.get(NOW_MS_HEADER, ""))
+    except ValueError as exc:
+        raise TransportError("衍生品重同步响应缺少服务时刻") from exc
 
 
 async def _subscribe(
@@ -175,8 +192,13 @@ async def _subscribe(
                                     for identity, bar in revisions
                                 ]
                             else:
+                                as_of = ready.server_ts
+                                if kind is DerivativeKind.FUNDING_RATE:
+                                    as_of = await _refresh_settlements(
+                                        endpoint.base_url, directory_id, instrument, coverage_start, as_of,
+                                    )
                                 recovered = await asyncio.to_thread(
-                                    _recover_derivatives, root, instrument, kind, ready, seen,
+                                    _recover_derivatives, root, instrument, kind, ready, seen, as_of=as_of,
                                 )
                             for event in recovered:
                                 seen.add(event.content_id)

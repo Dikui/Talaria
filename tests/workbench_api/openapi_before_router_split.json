@@ -2144,6 +2144,18 @@
             "title": "Revision",
             "type": "integer"
           },
+          "settled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "资金费率是否已结算。旧记录可省略。",
+            "title": "Settled"
+          },
           "timeframe": {
             "anyOf": [
               {
@@ -6168,6 +6180,127 @@
           }
         },
         "summary": "Report Collaboration Usage"
+      }
+    },
+    "/api/derivatives/backfill": {
+      "get": {
+        "operationId": "backfill_derivatives_api_derivatives_backfill_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "instrument",
+            "required": true,
+            "schema": {
+              "title": "Instrument",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DerivativeKind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "title": "Start",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "required": true,
+            "schema": {
+              "minimum": 0,
+              "title": "End",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          },
+          {
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Refresh",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "X-Talaria-Data-Dir": {
+                "description": "数据目录标识",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Talaria-Now-Ms": {
+                "description": "回填后服务时刻（UTC 毫秒）",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "结算重同步失败，可以重试"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "等待衍生品历史回填超时，可以重试"
+          }
+        },
+        "summary": "Backfill Derivatives"
       }
     },
     "/api/drawings": {

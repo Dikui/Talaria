@@ -87,7 +87,7 @@ class BybitPublicStream:
         self._events: asyncio.Queue[object] = asyncio.Queue()
         self._acks: list[asyncio.Future[None]] = []
         self._subscriptions: set[tuple[str, str]] = set()
-        self._tickers_by_instrument: dict[str, dict[str, object]] = {}
+        self._tickers_by_instrument: dict[str, dict[str, tuple[int, object]]] = {}
         self._reader: asyncio.Task[None] | None = None
         self._pinger: asyncio.Task[None] | None = None
         self._last_message_at: float = 0.0
@@ -375,13 +375,18 @@ class BybitPublicStream:
             return []
 
         message_type = envelope.get("type")
-        ticker = data
-        if message_type == "snapshot":
-            self._tickers_by_instrument.pop(instrument_id, None)
-        elif message_type == "delta":
-            ticker = self._tickers_by_instrument.get(instrument_id, {}) | data
-
+        fields = ("markPrice", "fundingRate", "openInterest", "nextFundingTime")
         try:
+            received = self._now_ms()
+            ts_event = int(data.get("ts") or envelope.get("ts") or received)
+            previous = self._tickers_by_instrument.get(instrument_id, {})
+            ticker = {
+                field: value for field, (updated, value) in previous.items() if updated <= ts_event
+            } if message_type == "delta" else {}
+            updates = {
+                field: data.get(field) for field in fields if field in data or message_type == "snapshot"
+            }
+            ticker.update(updates)
             mark_price, funding_rate, open_interest = (
                 _decimal(value) if value not in (None, "") else None
                 for value in (ticker.get("markPrice"), ticker.get("fundingRate"), ticker.get("openInterest"))
@@ -398,14 +403,17 @@ class BybitPublicStream:
                     funding_rate=funding_rate,
                     next_funding_ts=next_funding_ts,
                     open_interest=open_interest,
-                    ts_event=int(data.get("ts") or envelope.get("ts") or self._now_ms()),
-                    ts_ingested=self._now_ms(),
+                    ts_event=ts_event,
+                    ts_ingested=received,
                 )
         except (InvalidOperation, TypeError, ValueError) as exc:
             logger.warning("忽略无法解析的 Bybit tickers：%s", exc)
             return []
         if message_type in ("snapshot", "delta"):
-            self._tickers_by_instrument[instrument_id] = ticker
+            cache = self._tickers_by_instrument.setdefault(instrument_id, {})
+            for field, value in updates.items():
+                if field not in cache or cache[field][0] <= ts_event:
+                    cache[field] = ts_event, value
         return [event] if event is not None else []
 
     def _parse_book(
