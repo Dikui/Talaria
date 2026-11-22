@@ -1,4 +1,4 @@
-"""按可获取时间用逐笔和买一卖一驱动共用的仓位执行器。"""
+"""在回测中按可获取时间用逐笔和买一卖一驱动共用的仓位执行器。"""
 
 from collections import deque
 from collections.abc import Iterable, Iterator
@@ -17,7 +17,7 @@ from talaria.account.plugins.bar_sim_1m import (
     BalanceReader, BarSim1m, BarSimParams, PositionExecutor, _BarLiquidity, _Entry,
 )
 from talaria.account.plugins.parquet import TickMarketEvent, TickReplay, tick_market_order
-from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParams, Slot, SlotPlugin
+from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParams, SchemeError, Slot, SlotPlugin
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.derivatives import DerivativePoint
 from talaria.foundation.ticks import Quote, Trade, relative_tick_order_known, tick_order, trade_version
@@ -78,6 +78,8 @@ def _quote_version(row: Quote) -> tuple:
 
 class L1TradeSim(BarSim1m):
     def __init__(self, context: PluginContext, params: PluginParams) -> None:
+        if context.mode != "backtest":
+            raise SchemeError("l1_trade_sim 仅支持回测，模拟盘请使用 bar_sim_1m")
         settings = L1TradeSimParams.model_validate(params)
         super().__init__(context, settings)
         self.quote_max_age_ms = settings.quote_max_age_ms

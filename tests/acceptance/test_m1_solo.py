@@ -7,22 +7,25 @@
 阶段 C（无 replay 再重启）：按 snapshot_id 读回逐字节一致的快照与预警记录。
 
 阶段 A 的时钟固定在快照截止时刻，回放从挂好预警后的下一分钟开始。
-阶段 B、C 的时钟固定在回放末柱收盘时刻，扫描器手动触发。
+阶段 B、C 的业务时钟固定在回放末柱收盘时刻。阶段 B 按 WS 帧分段推进回放。
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import queue
 import threading
 import time
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from talaria.replay import ReplayFeed
 from talaria.workbench_api.app import create_app
 from talaria.workbench_api.settings import AppSettings
 
@@ -33,6 +36,30 @@ SNAPSHOT_CUTOFF_MS = 1_795_022_974_103
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 INSTRUMENT = "BTC-USDT-PERP"
 TIMEFRAME = "1m"
+BARS_OFFSET_MS = 1000
+DISCONNECT_OFFSET_MS = 2000
+RECOVERY_OFFSET_MS = 3000
+
+
+class ReplayClock:
+    """只在 TestClient 的事件循环里推进 ReplayFeed 的单调时钟。"""
+
+    def __init__(self) -> None:
+        self.seconds = 0.0
+        self._advanced = asyncio.Condition()
+
+    def monotonic(self) -> float:
+        return self.seconds
+
+    async def sleep(self, delay: float) -> None:
+        target = self.seconds + delay
+        async with self._advanced:
+            await self._advanced.wait_for(lambda: self.seconds >= target)
+
+    async def advance_to(self, offset_ms: int) -> None:
+        async with self._advanced:
+            self.seconds = offset_ms / 1000
+            self._advanced.notify_all()
 
 
 class MessagePump:
@@ -48,21 +75,24 @@ class MessagePump:
         try:
             while True:
                 message = websocket.receive_json()
-                self.seen.append(message)
                 self._queue.put(message)
         except Exception:
             return
 
     def next(self, timeout: float = 10.0) -> dict:
-        return self._queue.get(timeout=timeout)
+        message = self._queue.get(timeout=timeout)
+        self.seen.append(message)
+        return message
 
     def wait_for(self, predicate, timeout: float = 15.0) -> dict:  # noqa: ANN001
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            for message in list(self.seen):
-                if predicate(message):
-                    return message
-            time.sleep(0.05)
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                message = self.next(timeout=remaining)
+            except queue.Empty:
+                break
+            if predicate(message):
+                return message
         raise AssertionError(
             "等待 WS 帧超时；bar 状态 "
             f"{[m['data']['bar']['status'] for m in self.seen if m.get('type') == 'bar']}"
@@ -82,20 +112,9 @@ def _settings(
         dist_dir=dist_dir,
         fixture_dir=fixture_dir,
         replay_events=replay_events,
-        replay_speed=4.0,
         token=TOKEN,
         now_ms=lambda: now_ms,
     )
-
-
-def _wait_until(predicate, timeout: float = 25.0, interval: float = 0.1):  # noqa: ANN001
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        value = predicate()
-        if value:
-            return value
-        time.sleep(interval)
-    raise AssertionError("等待条件超时")
 
 
 def _decimal(value: Decimal) -> str:
@@ -109,11 +128,12 @@ def _bar_event(
     close: Decimal,
     high: Decimal,
     low: Decimal,
+    offset_ms: int = BARS_OFFSET_MS,
     volume: str = "100",
     turnover: str = "100000",
 ) -> dict:
     return {
-        "offset_ms": 0,
+        "offset_ms": offset_ms,
         "type": "kline",
         "event": {
             "instrument_id": instrument_id,
@@ -143,13 +163,7 @@ def _write_replay(path: Path, *, level_price: Decimal, snapshot_cutoff_ts: int) 
     start = (snapshot_cutoff_ts // 60_000 + 1) * 60_000
     calm = level_price - Decimal("200")
     events: list[dict] = [{"offset_ms": 0, "type": "heartbeat"}]
-    bars: list[dict] = []
 
-    def append(event: dict, offset_ms: int) -> None:
-        event["offset_ms"] = offset_ms
-        events.append(event)
-
-    offset = 8_000
     for index in range(24):
         bar = _bar_event(
             instrument_id=INSTRUMENT,
@@ -158,12 +172,8 @@ def _write_replay(path: Path, *, level_price: Decimal, snapshot_cutoff_ts: int) 
             high=calm + Decimal("10"),
             low=calm - Decimal("10"),
         )
-        bar["offset_ms"] = offset
         events.append(bar)
-        bars.append(bar["event"]["bar"])
-        offset += 40
 
-    touch_offset = offset
     touch = _bar_event(
         instrument_id=INSTRUMENT,
         timestamp=start + 24 * 60_000,
@@ -171,11 +181,8 @@ def _write_replay(path: Path, *, level_price: Decimal, snapshot_cutoff_ts: int) 
         high=level_price + Decimal("5"),
         low=level_price - Decimal("5"),
     )
-    touch["offset_ms"] = touch_offset
     events.append(touch)
-    bars.append(touch["event"]["bar"])
 
-    cross_offset = touch_offset + 40
     cross = _bar_event(
         instrument_id=INSTRUMENT,
         timestamp=start + 25 * 60_000,
@@ -183,11 +190,8 @@ def _write_replay(path: Path, *, level_price: Decimal, snapshot_cutoff_ts: int) 
         high=level_price + Decimal("120"),
         low=level_price + Decimal("60"),
     )
-    cross["offset_ms"] = cross_offset
     events.append(cross)
-    bars.append(cross["event"]["bar"])
 
-    follow_offset = cross_offset + 40
     follow = _bar_event(
         instrument_id=INSTRUMENT,
         timestamp=start + 26 * 60_000,
@@ -195,11 +199,8 @@ def _write_replay(path: Path, *, level_price: Decimal, snapshot_cutoff_ts: int) 
         high=level_price + Decimal("160"),
         low=level_price + Decimal("100"),
     )
-    follow["offset_ms"] = follow_offset
     events.append(follow)
-    bars.append(follow["event"]["bar"])
 
-    spike_offset = follow_offset + 40
     spike = _bar_event(
         instrument_id=INSTRUMENT,
         timestamp=start + 27 * 60_000,
@@ -209,31 +210,23 @@ def _write_replay(path: Path, *, level_price: Decimal, snapshot_cutoff_ts: int) 
         volume="999999",
         turnover="99999900",
     )
-    spike["offset_ms"] = spike_offset
     events.append(spike)
-    bars.append(spike["event"]["bar"])
 
-    # 扫描器只评估最新一根柱；放量柱之后不再追加正常柱，手动扫描才稳定命中。
-    disconnect_offset = spike_offset + 1_000
-    append(
-        {"offset_ms": disconnect_offset, "type": "disconnect", "reason": "验收模拟行情断流"},
-        disconnect_offset,
+    events.append(
+        {"offset_ms": DISCONNECT_OFFSET_MS, "type": "disconnect", "reason": "验收模拟行情断流"}
     )
-    reconnect_offset = disconnect_offset + 2_400
-    append({"offset_ms": reconnect_offset, "type": "reconnect"}, reconnect_offset)
+    events.append({"offset_ms": RECOVERY_OFFSET_MS, "type": "reconnect"})
 
-    recovery_offset = reconnect_offset + 200
     recovery_ts = start + 29 * 60_000  # 跳过 28 号槽位，触发一根 FEED_GAP
     recovery = _bar_event(
+        offset_ms=RECOVERY_OFFSET_MS,
         instrument_id=INSTRUMENT,
         timestamp=recovery_ts,
         close=level_price + Decimal("270"),
         high=level_price + Decimal("280"),
         low=level_price + Decimal("220"),
     )
-    recovery["offset_ms"] = recovery_offset
     events.append(recovery)
-    bars.append(recovery["event"]["bar"])
 
     path.write_text(
         "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
@@ -248,7 +241,9 @@ def _write_replay(path: Path, *, level_price: Decimal, snapshot_cutoff_ts: int) 
     }
 
 
-def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
+def test_m1_solo_acceptance_flow(
+    tmp_path: Path, fixture_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     data_dir = tmp_path / "data"
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
@@ -465,9 +460,13 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
     assert max(level_alert["created_ts"], overlay_alert["created_ts"]) <= replay["start"]
     replay_end_ms = replay["recovery_ts"] + 60_000
 
-    with TestClient(
-        create_app(_settings(data_dir, dist_dir, fixture_dir, replay_path, now_ms=replay_end_ms))
-    ) as client:
+    clock = ReplayClock()
+    monkeypatch.setattr(
+        "talaria.workbench_api.runtime.ReplayFeed",
+        partial(ReplayFeed, clock=clock.monotonic, sleep=clock.sleep),
+    )
+    app = create_app(_settings(data_dir, dist_dir, fixture_dir, replay_path, now_ms=replay_end_ms))
+    with TestClient(app) as client:
         assert client.get("/api/health").json()["feed_mode"] == "replay"
         loaded = client.get("/api/alerts").json()["alerts"]
         assert {alert["alert_id"] for alert in loaded} >= {
@@ -502,20 +501,18 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
                 {"op": "subscribe", "instrument_id": INSTRUMENT, "timeframe": TIMEFRAME}
             )
 
-            triggers = _wait_until(
-                lambda: (
-                    lambda items: items
-                    if {item["alert_id"] for item in items}
-                    >= {level_alert["alert_id"], overlay_alert["alert_id"]}
-                    else None
-                )(
-                    client.get(
-                        "/api/alerts/triggers",
-                        params={"instrument_id": INSTRUMENT, "limit": 50},
-                    ).json()["triggers"]
-                ),
-                timeout=30.0,
+            pump.wait_for(lambda m: m["type"] == "health" and m["data"]["status"] == "LIVE")
+            client.portal.call(clock.advance_to, BARS_OFFSET_MS)
+            pump.wait_for(
+                lambda m: m["type"] == "bar" and m["data"]["bar"]["timestamp"] == replay["spike_ts"]
             )
+            client.portal.call(app.state.runtime.alerts.flush)
+            triggers = client.get(
+                "/api/alerts/triggers", params={"instrument_id": INSTRUMENT, "limit": 50}
+            ).json()["triggers"]
+            assert {item["alert_id"] for item in triggers} >= {
+                level_alert["alert_id"], overlay_alert["alert_id"]
+            }
             level_trigger = next(
                 item
                 for item in triggers
@@ -538,38 +535,19 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
                 f"/api/snapshots/{overlay_trigger['snapshot_id']}"
             ).status_code == 200
 
-            # 等放量柱到达后再手动扫描，避免依赖 3 秒 ticker 的时序。
-            pump.wait_for(
-                lambda message: message.get("type") == "bar"
-                and message["data"]["bar"]["timestamp"] >= replay["spike_ts"],
-                timeout=15.0,
-            )
             scan_resp = client.post(
                 "/api/scanner/scan",
                 json={"instrument_ids": [INSTRUMENT]},
                 headers=AUTH,
             )
             assert scan_resp.status_code == 200
-            scan_triggers = scan_resp.json()["triggers"]
-            liquidity = [
-                item for item in scan_triggers if item["kind"] == "LIQUIDITY_ANOMALY"
-            ]
-            if not liquidity:
-                liquidity = _wait_until(
-                    lambda: (
-                        lambda items: items or None
-                    )(
-                        [
-                            item
-                            for item in client.get(
-                                "/api/scanner/triggers",
-                                params={"instrument_id": INSTRUMENT, "limit": 50},
-                            ).json()["triggers"]
-                            if item["kind"] == "LIQUIDITY_ANOMALY"
-                        ]
-                    ),
-                    timeout=5.0,
-                )
+            # 定时扫描可能先命中同一根柱，手动扫描返回后从共同的触发历史读取。
+            liquidity = client.get(
+                "/api/scanner/triggers",
+                params={"instrument_id": INSTRUMENT, "kind": "LIQUIDITY_ANOMALY"},
+            ).json()["triggers"]
+            assert len(liquidity) == 1
+            assert liquidity[0]["kind"] == "LIQUIDITY_ANOMALY"
             assert liquidity[0]["trigger_id"]
             assert liquidity[0]["snapshot_id"]
             assert client.get(
@@ -590,15 +568,15 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
                 entry["instrument_id"] for entry in focus_group["items"]
             ]
 
-            # 断流：supervisor 直接把已订阅通道置 STALE。
-            assert _wait_until(
-                lambda: client.get("/api/feed/health").json()["status"] == "STALE",
-                timeout=15.0,
+            client.portal.call(clock.advance_to, DISCONNECT_OFFSET_MS)
+            pump.wait_for(lambda m: m["type"] == "health" and m["data"]["status"] == "STALE")
+            assert client.get("/api/feed/health").json()["status"] == "STALE"
+            client.portal.call(clock.advance_to, RECOVERY_OFFSET_MS)
+            pump.wait_for(
+                lambda m: m["type"] == "health" and m["data"]["status"] == "RECOVERING"
             )
-            assert _wait_until(
-                lambda: client.get("/api/feed/health").json()["status"] == "LIVE",
-                timeout=15.0,
-            )
+            pump.wait_for(lambda m: m["type"] == "health" and m["data"]["status"] == "LIVE")
+            assert client.get("/api/feed/health").json()["status"] == "LIVE"
 
             gap_frame = pump.wait_for(
                 lambda message: message.get("type") == "bar"
@@ -608,12 +586,10 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
             assert gap_frame["data"]["bar"]["close"] is None
             assert gap_frame["data"]["bar"]["timestamp"] == replay["gap_ts"]
 
-            health_statuses = {
-                message["data"]["status"]
-                for message in pump.seen
-                if message.get("type") == "health"
-            }
-            assert {"STALE", "RECOVERING", "LIVE"} <= health_statuses
+            pump.wait_for(
+                lambda m: m["type"] == "bar"
+                and m["data"]["bar"]["timestamp"] == replay["recovery_ts"]
+            )
             alert_frames = [
                 message for message in pump.seen if message.get("type") == "alert"
             ]

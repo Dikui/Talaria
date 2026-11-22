@@ -10,7 +10,7 @@ import pytest
 from talaria.account.contracts import MarketEvent
 from talaria.account.risk_config import AccountRiskConfig
 from talaria.account.host import default_registry
-from talaria.account.scheme import INTERFACE_VERSION, PluginContext, Slot
+from talaria.account.scheme import INTERFACE_VERSION, PluginContext, SchemeError, Slot
 from talaria.foundation.ticks import Quote, TickKind, Trade
 from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdReader, ColdStore
@@ -49,6 +49,13 @@ def engine(tmp_path, trades=(), quotes=(), *, risk=None, **params):
         cold_reader=ColdReader(tmp_path),
     )
     return plugin.create(context, params)
+
+
+def test_paper_mode_rejects_l1_fill_at_assembly(tmp_path):
+    registry = default_registry()
+    plugin = registry.resolve(Slot.FILL, "l1_trade_sim", INTERFACE_VERSION, tmp_path, mode="paper")
+    with pytest.raises(SchemeError, match="l1_trade_sim 仅支持回测"):
+        plugin.create(PluginContext(tmp_path, "paper", 7, lambda: 0), {})
 
 
 @pytest.mark.parametrize("bar_volume", ["30", "0"])

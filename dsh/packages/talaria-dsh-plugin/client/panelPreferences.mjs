@@ -28,6 +28,11 @@ export function restoreActivePanel(layout, panels, storage = kind => window[kind
   return active.subscribe(remember)
 }
 
+/** @template {string} T @param {T[]} panels */
+export function dockPanels(panels) {
+  return panels.filter(panel => panel !== 'chart')
+}
+
 export function panelLinkKey(panel, surface, sessionId) {
   if (surface === 'session') return `session:${sessionId}:${panel}`
   return `main:${panel}`

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -41,7 +41,7 @@ class SubscriptionRejectedError(TalariaError):
 
 async def _range_revisions(
     base_url: str, directory_id: str, request: SubscriptionRequest, *,
-    coverage_start: int, now: int, interval: int, seen: set[str],
+    coverage_start: int, now: int, interval: int, seen: set[str], range_start: int = 0,
 ) -> list[tuple[str, RangeBar]]:
     result: list[tuple[str, RangeBar]] = []
     end = last_closed_bar_start(now, interval)
@@ -51,7 +51,7 @@ async def _range_revisions(
         "instrument": request.instrument, "timeframe": request.timeframe,
         "resync_from": coverage_start,
     }
-    ranges = [(0, end)]
+    ranges = [(range_start, end)]
     async with AsyncClient(base_url=base_url, trust_env=False, timeout=35) as client:
         while ranges:
             start, end = ranges.pop()
@@ -79,6 +79,9 @@ async def _range_revisions(
 
 def subscribe(
     instrument: str, timeframe: str, *, data_dir: str | Path | None = None,
+    on_connection: Callable[[bool], None] | None = None,
+    after: SubscriptionCursor | None = None, resume_from: int | None = None,
+    on_cursor: Callable[[SubscriptionCursor, int], None] | None = None,
 ) -> AsyncGenerator[StrategyBarEvent]:
     """订阅已收盘柱修订，断线时自动重连。
 
@@ -88,15 +91,22 @@ def subscribe(
     ``contextlib.aclosing`` 及时释放本次订阅。常驻服务明确拒绝时抛出
     ``SubscriptionRejectedError``。
     """
-    return cast(AsyncGenerator[StrategyBarEvent], _subscribe(instrument, timeframe, data_dir=data_dir))
+    return cast(AsyncGenerator[StrategyBarEvent], _subscribe(
+        instrument, timeframe, data_dir=data_dir, on_connection=on_connection,
+        after=after, resume_from=resume_from, on_cursor=on_cursor,
+    ))
 
 
 def subscribe_derivatives(
     instrument: str, kind: DerivativeKind | str, *, data_dir: str | Path | None = None,
+    on_connection: Callable[[bool], None] | None = None,
+    after: SubscriptionCursor | None = None, resume_from: int | None = None,
+    on_cursor: Callable[[SubscriptionCursor, int], None] | None = None,
 ) -> AsyncGenerator[StrategyDerivativeEvent]:
     """订阅归档后的衍生品修订。日志过期后从本地清单补齐已发布的修订。"""
     return cast(AsyncGenerator[StrategyDerivativeEvent], _subscribe(
-        instrument, "1m", data_dir=data_dir, kind=DerivativeKind(kind),
+        instrument, "1m", data_dir=data_dir, kind=DerivativeKind(kind), on_connection=on_connection,
+        after=after, resume_from=resume_from, on_cursor=on_cursor,
     ))
 
 
@@ -135,18 +145,23 @@ async def _refresh_settlements(
 
 async def _subscribe(
     instrument: str, timeframe: str, *, data_dir: str | Path | None, kind: DerivativeKind | None = None,
+    on_connection: Callable[[bool], None] | None = None,
+    after: SubscriptionCursor | None = None, resume_from: int | None = None,
+    on_cursor: Callable[[SubscriptionCursor, int], None] | None = None,
 ) -> AsyncGenerator[StrategyBarEvent | StrategyDerivativeEvent]:
     if timeframe not in SUPPORTED_TIMEFRAMES:
         raise InvalidRequestError(f"不支持的周期：{timeframe}")
     root = Path(data_dir or os.environ.get("TALARIA_DATA_DIR") or ".talaria").expanduser().resolve()
     request = SubscriptionRequest(
-        instrument=instrument, timeframe=timeframe, owner=uuid4().hex, include_baseline=True, kind=kind,
+        instrument=instrument, timeframe=timeframe, owner=uuid4().hex, include_baseline=True, kind=kind, report_replay_through=on_cursor is not None,
     )
     event_model = StrategyBarEvent if kind is None else StrategyDerivativeEvent
     directory_id = data_dir_id(root)
     interval = timeframe_ms(timeframe)
-    cursor: SubscriptionCursor | None = None
-    coverage_start: int | None = None
+    cursor = after
+    if cursor is None and resume_from is not None:
+        cursor = SubscriptionCursor(epoch="paper-recovery", seq=0)
+    coverage_start = resume_from
     seen: set[str] = set()
     delay = 0.1
     while True:
@@ -159,9 +174,10 @@ async def _subscribe(
                         "Authorization": f"Bearer {endpoint.token}", DATA_DIR_HEADER: directory_id,
                     },
                     proxy=None, open_timeout=2, close_timeout=1,
+                    **({"ping_interval": 5, "ping_timeout": 5} if on_connection else {}),
                 ) as socket:
                     await socket.send(request.model_copy(update={"after": cursor}).model_dump_json(
-                        exclude={"kind"} if kind is None else None,
+                        exclude=({"kind"} if kind is None else set()) | ({"report_replay_through"} if on_cursor is None else set()),
                     ))
                     answer = json.loads(await asyncio.wait_for(socket.recv(), timeout=10))
                     if answer.get("type") == "error":
@@ -175,14 +191,15 @@ async def _subscribe(
                                 raise TransportError("订阅内容基线不完整")
                             baseline.update(chunk["ids"])
                         seen.update(baseline)
+                    if coverage_start is None:
                         coverage_start = ready.started_ts // interval * interval
-                    assert coverage_start is not None
                     if ready.type == "resync":
                         try:
                             if kind is None:
                                 revisions = await _range_revisions(
                                     endpoint.base_url, directory_id, request, coverage_start=coverage_start,
                                     now=ready.server_ts, interval=interval, seen=seen,
+                                    range_start=resume_from if resume_from is not None else 0,
                                 )
                                 recovered = [
                                     StrategyBarEvent(
@@ -208,6 +225,14 @@ async def _subscribe(
                             raise
                     cursor = SubscriptionCursor(epoch=ready.epoch, seq=ready.seq)
                     delay = 0.1
+                    replay_through = ready.replay_through or ready.seq
+                    def caught_up():
+                        if on_cursor is not None:
+                            on_cursor(cursor, coverage_start)
+                        if on_connection is not None:
+                            on_connection(True)
+                    if cursor.seq >= replay_through:
+                        caught_up()
                     while True:
                         event = event_model.model_validate_json(await socket.recv())
                         if event.epoch != cursor.epoch or event.seq is None or event.seq > cursor.seq + 1:
@@ -220,6 +245,8 @@ async def _subscribe(
                         if identity not in seen:
                             seen.add(identity)
                             yield event
+                        if cursor.seq == replay_through:
+                            caught_up()
             except (ConnectionClosed, TimeoutError, OSError, TransportError):
                 pass
             except HTTPStatusError as exc:
@@ -228,5 +255,7 @@ async def _subscribe(
             except InvalidStatus as exc:
                 if exc.response.status_code not in (401, 403, 502, 503, 504):
                     raise
+        if on_connection is not None:
+            on_connection(False)
         await asyncio.sleep(delay)
         delay = min(delay * 2, 5)

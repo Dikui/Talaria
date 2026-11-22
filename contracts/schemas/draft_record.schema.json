@@ -1,0 +1,301 @@
+{
+  "$defs": {
+    "Direction": {
+      "enum": [
+        "LONG",
+        "SHORT"
+      ],
+      "type": "string"
+    },
+    "DraftContent": {
+      "additionalProperties": false,
+      "properties": {
+        "consultation_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Consultation Id"
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "entry_high": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Entry High",
+          "type": "string"
+        },
+        "entry_low": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Entry Low",
+          "type": "string"
+        },
+        "inherited_barriers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExitBarrierSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "instrument_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "invalidation_stop": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Invalidation Stop",
+          "type": "string"
+        },
+        "round_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Round Id"
+        },
+        "snapshot_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "sub_account_id": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Sub Account Id",
+          "type": "string"
+        },
+        "take_profit": {
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Take Profit",
+          "type": "array"
+        },
+        "valid_until": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid Until"
+        }
+      },
+      "required": [
+        "sub_account_id",
+        "instrument_id",
+        "snapshot_id",
+        "direction",
+        "entry_low",
+        "entry_high",
+        "invalidation_stop",
+        "take_profit"
+      ],
+      "title": "DraftContent",
+      "type": "object"
+    },
+    "DraftReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {
+          "title": "Accepted",
+          "type": "boolean"
+        },
+        "draft_id": {
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plan Id"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Id"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "draft_id",
+        "version",
+        "accepted"
+      ],
+      "title": "DraftReceipt",
+      "type": "object"
+    },
+    "ExitBarrierSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "max_holding_ms": {
+          "exclusiveMinimum": 0,
+          "title": "Max Holding Ms",
+          "type": "integer"
+        },
+        "stop": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Stop",
+          "type": "string"
+        },
+        "take_profit": {
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Take Profit",
+          "type": "array"
+        },
+        "trailing_stop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrailingStopSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "stop",
+        "take_profit",
+        "max_holding_ms"
+      ],
+      "title": "ExitBarrierSpec",
+      "type": "object"
+    },
+    "TrailingStopSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_pct": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Activation Pct",
+          "type": "string"
+        },
+        "distance_pct": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Distance Pct",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_pct",
+        "distance_pct"
+      ],
+      "title": "TrailingStopSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "claimed": {
+      "title": "Claimed",
+      "type": "boolean"
+    },
+    "content": {
+      "$ref": "#/$defs/DraftContent"
+    },
+    "content_hash": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "draft_id": {
+      "title": "Draft Id",
+      "type": "string"
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DraftReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "status": {
+      "enum": [
+        "STAGED",
+        "MODIFIED",
+        "CONFIRMED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "draft_id",
+    "version",
+    "content_hash",
+    "content",
+    "status",
+    "claimed"
+  ],
+  "title": "DraftRecord",
+  "type": "object"
+}

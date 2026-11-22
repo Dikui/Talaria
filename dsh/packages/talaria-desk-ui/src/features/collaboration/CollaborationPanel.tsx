@@ -120,7 +120,10 @@ function InsightCard({ insight }: { insight: SetupInsight }) {
   );
 }
 
-function TurnCard({ record }: { record: ConsultationRecord }) {
+function TurnCard({ record, onStageDraft }: {
+  record: ConsultationRecord;
+  onStageDraft?: (record: ConsultationRecord) => void;
+}) {
   const abstain = record.abstain;
   return (
     <article
@@ -147,7 +150,11 @@ function TurnCard({ record }: { record: ConsultationRecord }) {
           </div>
         )}
         {record.status === "READY" && record.insight !== null && record.insight !== undefined && (
-          <InsightCard insight={record.insight} />
+          <>
+            <InsightCard insight={record.insight} />
+            {onStageDraft && record.insight.direction !== "NEUTRAL" &&
+              <button type="button" className="ghost-button" onClick={() => onStageDraft(record)}>存为模拟盘草案</button>}
+          </>
         )}
         {record.status === "ABSTAIN" && abstain !== null && abstain !== undefined && (
           <div
@@ -207,6 +214,7 @@ export interface CollaborationPanelProps {
   draft?: CollaborationDraft | null;
   tabBar?: ReactNode;
   onClose: () => void;
+  onStageDraft?: (record: ConsultationRecord) => void;
 }
 
 export function CollaborationPanel({
@@ -227,6 +235,7 @@ export function CollaborationPanel({
   draft = null,
   tabBar,
   onClose,
+  onStageDraft,
 }: CollaborationPanelProps) {
   const consultation = useConsultation();
   const [question, setQuestion] = useState("");
@@ -383,7 +392,8 @@ export function CollaborationPanel({
           </div>
         ) : (
           ordered.map((record) => (
-            <TurnCard key={record.consultation_id} record={record} />
+            <TurnCard key={record.consultation_id} record={record}
+              onStageDraft={readOnlyViewport ? undefined : onStageDraft} />
           ))
         )}
       </div>

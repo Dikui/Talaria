@@ -8,12 +8,12 @@ import { createPortal } from "react-dom";
 import styles from "@talaria/desk-ui/styles.css?inline";
 import hostStyles from "./styles.css?inline";
 import { createLinkRelay } from "./linkRelay";
-import { panelLinkKey, restoreActivePanel } from "./panelPreferences.mjs";
+import { dockPanels, panelLinkKey, restoreActivePanel } from "./panelPreferences.mjs";
 import { panelId, registerPanels } from "./registerPanels.mjs";
 
 const STYLE_ID = "talaria-desk-plugin-styles";
 const DOCK_KEY = "talaria-dsh-docked-panel";
-const DOCK_PANELS = ["alerts", "scanner", "levels"] as const;
+const DOCK_PANELS = dockPanels(PANELS) as Exclude<PanelName, "chart">[];
 const SERVICE_OFFLINE = "Talaria 常驻服务离线。请运行 talaria service install 或 talaria up。";
 const CONNECTION_REFRESH_MS = 3_000;
 type DockPanel = (typeof DOCK_PANELS)[number];
@@ -259,6 +259,7 @@ const ICONS: Record<PanelName, string> = {
   chart: "M4 17l4-5 4 2 7-8M4 4v16h16",
   alerts: "M6 16h12l-2-3V9a4 4 0 00-8 0v4l-2 3zm4 3h4",
   scanner: "M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5m3-3h10",
+  accounts: "M3 6h18v13H3z M3 10h18m-7 5h4",
   levels: "M4 6h16M4 12h12M4 18h10",
 };
 

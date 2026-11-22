@@ -10,7 +10,6 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import ConfigDict, Field, JsonValue
 
-from talaria.account.risk_config import TrailingStopSpec
 from talaria.components import Ctx
 from talaria.components.runtime import BarReader, DerivativeReader
 from talaria.foundation.bars import RangeBar
@@ -19,6 +18,7 @@ from talaria.foundation.margin import Direction as Direction
 from talaria.foundation.margin import MarginEstimate as MarginEstimate
 from talaria.foundation.margin import MarginPosition
 from talaria.foundation.margin import MarginValuation as MarginValuation
+from talaria.foundation.paper import DraftReceipt, ExitBarrierSpec
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
@@ -54,8 +54,12 @@ class EntryCandidate(_Value):
     valid_until: int | None = None
     evidence_ids: tuple[str, ...] = ()
     round_id: str | None = None  # 有回合 ID 时为加仓。
+    draft_plan_id: str | None = None
+    inherited_barriers: ExitBarrierSpec | None = None
     signal_bar_close: int | None = Field(default=None, ge=0)
     order_type: Literal["LIMIT", "MARKET", "POST_ONLY"] = "LIMIT"
+    snapshot_id: str | None = None
+    deliberation_ms: int | None = Field(default=None, ge=0)
 
 
 class SizingDecision(_Value):
@@ -71,13 +75,6 @@ class SizingPreview(_Value):
 
 class SizingRejected(ValueError):
     """有效意图无法定出可下单的数量。"""
-
-
-class ExitBarrierSpec(_Value):
-    stop: DecimalStr
-    take_profit: tuple[DecimalStr, ...] = Field(min_length=1)
-    max_holding_ms: int = Field(gt=0)
-    trailing_stop: TrailingStopSpec | None = None
 
 
 class ApprovedExecutionPlan(_Value):
@@ -197,6 +194,12 @@ class ExecutionEvent(_Value):
     postings: tuple[LedgerPosting, ...] = ()
     settlement_ts: int | None = Field(default=None, ge=0)
     fill_tier: FillTier | None = Field(default=None, exclude_if=lambda value: value is None)
+    take_profit: tuple[DecimalStr, ...] = ()
+    draft_id: str | None = None
+    draft_version: int | None = None
+    barriers: ExitBarrierSpec | None = None
+    draft_receipt: DraftReceipt | None = None
+    deliberation_ms: int | None = Field(default=None, ge=0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +210,7 @@ class MarketData:
     read_bars: BarReader
     read_derivatives: DerivativeReader | None = None
     tail_completed: bool = True
+    signal_as_of: int | None = None
     read_derivative_revisions: Callable[[str, DerivativeKind, int], Sequence[DerivativePoint]] | None = None
 
     @classmethod
@@ -235,6 +239,7 @@ class DataEntry(Protocol):
 
 class PlanReceipt(_Value):
     accepted: bool
+    plan_id: str | None = None
     reason: str | None = None
 
 

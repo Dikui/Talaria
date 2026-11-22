@@ -658,3 +658,25 @@ def test_midnight_values_last_known_position_before_first_change():
 def test_mark_bar_age_runs_from_close():
     mark = point(now=0).model_copy(update={"timeframe": "1m", "ts_available": 60_000})
     assert isinstance(evaluate(state=account(marks={BTC: mark}), mark_max_age_ms=1), ApprovedExecutionPlan)
+
+
+def test_restart_retains_day_open_peak_and_drawdown_circuit_breaker():
+    cash = D(10000)
+    def create():
+        risk = SevenStepRisk(PACK, {})
+        gate = ExecutionGate(("one",), NotionalSizer(400), risk, HoldingFill(),
+                             balances=lambda _: {("USDT", "CASH_AVAILABLE"): cash}, valuation=VALUATION)
+        return gate, risk
+    gate, risk = create()
+    gate.observe_market(60_000, ())
+    cash = D(12000)
+    gate.observe_market(120_000, ())
+    restored, restored_risk = create()
+    restored_risk.restore_checkpoint(risk.checkpoint())
+    restored.restore_checkpoint(gate.checkpoint())
+    cash = D(9500)
+    restored.observe_market(86_400_000, ())
+    assert restored.account_state("one").trading_state == TradingState.HALTED
+    again, _ = create()
+    again.restore_checkpoint(restored.checkpoint())
+    assert again.account_state("one").trading_state == TradingState.HALTED

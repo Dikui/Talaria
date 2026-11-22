@@ -180,7 +180,7 @@ class StrategyStream:
 
     async def attach(
         self, owner: str, key: StrategyKey, after: SubscriptionCursor | None,
-        *, include_baseline: bool = False,
+        *, include_baseline: bool = False, report_replay_through: bool = False,
     ) -> StrategySession:
         async with self._attaching:
             upstream = (key[0], key[1])
@@ -220,6 +220,7 @@ class StrategyStream:
                             type="ready" if valid else "resync", epoch=journal.epoch,
                             seq=cursor.seq if valid else journal.seq, server_ts=self._now_ms(),
                             started_ts=lease.started_ts, baseline_count=len(baseline),
+                            replay_through=journal.seq if report_replay_through else None,
                         ),
                         tuple(ev for ev in journal.events if valid and ev.seq > cursor.seq),
                         baseline,

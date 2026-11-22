@@ -1,0 +1,171 @@
+{
+  "$defs": {
+    "BarStatus": {
+      "description": "一根紧凑柱的来源状态。",
+      "enum": [
+        "NORMAL",
+        "NO_TRADES",
+        "FEED_GAP"
+      ],
+      "title": "BarStatus",
+      "type": "string"
+    },
+    "CompactBar": {
+      "additionalProperties": false,
+      "description": "图表可直接消费的紧凑柱；与 KLineChart ``dataList`` 一一对应。\n\n``timestamp`` 等于 ``ts_event``（UTC 毫秒）。``FEED_GAP`` 柱保留时间槽，\n但 OHLCV 全为 null，前端可跳过绘制并计数；API 不得丢弃这些柱。",
+      "properties": {
+        "close": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Close"
+        },
+        "high": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "High"
+        },
+        "low": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Low"
+        },
+        "open": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Open"
+        },
+        "precision": {
+          "$ref": "#/$defs/PrecisionTier"
+        },
+        "status": {
+          "$ref": "#/$defs/BarStatus"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "integer"
+        },
+        "ts_available": {
+          "title": "Ts Available",
+          "type": "integer"
+        },
+        "turnover": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turnover"
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Volume"
+        }
+      },
+      "required": [
+        "timestamp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "turnover",
+        "status",
+        "ts_available",
+        "precision"
+      ],
+      "title": "CompactBar",
+      "type": "object"
+    },
+    "PrecisionTier": {
+      "description": "时点可取信的程度。",
+      "enum": [
+        "SECOND_VERIFIED",
+        "SESSION_BOUND",
+        "DATE_CONSERVATIVE"
+      ],
+      "title": "PrecisionTier",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "bars": {
+      "items": {
+        "$ref": "#/$defs/CompactBar"
+      },
+      "title": "Bars",
+      "type": "array"
+    },
+    "current_bar": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CompactBar"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cutoff_ts": {
+      "title": "Cutoff Ts",
+      "type": "integer"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "snapshot_id",
+    "instrument_id",
+    "cutoff_ts",
+    "bars"
+  ],
+  "title": "DraftEvidence",
+  "type": "object"
+}

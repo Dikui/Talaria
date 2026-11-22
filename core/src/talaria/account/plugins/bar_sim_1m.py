@@ -9,9 +9,11 @@ from decimal import Context, Decimal, InvalidOperation, ROUND_HALF_EVEN, localco
 from fractions import Fraction
 from heapq import merge
 from math import ceil, floor
+import time
 
 from pydantic import Field, StrictInt, field_validator
 
+from talaria.account.checkpoint import RuntimeCheckpoint
 from talaria.account.contracts import (
     ApprovedBarrierAmendment, ApprovedExecutionPlan, BarrierChangeRequest, BarrierReceipt,
     Direction, ExecutionEvent, ExitBarrierSpec, FillTier, Intervention, LedgerPosting, MarginValuation,
@@ -212,9 +214,34 @@ class PositionExecutor:
         return retained
 
 
+class _FillCheckpoint(RuntimeCheckpoint):
+    now: int
+    rounds: dict[str, PositionExecutor]
+    plans: set[str]
+    states: dict[str, TradingState]
+    events: list[ExecutionEvent]
+    seen_slots: dict[str, set[int]]
+    last_prices: dict[str, tuple[int, Decimal]]
+    last_liquidity: dict[str, _BarLiquidity]
+    amendments: set[str]
+    marks: MarkHistory
+    pricing_marks: MarkHistory
+    funding: dict[str, dict[int, _Settlement]]
+    last_funding_ts: dict[str, int]
+    unpriced: dict[str, set[int]]
+    cash_delta: dict[str, Fraction]
+    funding_rechecks: dict[str, int]
+    legacy_funding: dict[str, dict[int, dict[str, Fraction]]] = Field(default_factory=dict)
+
+
 class BarSim1m:
-    def __init__(self, context: PluginContext, params: PluginParams | BarSimParams) -> None:
+    def __init__(
+        self, context: PluginContext, params: PluginParams | BarSimParams, *,
+        now_ms=lambda: time.time_ns() // 1_000_000,
+    ) -> None:
         self._params = BarSimParams.model_validate(params)
+        self._paper = context.mode == "paper"
+        self._now_ms = now_ms
         self._pack = get_market_pack(DEFAULT_PACK)
         self._configs: Mapping[str, AccountRiskConfig] = context.account_risk
         self._now = 0
@@ -235,6 +262,44 @@ class BarSim1m:
         self._unpriced: dict[str, set[int]] = {}
         self._cash_delta: dict[str, Fraction] = {}
         self._funding_rechecks: dict[str, int] = {}
+        self._legacy_funding: dict[str, dict[int, dict[str, Fraction]]] = {}
+
+    def checkpoint(self) -> dict:
+        return _FillCheckpoint.capture(self)
+
+    def restore_checkpoint(self, state: dict) -> None:
+        _FillCheckpoint.restore(self, state)
+        self._live_rounds = {key: value for key, value in self._rounds.items() if value.phase not in _TERMINAL}
+
+    def restore_closed_history(self, events: list[ExecutionEvent]) -> None:
+        # 旧账本记录每笔成交和当时的净头寸，足以还原已平回合的资金费归属。
+        final = {e.position.round_id: e for e in events if e.position is not None}
+        for key, event in final.items():
+            pos = event.position
+            if pos.quantity or pos.phase not in _TERMINAL:
+                raise ValueError(f"旧回合 {key} 缺少恢复在途计划所需的执行检查点")
+            instrument = self._pack.instrument(pos.instrument_id)
+            config = self._configs.get(pos.sub_account_id, _DEFAULT_RISK)
+            barriers = event.barriers or ExitBarrierSpec(stop=pos.stop, take_profit=event.take_profit,
+                                                         max_holding_ms=config.max_holding_ms)
+            self._rounds[key] = PositionExecutor(
+                key, pos.sub_account_id, pos.direction, instrument, self._pack.traits(pos.instrument_id).margin,
+                config, barriers, pos.stop, phase=pos.phase,
+            )
+        for event in events:
+            pos = event.position
+            if pos is None:
+                continue
+            if event.kind in {"ENTRY_FILLED", "EXIT_FILLED"}:
+                change = Fraction(event.quantity) * (1 if event.kind == "ENTRY_FILLED" else -1)
+                self._rounds[pos.round_id].record_fill(event.ts_event, change)
+            if event.kind == "FUNDING_SETTLED":
+                cash = sum((Fraction(p.amount) for p in event.postings if p.account == "CASH_AVAILABLE"), Fraction(0))
+                booked = self._legacy_funding.setdefault(pos.instrument_id, {}).setdefault(event.settlement_ts, {})
+                booked[pos.round_id] = booked.get(pos.round_id, Fraction(0)) + cash
+
+    def resume_after_stop(self, account: str) -> None:
+        self._states.pop(account, None)
 
     def _state(self, account: str) -> TradingState:
         return max(
@@ -251,6 +316,8 @@ class BarSim1m:
         if plan.plan_id in self._plans:
             return PlanReceipt(accepted=False, reason="DUPLICATE_PLAN")
         ready_at = max(self._now, candidate.ts_decision + self._params.decision_latency_ms)
+        if self._paper:
+            ready_at = max(ready_at, self._now_ms())
         if candidate.valid_until is not None and ready_at > candidate.valid_until:
             return PlanReceipt(accepted=False, reason="PLAN_EXPIRED")
         executor = self._rounds.get(plan.round_id)
@@ -287,13 +354,16 @@ class BarSim1m:
             self._live_rounds[plan.round_id] = executor
         executor.entries[plan.plan_id] = _Entry(plan, ready_at, Fraction(plan.sizing.quantity))
         self._plans.add(plan.plan_id)
+        if self._paper:
+            self._emit(executor, "PLAN_SUBMITTED", plan_id=plan.plan_id)
         return PlanReceipt(accepted=True)
 
     def _emit(self, executor: PositionExecutor, kind: str, *, timestamp: int | None = None, **details) -> None:
         event = ExecutionEvent(
             kind=kind, sub_account_id=executor.account,
             ts_event=self._event_time if timestamp is None else timestamp,
-            position=executor.status(), **details,
+            position=executor.status(), take_profit=executor.barriers.take_profit,
+            barriers=executor.barriers.model_copy(update={"stop": executor.stop}) if self._paper else None, **details,
         )
         self._events.append(event)
         cash = sum((
@@ -783,14 +853,18 @@ class BarSim1m:
         at = point.ts_event
         held = executor.held_at(at, before=True)
         booking = settlement.bookings.get(executor.round_id)
+        if booking is None:
+            previous = self._legacy_funding.get(point.instrument_id, {}).get(at, {}).pop(executor.round_id, None)
+            if previous is not None:
+                booking = settlement.bookings[executor.round_id] = _FundingBooking(None, previous)
         if not held and booking is None:
             return
         price = booking.price if booking is not None else None
         if price is None:
             price = self._mark_at(self._pricing_marks, point.instrument_id, at, executor.config.mark_max_age_ms)
         if price is None:
-            if booking is None:
-                settlement.bookings[executor.round_id] = _FundingBooking(None)
+            if executor.round_id not in settlement.unpriced:
+                settlement.bookings.setdefault(executor.round_id, _FundingBooking(None))
                 settlement.unpriced.add(executor.round_id)
                 self._unpriced.setdefault(point.instrument_id, set()).add(at)
                 self._emit(executor, "FUNDING_UNPRICED", timestamp=at, settlement_ts=at,

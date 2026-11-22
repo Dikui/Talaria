@@ -24,6 +24,7 @@ from talaria.workbench_api.routes import (
     desk_ws,
     drawings,
     health,
+    paper,
     scanner,
     static,
     strategy_ws,
@@ -41,6 +42,7 @@ ERROR_STATUS: dict[str, int] = {
     "BARS_RANGE_TOO_LARGE": 400,
     "BARS_BACKFILL_TIMEOUT": 504,
     "NOT_FOUND": 404,
+    "DRAFT_CONFLICT": 409,
     "INSTRUMENT_NOT_FOUND": 404,
     "SNAPSHOT_NOT_FOUND": 404,
     "DRAWING_NOT_FOUND": 404,
@@ -127,6 +129,7 @@ def create_app(
         return _error(422, "VALIDATION_ERROR", "；".join(parts) or "参数错误")
 
     app.include_router(health.router)
+    app.include_router(paper.router)
     app.include_router(analysis.router)
     app.include_router(bars.router)
     app.include_router(derivatives.router)
