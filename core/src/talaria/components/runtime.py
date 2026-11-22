@@ -12,7 +12,7 @@ from typing import Protocol
 from talaria import sdk
 from talaria.components.contracts import Series
 from talaria.components.operators import OPERATORS
-from talaria.foundation.bars import RangeBar
+from talaria.foundation.bars import CompactBar, RangeBar
 from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
     DerivativeKind,
@@ -80,6 +80,25 @@ class Ctx:
         default_factory=dict, init=False, repr=False, compare=False,
     )
 
+    _confirmed_compact: Sequence[CompactBar] | None = field(
+        default=None, repr=False, compare=False, kw_only=True,
+    )
+    _indicator_history_limit: int | None = field(default=None, repr=False, compare=False, kw_only=True)
+
+    _session_prefix: Sequence[CompactBar] = field(default=(), repr=False, compare=False, kw_only=True)
+
+    def compact_bars(self) -> tuple[CompactBar, ...]:
+        """保留有界实时窗口中的缺口，同时按可获取时点截断确认柱。"""
+        if self._confirmed_compact is None:
+            return tuple(compact_series(self.bars(), timeframe=self.timeframe, cutoff_ts=self.now))
+        end = self.now - timeframe_ms(self.timeframe)
+        if self._bar_ts is not None:
+            end = min(end, self._bar_ts)
+        return tuple(
+            bar for bar in self._confirmed_compact
+            if self.start <= bar.timestamp <= end and bar.ts_available <= self.now
+        )
+
     @property
     def tail_completed(self) -> bool:
         """本次确认时点查找和已读取的柱范围均已完成补尾查询。"""
@@ -146,7 +165,15 @@ class Ctx:
             if defaults is not None:
                 params = defaults.model_dump(exclude_none=True) | params
         requested = self.timeframe if timeframe is None else timeframe
-        bars = compact_series(self._closed_bars(requested), timeframe=requested, cutoff_ts=self.now)
+        bars = (
+            self.compact_bars() if requested == self.timeframe
+            else compact_series(self._closed_bars(requested), timeframe=requested, cutoff_ts=self.now)
+        )
+        if operator.indicator_name is IndicatorName.VWAP and params.get("anchor", "session") == "session":
+            if self._session_prefix:
+                bars = tuple(bar for bar in self._session_prefix if bar.ts_available <= self.now) + tuple(bars)
+        elif self._indicator_history_limit is not None:
+            bars = bars[-self._indicator_history_limit:]
         samples = None
         if operator.derivative_inputs:
             timeframes = {

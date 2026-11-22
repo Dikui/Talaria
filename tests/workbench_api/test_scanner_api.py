@@ -173,3 +173,24 @@ def test_repeat_scan_on_same_bar_does_not_duplicate_triggers(
     )
     assert second.status_code == 200
     assert second.json()["triggers"] == []
+
+
+def test_manual_json_rule_scan_returns_a_frozen_hit(client: TestClient) -> None:
+    # alerts-and-scanning/01: 与预警使用相同的版本化比较节点。
+    _seed_spike(client)
+    rule = {
+        "version": "1", "timing": "bar_close",
+        "expression": {
+            "op": "compare", "test": "gt",
+            "left": {"source": "bar", "field": "close"},
+            "right": {"source": "constant", "value": "120"},
+        },
+    }
+    response = client.post(
+        "/api/scanner/scan", json={"instrument_ids": [INSTRUMENT], "rule": rule}, headers=AUTH,
+    )
+    assert response.status_code == 200, response.text
+    [trigger] = response.json()["triggers"]
+    assert trigger["kind"] == "RULE" and trigger["snapshot_id"]
+    assert trigger["evidence"][0]["value"] == "128"
+    assert client.get("/api/scanner/focus").json()["items"][0]["kinds"] == ["RULE"]

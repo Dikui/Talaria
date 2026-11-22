@@ -346,10 +346,12 @@ def test_agent_alert_is_draft_until_confirmed_and_dismiss_never_triggers(
     client: TestClient,
 ) -> None:
     condition = {
-        "kind": "METRIC_THRESHOLD",
-        "metric": "last_price",
-        "direction": "ABOVE",
-        "threshold": "100000",
+        "version": "1", "timing": "event",
+        "expression": {
+            "op": "compare", "test": "gte",
+            "left": {"source": "event", "metric": "last_price"},
+            "right": {"source": "constant", "value": '100000'},
+        },
     }
     first = client.post(
         "/api/alerts",

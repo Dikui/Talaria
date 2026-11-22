@@ -11,8 +11,6 @@ from decimal import Decimal
 import pytest
 
 from talaria.foundation.alerts import (
-    AlertCondition,
-    AlertConditionKind,
     AlertLevelEvent,
     AlertRecord,
     AlertStatus,
@@ -31,6 +29,7 @@ from talaria.foundation.key_levels import (
     KeyLevelStatus,
 )
 from talaria.foundation.types import PrecisionTier
+from talaria.foundation.rules import Rule
 from talaria.perception.alerts import AlertEngine
 
 pytestmark = pytest.mark.small
@@ -148,12 +147,10 @@ def _level_alert(
     cooldown_ms: int = 60_000,
     level_kind: KeyLevelKind | None = None,
 ) -> AlertRecord:
-    condition = AlertCondition(
-        kind=AlertConditionKind.LEVEL_EVENT,
-        level_id=LEVEL_ID,
-        level_event=event,
-        level_kind=level_kind,
-    )
+    condition = Rule.model_validate({
+        "version": "1", "timing": ("event" if event == "TOUCH" else "bar_close"),
+        "expression": {"op": "level_event", "level_id": LEVEL_ID, "event": event, "level_kind": level_kind},
+    })
     return AlertRecord(
         alert_id=alert_id,
         instrument_id=INSTRUMENT,
@@ -377,22 +374,10 @@ def test_zone_touch_uses_low_and_high() -> None:
     assert alert.trigger_count == 1
 
 
-def test_level_event_contract_rejects_cross_kind_fields() -> None:
-    with pytest.raises(ValueError):
-        AlertCondition(
-            kind=AlertConditionKind.LEVEL_EVENT,
-            level_id=LEVEL_ID,
-            level_event=AlertLevelEvent.TOUCH,
-            threshold=Decimal("100"),
-        )
-    with pytest.raises(ValueError):
-        AlertCondition(kind=AlertConditionKind.LEVEL_EVENT, level_id=LEVEL_ID)
-    with pytest.raises(ValueError):
-        AlertCondition(
-            kind=AlertConditionKind.METRIC_THRESHOLD,
-            direction="ABOVE",
-            metric="last_price",
-            threshold=Decimal("100"),
-            level_id=LEVEL_ID,
-            level_event=AlertLevelEvent.TOUCH,
-        )
+def test_level_event_rejects_extra_fields() -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        Rule.model_validate({
+            "version": "1", "timing": "event",
+            "expression": {"op": "level_event", "level_id": LEVEL_ID,
+                           "event": "TOUCH", "threshold": "100"},
+        })

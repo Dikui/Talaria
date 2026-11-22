@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type {
-  AlertConditionKind,
   AlertDirection,
   AlertMetric,
   AlertOverlayMode,
@@ -37,6 +36,7 @@ import {
   triggerSummary,
   validateAlertForm,
   type AlertFormState,
+  type AlertFormKind,
   type AlertTabId,
 } from "./model";
 import type { AlertsController } from "./useAlerts";
@@ -154,7 +154,7 @@ export function AlertPanel({
       editingId === null
         ? await controller.create(payload)
         : await controller.update(editingId, {
-            condition: payload.condition,
+            ...(form.savedRule ? {} : { condition: payload.condition }),
             note: payload.note,
             repeat: payload.repeat,
             cooldown_ms: payload.cooldown_ms,
@@ -168,15 +168,15 @@ export function AlertPanel({
     setTab(statusToTab(result.status));
   };
 
-  const changeKind = (kind: AlertConditionKind) => {
+  const changeKind = (kind: AlertFormKind) => {
     setForm((current) => ({
       ...current,
       kind,
       drawingId:
-        kind === "OVERLAY_CROSS" && current.drawingId === ""
+        kind === "overlay" && current.drawingId === ""
           ? (selectableDrawings[0]?.drawing_id ?? "")
           : current.drawingId,
-      levelKind: kind === "LEVEL_EVENT" ? current.levelKind : null,
+      levelKind: kind === "level" ? current.levelKind : null,
     }));
   };
 
@@ -263,20 +263,24 @@ export function AlertPanel({
               ))}
             </select>
           </label>
-          <label>
-            条件
-            <select
-              value={form.kind}
-              onChange={(event) => changeKind(event.target.value as AlertConditionKind)}
-            >
-              <option value="METRIC_THRESHOLD">指标阈值</option>
-              <option value="INDICATOR_SIGNAL">指标信号</option>
-              <option value="OVERLAY_CROSS">画线触碰</option>
-              <option value="LEVEL_EVENT">关键位事件</option>
-            </select>
-          </label>
+          {form.savedRule ? (
+            <p className="alert-condition">{conditionSummary(form.savedRule)}</p>
+          ) : (
+            <label>
+              条件
+              <select
+                value={form.kind}
+                onChange={(event) => changeKind(event.target.value as AlertFormKind)}
+              >
+                <option value="metric">指标阈值</option>
+                <option value="indicator">指标信号</option>
+                <option value="overlay">画线触碰</option>
+                <option value="level">关键位事件</option>
+              </select>
+            </label>
+          )}
 
-          {form.kind === "METRIC_THRESHOLD" && (
+          {form.kind === "metric" && (
             <>
               <label>
                 指标
@@ -310,7 +314,7 @@ export function AlertPanel({
             </>
           )}
 
-          {form.kind === "INDICATOR_SIGNAL" && (
+          {form.kind === "indicator" && (
             <>
               <label>
                 指标
@@ -434,7 +438,7 @@ export function AlertPanel({
             </>
           )}
 
-          {form.kind === "OVERLAY_CROSS" && (
+          {form.kind === "overlay" && (
             <>
               <label>
                 画线
@@ -470,7 +474,7 @@ export function AlertPanel({
             </>
           )}
 
-          {form.kind === "LEVEL_EVENT" && (
+          {form.kind === "level" && (
             <>
               <label>
                 关键位 level_id
@@ -514,7 +518,7 @@ export function AlertPanel({
             </>
           )}
 
-          {form.kind !== "LEVEL_EVENT" && (
+          {form.kind !== "level" && form.kind !== "rule" && (
           <label>
             方向
             <select
@@ -694,7 +698,8 @@ interface AlertCardProps {
 }
 
 function AlertCard({ quotaDenied, alert, drawings, now, controller, onEdit }: AlertCardProps) {
-  const kind = drawingKindFor(alert.condition.drawing_id ?? "", drawings);
+  const expression = alert.condition.expression;
+  const kind = expression.op === "overlay" ? drawingKindFor(expression.drawing_id, drawings) : null;
   return (
     <article
       className={`alert-item alert-item--${alert.status.toLowerCase()}${

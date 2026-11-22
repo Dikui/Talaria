@@ -365,6 +365,16 @@ test('create_alert always posts draft=true and refuses a non-draft response', as
       }))
     })
   })
+  const rule = {
+    version: '1',
+    timing: 'event',
+    expression: {
+      op: 'compare',
+      test: 'gte',
+      left: { source: 'event', metric: 'last_price' },
+      right: { source: 'constant', value: '100000' },
+    },
+  }
   const port = await listen(server)
   try {
     const bridge = createBridge({ baseUrl: `http://127.0.0.1:${port}`, token: 'token' })
@@ -372,16 +382,12 @@ test('create_alert always posts draft=true and refuses a non-draft response', as
       snapshot_id: 'snap-abc',
       instrument_id: 'BTC-USDT-PERP',
       timeframe: '1m',
-      condition: {
-        kind: 'METRIC_THRESHOLD',
-        metric: 'last_price',
-        direction: 'ABOVE',
-        threshold: '100000',
-      },
+      condition: rule,
     })
     assert.equal(value.status, 'DRAFT')
     const posted = JSON.parse(requests.find((request) => request.method === 'POST').body)
     assert.equal(posted.draft, true)
+    assert.deepEqual(posted.condition, rule)
     assert.equal('snapshot_id' in posted, false)
 
     status = 'ARMED'
@@ -390,12 +396,7 @@ test('create_alert always posts draft=true and refuses a non-draft response', as
         snapshot_id: 'snap-abc',
         instrument_id: 'BTC-USDT-PERP',
         timeframe: '1m',
-        condition: {
-          kind: 'METRIC_THRESHOLD',
-          metric: 'last_price',
-          direction: 'ABOVE',
-          threshold: '100000',
-        },
+        condition: rule,
       }),
       (error) => {
         assert.equal(error.code, 'TALARIA_BRIDGE_PROTOCOL')

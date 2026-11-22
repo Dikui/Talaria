@@ -440,3 +440,34 @@ def test_scan_is_deterministic_and_ordered() -> None:
     assert [item.model_dump() for item in first] == [
         item.model_dump() for item in second
     ]
+
+
+def test_manual_scan_evaluates_a_composite_rule_only_on_visible_confirmed_bars() -> None:
+    # alerts-and-scanning/01: 扫描器复用规则，在确认时点冻结证据。
+    from talaria.foundation.rules import Rule
+
+    engine, freezer = _engine(Freezer())
+    instrument = "BTC-USDT-PERP"
+    rule = Rule.model_validate({"version": "1", "timing": "bar_close", "expression": {
+        "op": "all", "args": [
+            {"op": "compare", "test": "gt", "left": {"source": "bar", "field": "close"},
+             "right": {"source": "constant", "value": "105"}},
+            {"op": "compare", "test": "lt",
+             "left": {"source": "derivative", "kind": "funding_rate"},
+             "right": {"source": "constant", "value": "0"}},
+        ],
+    }})
+    current = _bar(BASE_TS + MINUTE, close=110)
+    _seed(engine, [_bar(BASE_TS)])
+    engine.seed_derivatives(instrument, [_funding_point(BASE_TS, -0.0001)])
+    engine.handle_event(_kline(current).model_copy(update={"confirmed": False}))
+    assert engine.scan([instrument], now=current.ts_available, rule=rule) == []
+    assert engine.scan([instrument], now=current.ts_available + engine.config.focus_ttl_ms, rule=rule) == []
+
+    engine.handle_event(_kline(current))
+    assert engine.scan([instrument], now=current.ts_available - 1, rule=rule) == []
+    hits = engine.scan([instrument], now=current.ts_available, rule=rule)
+    assert [hit.kind for hit in hits] == [ScannerConditionKind.RULE]
+    assert hits[0].snapshot_id == "snap_scanner"
+    assert freezer.calls == [(instrument, "1m", current.ts_available)]
+    assert engine.scan([instrument], now=current.ts_available, rule=rule) == []

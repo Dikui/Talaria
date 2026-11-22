@@ -49,16 +49,21 @@ def client(app):
         yield instance
 
 
+def _metric_rule(value: str) -> dict:
+    return {
+        "version": "1", "timing": "event", "expression": {
+            "op": "compare", "test": "gte",
+            "left": {"source": "event", "metric": "last_price"},
+            "right": {"source": "constant", "value": value},
+        },
+    }
+
+
 def _metric_body(**overrides) -> dict:
     body = {
         "instrument_id": INSTRUMENT,
         "timeframe": "1m",
-        "condition": {
-            "kind": "METRIC_THRESHOLD",
-            "metric": "last_price",
-            "direction": "ABOVE",
-            "threshold": "105.10",
-        },
+        "condition": _metric_rule("105.10"),
         "note": "突破前高",
         "cooldown_ms": 60_000,
         "repeat": True,
@@ -95,9 +100,9 @@ def test_create_list_patch_and_delete_round_trip(client) -> None:
     created = _create(client)
     assert created["alert_id"].startswith("alr_")
     assert created["status"] == "ARMED"
-    assert created["condition"]["kind"] == "METRIC_THRESHOLD"
-    assert created["condition"]["threshold"] == "105.10"
-    assert isinstance(created["condition"]["threshold"], str)
+    assert created["condition"]["timing"] == "event"
+    assert created["condition"]["expression"]["right"]["value"] == "105.10"
+    assert isinstance(created["condition"]["expression"]["right"]["value"], str)
     assert created["note"] == "突破前高"
     assert created["trigger_count"] == 0
 
@@ -107,11 +112,11 @@ def test_create_list_patch_and_delete_round_trip(client) -> None:
 
     patched = client.patch(
         f"/api/alerts/{created['alert_id']}",
-        json={"condition": {**created["condition"], "threshold": "99.9"}},
+        json={"condition": _metric_rule("99.9")},
         headers=AUTH,
     )
     assert patched.status_code == 200, patched.text
-    assert patched.json()["condition"]["threshold"] == "99.9"
+    assert patched.json()["condition"]["expression"]["right"]["value"] == "99.9"
     assert patched.json()["alert_id"] == created["alert_id"]
 
     triggers = client.get(
@@ -152,13 +157,11 @@ def test_draft_requires_confirmation_and_dismiss_disables(client) -> None:
 def test_overlay_condition_requires_existing_non_text_drawing(client) -> None:
     horizontal = _drawing(client, "HORIZONTAL_LINE", [{"ts": NOW_MS, "price": "100.5"}])
     overlay = {
-        "kind": "OVERLAY_CROSS",
-        "direction": "ABOVE",
-        "drawing_id": horizontal["drawing_id"],
-        "overlay_mode": "CLOSE_BREAK",
+        "version": "1", "timing": "bar_close",
+        "expression": {"op": "overlay", "direction": "ABOVE", "drawing_id": horizontal['drawing_id'], "mode": "CLOSE_BREAK"},
     }
     created = _create(client, condition=overlay, note="突破水平线")
-    assert created["condition"]["drawing_id"] == horizontal["drawing_id"]
+    assert created["condition"]["expression"]["drawing_id"] == horizontal["drawing_id"]
 
     text = _drawing(
         client,
@@ -170,10 +173,8 @@ def test_overlay_condition_requires_existing_non_text_drawing(client) -> None:
         "/api/alerts",
         json=_metric_body(
             condition={
-                "kind": "OVERLAY_CROSS",
-                "direction": "ABOVE",
-                "drawing_id": text["drawing_id"],
-                "overlay_mode": "TOUCH",
+                "version": "1", "timing": "event",
+                "expression": {"op": "overlay", "direction": "ABOVE", "drawing_id": text['drawing_id'], "mode": "TOUCH"},
             }
         ),
         headers=AUTH,
@@ -185,10 +186,8 @@ def test_overlay_condition_requires_existing_non_text_drawing(client) -> None:
         "/api/alerts",
         json=_metric_body(
             condition={
-                "kind": "OVERLAY_CROSS",
-                "direction": "ABOVE",
-                "drawing_id": "drw_missing",
-                "overlay_mode": "TOUCH",
+                "version": "1", "timing": "event",
+                "expression": {"op": "overlay", "direction": "ABOVE", "drawing_id": 'drw_missing', "mode": "TOUCH"},
             }
         ),
         headers=AUTH,
@@ -199,40 +198,43 @@ def test_overlay_condition_requires_existing_non_text_drawing(client) -> None:
 
 def test_indicator_signal_is_validated_server_side(client) -> None:
     indicator = {
-        "kind": "INDICATOR_SIGNAL",
-        "direction": "BELOW",
-        "indicator": "RSI",
-        "indicator_period": 14,
-        "threshold": "30",
+        "version": "1", "timing": "bar_close",
+        "expression": {
+            "op": "compare", "test": "lte",
+            "left": {"source": "indicator", "name": 'RSI', "params": {"period": 14}},
+            "right": {"source": "constant", "value": '30'},
+        },
     }
     created = _create(client, condition=indicator)
-    assert created["condition"]["indicator"] == "RSI"
+    assert created["condition"]["expression"]["left"]["name"] == "RSI"
 
     derived = client.post(
         "/api/alerts",
         json=_metric_body(
             condition={
-                "kind": "INDICATOR_SIGNAL",
-                "direction": "BELOW",
-                "indicator": "FUNDING_QUANTILE",
-                "threshold": "0.1",
+                "version": "1", "timing": "bar_close",
+                "expression": {
+                    "op": "compare", "test": "lte",
+                    "left": {"source": "indicator", "name": 'FUNDING_QUANTILE'},
+                    "right": {"source": "constant", "value": '0.1'},
+                },
             }
         ),
         headers=AUTH,
     )
-    assert derived.status_code == 422
-    assert derived.json()["code"] == "VALIDATION_ERROR"
+    assert derived.status_code == 201
+    assert derived.json()["condition"]["expression"]["left"]["name"] == "FUNDING_QUANTILE"
 
     bad_channel = client.post(
         "/api/alerts",
         json=_metric_body(
             condition={
-                "kind": "INDICATOR_SIGNAL",
-                "direction": "BELOW",
-                "indicator": "EMA",
-                "indicator_period": 20,
-                "indicator_channel": "upper",
-                "threshold": "1",
+                "version": "1", "timing": "bar_close",
+                "expression": {
+                    "op": "compare", "test": "lte",
+                    "left": {"source": "indicator", "name": "EMA", "channel": 'upper', "params": {"period": 20}},
+                    "right": {"source": "constant", "value": '1'},
+                },
             }
         ),
         headers=AUTH,
@@ -244,48 +246,54 @@ def test_indicator_signal_persists_explicit_period_and_vwap_anchor(client) -> No
     ema = _create(
         client,
         condition={
-            "kind": "INDICATOR_SIGNAL",
-            "direction": "BELOW",
-            "indicator": "EMA",
-            "threshold": "1",
+            "version": "1", "timing": "bar_close",
+            "expression": {
+                "op": "compare", "test": "lte",
+                "left": {"source": "indicator", "name": "EMA"},
+                "right": {"source": "constant", "value": '1'},
+            },
         },
     )
-    assert ema["condition"]["indicator_period"] == 9
-    assert ema["condition"]["indicator_anchor"] is None
+    assert ema["condition"]["expression"]["left"]["params"]["period"] == 9
+    assert ema["condition"]["expression"]["left"]["params"]["anchor"] is None
 
     vwap = _create(
         client,
         condition={
-            "kind": "INDICATOR_SIGNAL",
-            "direction": "BELOW",
-            "indicator": "VWAP",
-            "threshold": "1",
+            "version": "1", "timing": "bar_close",
+            "expression": {
+                "op": "compare", "test": "lte",
+                "left": {"source": "indicator", "name": "VWAP"},
+                "right": {"source": "constant", "value": '1'},
+            },
         },
     )
-    assert vwap["condition"]["indicator_period"] == 1
-    assert vwap["condition"]["indicator_anchor"] == "session"
+    assert vwap["condition"]["expression"]["left"]["params"]["period"] == 1
+    assert vwap["condition"]["expression"]["left"]["params"]["anchor"] == "session"
 
     snapshot = _create(
         client,
         condition={
-            "kind": "INDICATOR_SIGNAL",
-            "direction": "BELOW",
-            "indicator": "VWAP",
-            "indicator_anchor": "snapshot",
-            "threshold": "1",
+            "version": "1", "timing": "bar_close",
+            "expression": {
+                "op": "compare", "test": "lte",
+                "left": {"source": "indicator", "name": "VWAP", "params": {"anchor": "snapshot"}},
+                "right": {"source": "constant", "value": '1'},
+            },
         },
     )
-    assert snapshot["condition"]["indicator_anchor"] == "snapshot"
+    assert snapshot["condition"]["expression"]["left"]["params"]["anchor"] == "snapshot"
 
     bad_anchor = client.post(
         "/api/alerts",
         json=_metric_body(
             condition={
-                "kind": "INDICATOR_SIGNAL",
-                "direction": "BELOW",
-                "indicator": "EMA",
-                "indicator_anchor": "session",
-                "threshold": "1",
+                "version": "1", "timing": "bar_close",
+                "expression": {
+                    "op": "compare", "test": "lte",
+                    "left": {"source": "indicator", "name": "EMA", "params": {"anchor": "session"}},
+                    "right": {"source": "constant", "value": '1'},
+                },
             }
         ),
         headers=AUTH,

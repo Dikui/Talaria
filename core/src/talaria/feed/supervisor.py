@@ -313,6 +313,7 @@ class FeedSupervisor(MarketEventFeed):
         instrument_id: str,
         timeframe: str,
         after_ts: int | None = None,
+        confirmed_only: bool = False,
     ) -> list[CompactBar]:
         """返回当前订阅通道内按 timestamp 去重后的最新柱（可按时间截断）。
 
@@ -322,7 +323,8 @@ class FeedSupervisor(MarketEventFeed):
         return [
             series[timestamp].bar
             for timestamp in sorted(series)
-            if after_ts is None or timestamp > after_ts
+            if (after_ts is None or timestamp > after_ts)
+            and (not confirmed_only or series[timestamp].confirmed)
         ]
 
     # ------------------------------------------------------------------ 事件整理

@@ -313,7 +313,9 @@ async def build_runtime(
 
         def bar_history(instrument_id: str, timeframe: str):
             assert supervisor is not None
-            return supervisor.recent_bars(instrument_id=instrument_id, timeframe=timeframe)
+            return supervisor.recent_bars(
+                instrument_id=instrument_id, timeframe=timeframe, confirmed_only=True,
+            )
 
         async def session_history(instrument_id: str, timeframe: str) -> list[CompactBar]:
             now = settings.now_ms()
@@ -366,6 +368,7 @@ async def build_runtime(
                 now_ms=settings.now_ms,
                 freeze_snapshot=freeze_snapshot,
                 publish=desk.publish_scanner,
+                rule_levels_at=key_levels.levels_at,
                 on_change=rebalance_watchlist,
                 routing=TriggerRoutingPolicy(co_pilot=briefings, co_pilot_enabled=True),
             )

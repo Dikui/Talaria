@@ -1,6 +1,4 @@
 import type {
-  AlertCondition,
-  AlertConditionKind,
   AlertCreate,
   AlertDirection,
   AlertLevelEvent,
@@ -13,6 +11,9 @@ import type {
   DrawingKind,
   IndicatorName,
   KeyLevelKind,
+  Rule,
+  RuleComparison,
+  RuleIndicator,
 } from "@talaria/contracts";
 
 import { KIND_LABELS } from "../drawings/tools";
@@ -45,7 +46,7 @@ export const METRIC_LABELS: Record<AlertMetric, string> = {
   open_interest: "持仓量",
 };
 
-/** 与后端一致：衍生品指标暂不支持预警，表单也不展示。 */
+/** 快捷预警表单提供常见的技术指标。 */
 export const ALERT_INDICATORS: IndicatorName[] = [
   "EMA",
   "SMA",
@@ -151,9 +152,14 @@ export function formatCooldown(cooldownMs: number): string {
   return `${cooldownMs} 毫秒`;
 }
 
-const DIRECTION_SYMBOL: Record<AlertDirection, string> = {
-  ABOVE: "≥",
-  BELOW: "≤",
+const COMPARISON_LABELS: Record<RuleComparison["test"], string> = {
+  lt: "<",
+  lte: "≤",
+  gt: ">",
+  gte: "≥",
+  eq: "=",
+  cross_above: "上穿",
+  cross_below: "下穿",
 };
 
 const CROSS_LABEL: Record<AlertDirection, string> = {
@@ -171,47 +177,55 @@ export function indicatorLabel(
   return `${label}${period ? `(${period})` : ""}${suffix}`;
 }
 
-/** 条件摘要只消费后端契约字段；画线类型由调用方按 id 补进来。 */
-export function conditionSummary(
-  condition: AlertCondition,
-  drawingKind?: DrawingKind | null,
-): string {
-  const direction = condition.direction
-    ? DIRECTION_SYMBOL[condition.direction]
-    : "";
-  switch (condition.kind) {
-    case "METRIC_THRESHOLD":
-      return `${METRIC_LABELS[condition.metric ?? "last_price"]} ${direction} ${condition.threshold ?? "?"}`;
-    case "INDICATOR_SIGNAL": {
-      const left = indicatorLabel(
-        condition.indicator ?? "EMA",
-        condition.indicator_period,
-        condition.indicator_channel,
-      );
-      if (condition.compare_indicator !== null && condition.compare_indicator !== undefined) {
-        const right = indicatorLabel(
-          condition.compare_indicator,
-          condition.compare_period,
-          null,
-        );
-        return `${left} ${
-          condition.direction ? CROSS_LABEL[condition.direction] : "穿越"
-        } ${right}`;
-      }
-      return `${left} ${direction} ${condition.threshold ?? "?"}`;
-    }
-    case "OVERLAY_CROSS": {
-      const kind = drawingKind ? KIND_LABELS[drawingKind] : "画线";
-      const mode = condition.overlay_mode === "TOUCH" ? "盘中触碰" : "收盘突破";
-      return `${kind} ${mode}（${
-        condition.direction ? CROSS_LABEL[condition.direction] : "触发"
-      }）`;
-    }
-    case "LEVEL_EVENT":
-      return `关键位 ${condition.level_id ?? "?"} · ${
-        ALERT_LEVEL_EVENT_LABELS[condition.level_event ?? "TOUCH"]
-      }`;
+function indicatorName(operator: RuleIndicator["name"]): IndicatorName {
+  if (operator === "legacy_ema") return "EMA";
+  if (operator === "legacy_atr") return "ATR";
+  return operator;
+}
+
+const BAR_FIELDS = {
+  open: "开盘价", high: "最高价", low: "最低价", close: "收盘价",
+  volume: "成交量", turnover: "成交额",
+};
+
+function operandSummary(operand: RuleComparison["left"]): string {
+  switch (operand.source) {
+    case "constant": return operand.value;
+    case "bar": return BAR_FIELDS[operand.field];
+    case "event": return METRIC_LABELS[operand.metric];
+    case "derivative": return METRIC_LABELS[operand.kind];
+    case "indicator":
+      return indicatorLabel(indicatorName(operand.name), operand.params?.period, operand.channel);
   }
+}
+
+export function conditionSummary(rule: Rule, drawingKind?: DrawingKind | null): string {
+  function summarize(node: Rule["expression"]): string {
+    switch (node.op) {
+      case "compare": {
+        const operator = node.left.source === "indicator" && node.right.source === "indicator"
+          && (node.test === "gte" || node.test === "lte")
+          ? CROSS_LABEL[node.test === "gte" ? "ABOVE" : "BELOW"]
+          : COMPARISON_LABELS[node.test];
+        return `${operandSummary(node.left)} ${operator} ${operandSummary(node.right)}`;
+      }
+      case "overlay": {
+        const kind = drawingKind ? KIND_LABELS[drawingKind] : "画线";
+        const mode = node.mode === "TOUCH"
+          ? (rule.timing === "event" ? "盘中触碰" : "收盘确认触碰")
+          : "收盘突破";
+        return `${kind} ${mode}（${CROSS_LABEL[node.direction]}）`;
+      }
+      case "level_event":
+        return `关键位 ${node.level_id} · ${ALERT_LEVEL_EVENT_LABELS[node.event]}`;
+      case "not":
+        return `非（${summarize(node.args[0])}）`;
+      case "all":
+      case "any":
+        return `（${node.args.map(summarize).join(node.op === "all" ? " 且 " : " 或 ")}）`;
+    }
+  }
+  return summarize(rule.expression);
 }
 
 export function triggerSummary(trigger: AlertTriggerRecord): string {
@@ -221,10 +235,15 @@ export function triggerSummary(trigger: AlertTriggerRecord): string {
   return `${trigger.instrument_id} ${trigger.timeframe} 条件触发`;
 }
 
+export type AlertFormKind = "metric" | "indicator" | "overlay" | "level" | "rule";
+
 export interface AlertFormState {
   instrumentId: string;
   timeframe: string;
-  kind: AlertConditionKind;
+  kind: AlertFormKind;
+  savedRule?: Rule;
+  savedIndicator?: RuleIndicator;
+  savedCompare?: RuleIndicator;
   metric: AlertMetric;
   threshold: string;
   direction: AlertDirection;
@@ -237,6 +256,7 @@ export interface AlertFormState {
   compareAnchor: "" | "snapshot" | "session";
   drawingId: string;
   overlayMode: AlertOverlayMode;
+  overlayRatio?: DecimalString | null;
   levelId: string;
   levelEvent: AlertLevelEvent;
   levelKind: KeyLevelKind | null;
@@ -259,10 +279,10 @@ export function defaultAlertForm(
     instrumentId,
     timeframe,
     kind: options.levelId
-      ? "LEVEL_EVENT"
+      ? "level"
       : options.drawingId
-        ? "OVERLAY_CROSS"
-        : "METRIC_THRESHOLD",
+        ? "overlay"
+        : "metric",
     metric: "last_price",
     threshold: "",
     direction: "ABOVE",
@@ -292,12 +312,12 @@ export function validateAlertForm(form: AlertFormState): string | null {
   if (!form.timeframe.trim()) {
     return "请选择周期";
   }
-  if (form.kind === "METRIC_THRESHOLD") {
+  if (form.kind === "metric") {
     if (!isDecimalString(form.threshold)) {
       return "请输入有效的阈值";
     }
   }
-  if (form.kind === "INDICATOR_SIGNAL") {
+  if (form.kind === "indicator") {
     if (!form.compareIndicator && !isDecimalString(form.threshold)) {
       return "指标信号需要阈值或对比指标";
     }
@@ -318,10 +338,10 @@ export function validateAlertForm(form: AlertFormState): string | null {
       return "对比周期需在 1 到 5000 之间（0 表示服务端默认）";
     }
   }
-  if (form.kind === "OVERLAY_CROSS" && !form.drawingId) {
+  if (form.kind === "overlay" && !form.drawingId) {
     return "请选择要挂载的画线";
   }
-  if (form.kind === "LEVEL_EVENT" && !form.levelId.trim()) {
+  if (form.kind === "level" && !form.levelId.trim()) {
     return "请从关键位面板选择或填写 level_id";
   }
   if (form.cooldownSeconds < 0) {
@@ -337,54 +357,61 @@ function isDecimalString(value: string): boolean {
   return /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value.trim());
 }
 
-export function buildAlertCondition(form: AlertFormState): AlertCondition {
-  if (form.kind === "METRIC_THRESHOLD") {
-    return {
-      kind: "METRIC_THRESHOLD",
-      direction: form.direction,
-      metric: form.metric,
-      threshold: form.threshold.trim() as DecimalString,
-    };
+export function buildAlertRule(form: AlertFormState): Rule {
+  if (form.savedRule) return form.savedRule;
+  const test = form.direction === "ABOVE" ? "gte" : "lte";
+  const constant = { source: "constant", value: form.threshold.trim() } as const;
+  if (form.kind === "metric") {
+    return { version: "1", timing: "event", expression: {
+      op: "compare", test,
+      left: { source: "event", metric: form.metric },
+      right: constant,
+    } };
   }
-  if (form.kind === "INDICATOR_SIGNAL") {
-    const useCompare = form.compareIndicator !== "";
-    return {
-      kind: "INDICATOR_SIGNAL",
-      direction: form.direction,
-      indicator: form.indicator,
-      ...(form.indicatorPeriod > 0
-        ? { indicator_period: form.indicatorPeriod }
-        : {}),
-      ...(form.indicator === "VWAP" && form.indicatorAnchor
-        ? { indicator_anchor: form.indicatorAnchor }
-        : {}),
-      indicator_channel: form.indicatorChannel,
-      ...(useCompare
-        ? {
-            compare_indicator: form.compareIndicator as IndicatorName,
-            ...(form.comparePeriod > 0
-              ? { compare_period: form.comparePeriod }
-              : {}),
-            ...(form.compareIndicator === "VWAP" && form.compareAnchor
-              ? { compare_anchor: form.compareAnchor }
-              : {}),
-          }
-        : { threshold: form.threshold.trim() as DecimalString }),
+  if (form.kind === "indicator") {
+    const indicator = (
+      name: IndicatorName, period: number, anchor: AlertFormState["indicatorAnchor"],
+      channel: string | null | undefined, saved: RuleIndicator | undefined,
+    ): RuleIndicator => {
+      const same = saved && indicatorName(saved.name) === name;
+      const params = {
+        ...(period > 0 ? { period } : {}),
+        ...(name === "VWAP" && anchor ? { anchor } : {}),
+        ...(same && saved.params?.std_dev != null ? { std_dev: saved.params.std_dev } : {}),
+      };
+      return {
+        source: "indicator",
+        name: same ? saved.name : name,
+        ...(channel != null ? { channel } : {}),
+        ...(Object.keys(params).length ? { params } : {}),
+      };
     };
+    return { version: "1", timing: "bar_close", expression: {
+      op: "compare", test,
+      left: indicator(form.indicator, form.indicatorPeriod, form.indicatorAnchor,
+        form.indicatorChannel, form.savedIndicator),
+      right: form.compareIndicator
+        ? indicator(form.compareIndicator, form.comparePeriod, form.compareAnchor,
+          form.savedCompare?.channel, form.savedCompare)
+        : constant,
+    } };
   }
-  if (form.kind === "LEVEL_EVENT") {
+  if (form.kind === "level") {
     return {
-      kind: "LEVEL_EVENT",
-      level_id: form.levelId.trim(),
-      level_event: form.levelEvent,
-      ...(form.levelKind !== null ? { level_kind: form.levelKind } : {}),
+      version: "1", timing: form.levelEvent === "TOUCH" ? "event" : "bar_close",
+      expression: {
+        op: "level_event", level_id: form.levelId.trim(), event: form.levelEvent,
+        ...(form.levelKind !== null ? { level_kind: form.levelKind } : {}),
+      },
     };
   }
   return {
-    kind: "OVERLAY_CROSS",
-    direction: form.direction,
-    drawing_id: form.drawingId,
-    overlay_mode: form.overlayMode,
+    version: "1", timing: form.overlayMode === "TOUCH" ? "event" : "bar_close",
+    expression: {
+      op: "overlay", direction: form.direction, drawing_id: form.drawingId,
+      mode: form.overlayMode,
+      ...(form.overlayRatio != null ? { ratio: form.overlayRatio } : {}),
+    },
   };
 }
 
@@ -392,7 +419,7 @@ export function buildAlertCreate(form: AlertFormState): AlertCreate {
   return {
     instrument_id: form.instrumentId,
     timeframe: form.timeframe,
-    condition: buildAlertCondition(form),
+    condition: buildAlertRule(form),
     note: form.note,
     draft: form.draft,
     repeat: form.repeat,
@@ -401,34 +428,49 @@ export function buildAlertCreate(form: AlertFormState): AlertCreate {
 }
 
 export function formFromRecord(record: AlertRecord): AlertFormState {
-  const condition = record.condition;
-  const base = defaultAlertForm(record.instrument_id, record.timeframe, {
-    drawingId: condition.drawing_id ?? undefined,
-  });
-  return {
-    ...base,
-    kind: condition.kind,
-    metric: condition.metric ?? base.metric,
-    threshold: condition.threshold ?? "",
-    direction: condition.direction ?? base.direction,
-    indicator: (condition.indicator ?? base.indicator) as IndicatorName,
-    indicatorPeriod: condition.indicator_period ?? base.indicatorPeriod,
-    indicatorAnchor: condition.indicator_anchor ?? base.indicatorAnchor,
-    indicatorChannel: condition.indicator_channel ?? base.indicatorChannel,
-    compareIndicator:
-      (condition.compare_indicator as IndicatorName | null | undefined) ?? "",
-    comparePeriod: condition.compare_period ?? 0,
-    compareAnchor: condition.compare_anchor ?? base.compareAnchor,
-    drawingId: condition.drawing_id ?? "",
-    overlayMode: condition.overlay_mode ?? base.overlayMode,
-    levelId: condition.level_id ?? "",
-    levelEvent: condition.level_event ?? base.levelEvent,
-    levelKind: condition.level_kind ?? null,
+  const rule = record.condition;
+  const node = rule.expression;
+  const base = {
+    ...defaultAlertForm(record.instrument_id, record.timeframe),
     note: record.note ?? "",
     cooldownSeconds: Math.round(record.cooldown_ms / 1_000),
     repeat: record.repeat,
     draft: record.status === "DRAFT",
   };
+  if (node.op === "overlay" && (rule.timing === "event") === (node.mode === "TOUCH")) {
+    return { ...base, kind: "overlay", drawingId: node.drawing_id, direction: node.direction,
+      overlayMode: node.mode, overlayRatio: node.ratio };
+  }
+  if (node.op === "level_event" && (rule.timing === "event") === (node.event === "TOUCH")) {
+    return { ...base, kind: "level", levelId: node.level_id, levelEvent: node.event,
+      levelKind: node.level_kind ?? null };
+  }
+  if (node.op === "compare" && (node.test === "gte" || node.test === "lte")) {
+    const direction = node.test === "gte" ? "ABOVE" : "BELOW";
+    const left = node.left;
+    const right = node.right;
+    if (left.source === "event" && right.source === "constant") {
+      return { ...base, kind: "metric", metric: left.metric, direction, threshold: right.value };
+    }
+    if (left.source === "indicator" && ALERT_INDICATORS.includes(indicatorName(left.name))
+      && (right.source === "constant" || (right.source === "indicator"
+        && ALERT_INDICATORS.includes(indicatorName(right.name))
+        && indicatorName(left.name) !== indicatorName(right.name)))) {
+      const name = indicatorName(left.name);
+      return {
+        ...base, kind: "indicator", direction, indicator: name, savedIndicator: left,
+        indicatorPeriod: left.params?.period ?? 0,
+        indicatorAnchor: left.params?.anchor ?? "",
+        indicatorChannel: left.channel ?? (name === "BOLL" ? "mid" : "value"),
+        threshold: right.source === "constant" ? right.value : "",
+        compareIndicator: right.source === "indicator" ? indicatorName(right.name) : "",
+        comparePeriod: right.source === "indicator" ? right.params?.period ?? 0 : 0,
+        compareAnchor: right.source === "indicator" ? right.params?.anchor ?? "" : "",
+        savedCompare: right.source === "indicator" ? right : undefined,
+      };
+    }
+  }
+  return { ...base, kind: "rule", savedRule: rule };
 }
 
 export function drawingKindFor(

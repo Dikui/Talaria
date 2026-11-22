@@ -13,8 +13,6 @@ from pathlib import Path
 import pytest
 
 from talaria.foundation.alerts import (
-    AlertCondition,
-    AlertConditionKind,
     AlertDirection,
     AlertMetric,
     AlertOverlayMode,
@@ -29,12 +27,14 @@ from talaria.foundation.drawings import (
     DrawingStyle,
 )
 from talaria.foundation.feed import (
+    DerivativeTickEvent,
     FeedHealthEvent,
     FeedHealthStatus,
     KlineEvent,
     OrderBookEvent,
 )
 from talaria.foundation.types import PrecisionTier
+from talaria.foundation.rules import Rule
 from talaria.perception.alerts import AlertEngine
 from talaria.replay import ReplayFeed
 
@@ -133,12 +133,14 @@ def _metric_alert(
         alert_id=alert_id,
         instrument_id=INSTRUMENT,
         timeframe=TIMEFRAME,
-        condition=AlertCondition(
-            kind=AlertConditionKind.METRIC_THRESHOLD,
-            direction=direction,
-            metric=metric,
-            threshold=threshold,
-        ),
+        condition=Rule.model_validate({
+            "version": "1", "timing": "event",
+            "expression": {
+                "op": "compare", "test": ("gte" if direction == "ABOVE" else "lte"),
+                "left": {"source": "event", "metric": metric},
+                "right": {"source": "constant", "value": threshold},
+            },
+        }),
         status=status,
         repeat=repeat,
         cooldown_ms=cooldown_ms,
@@ -182,12 +184,10 @@ def _overlay_alert(
         alert_id="alr_overlay",
         instrument_id=INSTRUMENT,
         timeframe=TIMEFRAME,
-        condition=AlertCondition(
-            kind=AlertConditionKind.OVERLAY_CROSS,
-            direction=direction,
-            drawing_id="drw_alert",
-            overlay_mode=mode,
-        ),
+        condition=Rule.model_validate({
+            "version": "1", "timing": ("event" if mode == "TOUCH" else "bar_close"),
+            "expression": {"op": "overlay", "direction": direction, "drawing_id": 'drw_alert', "mode": mode},
+        }),
         status=AlertStatus.ARMED,
         repeat=repeat,
         cooldown_ms=cooldown_ms,
@@ -256,13 +256,14 @@ def test_indicator_signal_uses_python_operator_series() -> None:
         alert_id="alr_rsi",
         instrument_id=INSTRUMENT,
         timeframe=TIMEFRAME,
-        condition=AlertCondition(
-            kind=AlertConditionKind.INDICATOR_SIGNAL,
-            direction=AlertDirection.ABOVE,
-            indicator="SMA",
-            indicator_period=2,
-            threshold="12",
-        ),
+        condition=Rule.model_validate({
+            "version": "1", "timing": "bar_close",
+            "expression": {
+                "op": "compare", "test": "gte",
+                "left": {"source": "indicator", "name": "SMA", "params": {"period": 2}},
+                "right": {"source": "constant", "value": '12'},
+            },
+        }),
         status=AlertStatus.ARMED,
         repeat=True,
         cooldown_ms=0,
@@ -499,14 +500,14 @@ def test_session_vwap_alert_keeps_utc_anchor_beyond_600_bars(
         on_trigger=lambda trigger, _: triggers.append(trigger),
     )
     alert = _metric_alert(threshold="12", cooldown_ms=0)
-    alert.condition = AlertCondition(
-        kind=AlertConditionKind.INDICATOR_SIGNAL,
-        direction=AlertDirection.ABOVE,
-        indicator="VWAP",
-        indicator_period=1,
-        indicator_anchor="session",
-        threshold="12",
-    )
+    alert.condition = Rule.model_validate({
+        "version": "1", "timing": "bar_close",
+        "expression": {
+            "op": "compare", "test": "gte",
+            "left": {"source": "indicator", "name": "VWAP", "params": {"period": 1, "anchor": "session"}},
+            "right": {"source": "constant", "value": '12'},
+        },
+    })
     engine.put(alert)
     for event in history[-1:] if seed_from_history else history:
         clock.now = event.bar.ts_available
@@ -530,3 +531,38 @@ def test_session_vwap_alert_keeps_utc_anchor_beyond_600_bars(
         assert [(trigger.triggered_ts, trigger.observed) for trigger in triggers] == [
             (clock.now, expected)
         ]
+
+
+
+def test_composite_rule_can_trigger_on_first_confirmed_cross_after_warmup() -> None:
+    # alerts-and-scanning/01: 上穿有两根已确认柱作为判断依据。
+    clock = Clock(BASE_TS + 2 * MINUTE)
+    trigger_times = []
+    seed = [_bar(BASE_TS, "100")]
+    engine = AlertEngine(
+        now_ms=clock, history_provider=lambda *_: seed,
+        on_trigger=lambda trigger, _: trigger_times.append(trigger.triggered_ts),
+    )
+    alert = _metric_alert()
+    alert.condition = Rule.model_validate({
+        "version": "1", "timing": "bar_close", "expression": {
+            "op": "all", "args": [
+                {"op": "compare", "test": "cross_above", "left": {"source": "bar", "field": "close"},
+                 "right": {"source": "indicator", "name": "EMA", "params": {"period": 2}}},
+                {"op": "compare", "test": "lt", "left": {"source": "bar", "field": "close"},
+                 "right": {"source": "constant", "value": "115"}},
+                {"op": "compare", "test": "lt",
+                 "left": {"source": "derivative", "kind": "funding_rate"},
+                 "right": {"source": "constant", "value": "0"}},
+            ],
+        },
+    })
+    engine.put(alert)
+    for ts, rate in ((BASE_TS + MINUTE, "-0.001"), (clock.now + 1, "0.001")):
+        engine.handle_event(DerivativeTickEvent(
+            instrument_id=INSTRUMENT, funding_rate=rate, ts_event=ts, ts_ingested=ts,
+        ))
+    engine.handle_event(_kline(BASE_TS + MINUTE, "111", confirmed=False))
+    assert trigger_times == []
+    engine.handle_event(_kline(BASE_TS + MINUTE, "110", revision=1))
+    assert trigger_times == [BASE_TS + 2 * MINUTE]

@@ -14,19 +14,11 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from uuid import uuid4
 
-from talaria.foundation.alerts.contracts import (
-    AlertConditionKind,
-    AlertDirection,
-    AlertLevelEvent,
-    AlertMetric,
-    AlertOverlayMode,
-    AlertRecord,
-    AlertStatus,
-    AlertTriggerRecord,
-    IndicatorSeed,
-)
-from talaria.foundation.alerts.overlay import OverlayBounds, overlay_bounds
-from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.components import CompiledRule, Ctx, compile_rule
+from talaria.components.rules import RuleObservation, RuleState, level_bounds
+from talaria.foundation.alerts.contracts import AlertRecord, AlertStatus, AlertTriggerKind, AlertTriggerRecord
+from talaria.foundation.bars import CompactBar
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint, OI_TIMEFRAME_BY_TIMEFRAME
 from talaria.foundation.drawings import DrawingKind, DrawingRecord
 from talaria.foundation.feed import (
     DerivativeTickEvent,
@@ -34,23 +26,14 @@ from talaria.foundation.feed import (
     FeedHealthEvent,
     FeedHealthStatus,
     KlineEvent,
-    OrderBookEvent,
     ReceivedKlineEvent,
 )
-from talaria.foundation.key_levels import (
-    KeyLevel,
-    KeyLevelStatus,
-    compute_key_levels,
+from talaria.foundation.key_levels import KeyLevel, compute_key_levels
+from talaria.foundation.operators import spec_from_params
+from talaria.foundation.rules import (
+    AlertDirection, AlertLevelEvent, AlertMetric, AlertOverlayMode,
+    RuleComparison, RuleConstant, RuleEvent, RuleIndicator, RuleLevelEvent, RuleOverlay,
 )
-from talaria.foundation.operators import (
-    CHANNELS,
-    IndicatorName,
-    IndicatorSpec,
-    Point,
-    compute_series,
-    spec_from_params,
-)
-from talaria.foundation.operators.core import legacy_alert_points
 from talaria.foundation.timeframes import TIMEFRAME_MS
 
 logger = logging.getLogger(__name__)
@@ -92,22 +75,8 @@ class _Runtime:
     condition_true: bool | None = None
     baseline_pending: bool = True
     last_bar_key: tuple[int, int] | None = None
-    level_status: KeyLevelStatus | None = None
-    level_breakout: str | None = None
-    level_breakout_ts: int | None = None
-
-
-@dataclass(slots=True)
-class _Observation:
-    value: Decimal | None
-    observed: Decimal | None
-    threshold: Decimal | None
-    bar: CompactBar | None = None
-    bounds: OverlayBounds | None = None
-    drawing_kind: DrawingKind | None = None
-    level: KeyLevel | None = None
-    level_event: AlertLevelEvent | None = None
-    level_direction: str | None = None
+    last_cross_ts: int | None = None
+    rule_state: RuleState = field(default_factory=RuleState)
 
 
 class AlertEngine:
@@ -131,6 +100,8 @@ class AlertEngine:
         self._freeze_snapshot = freeze_snapshot
         self._on_trigger = on_trigger
         self._bar_limit = max(bar_limit, 32)
+        self._compiled: dict[str, CompiledRule] = {}
+        self._derivatives: dict[str, deque[DerivativeTickEvent]] = {}
         self._alerts: dict[str, AlertRecord] = {}
         self._runtimes: dict[str, _Runtime] = {}
         self._windows: dict[tuple[str, str], deque[CompactBar]] = {}
@@ -148,15 +119,19 @@ class AlertEngine:
 
     def put(self, alert: AlertRecord, *, reset: bool = False) -> None:
         previous = self._alerts.get(alert.alert_id)
-        self._alerts[alert.alert_id] = alert
-        if reset or previous is None:
+        if reset or previous is None or previous.condition != alert.condition:
+            self._compiled[alert.alert_id] = compile_rule(alert.condition)
             self._runtimes[alert.alert_id] = _Runtime()
+        self._alerts[alert.alert_id] = alert
         self._ensure_window(alert.instrument_id, alert.timeframe)
-        self._warm_drawing(alert.condition.drawing_id)
+        for node in alert.condition.nodes():
+            if isinstance(node, RuleOverlay):
+                self._warm_drawing(node.drawing_id)
 
     def remove(self, alert_id: str) -> None:
         self._alerts.pop(alert_id, None)
         self._runtimes.pop(alert_id, None)
+        self._compiled.pop(alert_id, None)
 
     def get(self, alert_id: str) -> AlertRecord | None:
         return self._alerts.get(alert_id)
@@ -176,9 +151,10 @@ class AlertEngine:
     def overlay_alerts(self) -> tuple[str, ...]:
         return tuple(
             dict.fromkeys(
-                alert.condition.drawing_id
+                node.drawing_id
                 for alert in self._alerts.values()
-                if alert.condition.drawing_id is not None
+                for node in alert.condition.nodes()
+                if isinstance(node, RuleOverlay)
             )
         )
 
@@ -216,6 +192,8 @@ class AlertEngine:
         if isinstance(event, FeedHealthEvent):
             self._handle_health(event)
             return []
+        if isinstance(event, DerivativeTickEvent):
+            self._derivatives.setdefault(event.instrument_id, deque(maxlen=self._bar_limit)).append(event)
         self._store_event_bars(event)
         instrument_id = event.instrument_id
         now = self._now_ms()
@@ -226,7 +204,7 @@ class AlertEngine:
         levels: dict[str, KeyLevel] = {}
         if isinstance(event, KlineEvent) and any(
             alert.timeframe == event.timeframe
-            and alert.condition.kind is AlertConditionKind.LEVEL_EVENT
+            and any(isinstance(node, RuleLevelEvent) for node in alert.condition.nodes())
             and alert.status in {AlertStatus.ARMED, AlertStatus.COOLDOWN}
             for alert in alerts
         ):
@@ -333,13 +311,12 @@ class AlertEngine:
                         runtime = self._runtime_for(alert)
                         runtime.baseline_pending = True
                         runtime.condition_true = None
-                        runtime.level_breakout = None
-                        runtime.level_breakout_ts = None
+                        runtime.rule_state = RuleState()
             return
         self.suspend_channel(key)
 
     def _store_event_bars(self, event: FeedEvent) -> None:
-        if not isinstance(event, KlineEvent):
+        if not isinstance(event, KlineEvent) or not event.confirmed:
             return
         key = (event.instrument_id, event.timeframe)
         window = self._windows.get(key)
@@ -372,8 +349,7 @@ class AlertEngine:
             runtime = self._runtime_for(alert)
             runtime.baseline_pending = True
             runtime.condition_true = None
-            runtime.level_breakout = None
-            runtime.level_breakout_ts = None
+            runtime.rule_state = RuleState()
             changed = True
         if changed:
             alert.updated_ts = now
@@ -382,7 +358,6 @@ class AlertEngine:
     def _evaluate(
         self, alert: AlertRecord, event: FeedEvent, now: int, levels: dict[str, KeyLevel]
     ) -> bool:
-        condition = alert.condition
         runtime = self._runtime_for(alert)
 
         if isinstance(event, KlineEvent) and event.timeframe != alert.timeframe:
@@ -393,204 +368,91 @@ class AlertEngine:
             if runtime.last_bar_key == bar_key:
                 return False
 
-        observation = self._observe(alert, event, levels)
-        if observation is None or observation.value is None:
+        compiled = self._compiled[alert.alert_id]
+        if compiled.rule.timing == "bar_close" and (
+            not isinstance(event, KlineEvent) or not event.confirmed
+        ):
+            return False
+        observation = compiled.observe(
+            self._context(alert, event, now), event=event, drawing=self._drawing_for,
+            levels=levels, state=runtime.rule_state, consume_retests=False,
+        )
+        if observation is None:
             return False
         if isinstance(event, KlineEvent):
             runtime.last_bar_key = (event.bar.timestamp, event.revision)
 
-        if runtime.baseline_pending:
-            runtime.condition_true = observation.value
-            runtime.baseline_pending = False
+        previous = runtime.condition_true if not runtime.baseline_pending else None
+        runtime.baseline_pending = False
+        runtime.condition_true = observation.matched
+        if not observation.matched:
             return False
-
-        previous = runtime.condition_true
-        runtime.condition_true = observation.value
-        if not observation.value or previous is not False:
+        if observation.crossed_at is not None:
+            if runtime.last_cross_ts == observation.crossed_at:
+                return False
+            runtime.last_cross_ts = observation.crossed_at
+        elif previous is not False:
             return False
 
         self._trigger(alert, observation, now)
-        if (
-            condition.kind is AlertConditionKind.LEVEL_EVENT
-            and condition.level_event is AlertLevelEvent.RETEST
-        ):
-            runtime.level_breakout = None
-            runtime.level_breakout_ts = None
+        runtime.rule_state.consume_matches()
         return True
 
-    def _observe(
-        self, alert: AlertRecord, event: FeedEvent, levels: dict[str, KeyLevel]
-    ) -> _Observation | None:
-        condition = alert.condition
-        if condition.kind is AlertConditionKind.METRIC_THRESHOLD:
-            value = self._metric_value(condition.metric, event)
-            if value is None or condition.threshold is None:
-                return None
-            comparison = (
-                value >= condition.threshold
-                if condition.direction is AlertDirection.ABOVE
-                else value <= condition.threshold
-            )
-            return _Observation(
-                value=comparison,
-                observed=value,
-                threshold=condition.threshold,
-            )
-
-        if condition.kind is AlertConditionKind.INDICATOR_SIGNAL:
-            if not isinstance(event, KlineEvent) or not event.confirmed:
-                return None
-            return self._observe_indicator(alert, event)
-
-        if condition.kind is AlertConditionKind.OVERLAY_CROSS:
-            if not isinstance(event, KlineEvent):
-                return None
-            if condition.overlay_mode is AlertOverlayMode.CLOSE_BREAK and not event.confirmed:
-                return None
-            drawing = (
-                self._drawing_for(condition.drawing_id)
-                if condition.drawing_id is not None
-                else None
-            )
-            if drawing is None:
-                return None
-            bounds = overlay_bounds(
-                drawing,
-                event.bar.timestamp,
-                ratio=(
-                    Decimal("0.5")
-                    if condition.overlay_ratio is None
-                    else condition.overlay_ratio
-                ),
-            )
-            if bounds is None:
-                return None
-            level = bounds.upper if condition.direction is AlertDirection.ABOVE else bounds.lower
-            bar = event.bar
-            if condition.overlay_mode is AlertOverlayMode.TOUCH:
-                extreme = bar.high if condition.direction is AlertDirection.ABOVE else bar.low
-                if extreme is None:
-                    return None
-                comparison = extreme >= level if condition.direction is AlertDirection.ABOVE else extreme <= level
+    def _context(self, alert: AlertRecord, event: FeedEvent, now: int) -> Ctx:
+        key = (alert.instrument_id, alert.timeframe)
+        bars = list(self._windows[key])
+        cutoff = now
+        bar_ts = None
+        if isinstance(event, KlineEvent):
+            if event.confirmed:
+                bar_ts = event.bar.timestamp
+                cutoff = max(event.bar.ts_available, bar_ts + TIMEFRAME_MS[alert.timeframe])
+                if event.revision > 0 and bars and bars[-1].timestamp > bar_ts:
+                    # A received revision to an earlier slot can update the latest indicator.
+                    cutoff = max(cutoff, getattr(event, "ts_ingested", now))
+                    bar_ts = None
             else:
-                if bar.close is None or bar.status is BarStatus.FEED_GAP:
-                    return None
-                comparison = (
-                    bar.close > level
-                    if condition.direction is AlertDirection.ABOVE
-                    else bar.close < level
+                cutoff = max(event.bar.timestamp, getattr(event, "ts_ingested", now))
+                # Even a delayed open update cannot expose the bar it belongs to.
+                bar_ts = event.bar.timestamp - TIMEFRAME_MS[alert.timeframe]
+        elif not isinstance(event, FeedHealthEvent):
+            cutoff = event.ts_ingested
+
+        prefix = self._session_history.get(key, ())
+        if bars and prefix:
+            day_ms = TIMEFRAME_MS["1d"]
+            session_start = bars[-1].timestamp // day_ms * day_ms
+            first_ts = bars[0].timestamp
+            if first_ts < session_start:
+                del self._session_history[key]
+                prefix = ()
+            else:
+                earlier = tuple(bar for bar in prefix if bar.timestamp < first_ts)
+                prefix = (
+                    earlier if earlier and earlier[-1].timestamp + TIMEFRAME_MS[alert.timeframe] == first_ts
+                    else ()
                 )
-            return _Observation(
-                value=comparison,
-                observed=bar.close,
-                threshold=level,
-                bar=bar,
-                bounds=bounds,
-                drawing_kind=drawing.kind,
-            )
 
-        if condition.kind is AlertConditionKind.LEVEL_EVENT:
-            if not isinstance(event, KlineEvent):
-                return None
-            return self._observe_level(alert, event, levels)
+        def read_derivatives(instrument, kind, *, start, end, as_of):
+            timeframe = {
+                DerivativeKind.FUNDING_RATE: None,
+                DerivativeKind.MARK_PRICE: alert.timeframe,
+                DerivativeKind.OPEN_INTEREST: OI_TIMEFRAME_BY_TIMEFRAME[alert.timeframe],
+            }[kind]
+            return [
+                DerivativePoint(
+                    instrument_id=instrument, kind=kind, timeframe=timeframe, value=value,
+                    ts_event=tick.ts_event, ts_available=max(tick.ts_event, tick.ts_ingested),
+                    ts_ingested=tick.ts_ingested, ts_committed=tick.ts_ingested,
+                )
+                for tick in self._derivatives.get(instrument, ())
+                if start <= tick.ts_event <= end and max(tick.ts_event, tick.ts_ingested) <= as_of
+                and (value := getattr(tick, kind.value)) is not None
+            ]
 
-        return None
-
-    def _observe_level(
-        self, alert: AlertRecord, event: KlineEvent, levels: dict[str, KeyLevel]
-    ) -> _Observation | None:
-        """按 ``level_id`` 读取 cutoff 前最新状态，判定触及/突破/回踩。"""
-
-        condition = alert.condition
-        level_event = condition.level_event
-        level_id = condition.level_id
-        if level_event is None or level_id is None:
-            return None
-        bar = event.bar
-        if level_event is not AlertLevelEvent.TOUCH and not event.confirmed:
-            return None
-        if bar.close is None or bar.high is None or bar.low is None:
-            return None
-        level = levels.get(level_id)
-        if level is None:
-            return None
-        if condition.level_kind is not None and level.kind is not condition.level_kind:
-            return None
-        bounds = _level_bounds(level)
-        if bounds is None:
-            return None
-        lower, upper = bounds
-        runtime = self._runtime_for(alert)
-        runtime.level_status = level.status
-
-        if level_event is AlertLevelEvent.TOUCH:
-            touched = bar.low <= upper and bar.high >= lower
-            return _Observation(
-                value=touched,
-                observed=bar.close,
-                threshold=upper if bar.close >= upper else lower,
-                bar=bar,
-                level=level,
-                level_event=level_event,
-            )
-
-        if bar.status is BarStatus.FEED_GAP:
-            return None
-        close = bar.close
-        side = "UP" if close > upper else "DOWN" if close < lower else None
-        if side is not None and level.status is KeyLevelStatus.ACTIVE:
-            # 收盘已越过，但关键位仍报 ACTIVE：以最新状态为准，本次不判定。
-            return None
-
-        if level_event is AlertLevelEvent.BREAK:
-            return _Observation(
-                value=side is not None,
-                observed=close,
-                threshold=upper if side == "UP" else lower,
-                bar=bar,
-                level=level,
-                level_event=level_event,
-                level_direction=side,
-            )
-
-        # RETEST：记录突破方向与时刻；FLIPPED 表示价格已回到另一侧，方向随之翻转。
-        if side is not None and runtime.level_breakout != side:
-            runtime.level_breakout = side
-            runtime.level_breakout_ts = bar.timestamp
-        direction = runtime.level_breakout
-        if direction is None or runtime.level_breakout_ts is None:
-            return _Observation(
-                value=False,
-                observed=close,
-                threshold=upper if close >= upper else lower,
-                bar=bar,
-                level=level,
-                level_event=level_event,
-            )
-        if bar.timestamp <= runtime.level_breakout_ts or level.status is KeyLevelStatus.ACTIVE:
-            return _Observation(
-                value=False,
-                observed=close,
-                threshold=upper if direction == "UP" else lower,
-                bar=bar,
-                level=level,
-                level_event=level_event,
-                level_direction=direction,
-            )
-        if direction == "UP":
-            retested = bar.low <= upper and close > upper
-            threshold = upper
-        else:
-            retested = bar.high >= lower and close < lower
-            threshold = lower
-        return _Observation(
-            value=retested,
-            observed=close,
-            threshold=threshold,
-            bar=bar,
-            level=level,
-            level_event=level_event,
-            level_direction=direction,
+        return Ctx(
+            *key, 0, cutoff, _bar_ts=bar_ts, _indicator_defaults={}, _confirmed_compact=bars,
+            _indicator_history_limit=self._bar_limit, _read_derivatives=read_derivatives, _session_prefix=prefix,
         )
 
     def _levels_for_event(self, event: KlineEvent, now: int) -> Sequence[KeyLevel]:
@@ -618,121 +480,7 @@ class AlertEngine:
             logger.exception("重算关键位失败：%s %s", instrument_id, timeframe)
             return []
 
-    @staticmethod
-    def _metric_value(metric: AlertMetric | None, event: FeedEvent) -> Decimal | None:
-        if metric is AlertMetric.LAST_PRICE and isinstance(event, KlineEvent):
-            return event.bar.close
-        if isinstance(event, OrderBookEvent):
-            if metric is AlertMetric.BID_PRICE:
-                return event.bid_price
-            if metric is AlertMetric.ASK_PRICE:
-                return event.ask_price
-            return None
-        if isinstance(event, DerivativeTickEvent):
-            if metric is AlertMetric.MARK_PRICE:
-                return event.mark_price
-            if metric is AlertMetric.FUNDING_RATE:
-                return event.funding_rate
-            if metric is AlertMetric.OPEN_INTEREST:
-                return event.open_interest
-        return None
-
-    def _observe_indicator(self, alert: AlertRecord, event: KlineEvent) -> _Observation | None:
-        condition = alert.condition
-        assert condition.indicator is not None
-        key = (alert.instrument_id, alert.timeframe)
-        window = self._windows.get(key)
-        if not window:
-            return None
-        bars = list(window)
-        spec = self._indicator_spec(
-            condition.indicator,
-            condition.indicator_period,
-            condition.indicator_anchor,
-            condition.indicator_std_dev,
-        )
-        channel = condition.indicator_channel or CHANNELS[condition.indicator][0]
-        current = self._latest_indicator(key, bars, spec, condition.indicator_seed).get(channel)
-        if current is None:
-            return None
-        if condition.compare_indicator is not None:
-            compare_spec = self._indicator_spec(
-                condition.compare_indicator,
-                condition.compare_period,
-                condition.compare_anchor,
-                condition.compare_std_dev,
-            )
-            compare_channel = CHANNELS[condition.compare_indicator][0]
-            compare = self._latest_indicator(
-                key, bars, compare_spec, condition.compare_seed
-            ).get(compare_channel)
-            if compare is None:
-                return None
-            comparison = (
-                current >= compare
-                if condition.direction is AlertDirection.ABOVE
-                else current <= compare
-            )
-            return _Observation(value=comparison, observed=current, threshold=None)
-        if condition.threshold is None:
-            return None
-        comparison = (
-            current >= condition.threshold
-            if condition.direction is AlertDirection.ABOVE
-            else current <= condition.threshold
-        )
-        return _Observation(
-            value=comparison,
-            observed=current,
-            threshold=condition.threshold,
-        )
-
-    def _latest_indicator(
-        self,
-        key: tuple[str, str],
-        bars: list[CompactBar],
-        spec: IndicatorSpec,
-        seed: IndicatorSeed | None,
-    ) -> Point:
-        if spec.name is IndicatorName.VWAP and spec.anchor == "session":
-            history = self._session_history.get(key)
-            if history:
-                day_ms = TIMEFRAME_MS["1d"]
-                session_start = bars[-1].timestamp // day_ms * day_ms
-                if bars[0].timestamp < session_start:
-                    del self._session_history[key]
-                else:
-                    # Realtime revisions and explicit FEED_GAPs take precedence
-                    # from the first observed bar onward.
-                    first_ts = bars[0].timestamp
-                    prefix = [bar for bar in history if bar.timestamp < first_ts]
-                    interval = TIMEFRAME_MS[key[1]]
-                    if prefix and prefix[-1].timestamp + interval == first_ts:
-                        bars = prefix + bars
-        else:
-            bars = bars[-self._bar_limit:]
-        if seed == "legacy_sma":
-            return legacy_alert_points(bars, spec)[-1]
-        return compute_series(bars, spec).points[-1]
-
-    @staticmethod
-    def _indicator_spec(
-        name: IndicatorName,
-        period: int | None,
-        anchor: str | None,
-        std_dev: Decimal | None,
-    ) -> IndicatorSpec:
-        if period is None:
-            raise ValueError(f"{name} 预警缺少显式周期")
-        params: dict[str, object] = {"period": period}
-        if name is IndicatorName.VWAP:
-            params["anchor"] = anchor or "session"
-        if std_dev is not None:
-            params["std_dev"] = std_dev
-        return spec_from_params(name, params)
-
-    def _trigger(self, alert: AlertRecord, observation: _Observation, now: int) -> None:
-        condition = alert.condition
+    def _trigger(self, alert: AlertRecord, observation: RuleObservation, now: int) -> None:
         snapshot_id = ""
         if self._freeze_snapshot is not None:
             try:
@@ -744,11 +492,17 @@ class AlertEngine:
             alert_id=alert.alert_id,
             instrument_id=alert.instrument_id,
             timeframe=alert.timeframe,
-            condition_kind=condition.kind,
+            condition_kind=_trigger_kind(alert),
             triggered_ts=now,
             snapshot_id=snapshot_id,
             observed=observation.observed,
-            threshold=observation.threshold,
+            threshold=(
+                None if isinstance(alert.condition.expression, RuleComparison)
+                and isinstance(alert.condition.expression.left, RuleIndicator)
+                and isinstance(alert.condition.expression.right, RuleIndicator)
+                and alert.condition.expression.test in {"gte", "lte"}
+                else observation.threshold
+            ),
             message=self._message(alert, observation),
             note=alert.note,
         )
@@ -771,53 +525,59 @@ class AlertEngine:
                 logger.exception("预警触发回调失败：%s", alert.alert_id)
 
     @staticmethod
-    def _message(alert: AlertRecord, observation: _Observation) -> str:
-        condition = alert.condition
-        if condition.kind is AlertConditionKind.LEVEL_EVENT:
+    def _message(alert: AlertRecord, observation: RuleObservation) -> str:
+        node = alert.condition.expression
+        if isinstance(node, RuleLevelEvent):
             return _level_message(observation)
-        direction = "上穿" if condition.direction is AlertDirection.ABOVE else "下穿"
-        if condition.kind is AlertConditionKind.METRIC_THRESHOLD:
-            label = _METRIC_LABELS.get(condition.metric, "指标")
-            return f"{label}{direction} {_decimal_text(observation.threshold)}"
-        if condition.kind is AlertConditionKind.INDICATOR_SIGNAL:
-            assert condition.indicator is not None
-            period = condition.indicator_period
-            assert period is not None
-            if condition.compare_indicator is not None:
-                compare_period = condition.compare_period
-                assert compare_period is not None
-                return (
-                    f"{condition.indicator.value}({period}) {direction} "
-                    f"{condition.compare_indicator.value}({compare_period})"
-                )
-            return (
-                f"{condition.indicator.value}({period}) {direction} "
-                f"{_decimal_text(observation.threshold)}"
-            )
+        if isinstance(node, RuleComparison) and node.test in {"gte", "lte"}:
+            direction = "上穿" if node.test == "gte" else "下穿"
+            if isinstance(node.left, RuleEvent) and isinstance(node.right, RuleConstant):
+                label = _METRIC_LABELS[node.left.metric]
+                return f"{label}{direction} {_decimal_text(observation.threshold)}"
+            if isinstance(node.left, RuleIndicator):
+                if isinstance(node.right, RuleIndicator):
+                    return f"{_indicator_label(node.left)} {direction} {_indicator_label(node.right)}"
+                if isinstance(node.right, RuleConstant):
+                    return f"{_indicator_label(node.left)} {direction} {_decimal_text(observation.threshold)}"
+        if not isinstance(node, RuleOverlay):
+            return "规则触发"
+        direction = "上穿" if node.direction is AlertDirection.ABOVE else "下穿"
         drawing_kind = observation.drawing_kind
         label = _OVERLAY_LABELS.get(drawing_kind, "画线") if drawing_kind else "画线"
         edge = ""
         if drawing_kind in _THICK_OVERLAYS:
-            edge = "上沿" if condition.direction is AlertDirection.ABOVE else "下沿"
+            edge = "上沿" if node.direction is AlertDirection.ABOVE else "下沿"
         action = (
             "收盘突破"
-            if condition.overlay_mode is AlertOverlayMode.CLOSE_BREAK
+            if node.mode is AlertOverlayMode.CLOSE_BREAK
             else "触碰"
         )
         return f"价格{action}{label}{edge} {_decimal_text(observation.threshold)}"
 
 
-def _level_bounds(level: KeyLevel) -> tuple[Decimal, Decimal] | None:
-    if level.price is not None:
-        return level.price, level.price
-    if level.price_low is not None and level.price_high is not None:
-        return level.price_low, level.price_high
-    return None
+def _trigger_kind(alert: AlertRecord) -> AlertTriggerKind:
+    node = alert.condition.expression
+    if isinstance(node, RuleOverlay):
+        return AlertTriggerKind.OVERLAY_CROSS
+    if isinstance(node, RuleLevelEvent):
+        return AlertTriggerKind.LEVEL_EVENT
+    if isinstance(node, RuleComparison) and node.test in {"gte", "lte"}:
+        if isinstance(node.left, RuleEvent) and isinstance(node.right, RuleConstant):
+            return AlertTriggerKind.METRIC_THRESHOLD
+        if isinstance(node.left, RuleIndicator) and isinstance(node.right, (RuleConstant, RuleIndicator)):
+            return AlertTriggerKind.INDICATOR_SIGNAL
+    return AlertTriggerKind.RULE
 
 
-def _level_message(observation: _Observation) -> str:
+def _indicator_label(node: RuleIndicator) -> str:
+    name = node.indicator_name
+    period = spec_from_params(name, node.params.model_dump(exclude_none=True)).period
+    return f"{name.value}({period})"
+
+
+def _level_message(observation: RuleObservation) -> str:
     level = observation.level
-    bounds = _level_bounds(level) if level is not None else None
+    bounds = level_bounds(level) if level is not None else None
     label = "-"
     if bounds is not None:
         label = (

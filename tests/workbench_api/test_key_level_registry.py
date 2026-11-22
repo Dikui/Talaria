@@ -71,7 +71,10 @@ def _alert(level_id, level_event="TOUCH"):
     return AlertCreate(
         instrument_id=INSTRUMENT,
         timeframe="1m",
-        condition={"kind": "LEVEL_EVENT", "level_id": level_id, "level_event": level_event},
+        condition={
+            "version": "1", "timing": ("event" if level_event == "TOUCH" else "bar_close"),
+            "expression": {"op": "level_event", "level_id": level_id, "event": level_event, "level_kind": None},
+        },
     )
 
 

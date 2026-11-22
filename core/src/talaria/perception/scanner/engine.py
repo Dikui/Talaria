@@ -20,6 +20,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from statistics import fmean, median, pstdev
 
+from talaria.components import CompiledRule, Ctx, compile_rule
+from talaria.components.rules import RuleState
+from talaria.foundation.drawings import DrawingRecord
+from talaria.foundation.rules import AlertLevelEvent, Rule, RuleLevelEvent
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
@@ -47,6 +51,7 @@ logger = logging.getLogger(__name__)
 
 FreezeSnapshot = Callable[[str, str, int], str]
 KeyLevelsProvider = Callable[..., Sequence[KeyLevel]]
+RuleLevelsAt = Callable[[str, str, int], Sequence[KeyLevel]]
 
 KIND_ORDER: tuple[ScannerConditionKind, ...] = (
     ScannerConditionKind.LIQUIDITY_ANOMALY,
@@ -62,6 +67,7 @@ KIND_LABELS: dict[ScannerConditionKind, str] = {
     ScannerConditionKind.FUNDING_EXTREME: "资金费率极值",
     ScannerConditionKind.OI_DIVERGENCE: "持仓量背离",
     ScannerConditionKind.KEY_LEVEL_EVENT: "关键位异动",
+    ScannerConditionKind.RULE: "规则命中",
 }
 
 KEY_LEVEL_LABELS: dict[KeyLevelKind, str] = {
@@ -222,10 +228,12 @@ class ScannerEngine:
         config: ScannerConfig | None = None,
         freeze_snapshot: FreezeSnapshot,
         key_levels_provider: KeyLevelsProvider | None = None,
+        rule_levels_at: RuleLevelsAt | None = None,
     ) -> None:
         self._now_ms = now_ms
         self._config = config or ScannerConfig()
         self._freeze_snapshot = freeze_snapshot
+        self._rule_levels_at = rule_levels_at
         self._key_levels_provider = key_levels_provider or compute_key_levels
 
         self._bars: dict[tuple[str, str], dict[int, CompactBar]] = {}
@@ -234,6 +242,7 @@ class ScannerEngine:
         self._derivatives: dict[str, _DerivativeSeries] = {}
         self._oi_ticks: dict[str, dict[int, Decimal]] = {}
 
+        self._rule_hits: dict[tuple[str, str], tuple[int, int]] = {}
         self._last_trigger_at: dict[tuple[str, ScannerConditionKind], int] = {}
         self._last_trigger_bar: dict[tuple[str, ScannerConditionKind], int] = {}
         self._focus: dict[str, int] = {}
@@ -353,20 +362,36 @@ class ScannerEngine:
         instrument_ids: Iterable[str] | None = None,
         *,
         now: int | None = None,
+        rule: Rule | None = None,
+        drawing: Callable[[str], DrawingRecord | None] | None = None,
     ) -> list[ScannerTrigger]:
         """扫描给定标的；``instrument_ids`` 省略时沿用上一次的范围。"""
+
+        compiled = None
+        fingerprint = ""
+        if rule is not None:
+            if rule.timing != "bar_close":
+                raise ValueError("手动扫描只支持收盘求值规则")
+            compiled = compile_rule(rule)
+            fingerprint = hashlib.sha256(rule.model_dump_json().encode()).hexdigest()
 
         timestamp = self._now_ms() if now is None else now
         self._expire_focus(timestamp)
         if instrument_ids is not None:
             self._universe = set(instrument_ids)
+        # 保留窗口内同一柱的去重记录，即使焦点或冷却已经过期。
+        self._rule_hits = {
+            key: hit for key, hit in self._rule_hits.items()
+            if timestamp - hit[1] < self._config.cooldown_ms
+            or hit[0] in self._bars.get((key[0], self.timeframe), ())
+        }
 
         triggers: list[ScannerTrigger] = []
         for instrument_id in sorted(self._universe):
             if instrument_id in self._stale:
                 continue
-            for kind in KIND_ORDER:
-                trigger = self._evaluate(instrument_id, kind, timestamp)
+            for kind in ((ScannerConditionKind.RULE,) if compiled else KIND_ORDER):
+                trigger = self._evaluate(instrument_id, kind, timestamp, compiled, fingerprint, drawing)
                 if trigger is not None:
                     triggers.append(trigger)
         return triggers
@@ -406,6 +431,9 @@ class ScannerEngine:
         instrument_id: str,
         kind: ScannerConditionKind,
         now: int,
+        rule: CompiledRule | None,
+        fingerprint: str,
+        drawing: Callable[[str], DrawingRecord | None] | None,
     ) -> ScannerTrigger | None:
         bars = self._normal_bars(instrument_id, now)
         if not bars:
@@ -415,14 +443,22 @@ class ScannerEngine:
         if gap_ts > bars[-1].timestamp:
             return None
 
-        last_ts = self._last_trigger_bar.get((instrument_id, kind))
+        bar_ts = bars[-1].timestamp
+        if rule is not None:
+            # Repeated manual requests for different rules have independent cooldowns.
+            rule_key = (instrument_id, fingerprint)
+            last_ts, last_at = self._rule_hits.get(rule_key, (None, None))
+        else:
+            last_ts = self._last_trigger_bar.get((instrument_id, kind))
+            last_at = self._last_trigger_at.get((instrument_id, kind))
         if last_ts is not None and bars[-1].timestamp <= last_ts:
             return None
-        last_at = self._last_trigger_at.get((instrument_id, kind))
         if last_at is not None and now - last_at < self._config.cooldown_ms:
             return None
 
-        if kind is ScannerConditionKind.LIQUIDITY_ANOMALY:
+        if rule is not None:
+            hit = self._rule_hit(instrument_id, bars, now, rule, drawing)
+        elif kind is ScannerConditionKind.LIQUIDITY_ANOMALY:
             hit = self._liquidity_hit(instrument_id, bars)
         elif kind is ScannerConditionKind.VOLATILITY_EXPANSION:
             hit = self._volatility_hit(instrument_id, bars)
@@ -441,7 +477,7 @@ class ScannerEngine:
             return None
 
         trigger = ScannerTrigger(
-            trigger_id=self._trigger_id(instrument_id, kind, bars[-1].timestamp),
+            trigger_id=self._trigger_id(instrument_id, kind, bar_ts, fingerprint),
             instrument_id=instrument_id,
             timeframe=self._config.timeframe,
             kind=kind,
@@ -454,17 +490,74 @@ class ScannerEngine:
             snapshot_id=snapshot_id,
             route=ScannerTriggerRoute.LOCAL,
         )
-        self._last_trigger_at[(instrument_id, kind)] = now
-        self._last_trigger_bar[(instrument_id, kind)] = bars[-1].timestamp
+        if rule is not None:
+            self._rule_hits[(instrument_id, fingerprint)] = (bar_ts, now)
+        else:
+            self._last_trigger_at[(instrument_id, kind)] = now
+            self._last_trigger_bar[(instrument_id, kind)] = bar_ts
         self._focus[instrument_id] = now
         return trigger
 
     def _trigger_id(
-        self, instrument_id: str, kind: ScannerConditionKind, bar_ts: int
+        self, instrument_id: str, kind: ScannerConditionKind, bar_ts: int, fingerprint: str = "",
     ) -> str:
         payload = f"{instrument_id}|{self._config.timeframe}|{kind.value}|{bar_ts}"
+        if fingerprint:
+            payload += f"|{fingerprint}"
         digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
         return f"scn_{digest}"
+
+    def _rule_hit(
+        self, instrument_id: str, bars: Sequence[CompactBar], now: int,
+        rule: CompiledRule, drawing: Callable[[str], DrawingRecord | None] | None,
+    ) -> _Hit | None:
+        timeframe = self.timeframe
+        interval = timeframe_ms(timeframe)
+        closed = [bar for bar in bars if bar.timestamp + interval <= now]
+        if not closed or closed[-1] is not bars[-1]:
+            return None
+        points = self._all_derivative_points(instrument_id)
+
+        def read_derivatives(instrument, kind, *, start, end, as_of):
+            return [point for point in points if point.kind is kind]
+
+        level_nodes = [node for node in rule.rule.nodes() if isinstance(node, RuleLevelEvent)]
+        retest = any(node.event is AlertLevelEvent.RETEST for node in level_nodes)
+        state = RuleState()
+
+        def evaluate_at(bar: CompactBar):
+            # A manual scan examines data known at the latest bar's confirmation.
+            # Historical levels are also read at each bar's own cutoff.
+            cutoff = max(bar.ts_available, bar.timestamp + interval)
+            ctx = Ctx(
+                instrument_id, timeframe, 0, cutoff,
+                _bar_ts=bar.timestamp, _indicator_defaults={}, _confirmed_compact=closed,
+                _read_derivatives=read_derivatives,
+            )
+            levels = {}
+            if level_nodes:
+                if self._rule_levels_at is not None:
+                    available = self._rule_levels_at(instrument_id, timeframe, cutoff)
+                else:
+                    available = self._key_levels_provider(
+                        instrument_id=instrument_id, timeframe=timeframe, bars=closed,
+                        cutoff_ts=cutoff, derivative_points=points,
+                    )
+                levels = {level.level_id: level for level in available}
+            return rule.observe(ctx, drawing=drawing, levels=levels, state=state, consume_retests=False)
+
+        if retest:
+            for previous in closed[:-1]:
+                evaluate_at(previous)
+        observation = evaluate_at(closed[-1])
+        if observation is None or not observation.matched:
+            return None
+        evidence = []
+        if observation.observed is not None:
+            evidence.append(ScannerEvidence(metric="rule", value=observation.observed,
+                                            threshold=observation.threshold))
+        return _Hit(ScannerConditionKind.RULE, ScannerSeverity.INFO, "规则命中",
+                    "收盘规则成立", evidence, [])
 
     def _snapshot(self, instrument_id: str, now: int) -> str:
         key = (instrument_id, self._config.timeframe, now)

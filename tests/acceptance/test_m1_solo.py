@@ -412,10 +412,8 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
                 "instrument_id": INSTRUMENT,
                 "timeframe": TIMEFRAME,
                 "condition": {
-                    "kind": "LEVEL_EVENT",
-                    "level_id": chosen["level_id"],
-                    "level_event": "TOUCH",
-                    "level_kind": chosen["kind"],
+                    "version": "1", "timing": "event",
+                    "expression": {"op": "level_event", "level_id": chosen['level_id'], "event": "TOUCH", "level_kind": chosen['kind']},
                 },
                 "note": "关键位触及验收",
                 "repeat": False,
@@ -426,7 +424,7 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
         assert level_alert_resp.status_code == 201
         level_alert = level_alert_resp.json()
         assert level_alert["status"] == "ARMED"
-        assert level_alert["condition"]["level_id"] == chosen["level_id"]
+        assert level_alert["condition"]["expression"]["level_id"] == chosen["level_id"]
 
         overlay_alert_resp = client.post(
             "/api/alerts",
@@ -434,10 +432,8 @@ def test_m1_solo_acceptance_flow(tmp_path: Path, fixture_dir: Path) -> None:
                 "instrument_id": INSTRUMENT,
                 "timeframe": TIMEFRAME,
                 "condition": {
-                    "kind": "OVERLAY_CROSS",
-                    "drawing_id": drawing["drawing_id"],
-                    "overlay_mode": "TOUCH",
-                    "direction": "ABOVE",
+                    "version": "1", "timing": "event",
+                    "expression": {"op": "overlay", "direction": "ABOVE", "drawing_id": drawing['drawing_id'], "mode": "TOUCH"},
                 },
                 "note": "画线穿越验收",
                 "repeat": False,

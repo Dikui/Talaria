@@ -1,0 +1,554 @@
+{
+  "$defs": {
+    "AlertDirection": {
+      "enum": [
+        "ABOVE",
+        "BELOW"
+      ],
+      "title": "AlertDirection",
+      "type": "string"
+    },
+    "AlertLevelEvent": {
+      "enum": [
+        "TOUCH",
+        "BREAK",
+        "RETEST"
+      ],
+      "title": "AlertLevelEvent",
+      "type": "string"
+    },
+    "AlertMetric": {
+      "enum": [
+        "last_price",
+        "bid_price",
+        "ask_price",
+        "mark_price",
+        "funding_rate",
+        "open_interest"
+      ],
+      "title": "AlertMetric",
+      "type": "string"
+    },
+    "AlertOverlayMode": {
+      "enum": [
+        "TOUCH",
+        "CLOSE_BREAK"
+      ],
+      "title": "AlertOverlayMode",
+      "type": "string"
+    },
+    "DerivativeKind": {
+      "description": "衍生品序列种类。",
+      "enum": [
+        "mark_price",
+        "funding_rate",
+        "open_interest"
+      ],
+      "title": "DerivativeKind",
+      "type": "string"
+    },
+    "IndicatorName": {
+      "description": "技术指标与衍生品指标；全部共用同一算子核。",
+      "enum": [
+        "EMA",
+        "SMA",
+        "RSI",
+        "ATR",
+        "BOLL",
+        "VWAP",
+        "FUNDING_QUANTILE",
+        "OI_DIVERGENCE",
+        "NET_ODDS"
+      ],
+      "title": "IndicatorName",
+      "type": "string"
+    },
+    "KeyLevelKind": {
+      "description": "关键位类型；11 的成交量位/清算估算可直接追加而不改类别逻辑。",
+      "enum": [
+        "SWING_HIGH",
+        "SWING_LOW",
+        "PREV_DAY_HIGH",
+        "PREV_DAY_LOW",
+        "PREV_DAY_CLOSE",
+        "WEEK_OPEN",
+        "MONTH_OPEN",
+        "OPENING_RANGE",
+        "SESSION_HIGH",
+        "SESSION_LOW",
+        "GAP",
+        "ROUND_NUMBER",
+        "POC",
+        "VAH",
+        "VAL",
+        "ANCHORED_VWAP",
+        "LIQUIDATION_ZONE"
+      ],
+      "title": "KeyLevelKind",
+      "type": "string"
+    },
+    "RuleBar": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "enum": [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "turnover"
+          ],
+          "title": "Field",
+          "type": "string"
+        },
+        "source": {
+          "const": "bar",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "field"
+      ],
+      "title": "RuleBar",
+      "type": "object"
+    },
+    "RuleComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "left": {
+          "discriminator": {
+            "mapping": {
+              "bar": "#/$defs/RuleBar",
+              "constant": "#/$defs/RuleConstant",
+              "derivative": "#/$defs/RuleDerivative",
+              "event": "#/$defs/RuleEvent",
+              "indicator": "#/$defs/RuleIndicator"
+            },
+            "propertyName": "source"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RuleConstant"
+            },
+            {
+              "$ref": "#/$defs/RuleBar"
+            },
+            {
+              "$ref": "#/$defs/RuleEvent"
+            },
+            {
+              "$ref": "#/$defs/RuleDerivative"
+            },
+            {
+              "$ref": "#/$defs/RuleIndicator"
+            }
+          ],
+          "title": "Left"
+        },
+        "op": {
+          "const": "compare",
+          "title": "Op",
+          "type": "string"
+        },
+        "right": {
+          "discriminator": {
+            "mapping": {
+              "bar": "#/$defs/RuleBar",
+              "constant": "#/$defs/RuleConstant",
+              "derivative": "#/$defs/RuleDerivative",
+              "event": "#/$defs/RuleEvent",
+              "indicator": "#/$defs/RuleIndicator"
+            },
+            "propertyName": "source"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RuleConstant"
+            },
+            {
+              "$ref": "#/$defs/RuleBar"
+            },
+            {
+              "$ref": "#/$defs/RuleEvent"
+            },
+            {
+              "$ref": "#/$defs/RuleDerivative"
+            },
+            {
+              "$ref": "#/$defs/RuleIndicator"
+            }
+          ],
+          "title": "Right"
+        },
+        "test": {
+          "enum": [
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            "eq",
+            "cross_above",
+            "cross_below"
+          ],
+          "title": "Test",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "test",
+        "left",
+        "right"
+      ],
+      "title": "RuleComparison",
+      "type": "object"
+    },
+    "RuleConstant": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "constant",
+          "title": "Source",
+          "type": "string"
+        },
+        "value": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "value"
+      ],
+      "title": "RuleConstant",
+      "type": "object"
+    },
+    "RuleDerivative": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/DerivativeKind"
+        },
+        "source": {
+          "const": "derivative",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "kind"
+      ],
+      "title": "RuleDerivative",
+      "type": "object"
+    },
+    "RuleEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "$ref": "#/$defs/AlertMetric"
+        },
+        "source": {
+          "const": "event",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "metric"
+      ],
+      "title": "RuleEvent",
+      "type": "object"
+    },
+    "RuleGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "all": "#/$defs/RuleGroup",
+                "any": "#/$defs/RuleGroup",
+                "compare": "#/$defs/RuleComparison",
+                "level_event": "#/$defs/RuleLevelEvent",
+                "not": "#/$defs/RuleGroup",
+                "overlay": "#/$defs/RuleOverlay"
+              },
+              "propertyName": "op"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/RuleComparison"
+              },
+              {
+                "$ref": "#/$defs/RuleOverlay"
+              },
+              {
+                "$ref": "#/$defs/RuleLevelEvent"
+              },
+              {
+                "$ref": "#/$defs/RuleGroup"
+              }
+            ]
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Args",
+          "type": "array"
+        },
+        "op": {
+          "enum": [
+            "all",
+            "any",
+            "not"
+          ],
+          "title": "Op",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "args"
+      ],
+      "title": "RuleGroup",
+      "type": "object"
+    },
+    "RuleIndicator": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IndicatorName"
+            },
+            {
+              "enum": [
+                "legacy_ema",
+                "legacy_atr"
+              ],
+              "type": "string"
+            }
+          ],
+          "title": "Name"
+        },
+        "params": {
+          "$ref": "#/$defs/RuleIndicatorParams"
+        },
+        "source": {
+          "const": "indicator",
+          "title": "Source",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "name"
+      ],
+      "title": "RuleIndicator",
+      "type": "object"
+    },
+    "RuleIndicatorParams": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "anyOf": [
+            {
+              "enum": [
+                "snapshot",
+                "session"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        },
+        "period": {
+          "anyOf": [
+            {
+              "maximum": 5000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period"
+        },
+        "std_dev": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Std Dev"
+        }
+      },
+      "title": "RuleIndicatorParams",
+      "type": "object"
+    },
+    "RuleLevelEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/AlertLevelEvent"
+        },
+        "level_id": {
+          "maxLength": 64,
+          "title": "Level Id",
+          "type": "string"
+        },
+        "level_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeyLevelKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "op": {
+          "const": "level_event",
+          "title": "Op",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "level_id",
+        "event"
+      ],
+      "title": "RuleLevelEvent",
+      "type": "object"
+    },
+    "RuleOverlay": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/AlertDirection"
+        },
+        "drawing_id": {
+          "maxLength": 64,
+          "title": "Drawing Id",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/AlertOverlayMode"
+        },
+        "op": {
+          "const": "overlay",
+          "title": "Op",
+          "type": "string"
+        },
+        "ratio": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ratio"
+        }
+      },
+      "required": [
+        "op",
+        "drawing_id",
+        "mode",
+        "direction"
+      ],
+      "title": "RuleOverlay",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "bar_close 只读确认柱。event 比较必须引用本次行情事件。",
+  "properties": {
+    "expression": {
+      "discriminator": {
+        "mapping": {
+          "all": "#/$defs/RuleGroup",
+          "any": "#/$defs/RuleGroup",
+          "compare": "#/$defs/RuleComparison",
+          "level_event": "#/$defs/RuleLevelEvent",
+          "not": "#/$defs/RuleGroup",
+          "overlay": "#/$defs/RuleOverlay"
+        },
+        "propertyName": "op"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RuleComparison"
+        },
+        {
+          "$ref": "#/$defs/RuleOverlay"
+        },
+        {
+          "$ref": "#/$defs/RuleLevelEvent"
+        },
+        {
+          "$ref": "#/$defs/RuleGroup"
+        }
+      ],
+      "title": "Expression"
+    },
+    "timing": {
+      "enum": [
+        "bar_close",
+        "event"
+      ],
+      "title": "Timing",
+      "type": "string"
+    },
+    "version": {
+      "const": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "timing",
+    "expression"
+  ],
+  "title": "Rule",
+  "type": "object"
+}

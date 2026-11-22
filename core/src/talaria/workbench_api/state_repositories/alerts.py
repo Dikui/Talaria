@@ -9,6 +9,7 @@ from typing import Any
 
 from talaria.foundation.alerts import AlertRecord, AlertStatus, AlertTriggerRecord
 from talaria.foundation.errors import AlertNotFoundError
+from talaria.workbench_api.state_repositories.alert_migration import migrate_rule
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -87,6 +88,33 @@ class AlertRepository:
             ),
         )
         return record
+
+    def migrate_rules(self, *, pine_cutover_ts: int | None) -> None:
+        """只修改旧 payload，保留软删除、冷却状态和历史触发记录。"""
+        connection = self._connection
+        connection.execute("SAVEPOINT alert_json_rules")
+        try:
+            rows = connection.execute(
+                """SELECT alert_id, payload FROM alerts
+                WHERE json_type(payload, '$.condition.version') IS NULL"""
+            ).fetchall()
+            for alert_id, raw in rows:
+                payload = json.loads(raw)
+                rule = migrate_rule(
+                    payload["condition"],
+                    predates_pine=pine_cutover_ts is None or payload["created_ts"] < pine_cutover_ts,
+                )
+                payload["condition"] = rule.model_dump(mode="json")
+                record = AlertRecord.model_validate(payload)
+                connection.execute(
+                    "UPDATE alerts SET payload = ? WHERE alert_id = ?",
+                    (record.model_dump_json(), alert_id),
+                )
+        except BaseException:
+            connection.execute("ROLLBACK TO alert_json_rules")
+            raise
+        finally:
+            connection.execute("RELEASE alert_json_rules")
 
     def get(self, alert_id: str, *, include_deleted: bool = False) -> AlertRecord:
         row = self._connection.execute(

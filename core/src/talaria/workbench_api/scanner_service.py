@@ -14,6 +14,8 @@ from collections.abc import Callable, Iterable, Sequence
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.derivatives import DerivativePoint
+from talaria.foundation.drawings import DrawingRecord
+from talaria.foundation.rules import Rule
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.scanner.contracts import (
     ScannerConditionKind,
@@ -23,7 +25,7 @@ from talaria.foundation.scanner.contracts import (
     ScannerTrigger,
     ScannerTriggerRoute,
 )
-from talaria.perception.scanner.engine import KIND_ORDER, ScannerConfig, ScannerEngine
+from talaria.perception.scanner.engine import KIND_ORDER, RuleLevelsAt, ScannerConfig, ScannerEngine
 from talaria.perception.scanner.routing import TriggerRoutingPolicy
 from talaria.workbench_api.state_repositories.watchlist import SCANNER_FOCUS_GROUP_ID
 from talaria.workbench_api.state_store import StateStore, StateWriterQueue
@@ -54,6 +56,7 @@ class ScannerService:
         config: ScannerConfig | None = None,
         routing: TriggerRoutingPolicy | None = None,
         focus_name: str = SCANNER_FOCUS_NAME,
+        rule_levels_at: RuleLevelsAt | None = None,
     ) -> None:
         self._state_writer = state_writer
         self._instruments = {spec.instrument_id: spec for spec in instruments}
@@ -66,6 +69,7 @@ class ScannerService:
             now_ms=now_ms,
             config=config,
             freeze_snapshot=freeze_snapshot,
+            rule_levels_at=rule_levels_at,
         )
         self._history: deque[ScannerTrigger] = deque(maxlen=HISTORY_LIMIT)
         self._lock = asyncio.Lock()
@@ -106,6 +110,9 @@ class ScannerService:
     async def scan(
         self,
         instrument_ids: Sequence[str] | None = None,
+        *,
+        rule: Rule | None = None,
+        drawing: Callable[[str], DrawingRecord | None] | None = None,
     ) -> list[ScannerTrigger]:
         """扫描一轮；同一时刻的并发调用串行化，避免重复冻结。"""
 
@@ -123,7 +130,7 @@ class ScannerService:
             ]
             if unknown:
                 raise ValueError(f"未知标的：{', '.join(unknown)}")
-            triggers = self._engine.scan(requested, now=now)
+            triggers = self._engine.scan(requested, now=now, rule=rule, drawing=drawing)
             routed: list[ScannerTrigger] = []
             for trigger in triggers:
                 routed.append(self._apply_route(trigger))
@@ -212,7 +219,7 @@ class ScannerService:
                 continue
             kinds = [
                 kind
-                for kind in KIND_ORDER
+                for kind in (*KIND_ORDER, ScannerConditionKind.RULE)
                 if any(trigger.kind is kind for trigger in triggers)
             ]
             latest_trigger = max(
