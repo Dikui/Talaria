@@ -10,7 +10,7 @@ from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
-from typing import Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 import yaml
 from pydantic import Field, JsonValue, StrictInt, StringConstraints, model_validator
@@ -21,6 +21,9 @@ from talaria.account.parameters import ParameterSchema
 from talaria.account.risk_config import AccountRiskConfig
 from talaria.foundation.paper import AccountId
 from talaria.foundation.types import ContractModel
+
+if TYPE_CHECKING:
+    from talaria.perception.cold_store import ColdReader
 
 INTERFACE_VERSION = 2
 type Mode = Literal["backtest", "paper"]
@@ -128,6 +131,13 @@ class PluginContext:
     seed: int
     now: Callable[[], int]
     account_risk: Mapping[str, AccountRiskConfig] = field(default_factory=dict)
+    run_id: str | None = None
+    cold_reader: ColdReader | None = None
+
+    @property
+    def state_dir(self) -> Path:
+        """插件状态目录，回测时为宿主提前创建的 runs/<run_id>/state。"""
+        return self.data_dir
 
 
 @dataclass(frozen=True, slots=True)

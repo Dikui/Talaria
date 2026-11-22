@@ -74,11 +74,29 @@ class ContextReads:
         self.ctx = replace(
             ctx, _read_bars=self._bounded(ctx._read_bars, bars=True),
             _read_derivatives=self._bounded(ctx._read_derivatives, bars=False) if ctx._read_derivatives else None,
+            _read_derivative_revisions=(
+                self._bounded_revisions(ctx._read_derivative_revisions)
+                if ctx._read_derivative_revisions is not None else None
+            ),
         )
 
     def check_cancelled(self):
         if self.cancelled.is_set():
             raise AccountProcessError("策略取数已取消")
+
+    def _count_rows(self, rows):
+        self.check_cancelled()
+        self.rows += len(rows)
+        if self.rows > MAX_CONTEXT_ROWS:
+            raise AccountProcessError("策略取数结果超过行数上限")
+        return rows
+
+    def _bounded_revisions(self, reader):
+        def read(kind):
+            # 宿主固定的衍生品历史可以很稀疏，按实际返回的修订计数。
+            self.check_cancelled()
+            return self._count_rows(reader(kind))
+        return read
 
     def _bounded(self, reader, *, bars):
         def read(instrument, series, *, start, end, as_of):
@@ -90,12 +108,7 @@ class ContextReads:
                 raise AccountProcessError("策略取数范围超过行数上限")
             if (self.rows + estimate) * _ESTIMATED_ROW_BYTES > MAX_CONTEXT_BYTES:
                 raise AccountProcessError("策略取数估算超过字节上限")
-            rows = reader(instrument, series, start=start, end=end, as_of=as_of)
-            self.check_cancelled()
-            self.rows += len(rows)
-            if self.rows > MAX_CONTEXT_ROWS:
-                raise AccountProcessError("策略取数结果超过行数上限")
-            return rows
+            return self._count_rows(reader(instrument, series, start=start, end=end, as_of=as_of))
         return read
 
     def reply(self, message: dict) -> dict:

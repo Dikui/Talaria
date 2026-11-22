@@ -38,10 +38,12 @@ _DECISION = {
 }
 
 
-def isolated_strategy_plugin(entry: Path, original_dir: Path, symbol: str, version: int, lifetime: ExitStack) -> SlotPlugin:
+def isolated_strategy_plugin(
+    entry: Path, original_dir: Path, symbol: str, version: int, lifetime: ExitStack, *, data_dir: Path,
+) -> SlotPlugin:
     def create(context, params):
         return lifetime.enter_context(
-            _open_worker(entry, original_dir, symbol, version, context.mode, context.seed, params, context.data_dir),
+            _open_worker(entry, original_dir, symbol, version, context.mode, context.seed, params, data_dir),
         )
 
     return SlotPlugin(Slot.STRATEGY, (version,), create)

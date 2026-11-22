@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
@@ -13,7 +13,7 @@ from pydantic import ConfigDict, Field, JsonValue
 from talaria.components import Ctx
 from talaria.components.runtime import BarReader, DerivativeReader
 from talaria.foundation.bars import RangeBar
-from talaria.foundation.derivatives import DerivativePoint
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.margin import Direction as Direction
 from talaria.foundation.margin import MarginEstimate as MarginEstimate
 from talaria.foundation.margin import MarginPosition
@@ -207,6 +207,7 @@ class MarketData:
     read_derivatives: DerivativeReader | None = None
     tail_completed: bool = True
     signal_as_of: int | None = None
+    read_derivative_revisions: Callable[[str, DerivativeKind, int], Sequence[DerivativePoint]] | None = None
 
     @classmethod
     def from_ctx(cls, ctx: Ctx) -> MarketData:
