@@ -16,7 +16,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Sequence
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from websockets.asyncio.client import ClientConnection
 from websockets.asyncio.client import connect as ws_connect
@@ -32,6 +32,7 @@ from talaria.foundation.feed import (
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.types import PrecisionTier
+from talaria.packs.crypto_perp._proxy import is_loopback_url
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ class BybitPublicStream:
         self._events: asyncio.Queue[object] = asyncio.Queue()
         self._acks: list[asyncio.Future[None]] = []
         self._subscriptions: set[tuple[str, str]] = set()
+        self._tickers_by_instrument: dict[str, dict[str, object]] = {}
         self._reader: asyncio.Task[None] | None = None
         self._pinger: asyncio.Task[None] | None = None
         self._last_message_at: float = 0.0
@@ -103,7 +105,7 @@ class BybitPublicStream:
                 self._ws_url,
                 open_timeout=self._ack_timeout_seconds,
                 ping_interval=None,
-                proxy=None,
+                proxy=None if is_loopback_url(self._ws_url) else True,
                 max_queue=None,
             )
         except (OSError, WebSocketException, asyncio.TimeoutError) as exc:
@@ -142,6 +144,7 @@ class BybitPublicStream:
         self._subscriptions.discard((instrument_id, timeframe))
         topics = [f"kline.{interval}.{symbol}"]
         if not any(inst == instrument_id for inst, _ in self._subscriptions):
+            self._tickers_by_instrument.pop(instrument_id, None)
             topics.extend([f"orderbook.1.{symbol}", f"tickers.{symbol}"])
         with contextlib.suppress(FeedTransportError):
             await self._request({"op": "unsubscribe", "args": topics})
@@ -250,6 +253,7 @@ class BybitPublicStream:
                 await task
         self._reader = self._pinger = None
         ws, self._ws = self._ws, None
+        self._tickers_by_instrument.clear()
         if ws is not None:
             with contextlib.suppress(Exception):
                 await ws.close()
@@ -302,7 +306,7 @@ class BybitPublicStream:
         if topic.startswith("orderbook."):
             return self._parse_book(data, envelope)
         if topic.startswith("tickers."):
-            return self._parse_tickers(data, envelope)
+            return self._parse_tickers(topic, data, envelope)
         return []
 
     def _parse_kline(
@@ -359,41 +363,50 @@ class BybitPublicStream:
 
     def _parse_tickers(
         self,
+        topic: str,
         data: dict[str, object],
         envelope: dict[str, object],
     ) -> list[DerivativeTickEvent]:
-        symbol = data.get("symbol")
-        if not isinstance(symbol, str):
-            return []
+        symbol = topic.removeprefix("tickers.")
         instrument_id = self._instrument_by_symbol.get(symbol)
         if instrument_id is None:
             return []
         if not any(inst == instrument_id for inst, _ in self._subscriptions):
             return []
+
+        message_type = envelope.get("type")
+        ticker = data
+        if message_type == "snapshot":
+            self._tickers_by_instrument.pop(instrument_id, None)
+        elif message_type == "delta":
+            ticker = self._tickers_by_instrument.get(instrument_id, {}) | data
+
         try:
-            mark_price = data.get("markPrice")
-            funding_rate = data.get("fundingRate")
-            next_funding = data.get("nextFundingTime")
-            open_interest = data.get("openInterest")
-            event = DerivativeTickEvent(
-                instrument_id=instrument_id,
-                mark_price=_decimal(mark_price) if mark_price not in (None, "") else None,
-                funding_rate=(
-                    _decimal(funding_rate) if funding_rate not in (None, "") else None
-                ),
-                next_funding_ts=(
-                    int(next_funding) if next_funding not in (None, "", 0) else None
-                ),
-                open_interest=(
-                    _decimal(open_interest) if open_interest not in (None, "") else None
-                ),
-                ts_event=int(data.get("ts") or envelope.get("ts") or self._now_ms()),
-                ts_ingested=self._now_ms(),
+            mark_price, funding_rate, open_interest = (
+                _decimal(value) if value not in (None, "") else None
+                for value in (ticker.get("markPrice"), ticker.get("fundingRate"), ticker.get("openInterest"))
             )
-        except (TypeError, ValueError) as exc:
+            next_funding = ticker.get("nextFundingTime")
+            next_funding_ts = int(next_funding) if next_funding not in (None, "", 0) else None
+            event = None
+            if message_type != "delta" or any(
+                reading is not None for reading in (mark_price, funding_rate, open_interest, next_funding_ts)
+            ):
+                event = DerivativeTickEvent(
+                    instrument_id=instrument_id,
+                    mark_price=mark_price,
+                    funding_rate=funding_rate,
+                    next_funding_ts=next_funding_ts,
+                    open_interest=open_interest,
+                    ts_event=int(data.get("ts") or envelope.get("ts") or self._now_ms()),
+                    ts_ingested=self._now_ms(),
+                )
+        except (InvalidOperation, TypeError, ValueError) as exc:
             logger.warning("忽略无法解析的 Bybit tickers：%s", exc)
             return []
-        return [event]
+        if message_type in ("snapshot", "delta"):
+            self._tickers_by_instrument[instrument_id] = ticker
+        return [event] if event is not None else []
 
     def _parse_book(
         self,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from decimal import Decimal
 
 import httpx
@@ -42,6 +43,59 @@ def _connector(handler, **kwargs) -> BybitLinearConnector:
         now_ms=lambda: NOW_MS,
         **kwargs,
     )
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize(
+    ("base_url", "proxy_var", "no_proxy", "destination"),
+    [
+        pytest.param(
+            "https://api.bybit.com", "HTTPS_PROXY", None, "proxy.example", id="https-proxy"
+        ),
+        pytest.param(
+            "http://api.bybit.com", "HTTP_PROXY", None, "proxy.example", id="http-proxy"
+        ),
+        pytest.param(
+            "https://api.bybit.com", "ALL_PROXY", None, "proxy.example", id="all-proxy"
+        ),
+        pytest.param(
+            "https://api.bybit.com", "HTTPS_PROXY", "api.bybit.com", "api.bybit.com",
+            id="no-proxy",
+        ),
+        pytest.param(
+            "http://127.0.0.1", "HTTP_PROXY", None, "127.0.0.1", id="ipv4-loopback"
+        ),
+        pytest.param(
+            "http://localhost", "HTTP_PROXY", None, "localhost", id="localhost"
+        ),
+        pytest.param(
+            "http://[::1]", "HTTP_PROXY", None, "::1", id="ipv6-loopback"
+        ),
+    ],
+)
+def test_bybit_rest_routes_requests_using_proxy_environment(
+    monkeypatch, base_url, proxy_var, no_proxy, destination
+) -> None:
+    # platform/04: stop at the TCP connection to observe HTTPX's selected destination.
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.delenv("REQUEST_METHOD", raising=False)
+    monkeypatch.setenv(proxy_var, "http://proxy.example:8080")
+    if no_proxy is not None:
+        monkeypatch.setenv("NO_PROXY", no_proxy)
+
+    def connect(address, *args, **kwargs):
+        assert address[0] == destination
+        raise ConnectionRefusedError("test TCP connection")
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    connector = BybitLinearConnector(base_url, retries=0)
+    try:
+        with pytest.raises(FeedUnavailableError, match="test TCP connection"):
+            connector.fetch_bars(symbol="BTCUSDT", timeframe="1m")
+    finally:
+        connector.close()
 
 
 def test_request_parameters_and_ascending_decimal_bars() -> None:

@@ -8,9 +8,11 @@ import os
 import plistlib
 import subprocess
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic, sleep
+from urllib.parse import urlsplit
 from xml.parsers.expat import ExpatError
 from xml.sax.saxutils import escape
 
@@ -38,6 +40,13 @@ DEFAULT_SERVICE_LABEL = "com.talaria.workbench"
 SERVICE_LOG_SUBDIR = Path("logs")
 SERVICE_STDOUT_NAME = "service.out.log"
 SERVICE_STDERR_NAME = "service.err.log"
+_BOOTOUT_TIMEOUT = 5.0
+_BOOTOUT_POLL_INTERVAL = 0.1
+_BOOTSTRAP_RETRY_DELAY = 0.2
+_PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
+_PROXY_ENV_NAMES = tuple(
+    name for key in (*_PROXY_VARIABLES, "NO_PROXY") for name in (key, key.lower())
+)
 
 LaunchctlRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
@@ -95,6 +104,7 @@ class ServiceStatus:
     endpoint: str | None
     detail: str | None
     dsh: ServiceDshStatus
+    proxy_endpoints: tuple[str, ...] = ()
 
 
 def plist_path(launch_agents_dir: str | Path, label: str = DEFAULT_SERVICE_LABEL) -> Path:
@@ -106,7 +116,7 @@ def open_data_dir(data_dir: str | None) -> Path:
     if selected is None:
         job = plist_path(Path.home() / "Library" / "LaunchAgents")
         if job.is_file():
-            selected = _plist_data_dir(job)
+            selected = _plist_data_dir(_read_job_plist(job), job)
     return Path(selected or DEFAULT_DATA_DIR).expanduser().resolve()
 
 
@@ -120,6 +130,7 @@ def render_launchd_plist(
     working_directory: str | Path | None = None,
     process_type: str = "Interactive",
     throttle_interval: int = 10,
+    environment: Mapping[str, str] | None = None,
 ) -> str:
     """纯函数：同样的输入永远生成同样的 plist，便于快照测试与审计。"""
 
@@ -133,6 +144,13 @@ def render_launchd_plist(
     arguments = "\n".join(
         f"    <string>{escape(str(argument))}</string>" for argument in program_arguments
     )
+    environment_xml = ""
+    if environment:
+        variables = "".join(
+            f"    <key>{escape(name)}</key>\n    <string>{escape(value)}</string>\n"
+            for name, value in environment.items()
+        )
+        environment_xml = f"  <key>EnvironmentVariables</key>\n  <dict>\n{variables}  </dict>\n"
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -160,7 +178,7 @@ def render_launchd_plist(
   <string>{escape(str(stdout_path))}</string>
   <key>StandardErrorPath</key>
   <string>{escape(str(stderr_path))}</string>
-</dict>
+{environment_xml}</dict>
 </plist>
 """
 
@@ -208,6 +226,7 @@ def install_service(
         "--pack",
         pack,
     ]
+    proxy_env = {name: os.environ[name] for name in _PROXY_ENV_NAMES if name in os.environ}
     text = render_launchd_plist(
         label=label,
         program_arguments=arguments,
@@ -215,14 +234,22 @@ def install_service(
         stdout_path=stdout_path,
         stderr_path=stderr_path,
         working_directory=resolved_data_dir,
+        environment=proxy_env,
     )
     target = plist_path(launch_agents_dir, label)
-    _atomic_write(target, text, 0o644)
+    _atomic_write(target, text, 0o600 if proxy_env else 0o644)
 
     launchctl = runner or _run_launchctl
     domain = _domain(uid)
-    launchctl(["bootout", f"{domain}/{label}"])
-    result = launchctl(["bootstrap", domain, str(target)])
+    job = f"{domain}/{label}"
+    launchctl(["bootout", job])
+    if not _wait_for_job_exit(launchctl, job):
+        raise ServiceInstallError(f"等待 launchd 作业退出超时：{job}\nplist 已保留：{target}")
+    bootstrap = ["bootstrap", domain, str(target)]
+    result = launchctl(bootstrap)
+    if result.returncode != 0:
+        sleep(_BOOTSTRAP_RETRY_DELAY)
+        result = launchctl(bootstrap)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "无输出").strip()
         raise ServiceInstallError(
@@ -251,13 +278,16 @@ def uninstall_service(
     if not target.exists():
         return ServiceUninstallResult(plist_path=target, removed=False)
     launchctl = runner or _run_launchctl
-    result = launchctl(["bootout", f"{_domain(uid)}/{label}"])
+    job = f"{_domain(uid)}/{label}"
+    result = launchctl(["bootout", job])
     if result.returncode not in (0, errno.ESRCH):
         detail = (result.stderr or result.stdout).strip() or "无输出"
         raise ServiceUninstallError(
             f"launchctl bootout 失败（退出码 {result.returncode}）：{detail}\n"
             f"plist 已保留：{target}"
         )
+    if not _wait_for_job_exit(launchctl, job):
+        raise ServiceUninstallError(f"等待 launchd 作业退出超时：{job}\nplist 已保留：{target}")
     target.unlink()
     return ServiceUninstallResult(plist_path=target, removed=True)
 
@@ -276,6 +306,7 @@ def service_status(
     state: str | None = None
     pid: int | None = None
     detail: str | None = None
+    proxy_endpoints: tuple[str, ...] = ()
 
     if installed:
         launchctl = runner or _run_launchctl
@@ -295,9 +326,12 @@ def service_status(
                 f"launchctl print 退出码 {result.returncode}"
             )
 
-    if data_dir is None and installed:
+    if installed:
         try:
-            data_dir = _plist_data_dir(target)
+            job_plist = _read_job_plist(target)
+            proxy_endpoints = _plist_proxy_endpoints(job_plist)
+            if data_dir is None:
+                data_dir = _plist_data_dir(job_plist, target)
         except ValueError as exc:
             detail = _merge_detail(detail, str(exc))
     if data_dir is None:
@@ -346,7 +380,18 @@ def service_status(
         dsh=ServiceDshStatus(
             installed_desktop, installed_desktop and desktop_running(), desktop_plugin_installed()
         ),
+        proxy_endpoints=proxy_endpoints,
     )
+
+
+def _wait_for_job_exit(launchctl: LaunchctlRunner, job: str) -> bool:
+    deadline = monotonic() + _BOOTOUT_TIMEOUT
+    while launchctl(["print", job]).returncode == 0:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return False
+        sleep(min(_BOOTOUT_POLL_INTERVAL, remaining))
+    return True
 
 
 def _run_launchctl(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -400,21 +445,49 @@ def _job_data_dir(arguments: Sequence[str], working_dir: str | None) -> Path | N
     return None
 
 
-def _plist_data_dir(path: Path) -> Path | None:
+def _read_job_plist(path: Path) -> dict[str, object]:
     try:
         with path.open("rb") as handle:
             plist = plistlib.load(handle)
         if not isinstance(plist, dict):
             raise ValueError("顶层必须是字典")
-        arguments = plist.get("ProgramArguments", [])
-        if not isinstance(arguments, list) or not all(
-            isinstance(argument, str) for argument in arguments
-        ):
-            raise ValueError("ProgramArguments 必须是字符串数组")
-        working_dir = plist.get("WorkingDirectory")
-        return _job_data_dir(arguments, working_dir if isinstance(working_dir, str) else None)
     except (OSError, ValueError, plistlib.InvalidFileException, ExpatError) as exc:
         raise ValueError(f"无法读取作业 plist {path}：{exc}") from exc
+    return plist
+
+
+def _plist_data_dir(plist: dict[str, object], path: Path) -> Path | None:
+    arguments = plist.get("ProgramArguments", [])
+    if not isinstance(arguments, list) or not all(isinstance(arg, str) for arg in arguments):
+        raise ValueError(f"无法读取作业 plist {path}：ProgramArguments 必须是字符串数组")
+    working_dir = plist.get("WorkingDirectory")
+    return _job_data_dir(arguments, working_dir if isinstance(working_dir, str) else None)
+
+
+def _plist_proxy_endpoints(plist: dict[str, object]) -> tuple[str, ...]:
+    environment = plist.get("EnvironmentVariables")
+    if not isinstance(environment, dict):
+        return ()
+    endpoints = []
+    for key in _PROXY_VARIABLES:
+        for name in (key, key.lower()):
+            value = environment.get(name)
+            if isinstance(value, str) and value.strip():
+                endpoints.append(f"{name}={_proxy_endpoint(value.strip())}")
+    return tuple(endpoints)
+
+
+def _proxy_endpoint(value: str) -> str:
+    try:
+        url = urlsplit(value if "://" in value or value.startswith("//") else f"//{value}")
+        host, port = url.hostname, url.port
+    except ValueError:
+        return "地址无效"
+    if not host:
+        return "地址无效"
+    if port is None:
+        return host
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
 
 def _merge_detail(existing: str | None, extra: str) -> str:

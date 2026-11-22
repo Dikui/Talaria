@@ -14,6 +14,7 @@ from talaria.cli.main import main
 from talaria.cli.service import (
     DEFAULT_SERVICE_LABEL,
     ServiceInstallError,
+    ServiceUninstallError,
     install_service,
     render_launchd_plist,
     service_status,
@@ -35,6 +36,18 @@ pytestmark = pytest.mark.small
 DATA_DIR = Path("/Users/me/Talaria")
 
 
+@pytest.fixture(autouse=True)
+def isolate_dsh_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
+
+
+@pytest.fixture(autouse=True)
+def isolate_proxy_env(monkeypatch):
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
+
 class FakeRunner:
     def __init__(self, results: dict[str, subprocess.CompletedProcess | int] | None = None):
         self.calls: list[list[str]] = []
@@ -42,7 +55,7 @@ class FakeRunner:
 
     def __call__(self, args: list[str]) -> subprocess.CompletedProcess:
         self.calls.append(list(args))
-        result = self.results.get(args[0], 0)
+        result = self.results.get(args[0], 113 if args[0] == "print" else 0)
         if isinstance(result, subprocess.CompletedProcess):
             return result
         return subprocess.CompletedProcess(args, result, "", "")
@@ -174,8 +187,34 @@ def test_install_writes_config_plist_logs_and_bootstraps(tmp_path, monkeypatch):
     assert "ProcessType" in result.plist_path.read_text(encoding="utf-8")
     assert runner.calls == [
         ["bootout", f"gui/501/{DEFAULT_SERVICE_LABEL}"],
+        ["print", f"gui/501/{DEFAULT_SERVICE_LABEL}"],
         ["bootstrap", "gui/501", str(result.plist_path)],
     ]
+
+
+@pytest.mark.regression
+def test_service_install_copies_only_configured_proxy_variables(tmp_path, monkeypatch):
+    # platform/04: the fake runner replaces launchctl without loading a job.
+    proxy_env = {
+        "HTTP_PROXY": "http://test-user:p&ss@proxy.example:8080",
+        "http_proxy": "http://other.example:8081",
+        "https_proxy": "http://secure.example:8443",
+        "ALL_PROXY": "socks5://[::1]:1080",
+        "no_proxy": "localhost,127.0.0.1",
+    }
+    for name, value in proxy_env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("OTHER_VAR", "do not copy")
+    monkeypatch.setattr(service_module, "_run_launchctl", FakeRunner())
+
+    assert main([
+        "service", "install", "--data-dir", str(tmp_path / "data"),
+        "--launch-agents-dir", str(tmp_path), "--program", "/opt/talaria/bin/talaria",
+    ]) == 0
+
+    path = tmp_path / f"{DEFAULT_SERVICE_LABEL}.plist"
+    assert plistlib.loads(path.read_bytes())["EnvironmentVariables"] == proxy_env
+    assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_install_keeps_existing_feature_config(tmp_path):
@@ -198,7 +237,8 @@ def test_install_keeps_existing_feature_config(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["features"] == {"scanner": False}
 
 
-def test_install_reports_bootstrap_failure(tmp_path):
+def test_install_reports_bootstrap_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "sleep", lambda _: None)
     runner = FakeRunner(
         {"bootstrap": _completed(["bootstrap"], 5, "", "Bootstrap failed: 5: Input/output error")}
     )
@@ -215,6 +255,39 @@ def test_install_reports_bootstrap_failure(tmp_path):
         )
 
     assert "Bootstrap failed" in str(excinfo.value)
+    assert [command[0] for command in runner.calls].count("bootstrap") == 2
+    assert (tmp_path / "LaunchAgents" / f"{DEFAULT_SERVICE_LABEL}.plist").is_file()
+
+
+@pytest.mark.regression
+def test_install_waits_for_previous_job_and_retries_bootstrap(tmp_path, monkeypatch):
+    # platform/04: launchd can still report a job after bootout, and reject the first bootstrap.
+    monkeypatch.setattr(service_module, "sleep", lambda _: None)
+    printed = iter([0, 0, 113])
+    bootstraps = iter([5, 0])
+    previous_job_exists = True
+
+    def runner(args):
+        nonlocal previous_job_exists
+        if args[0] == "bootout":
+            return _completed(args, 3)
+        if args[0] == "print":
+            result = next(printed)
+            previous_job_exists = result == 0
+            return _completed(args, result)
+        assert args[0] == "bootstrap"
+        assert not previous_job_exists
+        return _completed(args, next(bootstraps))
+
+    result = install_service(
+        data_dir=tmp_path / "data",
+        port=8765,
+        pack="crypto_perp",
+        program="/opt/talaria/bin/talaria",
+        launch_agents_dir=tmp_path / "LaunchAgents",
+        runner=runner,
+    )
+    assert result.bootstrapped
 
 
 def test_uninstall_boots_out_and_removes_plist_idempotently(tmp_path):
@@ -241,7 +314,10 @@ def test_uninstall_boots_out_and_removes_plist_idempotently(tmp_path):
 
     assert first.removed is True
     assert not plist.exists()
-    assert runner.calls == [["bootout", f"gui/501/{DEFAULT_SERVICE_LABEL}"]]
+    assert runner.calls == [
+        ["bootout", f"gui/501/{DEFAULT_SERVICE_LABEL}"],
+        ["print", f"gui/501/{DEFAULT_SERVICE_LABEL}"],
+    ]
 
     runner.calls.clear()
     second = uninstall_service(
@@ -252,6 +328,29 @@ def test_uninstall_boots_out_and_removes_plist_idempotently(tmp_path):
     )
     assert second.removed is False
     assert runner.calls == []
+
+
+@pytest.mark.regression
+def test_uninstall_times_out_and_keeps_plist_when_job_still_exists(tmp_path, monkeypatch):
+    # platform/04: the runner keeps the job registered and the fake clock avoids a five-second wait.
+    launch_agents = tmp_path / "LaunchAgents"
+    plist = launch_agents / f"{DEFAULT_SERVICE_LABEL}.plist"
+    launch_agents.mkdir()
+    plist.touch()
+    elapsed = 0.0
+
+    def sleep(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    monkeypatch.setattr(service_module, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(service_module, "sleep", sleep)
+    runner = FakeRunner({"print": 0})
+    with pytest.raises(ServiceUninstallError, match="等待 launchd 作业退出超时"):
+        uninstall_service(launch_agents_dir=launch_agents, runner=runner, uid=501)
+
+    assert elapsed == pytest.approx(5)
+    assert plist.is_file()
 
 
 @pytest.mark.regression
@@ -423,6 +522,28 @@ def test_service_status_cli_reports_features_without_launchctl(tmp_path, capsys)
     assert "冷库写入=开" in output
     assert "预警=开" in output
     assert "扫描=开" in output
+    assert "代理（plist）：未配置" in output
+
+
+@pytest.mark.regression
+def test_service_status_shows_only_proxy_hosts_and_ports(tmp_path, monkeypatch, capsys):
+    # platform/04: the fake runner reports a loaded job; the plist supplies its configuration.
+    path = tmp_path / f"{DEFAULT_SERVICE_LABEL}.plist"
+    path.write_bytes(plistlib.dumps({"EnvironmentVariables": {
+        "HTTP_PROXY": "http://test-user:secret@proxy.example:8080/proxy-path?query=hidden",
+        "https_proxy": "secure.example:8443",
+        "ALL_PROXY": "socks5://[::1]:1080",
+        "NO_PROXY": "bypass.example",
+    }}))
+    monkeypatch.setenv("HTTPS_PROXY", "http://current-shell.example:1234")
+    monkeypatch.setattr(service_module, "_run_launchctl", FakeRunner({"print": 0}))
+
+    assert main(["service", "status", "--launch-agents-dir", str(tmp_path)]) == 0
+
+    output = capsys.readouterr().out
+    assert "代理（plist）：HTTP_PROXY=proxy.example:8080，https_proxy=secure.example:8443，ALL_PROXY=[::1]:1080" in output
+    for private in ("test-user", "secret", "proxy-path", "query", "bypass.example", "current-shell.example"):
+        assert private not in output
 
 
 @pytest.mark.regression
@@ -492,7 +613,7 @@ def test_up_rejects_invalid_service_config_before_starting(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("installed,running,plugin", [
-    (False, False, False), (True, False, False), (True, True, True),
+    (False, False, None), (True, False, None), (True, True, "bundle"), (True, True, "patch"),
 ])
 def test_service_status_reports_desktop_and_profile(
     tmp_path, monkeypatch, capsys, installed, running, plugin
@@ -502,13 +623,23 @@ def test_service_status_reports_desktop_and_profile(
         app.mkdir()
     monkeypatch.setattr(dsh_host, "DESKTOP_APP", app, raising=False)
     monkeypatch.setenv("DSH_HOME", str(tmp_path))
-    if plugin:
+    if plugin == "bundle":
         profile = tmp_path / "profiles/desktop"
         package = profile / "node_modules/@talaria/dsh-plugin/package.json"
         package.parent.mkdir(parents=True)
         package.write_text('{"name":"@talaria/dsh-plugin"}')
         (profile / "package.json").write_text(
             '{"dsh":{"profile":{"bundles":["@talaria/dsh-plugin"]}}}'
+        )
+    if plugin == "patch":
+        profile = tmp_path / "profiles/desktop"
+        profile.mkdir(parents=True)
+        (profile / "cordis.patch.yml").write_text(
+            "# >>> talaria (added by Talaria; remove this block to uninstall)\n"
+            "- insert:\n"
+            "    - id: talaria-desk-plugin\n"
+            "      name: /test/plugin/index.js\n"
+            "# <<< talaria\n"
         )
 
     def pgrep(command, **kwargs):
