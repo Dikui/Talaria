@@ -11,7 +11,7 @@ from itertools import chain, groupby
 from talaria.foundation.connector import RawBar
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.types import PrecisionTier
-from talaria.perception.cold_store import ColdReader
+from talaria.perception.cold_store import ColdManifest, ColdReader
 from talaria.perception.hot_buffer import HotSlot, HotStreamBuffer
 from talaria.perception.raw_store import latest_visible_bars
 
@@ -153,7 +153,7 @@ def range_visible_bars(
 def read_bar_range(
     reader: ColdReader, hot_buffer: HotStreamBuffer | None, instrument: InstrumentSpec,
     timeframe: str, start: int, end: int | None, *, slot: HotSlot | None = None,
-) -> tuple[int, list[RawBar], list[RawBar]]:
+) -> tuple[ColdManifest, list[RawBar], list[RawBar]]:
     """从同一版清单读取冷库，并保留读清单期间可能淘汰或刚落盘的热版本。"""
     def read_hot() -> list[RawBar]:
         if hot_buffer is None:
@@ -163,11 +163,11 @@ def read_bar_range(
         )
 
     before = read_hot() if slot is None else slot.revisions()
-    generation, cold = reader.read_manifest_revisions(
+    manifest, cold = reader.read_manifest_snapshot(
         instrument, timeframe, start_ts=start, end_ts=end,
     )
     after = read_hot()
     if before == after:
-        return generation, cold, before
+        return manifest, cold, before
     hot = {(bar.ts_event, bar.revision): bar for versions in (before, after) for bar in versions}
-    return generation, cold, [hot[key] for key in sorted(hot)]
+    return manifest, cold, [hot[key] for key in sorted(hot)]

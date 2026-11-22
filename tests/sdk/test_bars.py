@@ -11,7 +11,13 @@ from talaria import sdk
 from talaria.foundation.connector import RawBar
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.perception.cold_store import ColdBatch, ColdStore
-from talaria.service_endpoint import DATA_DIR_HEADER, data_dir_id, service_descriptor_path
+from talaria.service_endpoint import (
+    BARS_HOT_REVISION_HEADER,
+    DATA_DIR_HEADER,
+    NOW_MS_HEADER,
+    data_dir_id,
+    service_descriptor_path,
+)
 from talaria.service_lock import ROLE_SERVICE, ROLE_USAGE_SCAN, ServiceLock
 
 pytestmark = [pytest.mark.medium, pytest.mark.spec]
@@ -68,7 +74,7 @@ def test_sdk_reads_local_bars_when_service_disconnects_during_tail(tmp_path, mon
 
     def respond(transport, request):
         if request.url.path == "/api/health":
-            return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path)})
+            return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path), NOW_MS_HEADER: str(START)})
         raise error("connection lost", request=request)
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
@@ -84,7 +90,7 @@ def test_sdk_propagates_backfill_timeout_response(tmp_path, monkeypatch):
     # data-access/03 and 04: a retryable HTTP 504 remains visible to the caller.
     def respond(transport, request):
         if request.url.path == "/api/health":
-            return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path)})
+            return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path), NOW_MS_HEADER: str(START)})
         return httpx.Response(504, json={"code": "BARS_BACKFILL_TIMEOUT", "message": "Please retry"})
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
@@ -194,7 +200,9 @@ def test_sdk_splits_http_range_without_skipping_the_boundary(tmp_path, monkeypat
 
     def respond(transport, request):
         if request.url.path == "/api/health":
-            return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path)})
+            return httpx.Response(200, headers={
+                DATA_DIR_HEADER: data_dir_id(tmp_path), NOW_MS_HEADER: str(boundary + MINUTE),
+            })
         query = request.url.params
         start, end = int(query["start"]), int(query["end"])
         served.append((start, end))
@@ -204,9 +212,10 @@ def test_sdk_splits_http_range_without_skipping_the_boundary(tmp_path, monkeypat
             "volume": "0.1", "turnover": "10", "ts_available": timestamp + MINUTE,
             "precision": "SECOND_VERIFIED", "confirmed": True, "revision": 0,
         }
-        return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path)}, json={
-            "instrument_id": INSTRUMENT.instrument_id, "timeframe": "1m", "generation": 0, "bars": [bar],
-        })
+        return httpx.Response(
+            200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path), BARS_HOT_REVISION_HEADER: "test:0"},
+            json={"instrument_id": INSTRUMENT.instrument_id, "timeframe": "1m", "generation": 0, "bars": [bar]},
+        )
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
     with ServiceLock(tmp_path) as lock:
