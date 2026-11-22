@@ -6,7 +6,7 @@
 
 **Source of truth:** ADR-0018（取代 ADR-0011）；`docs/architecture.md` §4.1、§4.2。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 收盘柱写入所在分区（`标的/周期/月`）的尾部文件；首个已收盘版本 `ts_available` 为柱结束时刻，之后的修订 `ts_available` 为服务收到它的时刻（改掉实时解析把 `ts_available` 固定为柱结束时刻的做法）。
 - [ ] 历史回填是冷库写入器的独立路径：图表或范围接口请求的区间缺数据、启用实时订阅的标的启动时，服务用 REST 补齐并直接写入冷库。
