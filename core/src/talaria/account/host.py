@@ -12,6 +12,8 @@ import sys
 from typing import Literal, Protocol
 from uuid import uuid4
 
+from pydantic import Field
+
 from talaria import sdk
 from talaria.account.contracts import (
     DataEntry,
@@ -69,12 +71,13 @@ class RunResult:
     directory: Path
 
 
-class _RunConfig(ContractModel):
+class RunConfig(ContractModel):
     version: Literal[1]
     scheme: TradingScheme
     scheme_dir: Path
     data_dir: Path
     indicator_defaults: dict[IndicatorName, IndicatorParams]
+    deterministic_only: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class _EventClock:
@@ -369,7 +372,7 @@ class AccountProcess:
         return close, ctx
 
 
-def _prepare_files(config: _RunConfig, mode: Mode) -> dict[Slot, tuple[Path, str, StrategySource, StrategySnapshot]]:
+def _prepare_files(config: RunConfig, mode: Mode) -> dict[Slot, tuple[Path, str, StrategySource, StrategySnapshot]]:
     records = StrategyCodeRegistry(config.data_dir)
     snapshots = {}
     files = {}
@@ -383,6 +386,11 @@ def _prepare_files(config: _RunConfig, mode: Mode) -> dict[Slot, tuple[Path, str
         if path not in snapshots:
             snapshots[path] = records.source_for_run(path, mode)
         origin, snapshot = snapshots[path]
+        if config.deterministic_only and origin == "agent":
+            raise SchemeError(
+                f"{slot} 插槽 {path} 按 agent 来源处理。"
+                "认知成本和评估证据等级尚未纳入确定性回放。"
+            )
         if slot != Slot.STRATEGY and origin != "human":
             raise SchemeError(f"{slot} 插槽不能加载隔离策略，宿主文件插件须由交易员登记为 human：{path}")
         files[slot] = path, symbol, origin, snapshot
@@ -391,7 +399,7 @@ def _prepare_files(config: _RunConfig, mode: Mode) -> dict[Slot, tuple[Path, str
 
 @contextmanager
 def _open_process(
-    config: _RunConfig, mode: Mode, registry: PluginRegistry | None,
+    config: RunConfig, mode: Mode, registry: PluginRegistry | None,
 ) -> Iterator[AccountProcess]:
     scheme = config.scheme
     clock = _EventClock()
@@ -421,7 +429,8 @@ def _open_process(
         yield AccountProcess(scheme, plugins, clock, config.indicator_defaults, held, config.data_dir)
 
 
-def _resolve_config(scheme_path: Path, data_dir: Path) -> _RunConfig:
+def resolve_run_config(scheme_path: Path, data_dir: Path, *, deterministic_only: bool = False) -> RunConfig:
+    """固定交易方案和生效的指标默认值，供账户进程加载。"""
     scheme = load_scheme(scheme_path)
     if scheme.slots.selection(Slot.SIZING).reference == "r_unit" or (
         scheme.slots.selection(Slot.RISK).reference == "seven_step"
@@ -430,10 +439,22 @@ def _resolve_config(scheme_path: Path, data_dir: Path) -> _RunConfig:
             account: scheme.account_risk.get(account) or AccountRiskConfig() for account in scheme.sub_accounts
         }})
     data_dir = data_dir.expanduser().resolve()
-    return _RunConfig(
+    config = RunConfig(
         version=1, scheme=scheme, scheme_dir=scheme_path.resolve().parent, data_dir=data_dir,
         indicator_defaults=sdk.indicator_defaults(data_dir=data_dir),
+        deterministic_only=deterministic_only,
     )
+    if deterministic_only:
+        try:
+            files = _prepare_files(config, "backtest")
+            if Slot.STRATEGY not in files:
+                default_registry().resolve(
+                    Slot.STRATEGY, scheme.slots.selection(Slot.STRATEGY).reference,
+                    scheme.interface_version, config.scheme_dir,
+                )
+        except SchemeError as exc:
+            raise SchemeError(f"{scheme_path}：仅支持确定性策略。{exc}") from exc
+    return config
 
 
 @contextmanager
@@ -443,7 +464,7 @@ def open_account_process(
     """装配账户进程，模拟盘在整个运行期间独占方案声明的子账户。"""
     if mode not in ("backtest", "paper"):
         raise SchemeError(f"不支持的账户进程模式：{mode}")
-    with _open_process(_resolve_config(scheme_path, data_dir), mode, registry) as process:
+    with _open_process(resolve_run_config(scheme_path, data_dir), mode, registry) as process:
         yield process
 
 
@@ -453,11 +474,11 @@ def run_backtest(
 ) -> RunResult:
     """回测交易方案或运行配置产物，写入新建的 runs/<run_id>。"""
     if replay:
-        config = _RunConfig.model_validate_json(scheme_path.read_text(encoding="utf-8"))
+        config = RunConfig.model_validate_json(scheme_path.read_text(encoding="utf-8"))
         if data_dir is not None:
             config = config.model_copy(update={"data_dir": data_dir.expanduser().resolve()})
     else:
-        config = _resolve_config(scheme_path, data_dir if data_dir is not None else Path(".talaria"))
+        config = resolve_run_config(scheme_path, data_dir if data_dir is not None else Path(".talaria"))
     with _open_process(config, "backtest", registry) as process:
         run_id = uuid4().hex
         directory = config.data_dir / "runs" / run_id
