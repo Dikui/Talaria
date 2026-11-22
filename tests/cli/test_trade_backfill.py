@@ -46,9 +46,12 @@ def test_completed_archive_is_idempotent_and_visible_at_event_time(tmp_path, arc
     assert "2 笔" in capsys.readouterr().out
     assert main(args) == 0
     assert "0 笔" in capsys.readouterr().out
+    assert not sdk.trades(INSTRUMENT, BASE, as_of=BASE + 123, data_dir=tmp_path)
     assert [(row.trade_id, row.ts_event, row.price) for row in sdk.trades(
         INSTRUMENT, BASE, as_of=f"{DAY}T12:00:00Z", data_dir=tmp_path,
-    )] == [(FIRST_ID, BASE + 123, Decimal("100.1"))]
+    )] == [(FIRST_ID, BASE + 124, Decimal("100.1"))]
+    first = sdk.trades(INSTRUMENT, BASE, as_of=BASE + 124, data_dir=tmp_path)[0]
+    assert (first.ts_available, first.availability) == (BASE + 124, "inferred")
     assert [row.trade_id for row in sdk.trades(INSTRUMENT, BASE, data_dir=tmp_path)] == [FIRST_ID, SECOND_ID]
 
     assert main(["cold-size", "--data-dir", str(tmp_path)]) == 0
@@ -66,6 +69,38 @@ def test_invalid_archive_crc_cannot_publish_a_partial_day(tmp_path, archive):
     archive.write_bytes(contents)
     assert main(["trade-backfill", INSTRUMENT, DAY, "--data-dir", str(tmp_path)]) == 1
     assert not sdk.trades(INSTRUMENT, BASE, data_dir=tmp_path)
+
+
+@pytest.mark.regression
+def test_archive_preserves_csv_order_within_a_rounded_millisecond(tmp_path, archive):
+    with gzip.open(archive, "wt") as output:
+        output.write(
+            "timestamp,symbol,side,size,price,trdMatchID\n"
+            f"1763596800.1234,BTCUSDT,Buy,0.001,100.1,{SECOND_ID}\n"
+            f"1763596800.1239,BTCUSDT,Sell,0.003,100.2,{FIRST_ID}\n"
+        )
+    assert main(["trade-backfill", INSTRUMENT, DAY, "--data-dir", str(tmp_path)]) == 0
+    rows = sdk.trades(INSTRUMENT, BASE, data_dir=tmp_path)
+    assert [(row.trade_id, row.ts_event, row.archive_index, row.order_uncertain) for row in rows] == [
+        (SECOND_ID, BASE + 124, 0, False), (FIRST_ID, BASE + 124, 1, False),
+    ]
+
+
+@pytest.mark.regression
+def test_submillisecond_trade_at_archive_day_end_becomes_visible_on_next_day(tmp_path, archive):
+    with gzip.open(archive, "wt") as output:
+        output.write(
+            "timestamp,symbol,side,size,price,trdMatchID\n"
+            f"1763596800.1234,BTCUSDT,Buy,0.001,100.1,{FIRST_ID}\n"
+            f"1763683199.9999,BTCUSDT,Sell,0.003,100.2,{SECOND_ID}\n"
+        )
+    assert main(["trade-backfill", INSTRUMENT, DAY, "--data-dir", str(tmp_path)]) == 0
+    midnight = BASE + 86_400_000
+    assert [row.trade_id for row in sdk.trades(INSTRUMENT, BASE, as_of=midnight - 1, data_dir=tmp_path)] == [
+        FIRST_ID,
+    ]
+    last, = sdk.trades(INSTRUMENT, midnight, midnight, as_of=midnight, data_dir=tmp_path)
+    assert (last.trade_id, last.ts_event, last.ts_available) == (SECOND_ID, midnight, midnight)
 
 
 def test_cli_delegates_to_running_service_and_preserves_live_trade(tmp_path, archive, monkeypatch, capsys):
@@ -129,3 +164,48 @@ def test_cli_delegates_to_running_service_and_preserves_live_trade(tmp_path, arc
     assert [(row.trade_id, row.price) for row in sdk.trades(INSTRUMENT, BASE, data_dir=tmp_path)] == [
         (FIRST_ID, Decimal("101.0")), (SECOND_ID, Decimal("100.2")),
     ]
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("archive_first", [True, False])
+@pytest.mark.parametrize("event_time", [BASE + 124, BASE - 1], ids=["same-time", "different-day"])
+def test_live_trade_wins_by_id_in_either_arrival_order(tmp_path, archive, archive_first, event_time):
+    import asyncio
+
+    from talaria.foundation.feed import TradeEvent
+    from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
+    from talaria.perception.backfill import BackfillPolicy
+    from talaria.perception.cold_publisher import ColdPublisher
+    from talaria.perception.cold_store import ColdStore
+
+    def import_archive():
+        assert main(["trade-backfill", INSTRUMENT, DAY, "--data-dir", str(tmp_path)]) == 0
+
+    async def publish_live(store):
+        publisher = ColdPublisher(
+            store, instruments=CRYPTO_PERP_PACK.instruments(), connector=None,
+            policy=BackfillPolicy(), now_ms=lambda: BASE + 300,
+        )
+        publisher.ingest_ticks(TradeEvent(
+            instrument_id=INSTRUMENT, trade_id=FIRST_ID, side="Buy", price=Decimal("100.1"),
+            size=Decimal("0.001"), ts_event=event_time, ts_ingested=BASE + 200,
+        ))
+        await publisher.close()
+
+    if archive_first:
+        import_archive()
+    store = ColdStore(tmp_path)
+    try:
+        asyncio.run(publish_live(store))
+    finally:
+        store.close()
+    if not archive_first:
+        import_archive()
+
+    assert not sdk.trades(INSTRUMENT, BASE - 1, as_of=BASE + 199, data_dir=tmp_path)
+    row, = sdk.trades(INSTRUMENT, BASE - 1, as_of=BASE + 200, data_dir=tmp_path)
+    assert (row.trade_id, row.ts_event, row.ts_available, row.ts_ingested, row.revision, row.availability) == (
+        FIRST_ID, event_time, BASE + 200, BASE + 200, 0, "measured",
+    )
+    narrow = sdk.trades(INSTRUMENT, BASE + 124, BASE + 124, as_of=BASE + 200, data_dir=tmp_path)
+    assert narrow == ((row,) if event_time == BASE + 124 else ())

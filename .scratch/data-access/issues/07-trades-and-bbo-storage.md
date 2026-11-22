@@ -25,3 +25,18 @@
 - `trade-backfill` 每次补一个已结束的 UTC 日。常驻服务在线时通过鉴权的 `POST /api/trades/backfill` 提交给其冷库写入线程，服务停机时命令先持同一数据目录锁。下载可注入，HTTPX 遵循交易所代理环境变量。导入前完整校验 gzip CRC、CSV 行、标的、UTC 日和数值精度。逐笔归档按 ID 只补缺，保留实时已写版本。归档首版按事件毫秒还原历史公开成交流的可获取时间。Bybit 归档与实时流是否逐条对应仍需用实盘样本核对。归档亚毫秒时间按 ADR-0017 截到毫秒，同毫秒跨批次或跨来源的撮合先后没有保证。
 - 本机验收时，在独立的数据目录运行 `talaria up --solo --pack crypto_perp --data-dir "$dir"`，通过自选或图表持续订阅 BTCUSDT。UTC 日结束后等待下一次批写或正常停服务，再用 `talaria cold-size --data-dir "$dir" --day YYYY-MM-DD` 记录首个完整实时日的行数与字节数，写回 D3。另选一个已发布的归档日，在线及停机分别运行 `talaria trade-backfill BTC-USDT-PERP 2026-11-19 --data-dir "$dir"`，用 `cold-size` 和 `sdk.trades` 检查行数及半日截断。重复导入应新增 0 笔。沙箱中真实 WS、公开归档下载和首个完整实时日容量待验证。
 - 局部回归 254 项通过。6 项 Bybit WebSocket 用例在沙箱绑定 `127.0.0.1` 时被拒绝，排除后复跑 254 项通过。内存 WebSocket、归档夹具、ASGI 常驻服务补数、SDK 半日截断、冷库合并、OpenAPI 快照和契约生成物均已验证。
+
+### 审查修复
+
+- Bybit 每条连接重新建立订阅状态。Supervisor 用当前订阅意向重放各周期 K 线与各标的共享的逐笔、买一卖一和 ticker。盘口以连接代际和更新序号 `u` 识别，丢弃旧序号和重发，并在新连接收到快照后恢复。
+- 新导入的归档成交按事件时间向上取整到毫秒，`availability=inferred` 表示按历史公开成交流推定的可获取时刻。实时成交标为 `measured`，实时逐笔、盘口的 `ts_available` 取撮合时间、报文生成时间与本机接收时间的最大值。
+- 唯一写入线程按成交 ID 跨批、跨日去重。归档只补缺。已有两种来源时，查询先采用实时成交及其接收记录，再做 `as_of` 截断，因而两个导入顺序都采用同一实测截点。逐笔按 ID 过滤查重，未命中文件只扫描 ID 列，盘口查重按实际报文事件时刻过滤。
+- 归档保留 UTC 日和 CSV 行内顺位，实时逐笔保留 `seq`、报文身份和包内顺位。查询结果有稳定排序，同一毫秒存在无法判定的先后时标记 `order_uncertain`。SDK 省略 `as_of` 时采用常驻服务时钟，离线采用本地时钟。
+- 实时写入失败由后台保留并重试，每批最多尝试 3 次，队列最多保留 16 批。重试耗尽或队列满时记录标的、类别和事件时间范围。归档补数线程每次保留一批待重试数据，写入仍经唯一写入线程。逐笔价量按 `tick_size` 和 `qty_step` 质检。
+- 常驻服务和离线 CLI 注入市场包的可选归档读取能力。Bybit 下载及解码在市场包内完成，感知层只处理标准成交。已用 `27aa17b` 生成的 Parquet 验证旧数据读取与混合格式合并。旧归档的亚毫秒信息未落盘，旧行继续使用原有时间戳并标记为推定。
+
+#### 验证
+
+- 各审查缺陷先复现再修复。定向回归 140 项通过，6 项回环 WebSocket 测试纳入全量运行。`test_core_packages_do_not_import_market_packs` 通过，`contract-check` 零漂移，`git diff --check` 通过。
+- `PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests -q -p no:cacheprovider` 得到 998 项通过、16 项失败、1 项初始化错误、1 项取消选择。沙箱禁止绑定回环端口导致 14 项失败及 1 项初始化错误，禁止写入本机 DSH 配置导致 1 项失败。M1 验收等待流动性异常触发超时，在 `27aa17b` 源码上单独复现。
+- 未实测真实 Bybit 连线、公开归档下载、首个完整实时日容量和生产负载下跨日 ID 查重的耗时。改动保留在 `ticket/data-access-07` 工作区，HEAD 为 `27aa17b`。

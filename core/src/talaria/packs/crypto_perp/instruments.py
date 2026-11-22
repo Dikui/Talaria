@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Sequence
@@ -21,6 +22,7 @@ from talaria.foundation.market import (
 from talaria.packs.crypto_perp.connector import DEFAULT_BASE_URL, BybitLinearConnector
 from talaria.packs.crypto_perp.prompt import MARKET_PACK_SKILL
 from talaria.packs.crypto_perp.stream import BybitPublicStream
+from talaria.packs.crypto_perp.trade_archive import open_trade_archive
 
 _INSTRUMENTS: tuple[InstrumentSpec, ...] = (
     InstrumentSpec(
@@ -126,6 +128,9 @@ class CryptoPerpPack:
 
     def create_realtime_stream(self, *, now_ms: Callable[[], int]) -> BybitPublicStream:
         return BybitPublicStream(instruments=self.instruments(), now_ms=now_ms)
+
+    def open_trade_archive(self, instrument: InstrumentSpec, day: date, now_ms: Callable[[], int]):
+        return open_trade_archive(instrument, day, now_ms)
 
 
 CRYPTO_PERP_PACK = CryptoPerpPack()

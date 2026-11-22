@@ -157,7 +157,7 @@ def trades(
     instrument: str, start: int | str, end: int | str | None = None,
     as_of: int | str | None = None, *, data_dir: str | Path | None = None,
 ) -> TradesResult:
-    """从冷库按闭区间读取逐笔成交，支持可获取时间截断。"""
+    """从冷库按闭区间读取逐笔成交，省略 as_of 时按服务或本地时钟截断。"""
     rows = _tick_range(instrument, TickKind.TRADES, start, end, as_of, data_dir)
     return TradesResult(cast(list[Trade], rows))
 
@@ -166,7 +166,7 @@ def quotes(
     instrument: str, start: int | str, end: int | str | None = None,
     as_of: int | str | None = None, *, data_dir: str | Path | None = None,
 ) -> QuotesResult:
-    """从冷库按闭区间读取买一卖一，支持可获取时间截断。"""
+    """从冷库按闭区间读取买一卖一，省略 as_of 时按服务或本地时钟截断。"""
     rows = _tick_range(instrument, TickKind.QUOTES, start, end, as_of, data_dir)
     return QuotesResult(cast(list[Quote], rows))
 
@@ -184,14 +184,27 @@ def _tick_range(
         raise ValueError("end 不得早于 start")
     start_ts = ceil(exact_start)
     end_ts = None if exact_end is None else floor(exact_end)
-    cutoff = None if as_of is None else floor(_time_ms(as_of))
-    if cutoff is not None:
-        end_ts = cutoff if end_ts is None else min(cutoff, end_ts)
-    if end_ts is not None and end_ts < start_ts:
+    root = _data_root(data_dir)
+    cutoff = _tick_query_clock(root) if as_of is None else floor(_time_ms(as_of))
+    end_ts = cutoff if end_ts is None else min(cutoff, end_ts)
+    if end_ts < start_ts:
         return []
-    return ColdReader(_data_root(data_dir)).read_ticks(
+    return ColdReader(root).read_ticks(
         spec, kind, start_ts=start_ts, end_ts=end_ts, as_of=cutoff,
     )
+
+
+def _tick_query_clock(root: Path) -> int:
+    endpoint = read_service_endpoint(root)
+    if endpoint is not None:
+        try:
+            with httpx.Client(base_url=endpoint, trust_env=False, timeout=1) as client:
+                now = _service_clock(client, data_dir_id(root))
+                if now is not None:
+                    return now
+        except httpx.TransportError:
+            pass
+    return time.time_ns() // 1_000_000
 
 
 def derivatives(

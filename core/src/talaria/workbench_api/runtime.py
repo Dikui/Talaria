@@ -15,7 +15,7 @@ from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.errors import FeatureDisabledError, TalariaError
 from talaria.foundation.feed import FeedEvent, FeedTransport, KlineEvent, TradeEvent
-from talaria.foundation.market import InstrumentSpec
+from talaria.foundation.market import InstrumentSpec, TradeArchiveReader
 from talaria.foundation.snapshot import SnapshotRequest
 from talaria.foundation.timeframes import TIMEFRAME_MS
 from talaria.packs import get_market_pack
@@ -188,6 +188,7 @@ async def build_runtime(
                 cold_publisher = ColdPublisher(
                     cold_store, instruments=instruments, connector=connector,
                     policy=policy, now_ms=settings.now_ms, hot_buffer=hot_buffer,
+                    archive_reader=pack if isinstance(pack, TradeArchiveReader) else None,
                     funding_intervals_ms={
                         spec.instrument_id: hours * 3_600_000
                         for spec in instruments

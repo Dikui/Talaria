@@ -583,6 +583,8 @@ class FeedSupervisor(MarketEventFeed):
         backfill: Sequence[RawBar] = ()
         while not self._stop.is_set():
             try:
+                # 上一条连接剩余的事件和订阅操作已过期，订阅以通道集合为准。
+                self._inbound = asyncio.Queue()
                 await self._stream.connect()
                 await self._resubscribe_all()
                 backoff = self._backoff_initial_seconds

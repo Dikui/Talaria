@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from talaria.foundation.errors import ColdStoreError, ServiceLockError
+from talaria.foundation.market import TradeArchiveReader
 from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.backfill import BackfillPolicy
 from talaria.perception.cold_publisher import ColdPublisher
@@ -49,7 +50,8 @@ def _backfill(args: argparse.Namespace) -> int:
         except ServiceLockError:
             inserted = _through_service(root, args.instrument, args.day)
         else:
-            spec = get_market_pack(DEFAULT_PACK).instrument(args.instrument)
+            pack = get_market_pack(DEFAULT_PACK)
+            spec = pack.instrument(args.instrument)
             if spec is None:
                 raise ValueError(f"未知标的：{args.instrument}")
             store = ColdStore(root)
@@ -58,6 +60,7 @@ def _backfill(args: argparse.Namespace) -> int:
                     publisher = ColdPublisher(
                         store, instruments=[spec], connector=None, policy=BackfillPolicy(),
                         now_ms=lambda: time.time_ns() // 1_000_000,
+                        archive_reader=pack if isinstance(pack, TradeArchiveReader) else None,
                     )
                     try:
                         return await publisher.backfill_trades(spec, args.day)
@@ -91,7 +94,7 @@ def _capacity(args: argparse.Namespace) -> int:
 
 
 def add_tick_commands(subparsers) -> None:
-    backfill = subparsers.add_parser("trade-backfill", help="补齐 Bybit 公开逐笔日归档")
+    backfill = subparsers.add_parser("trade-backfill", help="补齐公开逐笔日归档")
     backfill.add_argument("instrument", help="标的 ID（如 BTC-USDT-PERP）")
     backfill.add_argument("day", type=date.fromisoformat, help="已结束的 UTC 日（YYYY-MM-DD）")
     backfill.set_defaults(func=_backfill)

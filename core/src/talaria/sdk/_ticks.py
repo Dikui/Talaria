@@ -23,6 +23,7 @@ class _TickResult[Row: TickTime](tuple[Row, ...]):
             "ts_committed": "int64",
             "precision": "string",
             "revision": "int64",
+            "order_uncertain": "bool",
         }
         return pd.DataFrame({
             field: pd.Series((getattr(row, field) for row in self), dtype=dtype)
@@ -33,10 +34,18 @@ class _TickResult[Row: TickTime](tuple[Row, ...]):
 class TradesResult(_TickResult[Trade]):
     """按事件时间排序的 Decimal 逐笔成交。"""
 
-    _fields = {"trade_id": "string", "side": "string", "price": "float64", "size": "float64"}
+    _fields = {
+        "trade_id": "string", "side": "string", "price": "float64", "size": "float64",
+        "availability": "string",
+        "archive_day": "Int64", "archive_index": "Int64", "sequence": "Int64",
+        "packet_id": "string", "packet_index": "Int64",
+    }
 
 
 class QuotesResult(_TickResult[Quote]):
     """按事件时间排序的 Decimal 买一卖一。"""
 
-    _fields = {field: "float64" for field in ("bid_price", "bid_size", "ask_price", "ask_size")}
+    _fields = {
+        **dict.fromkeys(("bid_price", "bid_size", "ask_price", "ask_size"), "float64"),
+        "connection_id": "string", "update_id": "Int64",
+    }

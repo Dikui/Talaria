@@ -26,10 +26,11 @@ import threading
 import time
 import uuid
 from contextlib import closing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 from enum import StrEnum
+from itertools import groupby, pairwise
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -67,6 +68,13 @@ _TICK_DECIMALS = {
     TickKind.QUOTES: ("bid_price", "bid_size", "ask_price", "ask_size"),
 }
 _TICK_TIMES = ("ts_event", "ts_available", "ts_ingested", "ts_committed", "revision")
+_TICK_METADATA = {
+    TickKind.TRADES: {
+        "availability": pa.string(), "archive_day": pa.int64(), "archive_index": pa.int64(),
+        "sequence": pa.int64(), "packet_id": pa.binary(16), "packet_index": pa.int64(),
+    },
+    TickKind.QUOTES: {"connection_id": pa.binary(16), "update_id": pa.int64()},
+}
 
 #: Parquet 元数据键：格式标记、逐列 scale、标的规格版本。读取侧按文件还原，
 #: 不假设整个冷库只有一种 scale（ADR-0017）。
@@ -690,8 +698,40 @@ def partition_day(ts_event: int) -> str:
     return datetime.fromtimestamp(ts_event // 1000, tz=UTC).date().isoformat()
 
 
-def _tick_order(row: Trade | Quote) -> tuple[int, int]:
-    return row.ts_event, row.ts_ingested
+def _tick_order(row: Trade | Quote) -> tuple:
+    if isinstance(row, Trade):
+        trade_order = (
+            row.availability,
+            row.archive_day if row.archive_day is not None else -1,
+            row.archive_index if row.archive_index is not None else -1,
+            row.sequence if row.sequence is not None else -1,
+            (row.packet_id or row.trade_id).bytes,
+            row.packet_index if row.packet_index is not None else -1,
+            row.trade_id.bytes,
+        )
+        return row.ts_event, trade_order, row.revision, row.ts_ingested
+    quote_order = (
+        row.connection_id.bytes if row.connection_id is not None else b"",
+        row.update_id if row.update_id is not None else -1,
+    )
+    return row.ts_event, quote_order, row.revision, row.ts_ingested
+
+
+def _relative_tick_order_known(first: Trade | Quote, second: Trade | Quote) -> bool:
+    if isinstance(first, Quote) and isinstance(second, Quote):
+        return (first.connection_id is not None and first.connection_id == second.connection_id
+                and first.update_id is not None and second.update_id is not None
+                and first.update_id != second.update_id)
+    if not isinstance(first, Trade) or not isinstance(second, Trade) or first.availability != second.availability:
+        return False
+    if first.availability == "inferred":
+        return (first.archive_day is not None and second.archive_day is not None
+                and first.archive_index is not None and second.archive_index is not None
+                and (first.archive_day, first.archive_index) < (second.archive_day, second.archive_index))
+    if first.packet_id is not None and first.packet_id == second.packet_id:
+        return (first.packet_index is not None and second.packet_index is not None
+                and first.packet_index < second.packet_index)
+    return first.sequence is not None and second.sequence is not None and first.sequence < second.sequence
 
 
 def tick_column_scales(instrument: InstrumentSpec, kind: TickKind) -> dict[str, int]:
@@ -701,7 +741,14 @@ def tick_column_scales(instrument: InstrumentSpec, kind: TickKind) -> dict[str, 
     }
 
 
-def validate_tick_values(row: Trade | Quote, scales: dict[str, int]) -> None:
+def validate_tick(
+    row: Trade | Quote, instrument: InstrumentSpec, kind: TickKind, scales: dict[str, int],
+) -> None:
+    expected = Trade if kind is TickKind.TRADES else Quote
+    if not isinstance(row, expected) or row.instrument_id != instrument.instrument_id:
+        raise ColdStoreQualityError("行情标的或类别与批次不一致")
+    if row.ts_event < 0 or row.revision < 0 or row.ts_available < row.ts_event or row.ts_committed < row.ts_ingested:
+        raise ColdStoreQualityError("行情时点或修订非法")
     for column, scale in scales.items():
         value = getattr(row, column)
         fits, reason = _fits_decimal128(value, scale)
@@ -709,6 +756,11 @@ def validate_tick_values(row: Trade | Quote, scales: dict[str, int]) -> None:
             raise ColdStoreQualityError(f"{column} {reason}")
         if value < 0 or (value == 0 and (isinstance(row, Trade) or column.endswith("price"))):
             raise ColdStoreQualityError(f"{column} 非法：{value}")
+    if isinstance(row, Trade):
+        if row.price % instrument.tick_size != 0:
+            raise ColdStoreQualityError(f"price 未对齐 tick_size={instrument.tick_size}")
+        if row.size % instrument.qty_step != 0:
+            raise ColdStoreQualityError(f"size 未对齐 qty_step={instrument.qty_step}")
     if isinstance(row, Quote) and row.bid_price > row.ask_price:
         raise ColdStoreQualityError("买一价高于卖一价")
 
@@ -718,16 +770,11 @@ def _validate_ticks(batch: TickBatch) -> None:
     if any(not 0 <= scale <= COLD_DECIMAL_PRECISION for scale in scales.values()):
         raise ColdStoreQualityError(f"非法行情精度：{scales}")
     previous = None
-    expected = Trade if batch.kind is TickKind.TRADES else Quote
     for row in batch.rows:
-        if not isinstance(row, expected) or row.instrument_id != batch.instrument.instrument_id:
-            raise ColdStoreQualityError("行情标的或类别与批次不一致")
-        if row.ts_event < 0 or row.revision < 0 or row.ts_available < row.ts_event or row.ts_committed < row.ts_ingested:
-            raise ColdStoreQualityError("行情时点或修订非法")
+        validate_tick(row, batch.instrument, batch.kind, scales)
         order = _tick_order(row)
         if previous is not None and order < previous:
             raise ColdStoreQualityError("行情批次未按事件时间排序")
-        validate_tick_values(row, scales)
         previous = order
 
 
@@ -739,7 +786,8 @@ def _tick_content(batch: TickBatch) -> bytes:
         values.extend(str(getattr(row, column)) for column in _TICK_DECIMALS[batch.kind])
         if isinstance(row, Trade):
             values.extend((row.trade_id.hex, row.side))
-        return json.dumps(values, separators=(",", ":"))
+        values.extend(getattr(row, name) for name in _TICK_METADATA[batch.kind])
+        return json.dumps(values, separators=(",", ":"), default=str)
 
     header = json.dumps([batch.instrument.instrument_id, batch.kind])
     return gzip.compress(
@@ -755,10 +803,17 @@ def _write_tick_parquet(path: Path, batch: TickBatch) -> None:
         pa.field("precision", pa.dictionary(pa.int8(), pa.string()), nullable=False),
         *(pa.field(name, pa.decimal128(COLD_DECIMAL_PRECISION, scale), nullable=False)
           for name, scale in scales.items()),
+        *(pa.field(name, dtype) for name, dtype in _TICK_METADATA[batch.kind].items()),
     ]
     data = {field.name: [getattr(row, field.name) for row in batch.rows] for field in fields}
+    for name, dtype in _TICK_METADATA[batch.kind].items():
+        if dtype == pa.binary(16):
+            data[name] = [value.bytes if value is not None else None for value in data[name]]
     if batch.kind is TickKind.TRADES:
-        fields.extend([pa.field("trade_id", pa.binary(16), nullable=False), pa.field("side", pa.bool_(), nullable=False)])
+        fields.extend([
+            pa.field("trade_id", pa.binary(16), nullable=False),
+            pa.field("side", pa.bool_(), nullable=False),
+        ])
         data["trade_id"] = [row.trade_id.bytes for row in batch.rows]
         data["side"] = [row.side == "Buy" for row in batch.rows]
     table = pa.Table.from_pydict(data, schema=pa.schema(fields))
@@ -768,8 +823,9 @@ def _write_tick_parquet(path: Path, batch: TickBatch) -> None:
 def _read_tick_parquet(
     path: Path, instrument_id: str, kind: TickKind, *,
     start_ts: int | None = None, end_ts: int | None = None,
+    expression: ds.Expression | None = None,
 ) -> list[Trade | Quote]:
-    table = _read_range_table(path, start_ts, end_ts)
+    table = _read_range_table(path, start_ts, end_ts, expression=expression)
     metadata = table.schema.metadata or {}
     if metadata.get(COLD_FORMAT_METADATA) != COLD_FORMAT_DECIMAL128:
         raise ColdStoreIntegrityError(f"未知行情冷库数值格式：{path}")
@@ -777,13 +833,29 @@ def _read_tick_parquet(
     rows = []
     for values in table.to_pylist():
         values["precision"] = PrecisionTier(values["precision"])
+        for name, dtype in _TICK_METADATA[kind].items():
+            if dtype == pa.binary(16) and values.get(name) is not None:
+                values[name] = uuid.UUID(bytes=values[name])
         if kind is TickKind.TRADES:
             values["trade_id"] = uuid.UUID(bytes=values["trade_id"])
             values["side"] = "Buy" if values["side"] else "Sell"
+            # 旧归档回填保留事件时刻，实时可获取时刻至少为接收时刻。
+            if "availability" not in values and values["ts_available"] < values["ts_ingested"]:
+                values["availability"] = "inferred"
             rows.append(Trade(instrument_id=instrument_id, **values))
         else:
             rows.append(Quote(instrument_id=instrument_id, **values))
     return rows
+
+
+def _read_matching_trades(path: Path, instrument_id: str, expression: ds.Expression) -> list[Trade | Quote]:
+    # 无命中的文件只扫描 ID 列。
+    matches = pq.read_table(path, columns=["trade_id"], filters=expression)
+    return _read_tick_parquet(path, instrument_id, TickKind.TRADES, expression=expression) if len(matches) else []
+
+
+def _trade_id_filter(ids: set[bytes]) -> ds.Expression:
+    return ds.field("trade_id").isin(pa.array(ids, type=pa.binary(16)))
 
 
 def partition_month(ts_event: int) -> str:
@@ -938,38 +1010,110 @@ class ColdReader:
     def read_tick_revisions(
         self, instrument: InstrumentSpec, kind: TickKind, *,
         start_ts: int | None = None, end_ts: int | None = None,
+        event_times: set[int] | None = None,
     ) -> list[Trade | Quote]:
+        expression = ds.field("ts_event").isin(event_times) if event_times is not None else None
+
         def read(path: Path, *, start_ts: int | None, end_ts: int | None) -> list[Trade | Quote]:
-            return _read_tick_parquet(path, instrument.instrument_id, kind, start_ts=start_ts, end_ts=end_ts)
+            return _read_tick_parquet(
+                path, instrument.instrument_id, kind, start_ts=start_ts, end_ts=end_ts,
+                expression=expression,
+            )
 
         _, rows = self._read_manifest(
             instrument, kind.value, read, start_ts=start_ts, end_ts=end_ts,
         )
         return rows
 
-    def read_trade_ids(self, instrument: InstrumentSpec, *, start_ts: int, end_ts: int) -> set[bytes]:
-        def read(path: Path, *, start_ts: int, end_ts: int) -> list[bytes]:
-            return pq.read_table(
-                path, columns=["trade_id"], filters=[("ts_event", ">=", start_ts), ("ts_event", "<=", end_ts)],
-            ).column("trade_id").to_pylist()
+    def read_trade_revisions_by_id(self, instrument: InstrumentSpec, ids: set[bytes]) -> list[Trade]:
+        expression = _trade_id_filter(ids)
 
-        _, ids = self._read_manifest(
-            instrument, TickKind.TRADES.value, read, start_ts=start_ts, end_ts=end_ts,
+        def read(path: Path, **_bounds) -> list[Trade | Quote]:
+            return _read_matching_trades(path, instrument.instrument_id, expression)
+
+        _, rows = self._read_manifest(
+            instrument, TickKind.TRADES.value, read, start_ts=None, end_ts=None,
         )
-        return set(ids)
+        return [row for row in rows if isinstance(row, Trade)]
+
+    def _trade_range_revisions(
+        self, instrument: InstrumentSpec, start_ts: int | None, end_ts: int | None,
+    ) -> list[Trade | Quote]:
+        def read(generations: Sequence[ColdGeneration]) -> list[Trade | Quote]:
+            paths: dict[ColdGeneration, Path] = {}
+            rows: list[Trade | Quote] = []
+            lower = 0 if start_ts is None else start_ts
+            upper = end_ts if end_ts is not None else (1 << 63) - 1
+            for generation in generations:
+                if generation.last_ts >= lower and generation.first_ts <= upper:
+                    path = _verify_generation_file(self._data_dir, generation)
+                    paths[generation] = path
+                    rows.extend(_read_tick_parquet(
+                        path, instrument.instrument_id, TickKind.TRADES, start_ts=start_ts, end_ts=end_ts,
+                    ))
+            outside = [
+                generation for generation in generations
+                if generation.first_ts < lower or generation.last_ts > upper
+            ]
+            if rows and outside:
+                # 同一成交 ID 的另一来源或修订可能在范围外，仍须由本次清单选版。
+                ids = {row.trade_id.bytes for row in rows if isinstance(row, Trade)}
+                ts = ds.field("ts_event")
+                expression = _trade_id_filter(ids) & ((ts < lower) | (ts > upper))
+                for generation in outside:
+                    path = paths.get(generation) or _verify_generation_file(self._data_dir, generation)
+                    rows.extend(_read_matching_trades(path, instrument.instrument_id, expression))
+            return rows
+
+        _, rows = self._read_generations(instrument, TickKind.TRADES.value, read, start_ts=None, end_ts=None)
+        return rows
 
     def read_ticks(
         self, instrument: InstrumentSpec, kind: TickKind, *,
         start_ts: int | None = None, end_ts: int | None = None, as_of: int | None = None,
     ) -> list[Trade | Quote]:
-        rows = self.read_tick_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
-        return latest_visible_revisions(
+        if kind is TickKind.TRADES:
+            rows = self._trade_range_revisions(instrument, start_ts, end_ts)
+            # 推定时间只补实测没有覆盖的成交。先按来源选定，再截断可获取时间。
+            measured = {row.trade_id for row in rows if isinstance(row, Trade) and row.availability == "measured"}
+            rows = [
+                row for row in rows
+                if isinstance(row, Trade) and (row.availability == "measured" or row.trade_id not in measured)
+            ]
+        else:
+            rows = self.read_tick_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
+        visible = latest_visible_revisions(
             sorted(rows, key=_tick_order), as_of=as_of, identity=tick_identity,
             ingested=lambda row: row.ts_ingested,
         )
+        in_range = [
+            row for row in visible
+            if (start_ts is None or row.ts_event >= start_ts) and (end_ts is None or row.ts_event <= end_ts)
+        ]
+        ordered = []
+        for _, group in groupby(sorted(in_range, key=_tick_order), key=lambda row: row.ts_event):
+            ties = list(group)
+            if any(not _relative_tick_order_known(first, second) for first, second in pairwise(ties)):
+                ties = [replace(row, order_uncertain=True) for row in ties]
+            ordered.extend(ties)
+        return ordered
 
     def _read_manifest[T](
         self, instrument: InstrumentSpec, series: str, read_parquet: Callable[..., list[T]], *,
+        start_ts: int | None, end_ts: int | None,
+    ) -> tuple[ColdManifest, list[T]]:
+        def read(generations: Sequence[ColdGeneration]) -> list[T]:
+            return [
+                row for generation in generations
+                for row in read_parquet(
+                    _verify_generation_file(self._data_dir, generation), start_ts=start_ts, end_ts=end_ts,
+                )
+            ]
+
+        return self._read_generations(instrument, series, read, start_ts=start_ts, end_ts=end_ts)
+
+    def _read_generations[T](
+        self, instrument: InstrumentSpec, series: str, read: Callable[[Sequence[ColdGeneration]], list[T]], *,
         start_ts: int | None, end_ts: int | None,
     ) -> tuple[ColdManifest, list[T]]:
         if not self._db_path.is_file():
@@ -988,15 +1132,12 @@ class ColdReader:
                 generations = _select_generations(
                     db, instrument, series, start_ts=start_ts, end_ts=end_ts,
                 )
-            decoded: list[T] = []
             try:
-                for generation in generations:
-                    path = _verify_generation_file(self._data_dir, generation)
-                    decoded.extend(read_parquet(path, start_ts=start_ts, end_ts=end_ts))
+                decoded = read(generations)
             except FileNotFoundError as exc:
                 if attempt:
                     raise ColdStoreIntegrityError(
-                        f"generation 文件缺失：{generation.parquet_path}"
+                        f"generation 文件缺失：{exc.filename or exc}"
                     ) from exc
             else:
                 return ColdManifest(version, tuple(generations)), decoded
@@ -1105,13 +1246,16 @@ class ColdStore:
 
     def read_tick_revisions(
         self, instrument: InstrumentSpec, kind: TickKind, *, start_ts: int, end_ts: int,
+        event_times: set[int] | None = None,
     ) -> list[Trade | Quote]:
         self._ensure_open()
-        return self._reader.read_tick_revisions(instrument, kind, start_ts=start_ts, end_ts=end_ts)
+        return self._reader.read_tick_revisions(
+            instrument, kind, start_ts=start_ts, end_ts=end_ts, event_times=event_times,
+        )
 
-    def read_trade_ids(self, instrument: InstrumentSpec, *, start_ts: int, end_ts: int) -> set[bytes]:
+    def read_trade_revisions_by_id(self, instrument: InstrumentSpec, ids: set[bytes]) -> list[Trade]:
         self._ensure_open()
-        return self._reader.read_trade_ids(instrument, start_ts=start_ts, end_ts=end_ts)
+        return self._reader.read_trade_revisions_by_id(instrument, ids)
 
     def generations(self, instrument: InstrumentSpec, timeframe: str) -> list[ColdGeneration]:
         with self._lock:

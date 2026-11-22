@@ -68,6 +68,14 @@ class OrderBookEvent(ContractModel):
         return self
 
 
+class ReceivedOrderBookEvent(OrderBookEvent):
+    """传输层盘口，携带报文时刻和连接内的更新身份。"""
+
+    ts_published: int | None = Field(default=None, ge=0, exclude=True)
+    connection_id: UUID = Field(exclude=True)
+    update_id: int = Field(ge=0, exclude=True)
+
+
 class TradeEvent(ContractModel):
     """一笔公开成交，方向为主动成交方。"""
 
@@ -78,6 +86,10 @@ class TradeEvent(ContractModel):
     size: DecimalStr = Field(gt=0)
     ts_event: int = Field(ge=0)
     ts_ingested: int
+    ts_published: int | None = Field(default=None, ge=0, exclude=True)
+    sequence: int | None = Field(default=None, ge=0, exclude=True)
+    packet_id: UUID | None = Field(default=None, exclude=True)
+    packet_index: int | None = Field(default=None, ge=0, exclude=True)
 
 
 class DerivativeTickEvent(ContractModel):

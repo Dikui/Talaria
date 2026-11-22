@@ -10,14 +10,13 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date
 from itertools import groupby
-from typing import BinaryIO
 
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
 from talaria.foundation.derivatives import DerivativeDataConnector, DerivativeKind
 from talaria.foundation.errors import FeedUnavailableError
 from talaria.foundation.feed import FeedEvent
-from talaria.foundation.market import InstrumentSpec
+from talaria.foundation.market import InstrumentSpec, TradeArchiveReader
 from talaria.foundation.timeframes import timeframe_ms
 from talaria.perception.backfill import BackfillPolicy
 from talaria.perception.bar_range import range_visible_bars, unpublished_revisions
@@ -47,6 +46,7 @@ class ColdPublisher:
         on_history_complete: Callable[[str, str], None] | None = None,
         on_derivative_publish: Callable[[str, DerivativeKind, int, int], None] | None = None,
         funding_intervals_ms: Mapping[str, int] | None = None,
+        archive_reader: TradeArchiveReader | None = None,
     ) -> None:
         self._store = store
         self._instruments = instruments
@@ -62,7 +62,7 @@ class ColdPublisher:
         self._archives = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trade-archive")
         self._pending_history: dict[tuple[str, str, int, int, frozenset[int], int | None], Future[None]] = {}
         self._history_lock = threading.Lock()
-        self._ticks = TickPublisher(store, instruments, now_ms, self._writes)
+        self._ticks = TickPublisher(store, instruments, now_ms, self._writes, archive_reader)
         self._derivatives = DerivativePublisher(
             store, instruments=instruments, connector=connector if isinstance(connector, DerivativeDataConnector) else None,
             policy=policy, now_ms=now_ms, writer=self._writes, history=self._history,
@@ -75,12 +75,9 @@ class ColdPublisher:
     async def flush_ticks_periodically(self) -> None:
         await self._ticks.flush_periodically()
 
-    async def backfill_trades(
-        self, instrument: InstrumentSpec, day: date, *,
-        download: Callable[[str, BinaryIO], None] | None = None,
-    ) -> int:
+    async def backfill_trades(self, instrument: InstrumentSpec, day: date) -> int:
         await self._ticks.flush()
-        future = self._archives.submit(self._ticks.backfill_trades, instrument, day, download)
+        future = self._archives.submit(self._ticks.backfill_trades, instrument, day)
         return await asyncio.shield(asyncio.wrap_future(future))
 
     def ingest_derivatives(self, event: FeedEvent) -> None:
@@ -191,7 +188,7 @@ class ColdPublisher:
         await asyncio.to_thread(self._history.shutdown)
         await asyncio.to_thread(self._archives.shutdown)
         await self._derivatives.flush()
-        await self._ticks.flush()
+        await self._ticks.flush(drain=True)
         await asyncio.to_thread(self._writes.shutdown)
 
     def _backfill(

@@ -6,14 +6,17 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Callable, Protocol, Sequence
+from typing import Callable, Iterator, Protocol, Sequence, runtime_checkable
 
 from talaria.foundation.connector import MarketDataConnector
 from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.feed import FeedTransport
+from talaria.foundation.ticks import Trade
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
@@ -128,3 +131,13 @@ class MarketPack(Protocol):
 
     def create_realtime_stream(self, *, now_ms: Callable[[], int]) -> FeedTransport:
         """创建该市场的实时行情传输。"""
+
+
+@runtime_checkable
+class TradeArchiveReader(Protocol):
+    """市场包可选的逐笔日归档读取能力。"""
+
+    def open_trade_archive(
+        self, instrument: InstrumentSpec, day: date, now_ms: Callable[[], int],
+    ) -> AbstractContextManager[Callable[[], Iterator[Trade]]]:
+        """提供可反复读取的标准 Trade 流，供完整质检后再分批发布。"""
