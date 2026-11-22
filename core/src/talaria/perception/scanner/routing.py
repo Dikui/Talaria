@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from talaria.foundation.scanner.contracts import (
+    ScannerConditionKind,
     ScannerTrigger,
     ScannerTriggerRoute,
 )
@@ -48,6 +49,8 @@ class TriggerRoutingPolicy:
     def route(self, trigger: ScannerTrigger) -> ScannerTriggerRoute:
         """返回路由并（仅在显式启用时）把候选交给占位通道。"""
 
+        if trigger.kind is ScannerConditionKind.RULE:
+            return ScannerTriggerRoute.LOCAL
         if self._co_pilot_enabled and self._co_pilot is not None:
             accepted = self._co_pilot.offer(trigger)
             if accepted is False:

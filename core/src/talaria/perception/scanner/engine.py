@@ -16,15 +16,21 @@ import hashlib
 import logging
 from bisect import bisect_right
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from statistics import fmean, median, pstdev
 
+from talaria.components import CompiledRule, Ctx, RuleState, compile_rule
+from talaria.components.rules import event_visible_at
+from talaria.foundation.drawings import DrawingRecord
+from talaria.foundation.operators import MAX_PERIOD
+from talaria.foundation.rules import AlertLevelEvent, Rule, RuleLevelEvent, RuleLevelPrice
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
     DerivativeKind,
     DerivativePoint,
+    latest_visible_derivatives,
 )
 from talaria.foundation.feed import (
     DerivativeTickEvent,
@@ -41,12 +47,14 @@ from talaria.foundation.scanner.contracts import (
     ScannerTriggerRoute,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
-from talaria.foundation.types import PrecisionTier
+from talaria.perception.confirmed_history import ConfirmedHistory
+from talaria.perception.rule_derivatives import ArchiveReader, RevisionSeries, RuleDerivatives
 
 logger = logging.getLogger(__name__)
 
 FreezeSnapshot = Callable[[str, str, int], str]
 KeyLevelsProvider = Callable[..., Sequence[KeyLevel]]
+RuleLevelsAt = Callable[[str, str, int], Sequence[KeyLevel]]
 
 KIND_ORDER: tuple[ScannerConditionKind, ...] = (
     ScannerConditionKind.LIQUIDITY_ANOMALY,
@@ -62,6 +70,7 @@ KIND_LABELS: dict[ScannerConditionKind, str] = {
     ScannerConditionKind.FUNDING_EXTREME: "资金费率极值",
     ScannerConditionKind.OI_DIVERGENCE: "持仓量背离",
     ScannerConditionKind.KEY_LEVEL_EVENT: "关键位异动",
+    ScannerConditionKind.RULE: "规则命中",
 }
 
 KEY_LEVEL_LABELS: dict[KeyLevelKind, str] = {
@@ -167,12 +176,6 @@ class _Hit:
     tags: list[str]
 
 
-@dataclass(slots=True)
-class _DerivativeSeries:
-    funding: dict[int, tuple[int, Decimal]] = field(default_factory=dict)
-    oi: dict[str, dict[int, tuple[int, Decimal]]] = field(default_factory=dict)
-
-
 @dataclass(frozen=True, slots=True)
 class _KeyLevelCandidate:
     level: KeyLevel
@@ -222,18 +225,20 @@ class ScannerEngine:
         config: ScannerConfig | None = None,
         freeze_snapshot: FreezeSnapshot,
         key_levels_provider: KeyLevelsProvider | None = None,
+        rule_levels_at: RuleLevelsAt | None = None,
+        read_archived_derivatives: ArchiveReader | None = None,
     ) -> None:
         self._now_ms = now_ms
         self._config = config or ScannerConfig()
         self._freeze_snapshot = freeze_snapshot
+        self._rule_levels_at = rule_levels_at
         self._key_levels_provider = key_levels_provider or compute_key_levels
 
-        self._bars: dict[tuple[str, str], dict[int, CompactBar]] = {}
-        self._last_gap: dict[tuple[str, str], int] = {}
+        self._bars: dict[tuple[str, str], ConfirmedHistory] = {}
         self._stale: set[str] = set()
-        self._derivatives: dict[str, _DerivativeSeries] = {}
-        self._oi_ticks: dict[str, dict[int, Decimal]] = {}
+        self._derivatives = RuleDerivatives(self._config.max_bars * 4, read_archived_derivatives)
 
+        self._rule_hits: dict[tuple[str, str], tuple[int, int]] = {}
         self._last_trigger_at: dict[tuple[str, ScannerConditionKind], int] = {}
         self._last_trigger_bar: dict[tuple[str, ScannerConditionKind], int] = {}
         self._focus: dict[str, int] = {}
@@ -261,19 +266,12 @@ class ScannerEngine:
         elif isinstance(event, FeedHealthEvent):
             self._ingest_health(event)
         elif isinstance(event, DerivativeTickEvent):
-            self._ingest_derivative_tick(event)
+            self._derivatives.handle_tick(event)
 
     def _ingest_bar(self, event: KlineEvent) -> None:
         if event.timeframe != self._config.timeframe or not event.confirmed:
             return
-        key = (event.instrument_id, event.timeframe)
-        bar = event.bar
-        if bar.status is BarStatus.FEED_GAP:
-            self._last_gap[key] = max(self._last_gap.get(key, 0), bar.timestamp)
-            return
-        bucket = self._bars.setdefault(key, {})
-        bucket[bar.timestamp] = bar
-        self._trim_bars(bucket)
+        self._history(event.instrument_id, event.timeframe).put(event.bar, event.revision, visible_at=event_visible_at(event))
         self._snapshot_cache.clear()
         self._level_cache.clear()
 
@@ -283,20 +281,6 @@ class ScannerEngine:
         elif event.status is FeedHealthStatus.LIVE:
             self._stale.discard(event.instrument_id)
 
-    def _ingest_derivative_tick(self, event: DerivativeTickEvent) -> None:
-        """OI ticker 只作为 07 序列的补充；资金费率历史必须来自结算序列。"""
-
-        if event.open_interest is None:
-            return
-        oi_timeframe = OI_TIMEFRAME_BY_TIMEFRAME.get(self._config.timeframe, "5m")
-        bucket_ms = timeframe_ms(oi_timeframe)
-        slot = event.ts_event // bucket_ms * bucket_ms
-        bucket = self._oi_ticks.setdefault(event.instrument_id, {})
-        bucket[slot] = event.open_interest
-        if len(bucket) > self._config.max_bars * 4:
-            for stale_slot in sorted(bucket)[: len(bucket) - self._config.max_bars * 2]:
-                bucket.pop(stale_slot, None)
-
     def seed_bars(
         self,
         instrument_id: str,
@@ -305,14 +289,10 @@ class ScannerEngine:
     ) -> None:
         """从冷启动历史（如 07/连接器回填）灌入确认柱。"""
 
-        key = (instrument_id, timeframe)
-        bucket = self._bars.setdefault(key, {})
+        history = self._history(instrument_id, timeframe)
         for bar in bars:
-            if bar.status is BarStatus.FEED_GAP:
-                self._last_gap[key] = max(self._last_gap.get(key, 0), bar.timestamp)
-                continue
-            bucket[bar.timestamp] = bar
-        self._trim_bars(bucket)
+            history.put(bar)
+        self._snapshot_cache.clear()
         self._level_cache.clear()
 
     def seed_derivatives(
@@ -322,29 +302,13 @@ class ScannerEngine:
     ) -> None:
         """灌入 07 的资金费率 / 持仓量历史。"""
 
-        series = self._derivatives.setdefault(instrument_id, _DerivativeSeries())
-        for point in points:
-            if point.kind is DerivativeKind.FUNDING_RATE:
-                series.funding[point.ts_event] = (point.ts_available, point.value)
-            elif point.kind is DerivativeKind.OPEN_INTEREST:
-                timeframe = point.timeframe or OI_TIMEFRAME_BY_TIMEFRAME.get(
-                    self._config.timeframe, "5m"
-                )
-                bucket = series.oi.setdefault(timeframe, {})
-                bucket[point.ts_event] = (point.ts_available, point.value)
-        for timeframe, bucket in series.oi.items():
-            if len(bucket) > self._config.max_bars * 4:
-                for stale_ts in sorted(bucket)[
-                    : len(bucket) - self._config.max_bars * 2
-                ]:
-                    bucket.pop(stale_ts, None)
+        self._derivatives.seed(point for point in points if point.instrument_id == instrument_id)
 
-    def _trim_bars(self, bucket: dict[int, CompactBar]) -> None:
-        limit = max(self._config.max_bars * 2, 600)
-        if len(bucket) <= limit:
-            return
-        for stale_ts in sorted(bucket)[: len(bucket) - self._config.max_bars]:
-            bucket.pop(stale_ts, None)
+    def _history(self, instrument: str, timeframe: str) -> ConfirmedHistory:
+        key = (instrument, timeframe)
+        if key not in self._bars:
+            self._bars[key] = ConfirmedHistory(timeframe_ms(timeframe), max(self._config.max_bars, MAX_PERIOD + 2))
+        return self._bars[key]
 
     # ------------------------------------------------------------------ 扫描
 
@@ -353,20 +317,51 @@ class ScannerEngine:
         instrument_ids: Iterable[str] | None = None,
         *,
         now: int | None = None,
+        rule: Rule | None = None,
+        drawing: Callable[[str], DrawingRecord | None] | None = None,
+        include_gate_hits: bool = False,
     ) -> list[ScannerTrigger]:
         """扫描给定标的；``instrument_ids`` 省略时沿用上一次的范围。"""
+
+        compiled = None
+        fingerprint = ""
+        if rule is not None:
+            if rule.timing != "bar_close":
+                raise ValueError("手动扫描只支持收盘求值规则")
+            compiled = compile_rule(rule)
+            fingerprint = hashlib.sha256(rule.model_dump_json().encode()).hexdigest()
 
         timestamp = self._now_ms() if now is None else now
         self._expire_focus(timestamp)
         if instrument_ids is not None:
             self._universe = set(instrument_ids)
+        # 保留窗口内同一柱的去重记录，即使焦点或冷却已经过期。
+        self._rule_hits = {
+            key: hit for key, hit in self._rule_hits.items()
+            if timestamp - hit[1] < self._config.cooldown_ms
+            or hit[0] in self._bars.get((key[0], self.timeframe), ())
+        }
 
         triggers: list[ScannerTrigger] = []
         for instrument_id in sorted(self._universe):
             if instrument_id in self._stale:
                 continue
+            history = self._history(instrument_id, self.timeframe)
+            visible = history.visible(timestamp)
+            if not visible or visible[-1].status is BarStatus.FEED_GAP:
+                continue
+            bars = [bar for bar in visible if bar.status is not BarStatus.FEED_GAP][-self._config.max_bars:]
+            revisions = self._derivatives.observation(instrument_id, timestamp)
+            if compiled is not None:
+                match = self._evaluate(instrument_id, ScannerConditionKind.RULE, timestamp, bars, revisions,
+                                       rule=compiled, fingerprint=fingerprint, drawing=drawing)
+                if match is None:
+                    continue
+                triggers.append(match)
+                if not include_gate_hits:
+                    continue
             for kind in KIND_ORDER:
-                trigger = self._evaluate(instrument_id, kind, timestamp)
+                trigger = self._evaluate(instrument_id, kind, timestamp, bars, revisions)
                 if trigger is not None:
                     triggers.append(trigger)
         return triggers
@@ -406,42 +401,49 @@ class ScannerEngine:
         instrument_id: str,
         kind: ScannerConditionKind,
         now: int,
+        bars: Sequence[CompactBar],
+        revisions: RevisionSeries,
+        *,
+        rule: CompiledRule | None = None,
+        fingerprint: str = "",
+        drawing: Callable[[str], DrawingRecord | None] | None = None,
     ) -> ScannerTrigger | None:
-        bars = self._normal_bars(instrument_id, now)
-        if not bars:
-            return None
-        key = (instrument_id, self._config.timeframe)
-        gap_ts = self._last_gap.get(key, -1)
-        if gap_ts > bars[-1].timestamp:
-            return None
-
-        last_ts = self._last_trigger_bar.get((instrument_id, kind))
+        bar_ts = bars[-1].timestamp
+        if rule is not None:
+            # Repeated manual requests for different rules have independent cooldowns.
+            rule_key = (instrument_id, fingerprint)
+            last_ts, last_at = self._rule_hits.get(rule_key, (None, None))
+        else:
+            last_ts = self._last_trigger_bar.get((instrument_id, kind))
+            last_at = self._last_trigger_at.get((instrument_id, kind))
         if last_ts is not None and bars[-1].timestamp <= last_ts:
             return None
-        last_at = self._last_trigger_at.get((instrument_id, kind))
         if last_at is not None and now - last_at < self._config.cooldown_ms:
             return None
 
-        if kind is ScannerConditionKind.LIQUIDITY_ANOMALY:
+        if rule is not None:
+            hit = self._rule_hit(instrument_id, bars[-1], rule, drawing, revisions)
+        elif kind is ScannerConditionKind.LIQUIDITY_ANOMALY:
             hit = self._liquidity_hit(instrument_id, bars)
         elif kind is ScannerConditionKind.VOLATILITY_EXPANSION:
             hit = self._volatility_hit(instrument_id, bars)
         elif kind is ScannerConditionKind.FUNDING_EXTREME:
-            hit = self._funding_hit(instrument_id, now)
+            hit = self._funding_hit(revisions, now)
         elif kind is ScannerConditionKind.OI_DIVERGENCE:
-            hit = self._oi_hit(instrument_id, bars, now)
+            hit = self._oi_hit(revisions, bars, now)
         else:
-            hit = self._key_level_hit(instrument_id, bars, now)
+            hit = self._key_level_hit(instrument_id, bars, now, revisions)
         if hit is None:
             return None
 
-        snapshot_id = self._snapshot(instrument_id, now)
+        as_of = max(bar_ts + timeframe_ms(self.timeframe), bars[-1].ts_available) if rule is not None else now
+        snapshot_id = self._snapshot(instrument_id, as_of)
         if not snapshot_id:
             # 没有冻结证据的异动不允许进入工作台，避免无法回看的卡片。
             return None
 
         trigger = ScannerTrigger(
-            trigger_id=self._trigger_id(instrument_id, kind, bars[-1].timestamp),
+            trigger_id=self._trigger_id(instrument_id, kind, bar_ts, fingerprint),
             instrument_id=instrument_id,
             timeframe=self._config.timeframe,
             kind=kind,
@@ -454,17 +456,71 @@ class ScannerEngine:
             snapshot_id=snapshot_id,
             route=ScannerTriggerRoute.LOCAL,
         )
-        self._last_trigger_at[(instrument_id, kind)] = now
-        self._last_trigger_bar[(instrument_id, kind)] = bars[-1].timestamp
+        if rule is not None:
+            self._rule_hits[(instrument_id, fingerprint)] = (bar_ts, now)
+        else:
+            self._last_trigger_at[(instrument_id, kind)] = now
+            self._last_trigger_bar[(instrument_id, kind)] = bar_ts
         self._focus[instrument_id] = now
         return trigger
 
     def _trigger_id(
-        self, instrument_id: str, kind: ScannerConditionKind, bar_ts: int
+        self, instrument_id: str, kind: ScannerConditionKind, bar_ts: int, fingerprint: str = "",
     ) -> str:
         payload = f"{instrument_id}|{self._config.timeframe}|{kind.value}|{bar_ts}"
+        if fingerprint:
+            payload += f"|{fingerprint}"
         digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
         return f"scn_{digest}"
+
+    def _rule_hit(
+        self, instrument_id: str, current: CompactBar,
+        rule: CompiledRule, drawing: Callable[[str], DrawingRecord | None] | None,
+        revisions: RevisionSeries,
+    ) -> _Hit | None:
+        timeframe = self.timeframe
+        interval = timeframe_ms(timeframe)
+        history = self._history(instrument_id, timeframe)
+
+        level_nodes = [node for node in rule.rule.references() if isinstance(node, (RuleLevelEvent, RuleLevelPrice))]
+        retest = any(isinstance(node, RuleLevelEvent) and node.event is AlertLevelEvent.RETEST for node in level_nodes)
+        state = RuleState()
+
+        def evaluate_at(slot: int, cutoff: int):
+            # A manual scan examines data known at the latest bar's confirmation.
+            # Historical levels are also read at each bar's own cutoff.
+            closed = history.visible(cutoff, through=slot)
+            levels = {}
+            if level_nodes:
+                close_ts = slot + interval
+                if self._rule_levels_at is not None:
+                    available = self._rule_levels_at(instrument_id, timeframe, close_ts)
+                else:
+                    available = self._key_levels_provider(
+                        instrument_id=instrument_id, timeframe=timeframe, bars=history.visible(close_ts, through=slot),
+                        cutoff_ts=close_ts, derivative_points=self._key_level_derivatives(revisions, close_ts),
+                    )
+                levels = {level.level_id: level for level in available}
+            ctx = Ctx(
+                instrument_id, timeframe, 0, cutoff, drawing=drawing, levels=levels, rule_state=state,
+                _bar_ts=slot, _indicator_defaults={}, _confirmed_compact=closed,
+                _first_confirmed_at=history.first_confirmed_at, _read_derivative_revisions=revisions,
+            )
+            return rule.observe(ctx)
+
+        cutoff = max(current.timestamp + interval, current.ts_available)
+        if retest:
+            for previous_cutoff, slot in history.observations_before(current.timestamp, cutoff):
+                evaluate_at(slot, previous_cutoff)
+        observation = evaluate_at(current.timestamp, cutoff)
+        if observation is None or not observation.matched:
+            return None
+        evidence = []
+        if observation.observed is not None:
+            evidence.append(ScannerEvidence(metric="rule", value=observation.observed,
+                                            threshold=observation.threshold))
+        return _Hit(ScannerConditionKind.RULE, ScannerSeverity.INFO, "规则命中",
+                    "收盘规则成立", evidence, [])
 
     def _snapshot(self, instrument_id: str, now: int) -> str:
         key = (instrument_id, self._config.timeframe, now)
@@ -482,20 +538,6 @@ class ScannerEngine:
             self._snapshot_cache.clear()
         self._snapshot_cache[key] = snapshot_id
         return snapshot_id
-
-    def _normal_bars(self, instrument_id: str, cutoff: int) -> list[CompactBar]:
-        key = (instrument_id, self._config.timeframe)
-        bucket = self._bars.get(key)
-        if not bucket:
-            return []
-        bars = [
-            bar
-            for bar in sorted(bucket.values(), key=lambda item: item.timestamp)
-            if bar.status is not BarStatus.FEED_GAP
-            and bar.ts_available <= cutoff
-            and bar.close is not None
-        ]
-        return bars[-self._config.max_bars :]
 
     # -------------------------------------------------------------- 五类条件
 
@@ -592,21 +634,11 @@ class ScannerEngine:
             tags=["波动率", self._config.timeframe, f"×{ratio:.1f}"],
         )
 
-    def _funding_series(
-        self, instrument_id: str, now: int
-    ) -> list[tuple[int, Decimal]]:
-        series = self._derivatives.get(instrument_id)
-        if series is None:
-            return []
-        return [
-            (ts_event, value)
-            for ts_event, (available, value) in sorted(series.funding.items())
-            if available <= now
-        ]
-
-    def _funding_hit(self, instrument_id: str, now: int) -> _Hit | None:
+    def _funding_hit(self, revisions: RevisionSeries, now: int) -> _Hit | None:
         config = self._config
-        points = self._funding_series(instrument_id, now)
+        points = [(p.ts_event, p.value) for p in latest_visible_derivatives(
+            (p for p in revisions(DerivativeKind.FUNDING_RATE) if p.is_funding_settlement), as_of=now,
+        )]
         if len(points) < config.funding_min_samples + 1:
             return None
         latest_ts, latest = points[-1]
@@ -645,28 +677,35 @@ class ScannerEngine:
             tags=["资金费率", f"{side}极值", self._config.timeframe],
         )
 
-    def _oi_series(
-        self, instrument_id: str, timeframe: str, now: int
-    ) -> list[tuple[int, Decimal]]:
-        series = self._derivatives.get(instrument_id)
-        points: dict[int, Decimal] = {}
-        if series is not None:
-            for ts_event, (available, value) in series.oi.get(timeframe, {}).items():
-                if available <= now:
-                    points[ts_event] = value
-        for slot, value in self._oi_ticks.get(instrument_id, {}).items():
-            points.setdefault(slot, value)
-        return sorted(points.items())
+    def _visible_oi(self, revisions: RevisionSeries, now: int) -> list[DerivativePoint]:
+        timeframe = OI_TIMEFRAME_BY_TIMEFRAME[self.timeframe]
+        return latest_visible_derivatives(
+            (p for p in revisions(DerivativeKind.OPEN_INTEREST) if p.timeframe in (None, timeframe)), as_of=now,
+        )
+
+    def _key_level_derivatives(self, revisions: RevisionSeries, cutoff: int) -> list[DerivativePoint]:
+        # 内置关键位只用持仓量，自定义提供方仍可消费其余可见的衍生品序列。
+        points = self._visible_oi(revisions, cutoff)
+        if self._key_levels_provider is not compute_key_levels:
+            points.extend(latest_visible_derivatives(revisions(DerivativeKind.MARK_PRICE), as_of=cutoff))
+            points.extend(latest_visible_derivatives(
+                (p for p in revisions(DerivativeKind.FUNDING_RATE) if p.is_funding_settlement), as_of=cutoff,
+            ))
+        return points
 
     def _oi_hit(
         self,
-        instrument_id: str,
+        revisions: RevisionSeries,
         bars: Sequence[CompactBar],
         now: int,
     ) -> _Hit | None:
         config = self._config
         oi_timeframe = OI_TIMEFRAME_BY_TIMEFRAME.get(self._config.timeframe, "5m")
-        points = self._oi_series(instrument_id, oi_timeframe, now)
+        visible = self._visible_oi(revisions, now)
+        interval = timeframe_ms(oi_timeframe)
+        buckets = {p.ts_event // interval * interval: p.value for p in visible if p.timeframe is None}
+        buckets.update((p.ts_event, p.value) for p in visible if p.timeframe == oi_timeframe)
+        points = sorted(buckets.items())
         if len(points) < config.oi_min_samples:
             return None
         window = points[-(config.oi_lookback + 1) :]
@@ -731,6 +770,7 @@ class ScannerEngine:
         instrument_id: str,
         bars: Sequence[CompactBar],
         now: int,
+        revisions: RevisionSeries,
     ) -> _Hit | None:
         config = self._config
         if len(bars) < 3:
@@ -747,7 +787,7 @@ class ScannerEngine:
                         timeframe=self._config.timeframe,
                         bars=list(bars),
                         cutoff_ts=now,
-                        derivative_points=self._all_derivative_points(instrument_id),
+                        derivative_points=self._key_level_derivatives(revisions, now),
                     )
                 )
             except Exception:
@@ -854,44 +894,3 @@ class ScannerEngine:
                 f"强度 {level.strength:.2f}",
             ],
         )
-
-    def _all_derivative_points(self, instrument_id: str) -> list[DerivativePoint]:
-        """把内部序列还原成 07 契约点，供关键位引擎估算清算区。"""
-
-        series = self._derivatives.get(instrument_id)
-        if series is None:
-            return []
-        points: list[DerivativePoint] = []
-        precision = PrecisionTier.SECOND_VERIFIED
-        for ts_event, (available, value) in sorted(series.funding.items()):
-            points.append(
-                DerivativePoint(
-                    instrument_id=instrument_id,
-                    kind=DerivativeKind.FUNDING_RATE,
-                    timeframe=None,
-                    value=value,
-                    ts_event=ts_event,
-                    ts_published=ts_event,
-                    ts_available=available,
-                    precision=precision,
-                    ts_ingested=available,
-                    ts_committed=available,
-                )
-            )
-        for timeframe, bucket in series.oi.items():
-            for ts_event, (available, value) in sorted(bucket.items()):
-                points.append(
-                    DerivativePoint(
-                        instrument_id=instrument_id,
-                        kind=DerivativeKind.OPEN_INTEREST,
-                        timeframe=timeframe,
-                        value=value,
-                        ts_event=ts_event,
-                        ts_published=ts_event,
-                        ts_available=available,
-                        precision=precision,
-                        ts_ingested=available,
-                        ts_committed=available,
-                    )
-                )
-        return points

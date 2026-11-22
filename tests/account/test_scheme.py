@@ -6,7 +6,7 @@ pytestmark = [pytest.mark.small, pytest.mark.spec]
 
 SCHEME = """\
 scheme: breakout
-interface_version: 1
+interface_version: 2
 sub_accounts: [alpha, beta]
 slots:
   data: {plugin: parquet_replay, params: {instrument: BTC-USDT-PERP}}
@@ -35,8 +35,8 @@ def test_load_scheme_with_named_slots_and_python_strategy(tmp_path):
 @pytest.mark.parametrize(("original", "invalid", "message"), [
     ("[alpha, beta]", "[alpha, alpha]", "重复"),
     ("[alpha, beta]", "[../alpha]", "sub_accounts"),
-    ("interface_version: 1", "interface_version: 9", "interface_version"),
-    ("interface_version: 1", "interface_version: true", "interface_version"),
+    ("interface_version: 2", "interface_version: 9", "interface_version"),
+    ("interface_version: 2", "interface_version: true", "interface_version"),
     ("tools: []", "tools: [tool]", "tools"),
     ("risk: example", "risk: example\n  risk: replaced", "重复"),
 ])
@@ -59,3 +59,11 @@ def test_slot_rejects_incompatible_plugin_before_creating_it(tmp_path):
     registry.register("example", SlotPlugin(Slot.RISK, (2,), create))
     with pytest.raises(SchemeError, match=r"risk.*example.*2.*1"):
         registry.resolve(Slot.RISK, "example", 1, tmp_path)
+
+
+def test_strategy_file_resolution_requires_account_admission(tmp_path):
+    from talaria.account.scheme import PluginRegistry, SchemeError, Slot
+
+    (tmp_path / "test_strategy.py").write_text("raise AssertionError('意外加载')")
+    with pytest.raises(SchemeError, match="账户宿主"):
+        PluginRegistry().resolve(Slot.STRATEGY, "test_strategy.py:plugin", 1, tmp_path)

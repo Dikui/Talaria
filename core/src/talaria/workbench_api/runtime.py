@@ -12,8 +12,8 @@ from talaria.feed.supervisor import FeedSupervisor
 from talaria.foundation.alerts import AlertRecord
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.connector import MarketDataConnector, RawBar
-from talaria.foundation.derivatives import DerivativeKind
-from talaria.foundation.errors import FeatureDisabledError, TalariaError
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
+from talaria.foundation.errors import ColdStoreError, FeatureDisabledError, TalariaError
 from talaria.foundation.feed import FeedEvent, FeedTransport, KlineEvent, TradeEvent
 from talaria.foundation.market import InstrumentSpec, TradeArchiveReader
 from talaria.foundation.snapshot import SnapshotRequest
@@ -236,6 +236,26 @@ async def build_runtime(
                 derivative_flusher = asyncio.create_task(cold_publisher.flush_derivatives_periodically())
                 resources.push_async_callback(_stop_task, derivative_flusher)
 
+        alerts: AlertService | None = None
+        scanner: ScannerService | None = None
+        cold_reader = ColdReader(settings.data_dir)
+
+        def read_archived_derivatives(instrument: str, kind: DerivativeKind, cutoff: int) -> Sequence[DerivativePoint]:
+            try:
+                return cold_reader.read_derivative_revisions(instruments_by_id[instrument], kind, end_ts=cutoff)
+            except ColdStoreError as exc:
+                logger.warning("读取规则冷库衍生品失败（%s %s）：%s", instrument, kind, exc)
+                return ()
+
+        def seed_derivatives(instrument_id: str, points: Sequence[DerivativePoint]) -> None:
+            if alerts is not None:
+                alerts.engine.seed_derivatives(points)
+            if scanner is not None:
+                scanner.seed_derivatives(instrument_id, points)
+
+        def snapshot_derivatives(instrument_id: str, points: Sequence[DerivativePoint]) -> None:
+            loop.call_soon_threadsafe(seed_derivatives, instrument_id, points)
+
         raw_store = RawStore(settings.data_dir, raw_archive_id=pack.raw_archive_id)
         builder = SnapshotBuilder(
             data_dir=settings.data_dir,
@@ -245,6 +265,7 @@ async def build_runtime(
             policy=policy,
             now_ms=settings.now_ms,
             hot_bars=hot_buffer,
+            on_derivatives=snapshot_derivatives if cold_publisher is None else None,
             cold_publisher=cold_publisher,
         )
         desk = DeskBroadcast()
@@ -294,7 +315,6 @@ async def build_runtime(
             state_writer=state_writer, drawings=drawings, now_ms=settings.now_ms
         )
         indicator_defaults = IndicatorDefaultsService(state_writer)
-        alerts: AlertService | None = None
 
         def subscription_denied(owner: tuple[str, str, tuple[str, str]]) -> None:
             if owner[0] == "alert" and alerts is not None:
@@ -311,7 +331,7 @@ async def build_runtime(
         )
         if supervisor is not None and hot_buffer is not None and scheduler is not None:
             strategy_stream = StrategyStream(
-                scheduler=scheduler, hot_buffer=hot_buffer, reader=ColdReader(settings.data_dir),
+                scheduler=scheduler, hot_buffer=hot_buffer, reader=cold_reader,
                 instruments=instruments, now_ms=settings.now_ms,
             )
             resources.callback(strategy_stream.close)
@@ -334,7 +354,9 @@ async def build_runtime(
 
         def bar_history(instrument_id: str, timeframe: str):
             assert supervisor is not None
-            return supervisor.recent_bars(instrument_id=instrument_id, timeframe=timeframe)
+            return supervisor.recent_bars(
+                instrument_id=instrument_id, timeframe=timeframe, confirmed_only=True,
+            )
 
         async def session_history(instrument_id: str, timeframe: str) -> list[CompactBar]:
             now = settings.now_ms()
@@ -358,6 +380,7 @@ async def build_runtime(
                 instruments=instruments,
                 now_ms=settings.now_ms,
                 bar_history=bar_history if supervisor is not None else None,
+                read_archived_derivatives=read_archived_derivatives,
                 session_history=(
                     session_history
                     if supervisor is not None and settings.replay_events is None
@@ -379,7 +402,6 @@ async def build_runtime(
             now_ms=settings.now_ms,
             active_alerts=alerts.active_realtime_alerts if alerts is not None else None,
         )
-        scanner: ScannerService | None = None
         if features.scanner:
             scanner = ScannerService(
                 state_writer=state_writer,
@@ -387,12 +409,14 @@ async def build_runtime(
                 now_ms=settings.now_ms,
                 freeze_snapshot=freeze_snapshot,
                 publish=desk.publish_scanner,
+                rule_levels_at=key_levels.levels_at,
+                read_archived_derivatives=read_archived_derivatives,
                 on_change=rebalance_watchlist,
                 routing=TriggerRoutingPolicy(co_pilot=briefings, co_pilot_enabled=True),
             )
             resources.callback(scanner.close)
             if isinstance(connector, FixtureConnector) and stream is None:
-                _seed_fixture_scanner(scanner, connector, instruments)
+                _seed_fixture_scanner(scanner, connector, instruments, seed_derivatives)
             if supervisor is not None:
                 resources.callback(supervisor.add_listener(scanner.handle_event))
             scanner_ticker = asyncio.create_task(
@@ -488,6 +512,7 @@ def _seed_fixture_scanner(
     scanner: ScannerService,
     connector: FixtureConnector,
     instruments: Sequence[InstrumentSpec],
+    seed_derivatives: Callable[[str, Sequence[DerivativePoint]], None],
 ) -> None:
     """离线样本没有实时流；预先回填一轮供演示与验收回看异动。"""
     for spec in instruments:
@@ -510,7 +535,7 @@ def _seed_fixture_scanner(
         except Exception:
             logger.warning("扫描器回填持仓量失败：%s", spec.instrument_id)
         if points:
-            scanner.seed_derivatives(
+            seed_derivatives(
                 spec.instrument_id,
                 [point.to_point(spec.instrument_id) for point in points],
             )

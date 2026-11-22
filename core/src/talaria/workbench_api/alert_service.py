@@ -21,53 +21,35 @@ from talaria.foundation.alerts import (
     AlertTriggerRecord,
     overlay_bounds,
 )
-from talaria.foundation.alerts.contracts import AlertCondition, AlertConditionKind
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.drawings import DrawingKind, DrawingRecord
 from talaria.foundation.errors import (
-    AlertNotFoundError,
     InvalidRequestError,
     TalariaError,
 )
 from talaria.foundation.feed import FeedEvent
 from talaria.foundation.market import InstrumentSpec
-from talaria.foundation.operators import (
-    CHANNELS,
-    DERIVATIVE_INDICATORS,
-    IndicatorName,
-    spec_from_params,
+from talaria.foundation.rules import (
+    Rule, RuleComparison, RuleIndicator,
+    RuleDrawingPrice, RuleLevelEvent, RuleLevelPrice, RuleOverlay,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.alerts import AlertEngine
 from talaria.perception.alerts.engine import KeyLevelProvider
+from talaria.perception.rule_derivatives import ArchiveReader
 from talaria.workbench_api.drawing_service import DrawingService
-from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
+from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService, pin_rule_indicator_params
 from talaria.workbench_api.state_store import StateStore, StateWriterQueue
 
 logger = logging.getLogger(__name__)
 
 _NOT_ALERTABLE_KINDS = frozenset({DrawingKind.TEXT_LABEL})
 
-#: 迁移标记；写入后不再重复改写历史规则。
 _ALERT_PARAMS_V1_KEY = "alerts.explicit_params.v1"
-_ALERT_PARAMS_MIGRATION_KEY = "alerts.explicit_params.v2"
 
-#: 迁移写入的旧默认值：当时由 DEFAULT_PERIODS 隐式补齐。
-_LEGACY_ALERT_PERIODS: dict[IndicatorName, int] = {
-    IndicatorName.EMA: 20,
-    IndicatorName.SMA: 20,
-    IndicatorName.RSI: 14,
-    IndicatorName.ATR: 14,
-    IndicatorName.BOLL: 20,
-    IndicatorName.VWAP: 1,
-}
 
-#: 主/比较指标的名称、周期、锚点、种子和倍数字段名。
-_INDICATOR_FIELDS = (
-    ("indicator", "indicator_period", "indicator_anchor", "indicator_seed", "indicator_std_dev"),
-    ("compare_indicator", "compare_period", "compare_anchor", "compare_seed", "compare_std_dev"),
-)
-_SEED_VERSIONED_INDICATORS = {IndicatorName.EMA, IndicatorName.ATR}
+def _has_level_rule(record: AlertRecord) -> bool:
+    return any(isinstance(node, (RuleLevelPrice, RuleLevelEvent)) for node in record.condition.references())
 
 
 class AlertService:
@@ -81,6 +63,7 @@ class AlertService:
         instruments: Sequence[InstrumentSpec],
         now_ms: Callable[[], int],
         bar_history: Callable[[str, str], Sequence[Any]] | None = None,
+        read_archived_derivatives: ArchiveReader | None = None,
         session_history: Callable[[str, str], Awaitable[Sequence[CompactBar]]] | None = None,
         key_level_provider: KeyLevelProvider | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
@@ -92,6 +75,7 @@ class AlertService:
         self._indicator_defaults = indicator_defaults or IndicatorDefaultsService(
             state_writer
         )
+        self._key_level_provider = key_level_provider
         self._drawings = drawings
         self._session_history = session_history
         self._session_history_seeded: set[tuple[str, str]] = set()
@@ -103,6 +87,7 @@ class AlertService:
         self._engine = AlertEngine(
             now_ms=now_ms,
             history_provider=bar_history,
+            read_archived_derivatives=read_archived_derivatives,
             key_level_provider=key_level_provider,
             freeze_snapshot=freeze_snapshot,
             on_trigger=self._handle_trigger,
@@ -112,7 +97,7 @@ class AlertService:
     # ------------------------------------------------------------- 生命周期
 
     async def start(self) -> None:
-        await self._migrate_legacy_parameters()
+        await self._state_writer.run(self._migrate_alerts)
         records = await self._state_writer.read(lambda store: store.alerts.list())
         for record in records:
             await self._seed_vwap_session(record)
@@ -137,7 +122,7 @@ class AlertService:
             alert.alert_id: (alert.instrument_id, alert.timeframe)
             for alert in self._engine.list_alerts()
             if alert.status is AlertStatus.ARMED or (
-                alert.status is AlertStatus.COOLDOWN and alert.condition.kind is AlertConditionKind.LEVEL_EVENT
+                alert.status is AlertStatus.COOLDOWN and _has_level_rule(alert)
             )
         }
 
@@ -145,7 +130,7 @@ class AlertService:
         return {
             (alert.instrument_id, alert.timeframe)
             for alert in self._engine.list_alerts()
-            if alert.condition.kind is AlertConditionKind.LEVEL_EVENT
+            if _has_level_rule(alert)
             and alert.status in {AlertStatus.ARMED, AlertStatus.COOLDOWN}
         }
 
@@ -184,8 +169,8 @@ class AlertService:
         self._check_timeframe(payload.timeframe)
         if payload.expires_at is not None and payload.expires_at <= self._now_ms():
             raise InvalidRequestError("expires_at 必须晚于当前时间")
-        condition = await self._validate_condition(
-            payload.condition, payload.instrument_id
+        condition = await self._validate_rule(
+            payload.condition, payload.instrument_id, payload.timeframe
         )
         now = self._now_ms()
         record = AlertRecord(
@@ -230,8 +215,8 @@ class AlertService:
         record = await self.get_alert(alert_id)
         normalized = None
         if patch.condition is not None:
-            normalized = await self._validate_condition(
-                patch.condition, record.instrument_id, previous=record.condition
+            normalized = await self._validate_rule(
+                patch.condition, record.instrument_id, record.timeframe, previous=record.condition
             )
         if patch.expires_at is not None and patch.expires_at <= self._now_ms():
             raise InvalidRequestError("expires_at 必须晚于当前时间")
@@ -272,8 +257,11 @@ class AlertService:
             AlertStatus.ARMED, AlertStatus.COOLDOWN,
         }:
             return
-        condition = record.condition
-        if "session" not in (condition.indicator_anchor, condition.compare_anchor):
+        if not any(
+            isinstance(operand, RuleIndicator) and operand.params.anchor == "session"
+            for node in record.condition.nodes() if isinstance(node, RuleComparison)
+            for operand in (node.left, node.right)
+        ):
             return
         key = (record.instrument_id, record.timeframe)
         if key in self._session_history_seeded:
@@ -387,20 +375,38 @@ class AlertService:
         if timeframe not in SUPPORTED_TIMEFRAMES:
             raise InvalidRequestError(f"不支持的周期：{timeframe}")
 
-    async def _validate_condition(
-        self, condition: AlertCondition, instrument_id: str, *,
-        previous: AlertCondition | None = None,
-    ) -> AlertCondition:
-        if condition.kind is AlertConditionKind.INDICATOR_SIGNAL:
-            normalized = await self._normalize_indicator_condition(condition, previous)
-            self._validate_indicator(normalized)
-            return normalized
-        if condition.kind is not AlertConditionKind.OVERLAY_CROSS:
-            return condition
-        assert condition.drawing_id is not None
-        drawing = await self._drawings.get_drawing(
-            condition.drawing_id, after_pending_writes=True
-        )
+    async def _validate_rule(
+        self, rule: Rule, instrument_id: str, timeframe: str, *, previous: Rule | None = None,
+    ) -> Rule:
+        # 固定保存时的参数，使之后修改工作台默认值不会改变已启用的规则。
+        result = rule.model_copy(deep=True)
+        defaults = None
+        levels = None
+        for node in result.references():
+            if isinstance(node, (RuleLevelEvent, RuleLevelPrice)):
+                if levels is None:
+                    provider = self._key_level_provider
+                    levels = {lv.level_id: lv for lv in provider(instrument_id, timeframe, self._now_ms())} if provider else {}
+                level = levels.get(node.level_id)
+                if level is None or (node.level_kind is not None and node.level_kind != level.kind):
+                    raise InvalidRequestError("关键位在当前版本中不存在或类型不匹配")
+            else:
+                await self._validate_overlay(node, instrument_id)
+        for node in result.nodes():
+            if isinstance(node, RuleComparison) and any(
+                isinstance(operand, RuleIndicator) for operand in (node.left, node.right)
+            ):
+                if defaults is None:
+                    defaults = await self._indicator_defaults.effective()
+        try:
+            if defaults is not None:
+                pin_rule_indicator_params(result.expression, previous.expression if previous is not None else None, defaults)
+            return Rule.model_validate(result.model_dump())
+        except ValueError as exc:
+            raise InvalidRequestError(str(exc)) from exc
+
+    async def _validate_overlay(self, node: RuleOverlay | RuleDrawingPrice, instrument_id: str) -> None:
+        drawing = await self._drawings.get_drawing(node.drawing_id, after_pending_writes=True)
         if drawing.deleted_at is not None:
             raise InvalidRequestError("画线已删除，无法挂载预警")
         if drawing.instrument_id != instrument_id:
@@ -408,120 +414,13 @@ class AlertService:
         if drawing.kind in _NOT_ALERTABLE_KINDS:
             raise InvalidRequestError("文本标签不支持预警")
         bounds = overlay_bounds(
-            drawing,
-            drawing.points[0].ts,
-            ratio=(
-                Decimal("0.5")
-                if condition.overlay_ratio is None
-                else condition.overlay_ratio
-            ),
+            drawing, drawing.points[0].ts,
+            ratio=Decimal("0.5") if node.ratio is None else node.ratio,
         )
         if bounds is None:
             raise InvalidRequestError("该画线在当前时刻不可见")
-        return condition
-
-    async def _normalize_indicator_condition(
-        self, condition: AlertCondition, previous: AlertCondition | None
-    ) -> AlertCondition:
-        updates: dict[str, Any] = {}
-        defaults = await self._indicator_defaults.effective()
-        for name_field, period_field, anchor_field, seed_field, std_dev_field in _INDICATOR_FIELDS:
-            name = getattr(condition, name_field)
-            if name is None:
-                continue
-            effective = defaults[name]
-            same_indicator = previous is not None and getattr(previous, name_field) is name
-            updates[period_field] = getattr(condition, period_field) or effective.period
-            if name is IndicatorName.VWAP:
-                updates[anchor_field] = (
-                    getattr(condition, anchor_field)
-                    or effective.anchor
-                    or "session"
-                )
-            if name in _SEED_VERSIONED_INDICATORS:
-                previous_seed = getattr(previous, seed_field) if same_indicator else None
-                updates[seed_field] = previous_seed or "pine"
-            if name is IndicatorName.BOLL:
-                previous_std_dev = getattr(previous, std_dev_field) if same_indicator else None
-                updates[std_dev_field] = (
-                    getattr(condition, std_dev_field) or previous_std_dev or effective.std_dev
-                )
-        return condition.model_copy(update=updates)
 
     @staticmethod
-    def _validate_indicator(condition: AlertCondition) -> None:
-        for name, period, anchor, std_dev in (
-            (
-                condition.indicator,
-                condition.indicator_period,
-                condition.indicator_anchor,
-                condition.indicator_std_dev,
-            ),
-            (
-                condition.compare_indicator,
-                condition.compare_period,
-                condition.compare_anchor,
-                condition.compare_std_dev,
-            ),
-        ):
-            if name is None:
-                continue
-            if name in DERIVATIVE_INDICATORS:
-                raise InvalidRequestError("衍生品指标暂不支持预警")
-            if period is None:
-                raise InvalidRequestError(f"{name} 缺少显式周期")
-            params: dict[str, Any] = {"period": period}
-            if name is IndicatorName.VWAP:
-                params["anchor"] = anchor or "session"
-            if std_dev is not None:
-                params["std_dev"] = std_dev
-            try:
-                spec_from_params(name, params)
-            except ValueError as exc:
-                raise InvalidRequestError(str(exc)) from exc
-            channel = condition.indicator_channel
-            if channel is not None and name is condition.indicator and channel not in CHANNELS[name]:
-                raise InvalidRequestError(f"{name} 不支持通道 {channel}")
-
-    async def _migrate_legacy_parameters(self) -> None:
-        await self._state_writer.run(self._migrate_alerts)
-
-    @classmethod
-    def _migrate_alerts(cls, store: StateStore) -> None:
-        if store.meta.get(_ALERT_PARAMS_MIGRATION_KEY) == 1:
-            return
+    def _migrate_alerts(store: StateStore) -> None:
         v1 = store.meta.get_with_timestamp(_ALERT_PARAMS_V1_KEY)
-        for record in store.alerts.list():
-            # v1 filled periods in place. Its timestamp distinguishes the older
-            # rules from those created after the Pine cutover.
-            predates_pine = v1 is None or record.created_ts < v1[1]
-            condition = cls._legacy_condition(record.condition, predates_pine=predates_pine)
-            if condition != record.condition:
-                store.alerts.write(record.model_copy(update={"condition": condition}))
-        store.meta.set(_ALERT_PARAMS_MIGRATION_KEY, 1)
-
-    @staticmethod
-    def _legacy_condition(
-        condition: AlertCondition, *, predates_pine: bool
-    ) -> AlertCondition:
-        if condition.kind is not AlertConditionKind.INDICATOR_SIGNAL:
-            return condition
-        updates: dict[str, Any] = {}
-        for name_field, period_field, anchor_field, seed_field, std_dev_field in _INDICATOR_FIELDS:
-            name = getattr(condition, name_field)
-            if name is None:
-                continue
-            missing_period = getattr(condition, period_field) is None
-            if missing_period:
-                legacy_period = _LEGACY_ALERT_PERIODS.get(name)
-                if legacy_period is not None:
-                    updates[period_field] = legacy_period
-            if name is IndicatorName.VWAP and getattr(condition, anchor_field) is None:
-                updates[anchor_field] = "snapshot"
-            if name in _SEED_VERSIONED_INDICATORS and getattr(condition, seed_field) is None:
-                updates[seed_field] = "legacy_sma" if predates_pine or missing_period else "pine"
-            if name is IndicatorName.BOLL and getattr(condition, std_dev_field) is None:
-                updates[std_dev_field] = Decimal(2)
-        if not updates:
-            return condition
-        return condition.model_copy(update=updates)
+        store.alerts.migrate_rules(pine_cutover_ts=v1[1] if v1 is not None else None)

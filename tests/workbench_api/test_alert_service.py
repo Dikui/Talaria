@@ -3,23 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
+from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from talaria.foundation.alerts import (
-    AlertCondition,
-    AlertConditionKind,
+    AlertTriggerKind,
     AlertCreate,
     AlertDirection,
     AlertMetric,
     AlertPatch,
-    AlertRecord,
     AlertStatus,
 )
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.indicators import IndicatorParams
+from talaria.foundation.rules import Rule
 from talaria.foundation.types import PrecisionTier
 from talaria.foundation.feed import KlineEvent
 from talaria.foundation.snapshot import SnapshotRequest
@@ -32,7 +34,7 @@ from talaria.perception.snapshot_store import SnapshotStore
 from talaria.workbench_api.alert_service import AlertService
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
-from talaria.workbench_api.state_store import StateWriterQueue
+from talaria.workbench_api.state_store import STATE_DB, StateWriterQueue
 
 pytestmark = pytest.mark.medium
 
@@ -50,15 +52,14 @@ class Clock:
         return self.now
 
 
-def _metric_condition(
-    threshold: str = "105", direction=AlertDirection.ABOVE
-) -> AlertCondition:
-    return AlertCondition(
-        kind=AlertConditionKind.METRIC_THRESHOLD,
-        metric=AlertMetric.LAST_PRICE,
-        direction=direction,
-        threshold=Decimal(threshold),
-    )
+def _metric_condition(threshold: str = "105", direction=AlertDirection.ABOVE) -> Rule:
+    return Rule.model_validate({
+        "version": "1", "timing": "event", "expression": {
+            "op": "compare", "test": "gte" if direction is AlertDirection.ABOVE else "lte",
+            "left": {"source": "event", "metric": AlertMetric.LAST_PRICE},
+            "right": {"source": "constant", "value": threshold},
+        },
+    })
 
 
 def _kline(ts: int, close: str) -> KlineEvent:
@@ -84,33 +85,46 @@ def _kline(ts: int, close: str) -> KlineEvent:
     )
 
 
-def _indicator_alert(
-    alert_id: str,
-    indicator: str,
-    *,
-    period: int | None = None,
-    anchor: str | None = None,
-    threshold: str = "12",
-) -> AlertRecord:
-    condition = AlertCondition(
-        kind=AlertConditionKind.INDICATOR_SIGNAL,
-        direction=AlertDirection.ABOVE,
-        indicator=indicator,
-        indicator_period=period,
-        indicator_anchor=anchor,
-        threshold=Decimal(threshold),
-    )
-    return AlertRecord(
-        alert_id=alert_id,
-        instrument_id=INSTRUMENT,
-        timeframe="1m",
-        condition=condition,
-        status=AlertStatus.ARMED,
-        repeat=True,
-        cooldown_ms=0,
-        created_ts=NOW_MS,
-        updated_ts=NOW_MS,
-    )
+def _indicator_rule(
+    name: str, *, period=None, anchor=None, channel=None, compare=None, threshold="12",
+) -> Rule:
+    return Rule.model_validate({
+        "version": "1", "timing": "bar_close", "expression": {
+            "op": "compare", "test": "gte",
+            "left": {"source": "indicator", "name": name, "channel": channel,
+                     "params": {"period": period, "anchor": anchor}},
+            "right": ({"source": "indicator", "name": compare} if compare else
+                      {"source": "constant", "value": threshold}),
+        },
+    })
+
+
+def _legacy_indicator(
+    alert_id: str, indicator: str, *, period=None, threshold="12", **fields,
+) -> dict:
+    condition = {
+        "kind": "INDICATOR_SIGNAL", "direction": "ABOVE", "indicator": indicator,
+        "indicator_period": period, "threshold": threshold,
+    } | fields
+    return {
+        "alert_id": alert_id, "instrument_id": INSTRUMENT, "timeframe": "1m",
+        "condition": condition, "status": "ARMED", "repeat": True, "cooldown_ms": 0,
+        "created_ts": NOW_MS, "updated_ts": NOW_MS,
+    }
+
+
+def _write_legacy(data_dir: Path, *records: dict) -> None:
+    # 历史 SQL payload 是迁移输入，走当前写接口会先校验为新规则。
+    with closing(sqlite3.connect(data_dir / STATE_DB)) as connection, connection:
+        connection.executemany(
+            """INSERT INTO alerts (
+                alert_id, instrument_id, timeframe, status,
+                repeat_flag, created_ts, updated_ts, payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ((record["alert_id"], record["instrument_id"], record["timeframe"], record["status"],
+              record["repeat"], record["created_ts"], record["updated_ts"], json.dumps(record))
+             for record in records),
+        )
 
 
 def _create(**overrides) -> AlertCreate:
@@ -182,7 +196,7 @@ def test_draft_never_triggers_until_confirmed_and_confirmed_trigger_is_persisted
             assert trigger.alert_id == draft.alert_id
             assert trigger.snapshot_id == "snap-evidence"
             assert trigger.instrument_id == INSTRUMENT
-            assert trigger.condition_kind is AlertConditionKind.METRIC_THRESHOLD
+            assert trigger.condition_kind is AlertTriggerKind.METRIC_THRESHOLD
             assert trigger.observed == Decimal("106")
             assert trigger.threshold == Decimal("105")
             assert "上穿" in trigger.message
@@ -206,7 +220,7 @@ def test_cooldown_expiry_and_delete_release_alert_tier(tmp_path: Path) -> None:
 
             cooling = await service.get_alert(record.alert_id)
             assert cooling.status is AlertStatus.COOLDOWN
-            assert cooling.next_arm_ts == NOW_MS + 10_000
+            assert cooling.next_arm_ts == NOW_MS + 2 * MINUTE + 10_000
             assert service.active_instrument_ids() == ()
 
             clock.now = cooling.next_arm_ts
@@ -280,7 +294,7 @@ def test_editing_threshold_uses_new_value_without_recreating(tmp_path: Path) -> 
                 record.alert_id,
                 AlertPatch(condition=_metric_condition(threshold="108")),
             )
-            assert patched.condition.threshold == Decimal("108")
+            assert patched.condition.expression.right.value == Decimal("108")
             assert patched.status is AlertStatus.ARMED
 
             # 106 对旧阈值 105 是穿越，对新阈值 108 不是；只有 109 才触发。
@@ -354,13 +368,11 @@ def test_start_migrates_legacy_indicator_params_to_explicit_values(
         await writer.start()
         try:
             legacy = [
-                _indicator_alert("alr_sma", "SMA"),
-                _indicator_alert("alr_vwap", "VWAP", threshold="100"),
-                _indicator_alert("alr_ema", "EMA", period=50),
+                _legacy_indicator("alr_sma", "SMA"),
+                _legacy_indicator("alr_vwap", "VWAP", threshold="100"),
+                _legacy_indicator("alr_ema", "EMA", period=50),
             ]
-            await writer.run(
-                lambda store: [store.alerts.write(record) for record in legacy]
-            )
+            _write_legacy(tmp_path, *legacy)
             service = AlertService(
                 state_writer=writer,
                 drawings=DrawingService(
@@ -374,11 +386,11 @@ def test_start_migrates_legacy_indicator_params_to_explicit_values(
                 records = {
                     record.alert_id: record for record in await service.list_alerts()
                 }
-                assert records["alr_sma"].condition.indicator_period == 20
-                assert records["alr_sma"].condition.indicator_anchor is None
-                assert records["alr_vwap"].condition.indicator_period == 1
-                assert records["alr_vwap"].condition.indicator_anchor == "snapshot"
-                assert records["alr_ema"].condition.indicator_period == 50
+                assert records["alr_sma"].condition.expression.left.params.period == 20
+                assert records["alr_sma"].condition.expression.left.params.anchor is None
+                assert records["alr_vwap"].condition.expression.left.params.period == 1
+                assert records["alr_vwap"].condition.expression.left.params.anchor == "snapshot"
+                assert records["alr_ema"].condition.expression.left.params.period == 50
             finally:
                 await service.close()
         finally:
@@ -400,8 +412,8 @@ def test_start_migrates_legacy_indicator_params_to_explicit_values(
                 records = {
                     record.alert_id: record for record in await service.list_alerts()
                 }
-                assert records["alr_sma"].condition.indicator_period == 20
-                assert records["alr_vwap"].condition.indicator_anchor == "snapshot"
+                assert records["alr_sma"].condition.expression.left.params.period == 20
+                assert records["alr_vwap"].condition.expression.left.params.anchor == "snapshot"
             finally:
                 await service.close()
         finally:
@@ -417,62 +429,25 @@ def test_create_alert_fills_effective_defaults_and_explicit_values_win(
         clock = Clock()
         writer, service = await _make_service(tmp_path, clock)
         try:
-            ema = await service.create_alert(
-                _create(
-                    condition=AlertCondition(
-                        kind=AlertConditionKind.INDICATOR_SIGNAL,
-                        direction=AlertDirection.ABOVE,
-                        indicator="EMA",
-                        threshold=Decimal("12"),
-                    )
-                )
-            )
-            assert ema.condition.indicator_period == 9
-            assert ema.condition.indicator_anchor is None
+            ema = await service.create_alert(_create(condition=_indicator_rule("EMA")))
+            assert ema.condition.expression.left.params.period == 9
+            assert ema.condition.expression.left.params.anchor is None
 
-            vwap = await service.create_alert(
-                _create(
-                    condition=AlertCondition(
-                        kind=AlertConditionKind.INDICATOR_SIGNAL,
-                        direction=AlertDirection.ABOVE,
-                        indicator="VWAP",
-                        threshold=Decimal("12"),
-                    )
-                )
-            )
-            assert vwap.condition.indicator_period == 1
-            assert vwap.condition.indicator_anchor == "session"
+            vwap = await service.create_alert(_create(condition=_indicator_rule("VWAP")))
+            assert vwap.condition.expression.left.params.period == 1
+            assert vwap.condition.expression.left.params.anchor == "session"
 
             defaults = IndicatorDefaultsService(writer)
             await defaults.set("EMA", IndicatorParams(period=30))
-            custom = await service.create_alert(
-                _create(
-                    condition=AlertCondition(
-                        kind=AlertConditionKind.INDICATOR_SIGNAL,
-                        direction=AlertDirection.ABOVE,
-                        indicator="EMA",
-                        indicator_period=5,
-                        threshold=Decimal("12"),
-                    )
-                )
-            )
-            assert custom.condition.indicator_period == 5
+            custom = await service.create_alert(_create(condition=_indicator_rule("EMA", period=5)))
+            assert custom.condition.expression.left.params.period == 5
 
-            inherited = await service.create_alert(
-                _create(
-                    condition=AlertCondition(
-                        kind=AlertConditionKind.INDICATOR_SIGNAL,
-                        direction=AlertDirection.ABOVE,
-                        indicator="EMA",
-                        threshold=Decimal("12"),
-                    )
-                )
-            )
-            assert inherited.condition.indicator_period == 30
+            inherited = await service.create_alert(_create(condition=_indicator_rule("EMA")))
+            assert inherited.condition.expression.left.params.period == 30
 
             # 已存预警保留创建时的显式参数，不随后续默认值变化。
             persisted = await service.get_alert(ema.alert_id)
-            assert persisted.condition.indicator_period == 9
+            assert persisted.condition.expression.left.params.period == 9
         finally:
             await _shutdown(writer, service)
 
@@ -487,15 +462,11 @@ def test_legacy_alert_after_migration_triggers_like_explicit_legacy_period(
         writer = StateWriterQueue(tmp_path, now_ms=clock)
         await writer.start()
         try:
-            legacy = _indicator_alert("alr_legacy", "SMA", threshold="12")
-            explicit = _indicator_alert(
+            legacy = _legacy_indicator("alr_legacy", "SMA", threshold="12")
+            explicit = _legacy_indicator(
                 "alr_explicit", "SMA", period=20, threshold="12"
             )
-            await writer.run(
-                lambda store: [
-                    store.alerts.write(record) for record in (legacy, explicit)
-                ]
-            )
+            _write_legacy(tmp_path, legacy, explicit)
             service = AlertService(
                 state_writer=writer,
                 drawings=DrawingService(
@@ -573,8 +544,8 @@ def test_migrated_ema_and_atr_alerts_match_baseline_source_bars(
             now_ms=clock,
         )
         try:
-            record = _indicator_alert("alr_historical", name, threshold=threshold)
-            await writer.run(lambda store: store.alerts.write(record))
+            record = _legacy_indicator("alr_historical", name, threshold=threshold)
+            _write_legacy(tmp_path, record)
             await service.start()
             events = [_kline(NOW_MS + index * MINUTE, price) for index, price in enumerate(prices)]
             for event in events:
@@ -603,24 +574,22 @@ def test_alert_migration_after_v1_preserves_seed_provenance_and_boll_default(tmp
             now_ms=clock,
         )
         try:
-            old = _indicator_alert("alr_old", "EMA", period=20)
-            old.condition = AlertCondition(
-                kind="INDICATOR_SIGNAL", direction="ABOVE",
-                indicator="EMA", indicator_period=20,
-                compare_indicator="ATR", compare_period=14,
+            old = _legacy_indicator(
+                "alr_old", "EMA", period=20, threshold=None, compare_indicator="ATR", compare_period=14,
             )
-            later = _indicator_alert("alr_after_v1", "EMA", period=20)
-            later.created_ts = NOW_MS + 1
-            boll = _indicator_alert("alr_boll", "BOLL", period=20)
-            await writer.run(lambda store: [store.alerts.write(item) for item in (old, later, boll)])
+            later = _legacy_indicator("alr_after_v1", "EMA", period=20)
+            later["created_ts"] = NOW_MS + 1
+            boll = _legacy_indicator("alr_boll", "BOLL", period=20)
+            _write_legacy(tmp_path, old, later, boll)
             await writer.set_meta("alerts.explicit_params.v1", 1, ts=NOW_MS + 1)
             await service.start()
-            old = await service.get_alert(old.alert_id)
-            later = await service.get_alert(later.alert_id)
-            boll = await service.get_alert(boll.alert_id)
-            assert old.condition.indicator_seed == old.condition.compare_seed == "legacy_sma"
-            assert later.condition.indicator_seed == "pine"
-            assert boll.condition.indicator_std_dev == Decimal(2)
+            old = await service.get_alert(old["alert_id"])
+            later = await service.get_alert(later["alert_id"])
+            boll = await service.get_alert(boll["alert_id"])
+            assert old.condition.expression.left.name == "legacy_ema"
+            assert old.condition.expression.right.name == "legacy_atr"
+            assert later.condition.expression.left.name == "EMA"
+            assert boll.condition.expression.left.params.std_dev == Decimal(2)
         finally:
             await _shutdown(writer, service)
 
@@ -635,14 +604,10 @@ def test_new_alert_pins_boll_multiplier_and_vwap_anchor_from_user_defaults(tmp_p
             defaults = IndicatorDefaultsService(writer)
             await defaults.set("BOLL", IndicatorParams(period=2, std_dev="3"))
             await defaults.set("VWAP", IndicatorParams(period=1, anchor="snapshot"))
-            main = await service.create_alert(_create(condition=AlertCondition(
-                kind="INDICATOR_SIGNAL", direction="ABOVE", indicator="BOLL",
-                indicator_channel="upper", threshold="15",
-            )))
-            comparison = await service.create_alert(_create(condition=AlertCondition(
-                kind="INDICATOR_SIGNAL", direction="ABOVE", indicator="VWAP",
-                compare_indicator="BOLL",
-            )))
+            main = await service.create_alert(
+                _create(condition=_indicator_rule("BOLL", channel="upper", threshold="15"))
+            )
+            comparison = await service.create_alert(_create(condition=_indicator_rule("VWAP", compare="BOLL")))
             await defaults.clear("BOLL")
             await defaults.clear("VWAP")
             for index, close in enumerate(("10", "10", "13")):
@@ -652,9 +617,9 @@ def test_new_alert_pins_boll_multiplier_and_vwap_anchor_from_user_defaults(tmp_p
             await service.flush()
             triggers = await service.list_triggers(alert_id=main.alert_id)
             assert [trigger.observed for trigger in triggers] == [Decimal(16)]
-            assert (await service.get_alert(main.alert_id)).condition.indicator_std_dev == Decimal(3)
-            assert comparison.condition.compare_std_dev == Decimal(3)
-            assert comparison.condition.indicator_anchor == "snapshot"
+            assert (await service.get_alert(main.alert_id)).condition.expression.left.params.std_dev == Decimal(3)
+            assert comparison.condition.expression.right.params.std_dev == Decimal(3)
+            assert comparison.condition.expression.left.params.anchor == "snapshot"
         finally:
             await _shutdown(writer, service)
 
@@ -689,13 +654,8 @@ def test_session_vwap_alert_backfills_utc_boundary_on_a_fresh_start(
         )
         try:
             await service.start()
-            vwap = await service.create_alert(_create(condition=AlertCondition(
-                kind="INDICATOR_SIGNAL", direction="ABOVE", indicator="VWAP", threshold="12",
-            )))
-            sma = await service.create_alert(_create(condition=AlertCondition(
-                kind="INDICATOR_SIGNAL", direction="ABOVE", indicator="SMA",
-                indicator_period=3, threshold="12",
-            )))
+            vwap = await service.create_alert(_create(condition=_indicator_rule("VWAP")))
+            sma = await service.create_alert(_create(condition=_indicator_rule("SMA", period=3)))
             service.handle_event(_kline(midnight + 600 * MINUTE, "10"))
             clock.now += MINUTE
             service.handle_event(_kline(midnight + 601 * MINUTE, "10000"))
@@ -709,4 +669,102 @@ def test_session_vwap_alert_backfills_utc_boundary_on_a_fresh_start(
         finally:
             await _shutdown(writer, service)
 
+    asyncio.run(scenario())
+
+
+def test_migrated_intrabar_touch_replay_freezes_at_the_legacy_event(tmp_path: Path) -> None:
+    # alerts-and-scanning/01: 期望值来自迁移前相同行情的引擎输出。
+    from talaria.foundation.drawings import DrawingCreate
+    from talaria.replay import ReplayFeed
+
+    async def scenario() -> None:
+        start = NOW_MS // MINUTE * MINUTE
+        clock = Clock(start)
+        writer = StateWriterQueue(tmp_path, now_ms=clock)
+        await writer.start()
+        drawings = DrawingService(queue=writer, pack=CRYPTO_PERP_PACK, now_ms=clock)
+        service = AlertService(
+            state_writer=writer, drawings=drawings, instruments=INSTRUMENTS, now_ms=clock,
+            freeze_snapshot=lambda alert, now: f"{alert.instrument_id}/{alert.timeframe}/{now}",
+        )
+        try:
+            drawing = await drawings.create_drawing(DrawingCreate.model_validate({
+                "instrument_id": INSTRUMENT, "kind": "HORIZONTAL_LINE",
+                "points": [{"ts": start, "price": "100"}],
+            }))
+            record = _legacy_indicator("alr_intrabar", "EMA")
+            record["condition"] = {
+                "kind": "OVERLAY_CROSS", "direction": "ABOVE", "overlay_mode": "TOUCH",
+                "drawing_id": drawing.drawing_id,
+            }
+            _write_legacy(tmp_path, record)
+            await service.start()
+            assert (await service.get_alert("alr_intrabar")).condition.timing == "event"
+
+            events = [
+                _kline(start, "98").model_copy(update={"confirmed": False}),
+                _kline(start, "101").model_copy(update={"confirmed": False, "revision": 1}),
+                _kline(start, "98").model_copy(update={"revision": 2}),
+            ]
+            events[-1].bar.high = Decimal("101")
+            offsets = (1_000, 2_000, MINUTE)
+            path = tmp_path / "intrabar.jsonl"
+            path.write_text("\n".join(
+                json.dumps({"offset_ms": offset, "type": "kline", "event": event.model_dump(mode="json")})
+                for offset, event in zip(offsets, events, strict=True)
+            ), encoding="utf-8")
+
+            async def no_sleep(_: float) -> None:
+                pass
+
+            feed = ReplayFeed(path, speed=1_000.0, sleep=no_sleep)
+            await feed.connect()
+            await feed.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+            try:
+                for offset in offsets:
+                    clock.now = start + offset
+                    service.handle_event(await feed.recv())
+            finally:
+                await feed.close()
+
+            triggers = await service.list_triggers()
+            assert [
+                (row.triggered_ts, row.snapshot_id, row.observed, row.threshold, row.message)
+                for row in triggers
+            ] == [(start + 2_000, f"{INSTRUMENT}/1m/{start + 2_000}",
+                   Decimal("101"), Decimal("100"), "价格触碰水平线 100")]
+        finally:
+            await _shutdown(writer, service)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cold_store", [True, False])
+def test_alert_service_reads_actual_funding_settlements_without_scanner(tmp_path, fixture_dir, cold_store):
+    from talaria.foundation.snapshot import SnapshotRequest
+    from talaria.workbench_api.runtime import build_runtime
+    from talaria.workbench_api.service_config import FeatureToggles
+    from talaria.workbench_api.settings import AppSettings
+
+    async def scenario():
+        runtime = await build_runtime(AppSettings(
+            data_dir=tmp_path, dist_dir=tmp_path / "dist", fixture_dir=fixture_dir,
+            now_ms=lambda: NOW_MS, features=FeatureToggles(scanner=False, cold_store=cold_store)))
+        try:
+            service = runtime.require_alerts()
+            runtime.workbench.create_snapshot(SnapshotRequest(instrument_id=INSTRUMENT,
+                                                             timeframes=["1m"], cutoff_ts=NOW_MS))
+            alert = await service.create_alert(AlertCreate.model_validate({
+                "instrument_id": INSTRUMENT, "timeframe": "1m", "condition": {
+                    "version": "1", "timing": "bar_close", "expression": {"op": "all", "args": [
+                        {"op": "compare", "test": "gt", "left": {"source": "bar", "field": "close"},
+                         "right": {"source": "constant", "value": "100"}},
+                        {"op": "compare", "test": "eq", "left": {"source": "derivative", "kind": "funding_rate"},
+                         "right": {"source": "constant", "value": "-0.0002"}},
+                    ]}}}))
+            for i, price in enumerate(["90", "105"]):
+                service.handle_event(_kline(NOW_MS - (2-i)*MINUTE, price))
+            assert len(await service.list_triggers(alert_id=alert.alert_id)) == 1
+        finally:
+            await runtime.aclose()
     asyncio.run(scenario())

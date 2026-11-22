@@ -451,8 +451,12 @@ def create_5m_alert(client, **fields):
         "/api/alerts", headers=AUTH, json={
             "instrument_id": BTC, "timeframe": "5m",
             "condition": {
-                "kind": "INDICATOR_SIGNAL", "indicator": "EMA", "indicator_period": 2,
-                "direction": "ABOVE", "threshold": "105",
+                "version": "1", "timing": "bar_close",
+                "expression": {
+                    "op": "compare", "test": "gte",
+                    "left": {"source": "indicator", "name": "EMA", "params": {"period": 2}},
+                    "right": {"source": "constant", "value": '105'},
+                },
             },
             **fields,
         },

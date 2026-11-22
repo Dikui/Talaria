@@ -11,6 +11,7 @@ from enum import StrEnum
 
 from pydantic import Field
 
+from talaria.foundation.rules import Rule
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
@@ -22,6 +23,7 @@ class ScannerConditionKind(StrEnum):
     FUNDING_EXTREME = "FUNDING_EXTREME"
     OI_DIVERGENCE = "OI_DIVERGENCE"
     KEY_LEVEL_EVENT = "KEY_LEVEL_EVENT"
+    RULE = "RULE"
 
 
 class ScannerSeverity(StrEnum):
@@ -100,6 +102,7 @@ class ScannerScanRequest(ContractModel):
     """手动扫描一次；省略标的时扫描当前 Watchlist。"""
 
     instrument_ids: list[str] | None = None
+    rule: Rule | None = Field(default=None, description="可选的收盘规则，替换本轮内置扫描条件。")
 
 
 class ScannerScanResponse(ContractModel):

@@ -12,6 +12,7 @@ export const SCANNER_KIND_LABELS: Record<ScannerConditionKind, string> = {
   FUNDING_EXTREME: "资金费率极端",
   OI_DIVERGENCE: "OI 背离",
   KEY_LEVEL_EVENT: "关键位事件",
+  RULE: "规则命中",
 };
 
 export const SCANNER_KIND_ORDER: ScannerConditionKind[] = [
@@ -20,6 +21,7 @@ export const SCANNER_KIND_ORDER: ScannerConditionKind[] = [
   "FUNDING_EXTREME",
   "OI_DIVERGENCE",
   "KEY_LEVEL_EVENT",
+  "RULE",
 ];
 
 export const SCANNER_SEVERITY_LABELS: Record<ScannerSeverity, string> = {

@@ -1,292 +1,6 @@
 {
   "$defs": {
-    "AlertCondition": {
-      "additionalProperties": false,
-      "description": "一条可评估条件；字段组合由 ``kind`` 决定。",
-      "properties": {
-        "compare_anchor": {
-          "anyOf": [
-            {
-              "enum": [
-                "snapshot",
-                "session"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Compare Anchor"
-        },
-        "compare_indicator": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/IndicatorName"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "compare_period": {
-          "anyOf": [
-            {
-              "maximum": 5000,
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Compare Period"
-        },
-        "compare_seed": {
-          "anyOf": [
-            {
-              "enum": [
-                "pine",
-                "legacy_sma"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Compare Seed"
-        },
-        "compare_std_dev": {
-          "anyOf": [
-            {
-              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Compare Std Dev"
-        },
-        "direction": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AlertDirection"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "drawing_id": {
-          "anyOf": [
-            {
-              "maxLength": 64,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Drawing Id"
-        },
-        "indicator": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/IndicatorName"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "indicator_anchor": {
-          "anyOf": [
-            {
-              "enum": [
-                "snapshot",
-                "session"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Indicator Anchor"
-        },
-        "indicator_channel": {
-          "anyOf": [
-            {
-              "maxLength": 16,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Indicator Channel"
-        },
-        "indicator_period": {
-          "anyOf": [
-            {
-              "maximum": 5000,
-              "minimum": 1,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Indicator Period"
-        },
-        "indicator_seed": {
-          "anyOf": [
-            {
-              "enum": [
-                "pine",
-                "legacy_sma"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Indicator Seed"
-        },
-        "indicator_std_dev": {
-          "anyOf": [
-            {
-              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Indicator Std Dev"
-        },
-        "kind": {
-          "$ref": "#/$defs/AlertConditionKind"
-        },
-        "level_event": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AlertLevelEvent"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "level_id": {
-          "anyOf": [
-            {
-              "maxLength": 64,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Level Id"
-        },
-        "level_kind": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/KeyLevelKind"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "metric": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AlertMetric"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "overlay_mode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AlertOverlayMode"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "overlay_ratio": {
-          "anyOf": [
-            {
-              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Overlay Ratio"
-        },
-        "threshold": {
-          "anyOf": [
-            {
-              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Threshold"
-        }
-      },
-      "required": [
-        "kind"
-      ],
-      "title": "AlertCondition",
-      "type": "object"
-    },
-    "AlertConditionKind": {
-      "description": "规则条件的来源；前端不复制任何指标、几何或关键位数学。",
-      "enum": [
-        "METRIC_THRESHOLD",
-        "INDICATOR_SIGNAL",
-        "OVERLAY_CROSS",
-        "LEVEL_EVENT"
-      ],
-      "title": "AlertConditionKind",
-      "type": "string"
-    },
     "AlertDirection": {
-      "description": "比较方向：向上穿越/高于，或向下穿越/低于。",
       "enum": [
         "ABOVE",
         "BELOW"
@@ -295,7 +9,6 @@
       "type": "string"
     },
     "AlertLevelEvent": {
-      "description": "关键位事件：盘中触及、收盘突破、突破后的回踩确认。",
       "enum": [
         "TOUCH",
         "BREAK",
@@ -305,7 +18,6 @@
       "type": "string"
     },
     "AlertMetric": {
-      "description": "可直接比较的盘口或衍生品标量。",
       "enum": [
         "last_price",
         "bid_price",
@@ -318,7 +30,6 @@
       "type": "string"
     },
     "AlertOverlayMode": {
-      "description": "画线触发的两种判定：盘中触碰或收盘确认突破。",
       "enum": [
         "TOUCH",
         "CLOSE_BREAK"
@@ -335,7 +46,7 @@
           "type": "string"
         },
         "condition": {
-          "$ref": "#/$defs/AlertCondition"
+          "$ref": "#/$defs/Rule"
         },
         "cooldown_ms": {
           "title": "Cooldown Ms",
@@ -437,6 +148,16 @@
       "title": "AlertStatus",
       "type": "string"
     },
+    "DerivativeKind": {
+      "description": "衍生品序列种类。",
+      "enum": [
+        "mark_price",
+        "funding_rate",
+        "open_interest"
+      ],
+      "title": "DerivativeKind",
+      "type": "string"
+    },
     "IndicatorName": {
       "description": "技术指标与衍生品指标；全部共用同一算子核。",
       "enum": [
@@ -476,6 +197,579 @@
       ],
       "title": "KeyLevelKind",
       "type": "string"
+    },
+    "Rule": {
+      "additionalProperties": false,
+      "description": "bar_close 只读确认柱，event 比较引用本次行情。缺值为未知。\n\nany 遇真为真、全假为假，all 遇假为假、全真为真，其余为未知。\nnot 保留未知。未知不能命中。事件预警在相同可用分支上从部分观察变为\n确定命中时识别边沿，始终只用本次事件的值判断根条件。",
+      "properties": {
+        "expression": {
+          "discriminator": {
+            "mapping": {
+              "all": "#/$defs/RuleGroup",
+              "any": "#/$defs/RuleGroup",
+              "compare": "#/$defs/RuleComparison",
+              "level_event": "#/$defs/RuleLevelEvent",
+              "not": "#/$defs/RuleGroup",
+              "overlay": "#/$defs/RuleOverlay"
+            },
+            "propertyName": "op"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RuleComparison"
+            },
+            {
+              "$ref": "#/$defs/RuleOverlay"
+            },
+            {
+              "$ref": "#/$defs/RuleLevelEvent"
+            },
+            {
+              "$ref": "#/$defs/RuleGroup"
+            }
+          ],
+          "title": "Expression"
+        },
+        "timing": {
+          "enum": [
+            "bar_close",
+            "event"
+          ],
+          "title": "Timing",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "timing",
+        "expression"
+      ],
+      "title": "Rule",
+      "type": "object"
+    },
+    "RuleBar": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "enum": [
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "turnover"
+          ],
+          "title": "Field",
+          "type": "string"
+        },
+        "source": {
+          "const": "bar",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "field"
+      ],
+      "title": "RuleBar",
+      "type": "object"
+    },
+    "RuleComparison": {
+      "additionalProperties": false,
+      "properties": {
+        "left": {
+          "discriminator": {
+            "mapping": {
+              "bar": "#/$defs/RuleBar",
+              "constant": "#/$defs/RuleConstant",
+              "derivative": "#/$defs/RuleDerivative",
+              "drawing_price": "#/$defs/RuleDrawingPrice",
+              "event": "#/$defs/RuleEvent",
+              "indicator": "#/$defs/RuleIndicator",
+              "level_price": "#/$defs/RuleLevelPrice"
+            },
+            "propertyName": "source"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RuleConstant"
+            },
+            {
+              "$ref": "#/$defs/RuleBar"
+            },
+            {
+              "$ref": "#/$defs/RuleEvent"
+            },
+            {
+              "$ref": "#/$defs/RuleDerivative"
+            },
+            {
+              "$ref": "#/$defs/RuleIndicator"
+            },
+            {
+              "$ref": "#/$defs/RuleDrawingPrice"
+            },
+            {
+              "$ref": "#/$defs/RuleLevelPrice"
+            }
+          ],
+          "title": "Left"
+        },
+        "op": {
+          "const": "compare",
+          "title": "Op",
+          "type": "string"
+        },
+        "right": {
+          "discriminator": {
+            "mapping": {
+              "bar": "#/$defs/RuleBar",
+              "constant": "#/$defs/RuleConstant",
+              "derivative": "#/$defs/RuleDerivative",
+              "drawing_price": "#/$defs/RuleDrawingPrice",
+              "event": "#/$defs/RuleEvent",
+              "indicator": "#/$defs/RuleIndicator",
+              "level_price": "#/$defs/RuleLevelPrice"
+            },
+            "propertyName": "source"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RuleConstant"
+            },
+            {
+              "$ref": "#/$defs/RuleBar"
+            },
+            {
+              "$ref": "#/$defs/RuleEvent"
+            },
+            {
+              "$ref": "#/$defs/RuleDerivative"
+            },
+            {
+              "$ref": "#/$defs/RuleIndicator"
+            },
+            {
+              "$ref": "#/$defs/RuleDrawingPrice"
+            },
+            {
+              "$ref": "#/$defs/RuleLevelPrice"
+            }
+          ],
+          "title": "Right"
+        },
+        "test": {
+          "enum": [
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            "eq",
+            "cross_above",
+            "cross_below"
+          ],
+          "title": "Test",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "test",
+        "left",
+        "right"
+      ],
+      "title": "RuleComparison",
+      "type": "object"
+    },
+    "RuleConstant": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "constant",
+          "title": "Source",
+          "type": "string"
+        },
+        "value": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "value"
+      ],
+      "title": "RuleConstant",
+      "type": "object"
+    },
+    "RuleDerivative": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/DerivativeKind"
+        },
+        "source": {
+          "const": "derivative",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "kind"
+      ],
+      "title": "RuleDerivative",
+      "type": "object"
+    },
+    "RuleDrawingPrice": {
+      "additionalProperties": false,
+      "properties": {
+        "drawing_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Drawing Id",
+          "type": "string"
+        },
+        "edge": {
+          "default": "upper",
+          "enum": [
+            "lower",
+            "upper"
+          ],
+          "title": "Edge",
+          "type": "string"
+        },
+        "ratio": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "le": 1,
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ratio"
+        },
+        "source": {
+          "const": "drawing_price",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "drawing_id"
+      ],
+      "title": "RuleDrawingPrice",
+      "type": "object"
+    },
+    "RuleEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "metric": {
+          "$ref": "#/$defs/AlertMetric"
+        },
+        "source": {
+          "const": "event",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "metric"
+      ],
+      "title": "RuleEvent",
+      "type": "object"
+    },
+    "RuleGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "all": "#/$defs/RuleGroup",
+                "any": "#/$defs/RuleGroup",
+                "compare": "#/$defs/RuleComparison",
+                "level_event": "#/$defs/RuleLevelEvent",
+                "not": "#/$defs/RuleGroup",
+                "overlay": "#/$defs/RuleOverlay"
+              },
+              "propertyName": "op"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/RuleComparison"
+              },
+              {
+                "$ref": "#/$defs/RuleOverlay"
+              },
+              {
+                "$ref": "#/$defs/RuleLevelEvent"
+              },
+              {
+                "$ref": "#/$defs/RuleGroup"
+              }
+            ]
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Args",
+          "type": "array"
+        },
+        "op": {
+          "enum": [
+            "all",
+            "any",
+            "not"
+          ],
+          "title": "Op",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "args"
+      ],
+      "title": "RuleGroup",
+      "type": "object"
+    },
+    "RuleIndicator": {
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Channel"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IndicatorName"
+            },
+            {
+              "enum": [
+                "legacy_ema",
+                "legacy_atr"
+              ],
+              "type": "string"
+            }
+          ],
+          "title": "Name"
+        },
+        "params": {
+          "$ref": "#/$defs/RuleIndicatorParams"
+        },
+        "source": {
+          "const": "indicator",
+          "title": "Source",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "name"
+      ],
+      "title": "RuleIndicator",
+      "type": "object"
+    },
+    "RuleIndicatorParams": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "anyOf": [
+            {
+              "enum": [
+                "snapshot",
+                "session"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor"
+        },
+        "period": {
+          "anyOf": [
+            {
+              "maximum": 5000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Period"
+        },
+        "std_dev": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Std Dev"
+        }
+      },
+      "title": "RuleIndicatorParams",
+      "type": "object"
+    },
+    "RuleLevelEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/AlertLevelEvent"
+        },
+        "level_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Level Id",
+          "type": "string"
+        },
+        "level_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeyLevelKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "op": {
+          "const": "level_event",
+          "title": "Op",
+          "type": "string"
+        }
+      },
+      "required": [
+        "op",
+        "level_id",
+        "event"
+      ],
+      "title": "RuleLevelEvent",
+      "type": "object"
+    },
+    "RuleLevelPrice": {
+      "additionalProperties": false,
+      "properties": {
+        "edge": {
+          "default": "upper",
+          "enum": [
+            "lower",
+            "upper"
+          ],
+          "title": "Edge",
+          "type": "string"
+        },
+        "level_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Level Id",
+          "type": "string"
+        },
+        "level_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeyLevelKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "const": "level_price",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "level_id"
+      ],
+      "title": "RuleLevelPrice",
+      "type": "object"
+    },
+    "RuleOverlay": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/AlertDirection"
+        },
+        "drawing_id": {
+          "maxLength": 64,
+          "title": "Drawing Id",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/AlertOverlayMode"
+        },
+        "op": {
+          "const": "overlay",
+          "title": "Op",
+          "type": "string"
+        },
+        "ratio": {
+          "anyOf": [
+            {
+              "ge": 0,
+              "le": 1,
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ratio"
+        }
+      },
+      "required": [
+        "op",
+        "drawing_id",
+        "mode",
+        "direction"
+      ],
+      "title": "RuleOverlay",
+      "type": "object"
     }
   },
   "additionalProperties": false,

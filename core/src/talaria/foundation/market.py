@@ -16,6 +16,7 @@ from typing import Callable, Iterator, Protocol, Sequence, runtime_checkable
 from talaria.foundation.connector import MarketDataConnector
 from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.feed import FeedTransport
+from talaria.foundation.margin import MarginValuation
 from talaria.foundation.ticks import Trade
 from talaria.foundation.types import ContractModel, DecimalStr
 
@@ -49,6 +50,7 @@ class MarginTrait:
 
     margin_asset: str
     max_leverage: Decimal
+    contract_multiplier: Decimal = Decimal(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +125,9 @@ class MarketPack(Protocol):
 
     def traits(self, instrument_id: str) -> TraitBundle:
         """返回标的的五项能力；未知标的应抛 ``KeyError``。"""
+
+    def margin_valuation(self) -> MarginValuation:
+        """提供该包的只读保证金估值。"""
 
     def create_history_connector(
         self, *, base_url: str | None = None

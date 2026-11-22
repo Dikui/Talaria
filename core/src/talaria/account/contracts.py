@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import ConfigDict, Field, JsonValue
 
+from talaria.account.risk_config import TrailingStopSpec
 from talaria.components import Ctx
 from talaria.components.runtime import BarReader, DerivativeReader
 from talaria.foundation.bars import RangeBar
+from talaria.foundation.derivatives import DerivativePoint
+from talaria.foundation.margin import Direction as Direction
+from talaria.foundation.margin import MarginEstimate as MarginEstimate
+from talaria.foundation.margin import MarginPosition
+from talaria.foundation.margin import MarginValuation as MarginValuation
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
@@ -32,7 +38,6 @@ class TradingState(StrEnum):
     HALTED = "HALTED"
 
 
-type Direction = Literal["LONG", "SHORT"]
 type Intervention = Literal["CANCEL_ENTRY", "CLOSE_ALL", "REDUCE_RATIO"]
 
 
@@ -50,11 +55,29 @@ class EntryCandidate(_Value):
     evidence_ids: tuple[str, ...] = ()
     round_id: str | None = None  # 有回合 ID 时为加仓。
     signal_bar_close: int | None = Field(default=None, ge=0)
+    order_type: Literal["LIMIT", "MARKET", "POST_ONLY"] = "LIMIT"
 
 
 class SizingDecision(_Value):
     quantity: DecimalStr = Field(gt=0)
     basis: str = Field(min_length=1)
+
+
+class SizingPreview(_Value):
+    sizing: SizingDecision
+    liquidation_price: DecimalStr | None = None
+    liquidation_distance: DecimalStr | None = None
+
+
+class SizingRejected(ValueError):
+    """有效意图无法定出可下单的数量。"""
+
+
+class ExitBarrierSpec(_Value):
+    stop: DecimalStr
+    take_profit: tuple[DecimalStr, ...] = Field(min_length=1)
+    max_holding_ms: int = Field(gt=0)
+    trailing_stop: TrailingStopSpec | None = None
 
 
 class ApprovedExecutionPlan(_Value):
@@ -63,6 +86,7 @@ class ApprovedExecutionPlan(_Value):
     candidate: EntryCandidate
     sizing: SizingDecision
     allowed_slippage: DecimalStr | None = Field(default=None, ge=0)  # 价格单位。
+    barriers: ExitBarrierSpec | None = None
 
 
 class RejectedPlanRecord(_Value):
@@ -90,30 +114,25 @@ class RoundStatus(_Value):
 
 
 @dataclass(frozen=True, slots=True)
+class RoundExposure:
+    round_id: str
+    position: MarginPosition
+    stop: Decimal
+    max_entry_price: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class AccountState:
     sub_account_id: str
     balances: Mapping[tuple[str, str], Decimal]  # (currency, ledger account)
     rounds: Mapping[str, RoundStatus]
     trading_state: TradingState
-
-
-class MarginEstimate(_Value):
-    equity: DecimalStr
-    initial_margin: DecimalStr
-    maintenance_margin: DecimalStr
-
-
-class MarginValuation(Protocol):
-    """市场规则包提供的只读估值，使用截止时刻内的标记价格。"""
-
-    def isolated_liquidation_price(
-        self, instrument_id: str, direction: Direction, quantity: Decimal,
-        entry_price: Decimal, isolated_margin: Decimal, *, as_of: int,
-    ) -> Decimal: ...
-
-    def cross_margin(
-        self, account_state: AccountState, mark_prices: Mapping[str, Decimal], *, as_of: int,
-    ) -> MarginEstimate: ...
+    as_of: int = 0
+    positions: tuple[RoundExposure, ...] = ()
+    reservations: tuple[RoundExposure, ...] = ()
+    barriers: Mapping[str, ExitBarrierSpec] = field(default_factory=dict)
+    marks: Mapping[str, DerivativePoint] = field(default_factory=dict)
+    funding_rates: Mapping[str, DerivativePoint] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -189,6 +208,7 @@ class MarketEvent:
     bar: RangeBar
     ctx: Ctx | None = None  # 兼容已注册的数据入口，新插件使用 source。
     source: MarketData | None = None
+    derivative_points: tuple[DerivativePoint, ...] = ()
 
 
 @runtime_checkable

@@ -279,16 +279,8 @@ class DerivativePublisher:
     def _write_ticks(self, ticks: Sequence[DerivativeTickEvent]) -> None:
         groups: dict[tuple[str, DerivativeKind], list[DerivativePoint]] = defaultdict(list)
         for tick in ticks:
-            for kind in DerivativeKind:
-                value = getattr(tick, kind.value)
-                if value is None:
-                    continue
-                groups[tick.instrument_id, kind].append(DerivativePoint(
-                    instrument_id=tick.instrument_id, kind=kind, value=value, ts_event=tick.ts_event,
-                    ts_available=max(tick.ts_event, tick.ts_ingested),
-                    ts_ingested=tick.ts_ingested, ts_committed=tick.ts_ingested,
-                    settled=False if kind is DerivativeKind.FUNDING_RATE else None,
-                ))
+            for point in tick.points():
+                groups[point.instrument_id, point.kind].append(point)
         for (instrument, kind), points in groups.items():
             try:
                 self._write_points(self._instruments[instrument], kind, points)

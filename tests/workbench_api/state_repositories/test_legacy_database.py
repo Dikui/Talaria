@@ -127,8 +127,9 @@ def test_legacy_database_round_trips_through_repositories(tmp_path: Path) -> Non
                 )
             )
             assert adoption is not None and adoption["drawing_id"] == "drw_old"
+            await queue.run(lambda store: store.alerts.migrate_rules(pine_cutover_ts=None))
             alert = await queue.read(lambda store: store.alerts.get("alert_old"))
-            assert alert.condition.threshold == Decimal("101.10")
+            assert alert.condition.expression.right.value == Decimal("101.10")
             triggers = await queue.read(lambda store: store.alerts.list_triggers())
             assert [item.message for item in triggers] == ["旧预警"]
             consultation = await queue.read(

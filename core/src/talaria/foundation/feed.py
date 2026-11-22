@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import StrEnum
 from typing import Callable, Literal, Protocol, TypeAlias, runtime_checkable
 from uuid import UUID
@@ -20,6 +21,7 @@ from uuid import UUID
 from pydantic import Field, model_validator
 
 from talaria.foundation.bars import CompactBar
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.types import ContractModel, DecimalStr
 
 
@@ -105,6 +107,17 @@ class DerivativeTickEvent(ContractModel):
     open_interest: DecimalStr | None = None
     ts_event: int
     ts_ingested: int
+
+    def points(self) -> Iterator[DerivativePoint]:
+        for kind in DerivativeKind:
+            value = getattr(self, kind.value)
+            if value is not None:
+                yield DerivativePoint(
+                    instrument_id=self.instrument_id, kind=kind, value=value, ts_event=self.ts_event,
+                    ts_available=max(self.ts_event, self.ts_ingested),
+                    ts_ingested=self.ts_ingested, ts_committed=self.ts_ingested,
+                    settled=False if kind is DerivativeKind.FUNDING_RATE else None,
+                )
 
     @model_validator(mode="after")
     def _at_least_one_reading(self) -> DerivativeTickEvent:

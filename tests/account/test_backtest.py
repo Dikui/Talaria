@@ -45,11 +45,26 @@ def replay(tmp_path):
     return scheme_dir / "scheme.yaml", data_dir
 
 
-def launch(scheme, data_dir):
-    return main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)])
+@pytest.fixture
+def launch(register_host_fixtures):
+    def run(scheme, data_dir):
+        register_host_fixtures(scheme, data_dir)
+        return main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)])
+
+    return run
 
 
-def test_cli_replays_same_scheme_data_and_seed_into_equal_journals(replay, capsys):
+def test_agent_strategy_can_backtest_without_approval(replay, seatbelt_available, register_host_fixtures):
+    from talaria.account.strategy_code import StrategyCodeRegistry
+
+    scheme, data_dir = replay
+    record = StrategyCodeRegistry(data_dir).register(scheme.parent / "replay_strategy.py", "agent")
+    assert record.approval is None
+    register_host_fixtures(scheme, data_dir, include_strategy=False)
+    assert main(["account", "run", str(scheme), "--mode", "backtest", "--data-dir", str(data_dir)]) == 0
+
+
+def test_cli_replays_same_scheme_data_and_seed_into_equal_journals(replay, launch, capsys):
     scheme, data_dir = replay
     assert launch(scheme, data_dir) == 0
     assert launch(scheme, data_dir) == 0
@@ -75,7 +90,7 @@ def test_cli_replays_same_scheme_data_and_seed_into_equal_journals(replay, capsy
     ]
 
 
-def test_strategy_quantity_is_rejected_and_audited(replay):
+def test_strategy_quantity_is_rejected_and_audited(replay, launch):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -90,11 +105,40 @@ def test_strategy_quantity_is_rejected_and_audited(replay):
     assert journal.entries == ()
 
 
+@pytest.mark.regression
+def test_account_rule_reads_derivatives_from_the_replay_directory(replay, launch):
+    # trading/01 × data-access/08：行情插件与策略规则绑定同一数据目录。
+    from talaria.account.ledger import read_journal
+    from talaria.foundation.derivatives import DerivativePoint
+
+    scheme, data_dir = replay
+    instrument = CRYPTO_PERP_PACK.instrument("BTC-USDT-PERP")
+    funding = DerivativePoint(instrument_id=instrument.instrument_id, kind="funding_rate",
+                              value="-0.0001", settled=True, ts_event=START, ts_available=START,
+                              ts_ingested=START, ts_committed=START)
+    with closing(ColdStore(data_dir)) as store:
+        store.publish_derivatives(instrument, funding.kind, [funding])
+    strategy = scheme.parent / "replay_strategy.py"
+    strategy.write_text(strategy.read_text().replace(
+        "        bar = ctx.bars()[-1]", """        from talaria.components import compile_rule
+        from talaria.foundation.rules import Rule
+        rule = Rule.model_validate({"version": "1", "timing": "bar_close", "expression": {
+            "op": "compare", "test": "lt", "left": {"source": "derivative", "kind": "funding_rate"},
+            "right": {"source": "constant", "value": "0"}}})
+        if not compile_rule(rule).evaluate(ctx):
+            return Abstain(reason_code=AbstainReason.EVIDENCE_CONFLICT, message="缺少负费率")
+        bar = ctx.bars()[-1]""",
+    ))
+    assert launch(scheme, data_dir) == 0
+    ledger, = (data_dir / "runs").glob("*/ledger.sqlite")
+    assert [event.kind for event in read_journal(ledger).events] == ["ENTRY_FILLED"]
+
+
 @pytest.mark.parametrize(("slot", "params", "message"), [
     ("risk", "resize: true", "定仓"),
     ("fill", "unapproved: true", "未经风控批准"),
 ])
-def test_unapproved_openings_cannot_enter_the_ledger(replay, capsys, slot, params, message):
+def test_unapproved_openings_cannot_enter_the_ledger(replay, launch, capsys, slot, params, message):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -116,7 +160,7 @@ def test_unapproved_openings_cannot_enter_the_ledger(replay, capsys, slot, param
     assert journal.entries == ()
 
 
-def test_a_risk_rejection_is_audited_without_a_fill(replay):
+def test_a_risk_rejection_is_audited_without_a_fill(replay, launch):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -132,7 +176,7 @@ def test_a_risk_rejection_is_audited_without_a_fill(replay):
     assert journal.entries == ()
 
 
-def test_mutating_a_strategy_bar_cannot_change_the_fill_market(replay):
+def test_mutating_a_strategy_bar_cannot_change_the_fill_market(replay, launch):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -152,7 +196,7 @@ def test_mutating_a_strategy_bar_cannot_change_the_fill_market(replay):
     assert fill.price == Decimal("12.66")
 
 
-def test_a_fill_at_signal_bar_close_is_rejected(replay, capsys):
+def test_a_fill_at_signal_bar_close_is_rejected(replay, launch, capsys):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -168,7 +212,7 @@ def test_a_fill_at_signal_bar_close_is_rejected(replay, capsys):
     assert journal.entries == ()
 
 
-def test_host_truncates_strategy_ctx_even_when_data_plugin_overrides_bars(replay):
+def test_host_truncates_strategy_ctx_even_when_data_plugin_overrides_bars(replay, launch):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -207,7 +251,7 @@ class Data(ParquetReplay):
             )
             yield replace(event, ctx=ctx, source=None)
 
-plugin = SlotPlugin(Slot.DATA, (1,), Data, ReplayParams)
+plugin = SlotPlugin(Slot.DATA, (2,), Data, ReplayParams)
 """)
     scheme.write_text(scheme.read_text().replace("parquet_replay", "unfiltered_data.py:plugin"))
     strategy = scheme.parent / "replay_strategy.py"
@@ -224,7 +268,7 @@ plugin = SlotPlugin(Slot.DATA, (1,), Data, ReplayParams)
 
 
 @pytest.mark.parametrize("reverse_batch", [False, True])
-def test_poll_books_fills_before_risk_evaluates_new_intents(replay, reverse_batch):
+def test_poll_books_fills_before_risk_evaluates_new_intents(replay, launch, reverse_batch):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -255,7 +299,7 @@ class BatchedFill(ExampleFill):
         )
         self.events.insert(INDEX, funding)
 
-fill = SlotPlugin(Slot.FILL, (1,), lambda context, params: BatchedFill(context, **params))
+fill = SlotPlugin(Slot.FILL, (2,), lambda context, params: BatchedFill(context, **params))
 """.replace("INDEX", "1" if reverse_batch else "0"))
     assert launch(scheme, data_dir) == 0
     path, = (data_dir / "runs").glob("*/ledger.sqlite")
@@ -270,7 +314,7 @@ fill = SlotPlugin(Slot.FILL, (1,), lambda context, params: BatchedFill(context, 
 
 
 @pytest.mark.parametrize("deny_add_on", [False, True])
-def test_strategy_same_direction_intent_adds_to_its_round_through_risk(replay, deny_add_on):
+def test_strategy_same_direction_intent_adds_to_its_round_through_risk(replay, launch, deny_add_on):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -311,7 +355,7 @@ def test_strategy_same_direction_intent_adds_to_its_round_through_risk(replay, d
     ("sizing", "typo: 1", "typo"),
     ("data", "start: '1793491200000'", "start"),
 ])
-def test_account_refuses_invalid_yaml_slot_parameters(replay, capsys, slot, params, field):
+def test_account_refuses_invalid_yaml_slot_parameters(replay, launch, capsys, slot, params, field):
     scheme, data_dir = replay
     content = scheme.read_text()
     if slot == "strategy":
@@ -330,7 +374,7 @@ def test_account_refuses_invalid_yaml_slot_parameters(replay, capsys, slot, para
     assert not (data_dir / "runs").exists()
 
 
-def test_replaying_run_config_uses_recorded_effective_indicator_defaults(replay):
+def test_replaying_run_config_uses_recorded_effective_indicator_defaults(replay, launch):
     import json
     import sqlite3
 
@@ -372,7 +416,7 @@ def test_replaying_run_config_uses_recorded_effective_indicator_defaults(replay)
     assert read_journal(repeated / "ledger.sqlite") == first_journal
 
 
-def test_late_signal_bar_is_not_reused_by_immediate_fill(replay, capsys):
+def test_late_signal_bar_is_not_reused_by_immediate_fill(replay, launch, capsys):
     scheme, data_dir = replay
     scheme.write_text(scheme.read_text().replace('trigger_price: "11"', 'trigger_price: "12"'))
     plugins = scheme.parent / "replay_plugins.py"
@@ -389,13 +433,13 @@ class ImmediateFill(ExampleFill):
         super().on_market(self.market, None)
         return receipt
 
-fill = SlotPlugin(Slot.FILL, (1,), lambda context, params: ImmediateFill(context))
+fill = SlotPlugin(Slot.FILL, (2,), lambda context, params: ImmediateFill(context))
 """)
     assert launch(scheme, data_dir) == 2
     assert "信号柱" in capsys.readouterr().err
 
 
-def test_data_entry_that_publishes_a_bar_early_is_audited(replay, capsys):
+def test_data_entry_that_publishes_a_bar_early_is_audited(replay, launch, capsys):
     from talaria.account.ledger import read_journal
 
     scheme, data_dir = replay
@@ -410,7 +454,7 @@ class EarlyData(ParquetReplay):
         for event in super().events():
             yield replace(event, as_of=event.bar.ts_available - 1)
 
-plugin = SlotPlugin(Slot.DATA, (1,), EarlyData, ReplayParams)
+plugin = SlotPlugin(Slot.DATA, (2,), EarlyData, ReplayParams)
 """)
     scheme.write_text(scheme.read_text().replace("parquet_replay", "early_data.py:plugin"))
 
@@ -420,3 +464,96 @@ plugin = SlotPlugin(Slot.DATA, (1,), EarlyData, ReplayParams)
     journal = read_journal(path)
     assert [event.kind for event in journal.events] == ["DATA_REJECTED"]
     assert journal.entries == ()
+
+
+@pytest.mark.parametrize("has_marks", [True, False])
+def test_scheme_runs_default_sizing_and_risk_with_point_in_time_marks(replay, register_host_fixtures, has_marks):
+    from dataclasses import replace
+
+    from talaria.account.host import default_registry, run_backtest
+    from talaria.account.ledger import read_journal
+    from talaria.account.plugins.parquet import ParquetReplay, ReplayParams
+    from talaria.account.scheme import Slot, SlotPlugin
+    from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
+
+    class ReplayWithMarks(ParquetReplay):
+        """向现有 Parquet 行情入口注入标记价，独立于衍生品冷库。"""
+
+        def events(self):
+            for event in super().events():
+                ts = event.as_of if has_marks else event.as_of + 1
+                point = DerivativePoint(
+                    instrument_id=event.instrument_id, kind=DerivativeKind.MARK_PRICE, value="11",
+                    ts_event=ts, ts_available=ts, ts_ingested=ts, ts_committed=ts,
+                )
+                yield replace(event, derivative_points=(point,))
+
+    scheme, data_dir = replay
+    scheme.write_text(scheme.read_text().replace(
+        "plugin: parquet_replay", "plugin: replay_with_marks",
+    ).replace(
+        "sizing: replay_plugins.py:sizing", "sizing: r_unit",
+    ).replace(
+        "risk: replay_plugins.py:risk", "risk: seven_step",
+    ) + 'account_risk:\n  example: {initial_capital: "5000"}\n')
+    strategy = scheme.with_name("replay_strategy.py")
+    strategy.write_text(strategy.read_text().replace("take_profit=[bar.close + 2]", "take_profit=[bar.close + 10]"))
+    registry = default_registry()
+    registry.register("replay_with_marks", SlotPlugin(Slot.DATA, (2,), ReplayWithMarks, ReplayParams))
+
+    register_host_fixtures(scheme, data_dir)
+    first = run_backtest(scheme, data_dir, registry=registry)
+    second = run_backtest(first.directory / "run-config.json", None, registry=registry, replay=True)
+    journal = read_journal(first.directory / "ledger.sqlite")
+    assert journal == read_journal(second.directory / "ledger.sqlite")
+    assert journal.entries[0].postings[0].amount == Decimal(5000)
+    funded, decision = journal.events
+    assert funded.kind == "ACCOUNT_FUNDED"
+    if has_marks:
+        assert (decision.kind, decision.quantity) == ("ENTRY_FILLED", Decimal("6.209"))
+    else:
+        assert (decision.kind, decision.reason) == ("CANDIDATE_REJECTED", "MARGIN_VALUATION_UNAVAILABLE")
+
+
+def test_v2_scheme_rejects_v1_fill_at_assembly(replay, register_host_fixtures):
+    from talaria.account.host import open_account_process
+    from talaria.account.scheme import SchemeError
+
+    scheme, data_dir = replay
+    plugin = scheme.with_name("replay_plugins.py")
+    plugin.write_text(plugin.read_text().replace("Slot.FILL, (2,)", "Slot.FILL, (1,)"))
+    register_host_fixtures(scheme, data_dir)
+    with pytest.raises(SchemeError, match=r"fill.*兼容接口版本.*1.*要求 2"):
+        with open_account_process(scheme, data_dir, mode="backtest"):
+            pytest.fail("v1 成交插件不能被装配到 v2 交易方案")
+
+
+def test_halted_scheme_initializes_and_blocks_even_with_custom_risk(replay, launch):
+    from talaria.account.ledger import read_journal
+
+    scheme, data_dir = replay
+    scheme.write_text(scheme.read_text() + 'account_risk:\n  example: {trading_state: HALTED}\n')
+    assert launch(scheme, data_dir) == 0
+    path, = (data_dir / "runs").glob("*/ledger.sqlite")
+    journal = read_journal(path)
+    assert [(event.kind, event.reason) for event in journal.events] == [
+        ("ACCOUNT_FUNDED", None), ("CANDIDATE_REJECTED", "TRADING_STATE_BLOCKED"),
+    ]
+
+
+def test_initial_capital_postings_preserve_decimal_precision(replay, launch):
+    from decimal import localcontext
+
+    from talaria.account.ledger import read_journal
+
+    scheme, data_dir = replay
+    scheme.write_text(scheme.read_text().replace(
+        "sizing: replay_plugins.py:sizing", "sizing: r_unit",
+    ) + 'account_risk:\n  example: {initial_capital: "10000.0123456789"}\n')
+    with localcontext(prec=8):
+        assert launch(scheme, data_dir) == 0
+    path, = (data_dir / "runs").glob("*/ledger.sqlite")
+    funding = read_journal(path).entries[0]
+    assert tuple(item.amount for item in funding.postings) == (
+        Decimal("10000.0123456789"), Decimal("-10000.0123456789"),
+    )

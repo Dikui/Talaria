@@ -92,11 +92,13 @@ class ExampleFill:
         raise AssertionError("回放样例中没有持仓干预")
 
     def set_trading_state(self, sub_account_id, state, reason):
-        raise AssertionError("回放样例中没有交易状态调整")
+        self.pending = [
+            plan for plan in self.pending if sub_account_id not in (None, plan.candidate.sub_account_id)
+        ]
 
 
-sizing = SlotPlugin(Slot.SIZING, (1,), lambda _context, _params: FixedSizing())
+sizing = SlotPlugin(Slot.SIZING, (2,), lambda _context, _params: FixedSizing())
 risk_params = {"properties": {"resize": {"type": "boolean"}, "deny": {"type": "boolean"}}}
 fill_params = {"properties": {"unapproved": {"type": "boolean"}}}
-risk = SlotPlugin(Slot.RISK, (1,), lambda _context, params: ExampleRisk(**params), risk_params)
-fill = SlotPlugin(Slot.FILL, (1,), lambda context, params: ExampleFill(context, **params), fill_params)
+risk = SlotPlugin(Slot.RISK, (2,), lambda _context, params: ExampleRisk(**params), risk_params)
+fill = SlotPlugin(Slot.FILL, (2,), lambda context, params: ExampleFill(context, **params), fill_params)
