@@ -8522,6 +8522,75 @@
         "summary": "Preview Rule"
       }
     },
+    "/api/trades/backfill": {
+      "post": {
+        "description": "下载一个已结束的 UTC 日，返回新增的成交笔数。",
+        "operationId": "backfill_trades_api_trades_backfill_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "instrument",
+            "required": true,
+            "schema": {
+              "title": "Instrument",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "Day",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response Backfill Trades Api Trades Backfill Post",
+                  "type": "integer"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "X-Talaria-Data-Dir": {
+                "description": "数据目录标识",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "逐笔历史补数失败，可以重试"
+          }
+        },
+        "summary": "Backfill Trades"
+      }
+    },
     "/api/watchlist": {
       "get": {
         "operationId": "get_watchlist_api_watchlist_get",

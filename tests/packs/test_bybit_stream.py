@@ -192,6 +192,7 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
             "kline.1.BTCUSDT",
             "orderbook.1.BTCUSDT",
             "tickers.BTCUSDT",
+            "publicTrade.BTCUSDT",
         ]
         assert isinstance(bar, KlineEvent)
         assert (bar.instrument_id, bar.timeframe) == (INSTRUMENT, "1m")
@@ -211,6 +212,86 @@ def test_subscribe_ack_then_kline_and_orderbook() -> None:
         assert tick.open_interest == Decimal("12345.6")
 
     asyncio.run(Harness(handler).run(scenario))
+
+
+def test_public_trade_batches_and_l1_use_exchange_event_time(monkeypatch, tmp_path) -> None:
+    # data-access/07: inject a WebSocket with matching-engine and wall-clock times.
+    from talaria import sdk
+    from talaria.perception.backfill import BackfillPolicy
+    from talaria.perception.cold_publisher import ColdPublisher
+    from talaria.perception.cold_store import ColdStore
+
+    async def scenario() -> None:
+        requests = asyncio.Queue()
+        trade = {
+            "s": "BTCUSDT", "T": BASE + 10, "S": "Buy", "p": "100.1", "v": "0.123",
+            "i": "11111111-0000-0000-0000-000000000004", "seq": 82,
+        }
+
+        async def frames():
+            await requests.get()
+            yield json.dumps({"success": True, "op": "subscribe"})
+            yield json.dumps({
+                "topic": "publicTrade.BTCUSDT",
+                "ts": BASE + 2000,
+                "data": [trade, dict(trade, p="broken"), dict(
+                    trade, S="Sell", i="11111111-0000-0000-0000-000000000002",
+                )],
+            })
+            yield json.dumps({
+                "topic": "publicTrade.BTCUSDT", "ts": BASE + 2000,
+                "data": [dict(trade, i="11111111-0000-0000-0000-000000000003", seq=81)],
+            })
+            yield json.dumps({
+                "topic": "publicTrade.BTCUSDT", "ts": BASE + 2002,
+                "data": [dict(trade, i="11111111-0000-0000-0000-000000000001")],
+            })
+            yield json.dumps(dict(book_payload(), cts=BASE + 11, ts=BASE + 2001))
+
+        ws = MagicMock(send=AsyncMock(side_effect=requests.put), close=AsyncMock())
+        ws.__aiter__.side_effect = frames
+        monkeypatch.setattr("talaria.packs.crypto_perp.stream.ws_connect", AsyncMock(return_value=ws))
+        stream = make_stream("ws://unused", ping_interval_seconds=None, now_ms=lambda: BASE + 1000)
+        await stream.connect()
+        try:
+            await stream.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+            request = json.loads(ws.send.await_args.args[0])
+            assert "publicTrade.BTCUSDT" in request["args"]
+            first, second, earlier, tied, quote = [await asyncio.wait_for(stream.recv(), 1) for _ in range(5)]
+            assert [(row.ts_event, row.ts_ingested, row.side, row.price, row.size) for row in (first, second)] == [
+                (BASE + 10, BASE + 1000, "Buy", Decimal("100.1"), Decimal("0.123")),
+                (BASE + 10, BASE + 1000, "Sell", Decimal("100.1"), Decimal("0.123")),
+            ]
+            assert first.trade_id != second.trade_id
+            assert (quote.ts_event, quote.ts_ingested) == (BASE + 11, BASE + 1000)
+            store = ColdStore(tmp_path)
+            try:
+                publisher = ColdPublisher(
+                    store, instruments=CRYPTO_PERP_PACK.instruments(), connector=None,
+                    policy=BackfillPolicy(), now_ms=lambda: BASE + 3000,
+                )
+                for row in (first, second, earlier, tied, quote):
+                    publisher.ingest_ticks(row)
+                await publisher.close()
+            finally:
+                store.close()
+            assert not sdk.trades(INSTRUMENT, BASE, as_of=BASE + 1999, data_dir=tmp_path)
+            trades = sdk.trades(INSTRUMENT, BASE, as_of=BASE + 2000, data_dir=tmp_path)
+            assert {(row.ts_available, row.availability) for row in trades} == {(BASE + 2000, "measured")}
+            assert [row.trade_id for row in trades] == [earlier.trade_id, first.trade_id, second.trade_id]
+            assert [(row.sequence, row.packet_index, row.order_uncertain) for row in trades] == [
+                (81, 0, False), (82, 0, False), (82, 2, False),
+            ]
+            ambiguous = sdk.trades(INSTRUMENT, BASE, as_of=BASE + 2002, data_dir=tmp_path)
+            assert all(row.order_uncertain for row in ambiguous)
+            ids = [row.trade_id for row in ambiguous]
+            assert ids.index(first.trade_id) < ids.index(second.trade_id)
+            assert not sdk.quotes(INSTRUMENT, BASE, as_of=BASE + 2000, data_dir=tmp_path)
+            assert sdk.quotes(INSTRUMENT, BASE, as_of=BASE + 2001, data_dir=tmp_path)[0].ts_available == BASE + 2001
+        finally:
+            await stream.close()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.regression
@@ -456,10 +537,125 @@ def test_tickers_subscription_is_shared_across_timeframes() -> None:
         await stream.unsubscribe(instrument_id=INSTRUMENT, timeframe="1m")
         assert received[2]["args"] == ["kline.1.BTCUSDT"]
         await stream.unsubscribe(instrument_id=INSTRUMENT, timeframe="5m")
-        assert received[3]["args"] == ["kline.5.BTCUSDT", "orderbook.1.BTCUSDT", "tickers.BTCUSDT"]
+        assert received[3]["args"] == [
+            "kline.5.BTCUSDT", "orderbook.1.BTCUSDT", "tickers.BTCUSDT", "publicTrade.BTCUSDT",
+        ]
         await stream.close()
 
     try:
         asyncio.run(Harness(handler).run(scenario))
     finally:
         pass
+
+
+@pytest.mark.regression
+def test_supervisor_replays_all_topics_on_a_new_connection(monkeypatch) -> None:
+    async def scenario() -> None:
+        sockets = []
+        requests = [[], []]
+        subscribed = asyncio.Event()
+
+        def socket(index):
+            sent = asyncio.Queue()
+
+            async def frames():
+                for _ in range(2):
+                    requests[index].append(json.loads(await sent.get())["args"])
+                    yield json.dumps({"success": True, "op": "subscribe"})
+                if index == 1:
+                    subscribed.set()
+                    await asyncio.Future()
+
+            ws = MagicMock(send=AsyncMock(side_effect=sent.put), close=AsyncMock())
+            ws.__aiter__.side_effect = frames
+            return ws
+
+        sockets.extend(socket(index) for index in range(2))
+        monkeypatch.setattr("talaria.packs.crypto_perp.stream.ws_connect", AsyncMock(side_effect=sockets))
+        supervisor = FeedSupervisor(
+            stream=make_stream("ws://unused", ping_interval_seconds=None),
+            instruments=CRYPTO_PERP_PACK.instruments(), backoff_initial_seconds=0,
+        )
+        supervisor.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+        supervisor.subscribe(instrument_id=INSTRUMENT, timeframe="5m")
+        await supervisor.start()
+        try:
+            await asyncio.wait_for(subscribed.wait(), 2)
+            assert requests == [[
+                ["kline.1.BTCUSDT", "orderbook.1.BTCUSDT", "tickers.BTCUSDT", "publicTrade.BTCUSDT"],
+                ["kline.5.BTCUSDT"],
+            ]] * 2
+        finally:
+            await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.regression
+def test_l1_ignores_old_updates_and_rebuilds_from_reconnect_snapshot(monkeypatch, tmp_path) -> None:
+    from talaria import sdk
+    from talaria.perception.backfill import BackfillPolicy
+    from talaria.perception.cold_publisher import ColdPublisher
+    from talaria.perception.cold_store import ColdStore
+
+    def book(update_id, bid, *, message_type="snapshot"):
+        packet = book_payload(bid=bid)
+        packet["data"]["u"] = update_id
+        return dict(packet, type=message_type, cts=BASE + 10)
+
+    async def scenario() -> None:
+        def socket(*packets):
+            subscribed = asyncio.Event()
+
+            async def frames():
+                await subscribed.wait()
+                yield json.dumps({"success": True, "op": "subscribe"})
+                for packet in packets:
+                    yield json.dumps(packet)
+
+            ws = MagicMock(send=AsyncMock(side_effect=lambda _: subscribed.set()), close=AsyncMock())
+            ws.__aiter__.side_effect = frames
+            return ws
+
+        sockets = [
+            socket(book(8, "99.0", message_type="delta"), book(10, "100.0"),
+                   book(11, "100.1"), book(10, "99.1"), book(11, "99.2")),
+            socket(book(12, "99.3", message_type="delta"), book(1, "99.4")),
+        ]
+        monkeypatch.setattr("talaria.packs.crypto_perp.stream.ws_connect", AsyncMock(side_effect=sockets))
+        stream = make_stream("ws://unused", ping_interval_seconds=None, now_ms=lambda: BASE + 1000)
+        store = ColdStore(tmp_path)
+        publisher = ColdPublisher(
+            store, instruments=CRYPTO_PERP_PACK.instruments(), connector=None,
+            policy=BackfillPolicy(), now_ms=lambda: BASE + 1100,
+        )
+        groups = []
+        try:
+            for _ in sockets:
+                await stream.connect()
+                await stream.subscribe(instrument_id=INSTRUMENT, timeframe="1m")
+                updates = []
+                with pytest.raises(FeedTransportError):
+                    while True:
+                        event = await asyncio.wait_for(stream.recv(), 1)
+                        updates.append(event)
+                        publisher.ingest_ticks(event)
+                groups.append(updates)
+        finally:
+            await stream.close()
+            await publisher.close()
+            store.close()
+
+        assert [[row.bid_price for row in group] for group in groups] == [
+            [Decimal("100.0"), Decimal("100.1")], [Decimal("99.4")],
+        ]
+        rows = sdk.quotes(INSTRUMENT, BASE, as_of=BASE + 1100, data_dir=tmp_path)
+        first_connection = [row for row in rows if row.connection_id == groups[0][0].connection_id]
+        assert [(row.update_id, row.bid_price) for row in first_connection] == [
+            (10, Decimal("100.0")), (11, Decimal("100.1")),
+        ]
+        reset, = [row for row in rows if row.connection_id == groups[1][0].connection_id]
+        assert (reset.update_id, reset.bid_price) == (1, Decimal("99.4"))
+        assert all(row.order_uncertain for row in rows)
+
+    asyncio.run(scenario())
