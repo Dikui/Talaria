@@ -23,7 +23,7 @@ import {
 export interface ScannerPanelProps {
   controller: ScannerController;
   open: boolean;
-  onToggle: () => void;
+  onToggle?: () => void;
   onLocate: (payload: ScannerLocatePayload) => void;
   readOnly?: boolean;
   now?: number;
@@ -216,14 +216,16 @@ export function ScannerPanel({
               {scanning ? "扫描中…" : "手动扫描"}
             </button>
           )}
-          <button
-            type="button"
-            className="ghost-button scanner-toggle"
-            aria-expanded="true"
-            onClick={onToggle}
-          >
-            收起
-          </button>
+          {onToggle !== undefined && (
+            <button
+              type="button"
+              className="ghost-button scanner-toggle"
+              aria-expanded="true"
+              onClick={onToggle}
+            >
+              收起
+            </button>
+          )}
         </div>
       </header>
 

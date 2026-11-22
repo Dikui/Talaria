@@ -35,7 +35,7 @@ export interface ScannerController {
  * 扫描结果走双通道：WS 命中即时插入，4 秒轮询补齐历史并兜住断线；
  * 两者按 trigger_id 去重，因此切标的导致 WS 重置也不会丢卡片。
  */
-export function useScanner(): ScannerController {
+export function useScanner(enabled = true): ScannerController {
   const [triggers, setTriggers] = useState<ScannerTrigger[]>([]);
   const [focus, setFocus] = useState<ScannerFocusResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,6 +84,7 @@ export function useScanner(): ScannerController {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     mounted.current = true;
     void refresh();
     const timer = window.setInterval(() => void refresh(), POLL_MS);
@@ -91,7 +92,7 @@ export function useScanner(): ScannerController {
       mounted.current = false;
       window.clearInterval(timer);
     };
-  }, [refresh]);
+  }, [enabled, refresh]);
 
   const ingest = useCallback((trigger: ScannerTrigger) => {
     setTriggers((current) => {

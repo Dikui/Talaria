@@ -1,140 +1,323 @@
-import { DeskWorkbench, configureApi } from "@talaria/desk-ui";
-import { useEffect, useState } from "react";
-import type { ReactElement } from "react";
+import {
+  configureApi, PANELS, PANEL_LABELS, panelPath, WorkbenchPanel,
+  type PanelName, type Theme,
+} from "@talaria/desk-ui";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { ComponentType, ReactNode } from "react";
+import { createPortal } from "react-dom";
 import styles from "@talaria/desk-ui/styles.css?inline";
+import hostStyles from "./styles.css?inline";
+import { createLinkRelay } from "./linkRelay";
+import { panelId, registerPanels } from "./registerPanels.mjs";
 
 const STYLE_ID = "talaria-desk-plugin-styles";
+const ACTIVE_PANEL_KEY = "talaria-dsh-main-panel";
+const DOCK_KEY = "talaria-dsh-docked-panel";
+const DOCK_PANELS = ["alerts", "scanner", "levels"] as const;
+type DockPanel = (typeof DOCK_PANELS)[number];
+type Connection = { baseUrl: string; relay: ReturnType<typeof createLinkRelay> };
 
-function ensureStyles(): void {
-  if (typeof document === "undefined" || document.getElementById(STYLE_ID)) {
-    return;
-  }
-  const style = document.createElement("style");
-  style.id = STYLE_ID;
-  style.textContent = styles;
-  document.head.append(style);
+interface Observable<Value> {
+  getSnapshot(): Value;
+  subscribe(listener: () => void): () => void;
 }
 
-function removeStyles(): void {
-  document.getElementById(STYLE_ID)?.remove();
-}
-
-interface BootstrapPayload {
-  base_url?: string;
-  token?: string;
-  message?: string;
-}
-
-function TalariaDeskPanel(): ReactElement {
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    ensureStyles();
-    const controller = new AbortController();
-    fetch("/talaria/bootstrap", { signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`bootstrap HTTP ${response.status}`);
-        }
-        return (await response.json()) as BootstrapPayload;
-      })
-      .then((payload) => {
-        if (!payload.base_url || !payload.token) {
-          throw new Error("bootstrap 缺少 base_url 或 token");
-        }
-        configureApi({ baseUrl: payload.base_url, token: payload.token });
-        setReady(true);
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) {
-          setError(reason instanceof Error ? reason.message : String(reason));
-        }
-      });
-    return () => controller.abort();
-  }, []);
-
-  if (error) {
-    return (
-      <div className="talaria-desk-panel talaria-desk-panel--error">
-        Talaria 守护进程未连接（{error}）。请先运行 `talaria up`。
-      </div>
-    );
-  }
-  if (!ready) {
-    return <div className="talaria-desk-panel">正在连接 Talaria 守护进程…</div>;
-  }
-  return (
-    <div className="talaria-desk-panel">
-      <DeskWorkbench embedded />
-    </div>
-  );
-}
-
-export const inject = ["slots", "sidebarRight", "sidebarRightTabs"];
-
-export interface SlotContext {
-  effect(callback: () => () => void): () => void;
+// Public client contracts from ui-layout, ui-sidebar and ui-sidebar-right in DSH 0.2.2-rc.3.
+interface SlotContext {
+  effect(callback: () => () => void): void;
   slots: {
-    inject(name: string, register: () => () => void): () => void;
-    register(options: Record<string, unknown>, component: () => React.ReactElement): () => void;
+    inject(name: string, register: () => (() => void) | Generator<() => void>): () => void;
+    register(options: Record<string, unknown>, component: ComponentType): () => void;
+  };
+  layout: {
+    panelInfo: Observable<{ activePanelId: string | null }>;
+    selectPanel(id: string | null): void;
+    openRightbar(track: boolean, fullscreen: boolean): void;
+    closeRightbar(): void;
   };
   sidebarRightTabs: {
     register(definition: Record<string, unknown>): () => void;
   };
   sidebarRight: {
-    openTab(kind: string, options?: Record<string, unknown>): void;
+    mounted: Observable<string | undefined>;
+    openTab(kind: string): void;
   };
 }
 
-export function apply(ctx: SlotContext): void {
-  ctx.effect(() => {
-    const disposeTab = ctx.sidebarRightTabs.register({
-      id: "talaria-desk-tab",
-      kind: "talaria-desk",
-      title: () => "Talaria 看盘",
-      keepMounted: true,
-      canOpen: () => true,
-      guide: [
-        {
-          id: "talaria-desk",
-          order: 10,
-          title: () => "Talaria 看盘",
-          description: () => "在右侧面板打开确定性历史行情与指标工作台",
-        },
-      ],
+function readPreference(key: string) {
+  try {
+    return sessionStorage.getItem(key) ?? localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function savePreference(key: string, value: string, shared = false) {
+  try {
+    sessionStorage.setItem(key, value);
+    if (shared) localStorage.setItem(key, value);
+  } catch {
+    // A restricted storage context can still use each panel.
+  }
+}
+
+function createConnection() {
+  const controller = new AbortController();
+  let pending: Promise<Connection> | undefined;
+  let active: Connection | undefined;
+
+  function get() {
+    pending ??= fetch("/talaria/bootstrap", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`连接凭据读取失败（HTTP ${response.status}）`);
+        const { base_url: baseUrl, token } = await response.json();
+        if (typeof baseUrl !== "string" || !baseUrl || typeof token !== "string" || !token) {
+          throw new Error("连接凭据缺少服务地址或令牌");
+        }
+        controller.signal.throwIfAborted();
+        configureApi({ baseUrl, token });
+        active = { baseUrl, relay: createLinkRelay(baseUrl) };
+        return active;
+      })
+      .catch((error: unknown) => {
+        pending = undefined;
+        throw error;
+      });
+    return pending;
+  }
+
+  return {
+    get,
+    close() {
+      controller.abort();
+      active?.relay.close();
+    },
+  };
+}
+
+function useHostTheme(): Theme {
+  const read = () => document.body.hasAttribute("data-ds-dark-theme") ? "dark" : "light";
+  const [theme, setTheme] = useState<Theme>(read);
+  useEffect(() => {
+    const observer = new MutationObserver(() => setTheme(read()));
+    observer.observe(document.body, { attributeFilter: ["data-ds-dark-theme"] });
+    setTheme(read());
+    return () => observer.disconnect();
+  }, []);
+  return theme;
+}
+
+function Surface({
+  connection, children,
+}: { connection: ReturnType<typeof createConnection>; children: (value: Connection, theme: Theme) => ReactNode }) {
+  const theme = useHostTheme();
+  const [value, setValue] = useState<Connection>();
+  const [error, setError] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    connection.get().then((result) => {
+      if (!cancelled) setValue(result);
+    }).catch((reason: unknown) => {
+      if (!cancelled) setError(reason instanceof Error ? reason.message : "无法连接常驻服务");
     });
-    const disposeBody = ctx.slots.inject("sidebar.right.pane.tab", () =>
-      ctx.slots.register(
-        { name: "sidebar.right.pane.tab", key: "talaria-desk-tab", locale: "talaria-desk" },
-        TalariaDeskPanel,
-      ),
-    );
+    return () => { cancelled = true; };
+  }, [connection, attempt]);
+
+  return (
+    <div className="talaria-desk talaria-dsh-surface" data-theme={theme}>
+      {value ? children(value, theme) : (
+        <div className="desk-connect">
+          {error ? (
+            <>
+              <p role="alert">{error}</p>
+              <button type="button" className="ghost-button" onClick={() => {
+                setError(undefined);
+                setAttempt((count) => count + 1);
+              }}>重试</button>
+            </>
+          ) : <p role="status">正在连接 Talaria 常驻服务…</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChartWithDock({
+  connection, ctx, theme,
+}: { connection: Connection; ctx: SlotContext; theme: Theme }) {
+  const [panel, setPanel] = useState<DockPanel | null>(() =>
+    DOCK_PANELS.find((item) => readPreference(DOCK_KEY) === item) ?? null,
+  );
+  const inlineDock = useRef<HTMLDivElement>(null);
+  const [seat] = useState(() => document.createElement("div"));
+  const open = panel !== null;
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    // A global main panel hides the Session rightbar. Reuse AppFrame's
+    // resizable track and keep its Session occupant untouched.
+    const track = document.querySelector<HTMLElement>("[data-rightbar-col]");
+    function place() {
+      const dock = track && track.clientWidth >= 260 ? track : inlineDock.current;
+      seat.className = dock === track ? "talaria-dsh-dock-seat is-in-track" : "talaria-dsh-dock-seat";
+      if (dock && dock !== seat.parentElement) dock.append(seat);
+    }
+    ctx.layout.openRightbar(true, false);
+    place();
+    const observer = new ResizeObserver(place);
+    if (track) observer.observe(track);
     return () => {
-      disposeBody();
-      disposeTab();
-      removeStyles();
+      observer.disconnect();
+      seat.remove();
+      ctx.layout.closeRightbar();
+    };
+  }, [ctx, open, seat]);
+
+  function select(next: DockPanel | null) {
+    savePreference(DOCK_KEY, next ?? "");
+    setPanel(next);
+  }
+
+  return (
+    <>
+      <div className="talaria-dsh-chart">
+        <WorkbenchPanel
+          panel="chart"
+          persistenceKey="main:chart"
+          theme={theme}
+          transport={connection.relay}
+          embedded
+          tools={
+            <button type="button" className="ghost-button" aria-expanded={open}
+              onClick={() => select(open ? null : "alerts")}>
+              功能右栏
+            </button>
+          }
+        />
+      </div>
+      {open && <div ref={inlineDock} className="talaria-dsh-dock-inline" />}
+      {panel && createPortal(
+        <aside className="talaria-desk talaria-dsh-dock" data-theme={theme} aria-label="Talaria 功能右栏">
+          <div className="talaria-dsh-dock-bar">
+            {DOCK_PANELS.map((item) => (
+              <button type="button" key={item} className="ghost-button" aria-pressed={panel === item}
+                onClick={() => select(item)}>{PANEL_LABELS[item]}</button>
+            ))}
+            <button type="button" className="ghost-button" aria-label="关闭功能右栏" onClick={() => select(null)}>×</button>
+          </div>
+          <WorkbenchPanel
+            key={panel}
+            panel={panel}
+            persistenceKey={`dock:${panel}`}
+            theme={theme}
+            transport={connection.relay}
+            tools={
+              <div className="talaria-dsh-dock-actions">
+                <button type="button" className="ghost-button"
+                  onClick={() => ctx.layout.selectPanel(panelId(panel))}>在主区打开</button>
+                <button type="button" className="ghost-button"
+                  onClick={() => window.open(new URL(panelPath(panel), connection.baseUrl), "_blank", "popup,noopener,width=560,height=710")}>
+                  独立窗口
+                </button>
+              </div>
+            }
+          />
+        </aside>,
+        seat,
+      )}
+    </>
+  );
+}
+
+const ICONS: Record<PanelName, string> = {
+  chart: "M4 17l4-5 4 2 7-8M4 4v16h16",
+  alerts: "M6 16h12l-2-3V9a4 4 0 00-8 0v4l-2 3zm4 3h4",
+  scanner: "M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5m3-3h10",
+  levels: "M4 6h16M4 12h12M4 18h10",
+};
+
+export const inject = ["slots", "layout", "sidebarRight", "sidebarRightTabs"];
+
+export function apply(ctx: SlotContext): void {
+  const connection = createConnection();
+  ctx.effect(() => {
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = styles + hostStyles;
+    document.head.append(style);
+    return () => {
+      connection.close();
+      style.remove();
     };
   });
 
-  // 首次出现会话时打开一次；用户关闭后不再抢占。
+  registerPanels(ctx, PANEL_LABELS, {
+    main: (panel: PanelName) => function MainPanel() {
+      return (
+        <Surface connection={connection}>
+          {(value, theme) => panel === "chart"
+            ? <ChartWithDock connection={value} ctx={ctx} theme={theme} />
+            : <WorkbenchPanel panel={panel} theme={theme} transport={value.relay} persistenceKey={`main:${panel}`}
+                tools={<button type="button" className="ghost-button" onClick={() => {
+                  savePreference(DOCK_KEY, panel);
+                  ctx.layout.selectPanel(panelId("chart"));
+                }}>停靠图表右栏</button>} />}
+        </Surface>
+      );
+    },
+    sidebarIcon: (panel: PanelName) => ({ size = 16 }: { size?: number }) => (
+      <svg aria-hidden="true" viewBox="0 0 24 24" width={size} height={size}
+        fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d={ICONS[panel]} />
+      </svg>
+    ),
+    sessionTab: (panel: PanelName) => function SessionTab() {
+      return (
+        <Surface connection={connection}>
+          {(value, theme) => <WorkbenchPanel panel={panel} persistenceKey={`session:${panel}`}
+            theme={theme} transport={value.relay} embedded fullWorkbench={panel === "chart"} />}
+        </Surface>
+      );
+    },
+    onMainRegistered() {
+      const active = ctx.layout.panelInfo;
+      const remember = () => {
+        const id = active.getSnapshot().activePanelId;
+        if (id && PANELS.some((panel) => panelId(panel) === id)) savePreference(ACTIVE_PANEL_KEY, id, true);
+      };
+      const saved = readPreference(ACTIVE_PANEL_KEY);
+      if (active.getSnapshot().activePanelId === null && PANELS.some((panel) => panelId(panel) === saved)) {
+        ctx.layout.selectPanel(saved);
+      }
+      return active.subscribe(remember);
+    },
+  });
+
+  // Preserve the consultation chart's one-time opening when a Session seat is available.
   ctx.effect(() => {
-    let done = false;
-    let attempts = 0;
-    const timer = window.setInterval(() => {
-      attempts += 1;
-      if (done || attempts > 40) {
-        window.clearInterval(timer);
-        return;
+    let opened = false;
+    let frame = 0;
+    function schedule() {
+      cancelAnimationFrame(frame);
+      if (opened || ctx.sidebarRight.mounted.getSnapshot() === undefined) return;
+      let attempts = 0;
+      function openTab() {
+        if (ctx.sidebarRight.mounted.getSnapshot() === undefined) return;
+        try {
+          ctx.sidebarRight.openTab("talaria-desk");
+          opened = true;
+        } catch {
+          if (++attempts < 40) frame = requestAnimationFrame(openTab);
+        }
       }
-      try {
-        ctx.sidebarRight.openTab("talaria-desk");
-        done = true;
-        window.clearInterval(timer);
-      } catch {
-        // 右侧栏或会话尚未就绪；继续等待。
-      }
-    }, 1500);
-    return () => window.clearInterval(timer);
+      frame = requestAnimationFrame(openTab);
+    }
+    const unsubscribe = ctx.sidebarRight.mounted.subscribe(schedule);
+    schedule();
+    return () => {
+      cancelAnimationFrame(frame);
+      unsubscribe();
+    };
   });
 }

@@ -36,7 +36,7 @@ export interface KeyLevelPanelProps {
   loading: boolean;
   error: string | null;
   readOnly: boolean;
-  onClose: () => void;
+  onClose?: () => void;
   notes?: string[];
 }
 
@@ -81,14 +81,16 @@ export function KeyLevelPanel({
             {levels.length} / {allLevels.length}
           </span>
         </div>
-        <button
-          type="button"
-          className="key-level-close"
-          aria-label="收起关键位面板"
-          onClick={onClose}
-        >
-          ×
-        </button>
+        {onClose !== undefined && (
+          <button
+            type="button"
+            className="key-level-close"
+            aria-label="收起关键位面板"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        )}
       </header>
 
       {readOnly && (

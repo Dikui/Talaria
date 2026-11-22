@@ -42,3 +42,22 @@
 - [ ] 降级：停掉 DSH 宿主后，兜底页面照常看盘、画线、管理预警。
 - [ ] 浏览器检查并截图：DSH 面板与兜底页面各一组，宽度 1440 与 390、浅色与深色主题；空数据（无自选、无预警）与长标的名称；两个不同组的图表看不同标的、同组联动的前后截图。
 - [ ] 删除本地原型文件及 `.git/info/exclude` 里对应的条目。
+
+## Comments
+
+### 实现记录（platform-02）
+
+- 图表、预警、扫描、关键位各有 DSH 主区面板和侧栏入口。兜底保留原 `/desk` 工作台，新增 `/desk/chart`、`/desk/alerts`、`/desk/scanner`、`/desk/levels`，复用同一批 React 组件。
+- DSH 在注册完主区面板后恢复浏览器保存的 Talaria 面板。各面板记住联动组和标的周期。同组通过 `BroadcastChannel` 同步标的、周期、定位和 KLineChart 原生十字光标，借心跳显示已打开面板。服务同源 iframe 接通两个端口的频道并保存组状态。服务托管页等到会话 cookie，DSH 等到 bootstrap 凭据后才挂载功能组件。行情和写操作走常驻服务的 HTTP/WebSocket。
+- DSH 0.2.2-rc.3 的原生 tab 容器只在会话主区可见。预警、扫描、关键位注册为会话原生 tab，原 `Talaria 看盘` tab 和首次会话打开逻辑保留。全局图表使用 DSH 的可调宽右栏轨道承载 Talaria tab，窄屏移到图表下方。全局图表右栏的「独立窗口」打开对应服务页面。ADR-0020、ADR-0005 与架构 §1.1 的主入口、组件边界和快通道规则均适用。390 px 沿用当前图表的只读画线模式。
+- 自动检查记录了 red → green。desk-ui 174 项通过，DSH 插件注册用例通过，插件套件 14 项通过、9 项因沙箱禁止回环 TCP 绑定失败。Python 路由专项 5 项通过，工作台套件 258 项通过、`test_host_dispatch_ignores_ambient_http_proxy` 因相同限制失败。TypeScript 检查与生产构建通过。设计文档的 YAML 及 11 个运行时颜色值已核对。整包设计审计仍报告原生控件配置和既有表单规则问题。
+- 在生产源码中执行 `grep -rnE 'prototype\.html|vite\.prototype\.config\.ts|src/prototype|talaria-proto' dsh/packages/talaria-desk-ui/src dsh/packages/talaria-desk-ui/index.html dsh/packages/talaria-desk-ui/vite.config.ts`，退出 1，零匹配。本机原型目录及共享 `.git/info/exclude` 的三行由主任务执行者清理。
+
+### 本机待验收
+
+1. 使用本分支的前端构建及插件，通过 `talaria open` 打开带 token 的 DSH 入口（默认 `http://127.0.0.1:8766/`）。从 DSH 左栏逐个打开四个 Talaria 面板。图表点「功能右栏」，切换三个 tab，拖动 DSH 栏宽，并验证「在主区打开」与「停靠图表右栏」。进会话后检查右栏原有 `Talaria 看盘` 及「＋」里的三个新 tab。
+2. 打开 `http://127.0.0.1:8765/desk` 和四个子路由，直接加载每条子路由。两套界面各检查 1440 px、390 px、浅色、深色、空自选、空预警与长标的，留截图。
+3. 开两张 DSH 标签页和一个兜底图表，用相同的回环主机名。对红、蓝不同组先截图，再调成同组，检查切标的、切周期、真实十字光标，以及预警和扫描的「定位」。另检查新加入、刷新恢复和关掉一个窗口后的面板列表。
+4. 在 DevTools 检查首次请求、WebSocket、历史分页、画线和预警写操作直达常驻服务且首批无 401。DSH 离线时，从兜底页检查桌面看盘、画线与预警管理。
+
+提交尝试在逐路径暂存时触发沙箱限制，Git 无法在主仓库的 worktree 元数据目录创建 `index.lock`。代码及本记录留在 `ticket/platform-02` 工作区。

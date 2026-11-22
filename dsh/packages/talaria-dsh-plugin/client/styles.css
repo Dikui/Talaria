@@ -1,0 +1,77 @@
+.talaria-dsh-surface {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.talaria-dsh-chart {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.talaria-dsh-dock-inline:not(:empty) {
+  flex: 0 1 55%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.talaria-dsh-dock-seat.is-in-track {
+  position: absolute;
+  inset: 0;
+}
+
+.talaria-dsh-dock {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+  border-inline-start: 1px solid var(--border);
+}
+
+.talaria-dsh-dock-bar,
+.talaria-dsh-dock-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.talaria-dsh-dock-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  padding: 8px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.talaria-dsh-dock-bar button[aria-pressed="true"] {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.talaria-dsh-dock-bar button:last-child {
+  margin-inline-start: auto;
+}
+
+.talaria-dsh-chart {
+  container: talaria-chart / inline-size;
+}
+
+@container talaria-chart (max-width: 720px) {
+  .talaria-dsh-chart .workspace:has(> .workspace-sidebar) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-areas: "error" "alert" "sidebar" "chart";
+  }
+
+  .talaria-dsh-chart .workspace:has(> .workspace-sidebar):has(> .workspace-copilot) {
+    grid-template-areas: "error" "alert" "sidebar" "chart" "copilot";
+  }
+
+  .talaria-dsh-chart .watchlist-panel {
+    max-height: 160px;
+  }
+}

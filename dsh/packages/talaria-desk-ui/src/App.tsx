@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { Chart } from "klinecharts";
 
 import type {
@@ -32,7 +32,6 @@ import { SelectionOverlay } from "./features/collaboration/SelectionOverlay";
 import { useCollaborationStatus } from "./features/collaboration/useCollaborationStatus";
 import { feedBadgeView } from "./features/feed/health";
 import { useMarketStream } from "./features/feed/useMarketStream";
-import { InstrumentSelect } from "./features/instruments/InstrumentSelect";
 import { IndicatorToolbar } from "./features/indicators/IndicatorToolbar";
 import {
   INDICATOR_DEFAULTS,
@@ -65,10 +64,10 @@ import { useScanner } from "./features/scanner/useScanner";
 import { WatchlistPanel } from "./features/watchlist/WatchlistPanel";
 import { ApiError, api } from "./lib/api";
 import { toKLineSeries } from "./lib/chartData";
-import { applyTheme, resolveInitialTheme, THEME_STORAGE_KEY, type Theme } from "./lib/theme";
-
-const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
-const DEFAULT_INSTRUMENT = "BTC-USDT-PERP";
+import type { Theme } from "./lib/theme";
+import type { PanelLink } from "./workbench/link";
+import { LinkControls, SymbolControls } from "./workbench/PanelControls";
+import { useLinkSnapshot } from "./workbench/usePanelLink";
 const PAGE_SIZE = 300;
 
 const cutoffFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -107,16 +106,17 @@ function feedLabel(feedMode: string | null): string {
   return "行情源未知";
 }
 
-export interface DeskWorkbenchProps {
-  /** true 时渲染在 DSH 插槽内：不覆盖宿主主题，铺满插槽高度。 */
-  embedded?: boolean;
+interface ChartWorkbenchProps {
+  embedded: boolean;
+  link: PanelLink;
+  theme: Theme;
+  fullWorkbench: boolean;
+  tools?: ReactNode;
 }
 
-export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
-  const shellRef = useRef<HTMLDivElement>(null);
+export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: ChartWorkbenchProps) {
+  const { instrumentId, timeframe, locateTs: snapshotCutoff, crosshair } = useLinkSnapshot(link);
   const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
-  const [instrumentId, setInstrumentId] = useState(DEFAULT_INSTRUMENT);
-  const [timeframe, setTimeframe] = useState<string>("1m");
   const [feedMode, setFeedMode] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SnapshotMeta | null>(null);
   const [derivativeBundle, setDerivativeBundle] = useState<DerivativeBundle | null>(null);
@@ -127,7 +127,6 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   const [initialFailed, setInitialFailed] = useState(false);
   const [error, setError] = useState<ErrorInfo | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const [theme, setTheme] = useState<Theme>(() => resolveInitialTheme());
   const [indicatorSettings, setIndicatorSettings] =
     useState<IndicatorSettings | null>(null);
   const [indicatorDefaults, setIndicatorDefaults] = useState<IndicatorDefaults>(
@@ -143,9 +142,9 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   const [keyLevelFilter, setKeyLevelFilter] = useState<KeyLevelFilter>(
     defaultKeyLevelFilter,
   );
-  const [keyLevelPanelOpen, setKeyLevelPanelOpen] = useState(true);
-  const [scannerOpen, setScannerOpen] = useState(true);
-  const [rightTab, setRightTab] = useState<RightDockTab | null>("alerts");
+  const [keyLevelPanelOpen, setKeyLevelPanelOpen] = useState(fullWorkbench);
+  const [scannerOpen, setScannerOpen] = useState(fullWorkbench);
+  const [rightTab, setRightTab] = useState<RightDockTab | null>(fullWorkbench ? "alerts" : null);
   const [alertSeed, setAlertSeed] = useState<AlertFormSeed | null>(null);
   const [collabDraft, setCollabDraft] = useState<{
     nonce: number;
@@ -153,23 +152,14 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   } | null>(null);
   const [selection, setSelection] = useState<CollabWindow | null>(null);
   const [selecting, setSelecting] = useState(false);
-  const [snapshotCutoff, setSnapshotCutoff] = useState<number | null>(null);
   const readOnlyViewport = useReadOnlyViewport();
   const stream = useMarketStream(instrumentId, timeframe);
   const alerts = useAlerts();
-  const scanner = useScanner();
+  const scanner = useScanner(fullWorkbench);
   const briefings = useBriefings();
   const collaboration = useCollaborationStatus();
 
-  const chooseInstrument = useCallback((next: string) => {
-    setSnapshotCutoff(null);
-    setInstrumentId(next);
-  }, []);
-
-  const chooseTimeframe = useCallback((next: string) => {
-    setSnapshotCutoff(null);
-    setTimeframe(next);
-  }, []);
+  const chooseInstrument = (next: string) => link.setSymbol(next, timeframe);
 
   useEffect(() => {
     setSelection(null);
@@ -184,17 +174,6 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selecting]);
-
-  useEffect(() => {
-    if (embedded) {
-      if (shellRef.current !== null) {
-        applyTheme(theme, shellRef.current);
-      }
-    } else {
-      applyTheme(theme);
-    }
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
-  }, [theme, embedded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -375,7 +354,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     [],
   );
 
-  const latestLive = stream.bars[stream.bars.length - 1];
+  const latestLive = snapshotCutoff === null ? stream.bars.at(-1) : undefined;
   const liveTick =
     latestLive === undefined
       ? ""
@@ -407,7 +386,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
         (async () => {
           try {
             const series = await Promise.all(
-              requests.map((request) => api.computeOperator(request, true)),
+              requests.map((request) => api.computeOperator(request, snapshotCutoff === null)),
             );
             if (!cancelled) {
               setIndicatorBundle({
@@ -435,7 +414,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [snapshot, timeframe, liveTick, indicatorSettings]);
+  }, [snapshot, timeframe, liveTick, indicatorSettings, snapshotCutoff]);
 
   const loadOlder = useCallback(
     async (beforeTs: number): Promise<OlderPage> => {
@@ -490,23 +469,21 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
   }, [stream.alert, alerts.ingestTrigger]);
 
   useEffect(() => {
-    if (stream.scanner !== null) {
+    if (fullWorkbench && stream.scanner !== null) {
       scanner.ingest(stream.scanner);
     }
-  }, [stream.scanner, scanner.ingest]);
+  }, [stream.scanner, scanner.ingest, fullWorkbench]);
 
   const locateTrigger = useCallback(
     (trigger: { instrument_id: string; timeframe: string; triggered_ts: number }) => {
-      setSnapshotCutoff(trigger.triggered_ts > 0 ? trigger.triggered_ts : null);
-      setInstrumentId(trigger.instrument_id);
-      setTimeframe(trigger.timeframe);
+      link.locate(trigger);
       alerts.markSeen();
     },
-    [alerts.markSeen],
+    [alerts.markSeen, link],
   );
 
   const refresh = () => {
-    setSnapshotCutoff(null);
+    link.clearLocate();
     setRefreshNonce((nonce) => nonce + 1);
   };
   const effectiveFeedMode = stream.hello?.feed_mode ?? feedMode;
@@ -591,7 +568,6 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
 
   return (
     <div
-      ref={shellRef}
       className={`talaria-desk app-shell ${
         embedded ? "talaria-desk--embedded" : "talaria-desk--standalone"
       }`}
@@ -599,30 +575,11 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
     >
       <header className="app-header">
         <div className="brand">
-          <h1>Talaria 分析工作台</h1>
-          <p className="brand-subtitle">本地历史行情 · 确定性快照</p>
+          <h1>{fullWorkbench ? "Talaria 分析工作台" : "Talaria 图表"}</h1>
+          <LinkControls link={link} />
         </div>
         <div className="header-controls">
-          <InstrumentSelect
-            instruments={instruments}
-            value={instrumentId}
-            disabled={loading}
-            onChange={chooseInstrument}
-          />
-          <div className="timeframes" role="group" aria-label="K 线周期">
-            {TIMEFRAMES.map((item) => (
-              <button
-                key={item}
-                type="button"
-                className={`timeframe-button${item === timeframe ? " is-active" : ""}`}
-                aria-pressed={item === timeframe}
-                disabled={loading}
-                onClick={() => chooseTimeframe(item)}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+          <SymbolControls link={link} instruments={instruments} disabled={loading} />
           <div className="header-actions">
             <DerivativeSummary
               markPrice={markPrice}
@@ -656,19 +613,21 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
               book={stream.book}
               pricePrecision={pricePrecision}
             />
-            <button
-              type="button"
-              className={`ghost-button scanner-toggle${scannerOpen ? " is-active" : ""}`}
-              aria-pressed={scannerOpen}
-              onClick={() => {
-                setScannerOpen((open) => !open);
-                if (!scannerOpen) {
-                  scanner.markSeen();
-                }
-              }}
-            >
-              异动 {scanner.triggers.length}
-            </button>
+            {fullWorkbench && (
+              <button
+                type="button"
+                className={`ghost-button scanner-toggle${scannerOpen ? " is-active" : ""}`}
+                aria-pressed={scannerOpen}
+                onClick={() => {
+                  setScannerOpen((open) => !open);
+                  if (!scannerOpen) {
+                    scanner.markSeen();
+                  }
+                }}
+              >
+                异动 {scanner.triggers.length}
+              </button>
+            )}
             <button
               type="button"
               className={`ghost-button briefing-toggle${rightTab === "briefings" ? " is-active" : ""}`}
@@ -725,14 +684,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                 触发时刻 · 返回最新
               </button>
             )}
-            <button
-              type="button"
-              className="ghost-button"
-              aria-label={theme === "dark" ? "切换为浅色主题" : "切换为深色主题"}
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            >
-              {theme === "dark" ? "浅色" : "深色"}
-            </button>
+            {tools}
             <button
               type="button"
               className="primary-button"
@@ -875,7 +827,8 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
               </button>
             </div>
           ) : (
-            snapshot && (
+            snapshot && snapshot.instrument_id === instrumentId &&
+            snapshot.timeframes.includes(timeframe) && (
               <>
                 {indicatorSettings !== null && (
                   <IndicatorToolbar
@@ -916,7 +869,10 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                   initialBars={bars}
                   initialHasMoreForward={hasMoreForward}
                   loadOlder={loadOlder}
-                  liveBars={stream.bars}
+                  liveBars={snapshotCutoff === null ? stream.bars : undefined}
+                  locateTs={snapshotCutoff}
+                  linkedCrosshair={crosshair}
+                  onCrosshair={link.sendCrosshair}
                   indicatorSeries={visibleIndicators?.series ?? []}
                   onStats={setStats}
                   onLoadError={(caught) => setError(describeError(caught))}
@@ -970,7 +926,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                   onLocate={locateTrigger}
                   readOnly={readOnlyViewport}
                 />
-                {keyLevelPanelOpen ? (
+                {fullWorkbench && (keyLevelPanelOpen ? (
                   <KeyLevelPanel
                     levels={visibleLevels}
                     allLevels={keyLevels.levels.filter(
@@ -1016,7 +972,7 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
                   >
                     关键位 {visibleLevels.length}
                   </button>
-                )}
+                ))}
                 {!readOnlyViewport && drawings.error !== null && (
                   <div className="drawing-error" role="alert" data-testid="drawing-error">
                     <span>{drawings.error}</span>
@@ -1082,8 +1038,4 @@ export function DeskWorkbench({ embedded = false }: DeskWorkbenchProps) {
       </footer>
     </div>
   );
-}
-
-export default function App() {
-  return <DeskWorkbench />;
 }
