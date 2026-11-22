@@ -11,7 +11,8 @@ class ReplayStrategy:
     meta = ComponentMeta(
         name="replay_example", version="1", inputs=("bars",),
         parameters_schema={
-            "type": "object", "properties": {"trigger_price": {"type": "string"}},
+            "type": "object", "required": ["trigger_price"],
+            "properties": {"trigger_price": {"type": "string"}, "max_position": {"type": "string"}},
         },
         output_type="strategy_decision",
     )
@@ -28,7 +29,7 @@ class ReplayStrategy:
         self.triggered = True
         return SetupInsight(
             direction="LONG", summary="达到目标收盘价",
-            entry_low=bar.close, entry_high=bar.close,
+            entry_low=bar.close, entry_high=bar.close + 2,
             invalidation_stop=bar.close - 2, take_profit=[bar.close + 2],
             max_position=self.max_position,
         )
@@ -38,4 +39,4 @@ def make_strategy(_context, params):
     return ReplayStrategy(**params)
 
 
-plugin = SlotPlugin(Slot.STRATEGY, (1,), make_strategy)
+plugin = SlotPlugin(Slot.STRATEGY, (1,), make_strategy, ReplayStrategy.meta.parameters_schema)

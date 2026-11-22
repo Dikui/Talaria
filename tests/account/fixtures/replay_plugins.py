@@ -71,7 +71,7 @@ class ExampleFill:
             self.events.append(ExecutionEvent(
                 kind="ENTRY_FILLED", ts_event=event.as_of, sub_account_id=position.sub_account_id,
                 plan_id="unapproved" if self.unapproved else plan.plan_id,
-                quantity=plan.sizing.quantity, position=position,
+                quantity=plan.sizing.quantity, price=price, position=position,
                 postings=(
                     LedgerPosting(account="POSITION_COST", currency="USDT", amount=cost),
                     LedgerPosting(account="TRADE_PAYABLE", currency="USDT", amount=-cost),
@@ -96,5 +96,7 @@ class ExampleFill:
 
 
 sizing = SlotPlugin(Slot.SIZING, (1,), lambda _context, _params: FixedSizing())
-risk = SlotPlugin(Slot.RISK, (1,), lambda _context, params: ExampleRisk(**params))
-fill = SlotPlugin(Slot.FILL, (1,), lambda context, params: ExampleFill(context, **params))
+risk_params = {"properties": {"resize": {"type": "boolean"}, "deny": {"type": "boolean"}}}
+fill_params = {"properties": {"unapproved": {"type": "boolean"}}}
+risk = SlotPlugin(Slot.RISK, (1,), lambda _context, params: ExampleRisk(**params), risk_params)
+fill = SlotPlugin(Slot.FILL, (1,), lambda context, params: ExampleFill(context, **params), fill_params)

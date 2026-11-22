@@ -11,6 +11,7 @@ from typing import Literal, Protocol, runtime_checkable
 from pydantic import ConfigDict, Field, JsonValue
 
 from talaria.components import Ctx
+from talaria.components.runtime import BarReader, DerivativeReader
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.types import ContractModel, DecimalStr
 
@@ -48,6 +49,7 @@ class EntryCandidate(_Value):
     valid_until: int | None = None
     evidence_ids: tuple[str, ...] = ()
     round_id: str | None = None  # 有回合 ID 时为加仓。
+    signal_bar_close: int | None = Field(default=None, ge=0)
 
 
 class SizingDecision(_Value):
@@ -60,6 +62,7 @@ class ApprovedExecutionPlan(_Value):
     round_id: str = Field(min_length=1)
     candidate: EntryCandidate
     sizing: SizingDecision
+    allowed_slippage: DecimalStr | None = Field(default=None, ge=0)  # 价格单位。
 
 
 class RejectedPlanRecord(_Value):
@@ -141,26 +144,51 @@ class LedgerPosting(_Value):
 
 
 class ExecutionEvent(_Value):
+    """成交以 ENTRY_FILLED 或 EXIT_FILLED 回报数量、单价、回合及复式分录。
+
+    TRADE_PAYABLE 为成交对价（买为负，卖为正），入场的 POSITION_COST 借贷方向相反。
+    出场冲减 POSITION_COST，完全平仓时结清该回合成本。
+    PLAN_CANCELLED / PLAN_TERMINATED 等终态回报用 plan_id 标识失效的计划。
+    """
+
     kind: str = Field(min_length=1)
     sub_account_id: str
     ts_event: int = Field(ge=0, le=2**63 - 1)
+    event_id: str | None = None  # 由账本分配，与运行 ID 和 SQLite 行号无关。
     plan_id: str | None = None
     amendment_id: str | None = None
     quantity: DecimalStr | None = Field(default=None, gt=0)
+    price: DecimalStr | None = Field(default=None, gt=0)
     position: RoundStatus | None = None
     reason: str | None = None
     postings: tuple[LedgerPosting, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
+class MarketData:
+    """策略求值的原始数据源。宿主按时钟和信号柱构造 Ctx。"""
+
+    history_start: int
+    read_bars: BarReader
+    read_derivatives: DerivativeReader | None = None
+    tail_completed: bool = True
+
+    @classmethod
+    def from_ctx(cls, ctx: Ctx) -> MarketData:
+        # 兼容已有入口，仅读取数据源，不使用入口的求值逻辑或缓存。
+        return cls(ctx.start, ctx._read_bars, ctx._read_derivatives, ctx._discovery_tail_completed)
+
+
+@dataclass(frozen=True, slots=True)
 class MarketEvent:
-    """可获取时间驱动时钟。仅有触发求值的确认柱携带组件上下文。"""
+    """可获取时间驱动时钟。触发求值的确认柱携带原始数据源。"""
 
     as_of: int
     instrument_id: str
     timeframe: str
     bar: RangeBar
-    ctx: Ctx | None = None
+    ctx: Ctx | None = None  # 兼容已注册的数据入口，新插件使用 source。
+    source: MarketData | None = None
 
 
 @runtime_checkable

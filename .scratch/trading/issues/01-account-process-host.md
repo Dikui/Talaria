@@ -55,3 +55,37 @@ PYTHONPATH=$PWD/core/src:/private/tmp/talaria-trading01-deps /Users/dikui/Projec
 - `contract-check` 零漂移，`python -m talaria account run --help` 正常。`uv --no-cache --offline --no-python-downloads lock --check --python /Users/dikui/Project/Talaria/.venv/bin/python` 通过。
 
 已复核 `git diff main...HEAD`、工作区修改及新增文件。逐路径暂存时，Git 退出码为 128，沙箱拒绝创建 worktree 的 `index.lock`。代码、测试及本记录保留在 `ticket/trading-01` 工作区。HEAD 为 `e7ee468d2831de2966459097f1331b0df91f6c64`。预定提交信息为 `feat: 实现账户进程宿主与 Parquet 回测`。
+
+### 审查修复
+
+- 成交回报由宿主校验计划生命周期、回合归属、累计数量、首笔止损、信号柱与决策时点，以及含可选价格滑点的获批入场区间。撤单、计划终态和回合终态使对应审批失效。成交插件回报的入场和平仓都需要逐币种平衡、与成交对价及持仓成本一致的复式分录，全平时结清该回合成本。违规回报拒绝、记录事件并使此次运行报错。
+- 每批轮询按发生时间处理。账本提交成功后才更新风控持仓，新意图读取本轮已入账的余额和持仓。直达干预以最近获成交插件接受的止损和数量为基准，数量变化通过成交分录反映到风控持仓。规范化账本将稳定的事件 ID 纳入分录比较。
+- 数据入口提供原始读取器，宿主按虚拟时钟构造和截断策略上下文，并把独立的行情副本交给成交插件。策略对同标的同方向且唯一的活跃回合发出的意图沿用该回合止损，并重新经过定仓和风控。模拟盘在运行入口、处理各市场事件与每次写入前核验子账户锁。
+- 启动时用插件声明的 Pydantic 模型或组件参数 Schema 严格校验 YAML，错误包含插槽和字段路径。回测先解析交易方案、种子和全部生效的指标默认值，写入 `runs/<run_id>/run-config.json`。给定相同 Parquet 数据和插件代码，`talaria account run <run-config.json> --mode backtest --replay` 使用记录中的配置重放。端到端测试更改了工作台默认值并删除原 YAML，重放账本仍与原运行一致。
+
+#### 实际验证
+
+逐项编写并运行失败复现，再运行修复后的测试。局部回归 120 通过，`contract-check` 零漂移，`git diff --check` 通过。
+
+```sh
+PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests/account tests/components tests/sdk tests/cli/test_contract_check.py -q -p no:cacheprovider --tb=short
+PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest tests -q -p no:cacheprovider
+PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m talaria contract-check
+```
+
+全量测试 943 通过、15 失败、1 项初始化错误、1 项按默认 online 标记取消选择。另有 1 条既有 Starlette 弃用警告。
+
+沙箱限制本机端口绑定，造成 14 项失败和 1 项初始化错误。
+
+| 测试文件 | 受影响的测试 |
+| --- | --- |
+| `tests/acceptance/test_m1_solo.py` | `test_m1_solo_cli_loopback_and_token` |
+| `tests/acceptance/test_m2_copilot.py` | `test_m2_copilot_dual_plane_scenario` |
+| `tests/cli/test_cli.py` | `test_up_dual_keeps_fast_path_when_dsh_fails`、`test_up_dual_keeps_fast_path_when_dsh_binary_missing` |
+| `tests/cli/test_dsh_host.py` | `test_host_starts_probes_and_stops_with_redacted_log` |
+| `tests/cli/test_graceful_shutdown.py` | `test_sigterm_shuts_down_gracefully` |
+| `tests/cli/test_usage_scan_service.py` | `test_usage_scan_fails_closed_when_service_endpoint_is_unreachable`、`test_usage_scan_writes_through_running_service`（初始化错误） |
+| `tests/packs/test_bybit_stream.py` | `test_subscribe_ack_then_kline_and_orderbook`、`test_flat_zero_volume_bar_is_no_trades`、`test_rejected_subscription_raises_feed_transport_error`、`test_closed_connection_surfaces_transport_error`、`test_application_ping_and_pong_keep_connection_alive`、`test_tickers_subscription_is_shared_across_timeframes` |
+| `tests/workbench_api/test_collaboration_api.py` | `test_host_dispatch_ignores_ambient_http_proxy` |
+
+另有 `tests/cli/test_talaria_desk_profile.py::test_real_dump_config_matches_permission_snapshot` 因 DSH 无权写入沙箱外的 `~/.dsh/profiles/talaria-desk/cordis.yml` 失败。变更保留在 `ticket/trading-01` 工作区，未提交。

@@ -7,9 +7,9 @@ from typing import Annotated, Self
 from pydantic import Field, StrictInt, model_validator
 
 from talaria import sdk
-from talaria.account.contracts import MarketEvent
+from talaria.account.contracts import MarketData, MarketEvent
 from talaria.account.scheme import PluginContext, PluginParams, SchemeError, Slot, SlotPlugin
-from talaria.components import run_history
+from talaria.components.runtime import confirmed_bars
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.foundation.types import ContractModel
 from talaria.packs import DEFAULT_PACK, get_market_pack
@@ -46,13 +46,14 @@ class ParquetReplay:
     def events(self) -> Iterator[MarketEvent]:
         params = self._params
         read = partial(sdk.bars, data_dir=self._data_dir, offline=True)
-        for step in run_history(
-            lambda ctx: ctx, params.instrument, params.timeframe,
-            start=params.start, end=params.end, history_start=params.history_start,
-            read_bars=read, data_dir=self._data_dir,
+        history_start = params.start if params.history_start is None else params.history_start
+        for as_of, bar, tail_completed in confirmed_bars(
+            read, params.instrument, params.timeframe, start=params.start, end=params.end,
         ):
-            ctx = step.output
-            yield MarketEvent(step.as_of, ctx.instrument, ctx.timeframe, ctx.bars()[-1], ctx)
+            yield MarketEvent(
+                as_of, params.instrument, params.timeframe, bar,
+                source=MarketData(history_start, read, tail_completed=tail_completed),
+            )
 
 
-parquet_replay = SlotPlugin(Slot.DATA, (1,), ParquetReplay)
+parquet_replay = SlotPlugin(Slot.DATA, (1,), ParquetReplay, ReplayParams)

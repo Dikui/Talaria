@@ -77,3 +77,82 @@ slots: {{data: example, strategy: {{plugin: example, params: {{trigger_price: '1
         process_args("restarted", "[beta]"), input="", capture_output=True, text=True, timeout=10,
     )
     assert restarted.returncode == 0, restarted.stderr
+
+
+@pytest.mark.parametrize("release_during_run", [False, True])
+def test_paper_process_cannot_write_after_its_owner_lock_is_released(tmp_path, release_during_run):
+    from talaria.account.contracts import ExecutionEvent, MarketEvent
+    from talaria.account.host import open_account_process
+    from talaria.account.ownership import AccountOwnershipError
+    from talaria.account.scheme import PluginRegistry, Slot, SlotPlugin
+    from talaria.foundation.bars import RangeBar
+
+    class Data:
+        def events(self):
+            market = MarketEvent(
+                60_000, "BTC-USDT-PERP", "1m",
+                RangeBar(
+                    ts_event=0, ts_available=60_000, open="1", high="1", low="1",
+                    close="1", volume="1", turnover="1", precision="SECOND_VERIFIED",
+                    confirmed=True, revision=0,
+                ),
+            )
+            yield market
+
+    class Fill:
+        def poll_events(self, now):
+            if release_during_run:
+                owner.__exit__(None, None, None)
+            return [ExecutionEvent(kind="FUNDING_SETTLED", sub_account_id="example", ts_event=now)]
+
+        def on_market(self, *args):
+            pass
+
+        submit_plan = tighten_barrier = apply_approved_amendment = intervene_position = set_trading_state = on_market
+
+    class OtherSlots:
+        from talaria.components import ComponentMeta
+
+        meta = ComponentMeta(
+            name="test_strategy", version="1", inputs=(), parameters_schema={},
+            output_type="strategy_decision",
+        )
+
+        def on_bar(self, *args):
+            pytest.fail("当前行情无策略数据源")
+
+        size = evaluate_candidate = approve_barrier_widening = on_bar
+
+    class Ledger:
+        def __init__(self):
+            self.events = []
+
+        def record(self, events):
+            self.events.extend(events)
+
+        def balances(self, sub_account_id):
+            return {}
+
+    registry = PluginRegistry()
+    for slot, factory in (
+        (Slot.DATA, Data), (Slot.FILL, Fill), (Slot.STRATEGY, OtherSlots),
+        (Slot.SIZING, OtherSlots), (Slot.RISK, OtherSlots),
+    ):
+        registry.register("example", SlotPlugin(slot, (1,), lambda *_, factory=factory: factory()))
+    scheme = tmp_path / "paper.yaml"
+    scheme.write_text("""\
+scheme: paper
+interface_version: 1
+sub_accounts: [example]
+slots: {data: example, strategy: example, sizing: example, risk: example, fill: example}
+""")
+    ledger = Ledger()
+    owner = open_account_process(scheme, tmp_path / "data", mode="paper", registry=registry)
+    with owner as process:
+        if release_during_run:
+            with pytest.raises(AccountOwnershipError, match="owner.lock"):
+                process.run(ledger)
+    if not release_during_run:
+        with pytest.raises(AccountOwnershipError, match="owner.lock"):
+            process.run(ledger)
+    assert ledger.events == []

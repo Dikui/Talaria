@@ -53,3 +53,18 @@ def test_existing_run_ledger_cannot_be_reopened_for_writing(tmp_path):
         with open_ledger(ledger_path, "next-run", ("example",)):
             pytest.fail("应为每次回放分配新账本")
     assert read_journal(ledger_path).entries[0].postings == event.postings
+
+
+def test_normalized_entries_keep_their_execution_event_id(tmp_path):
+    ledger_path = tmp_path / "ledger.sqlite"
+    audit = ExecutionEvent(kind="CANDIDATE_REJECTED", sub_account_id="example", ts_event=1)
+    funding = postings_event(("CASH_AVAILABLE", "USDT", "1"), ("FUNDING", "USDT", "-1"), ts=1)
+    with open_ledger(ledger_path, "replay", ("example",)) as ledger:
+        ledger.record([funding, audit, funding])
+
+    journal = read_journal(ledger_path)
+    assert len({event.event_id for event in journal.events}) == 3
+    assert [entry.event_id for entry in journal.entries] == [
+        journal.events[0].event_id, journal.events[2].event_id,
+    ]
+    assert journal.entries[0] != journal.entries[1]

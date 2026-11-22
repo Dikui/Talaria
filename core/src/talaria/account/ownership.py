@@ -5,14 +5,35 @@ import os
 from collections.abc import Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from threading import RLock
 
 
 class AccountOwnershipError(ValueError):
     """已有另一个账户进程持有子账户。"""
 
 
+class AccountOwnership:
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._pid = os.getpid()
+        self._active = True
+
+    @contextmanager
+    def guard(self) -> Iterator[None]:
+        if self._pid != os.getpid():
+            raise AccountOwnershipError("账户进程未持有子账户 owner.lock")
+        with self._lock:
+            if not self._active:
+                raise AccountOwnershipError("账户进程已失去子账户 owner.lock")
+            yield
+
+    def _release(self) -> None:
+        with self._lock:
+            self._active = False
+
+
 @contextmanager
-def hold_sub_accounts(data_dir: Path, sub_accounts: Sequence[str]) -> Iterator[None]:
+def hold_sub_accounts(data_dir: Path, sub_accounts: Sequence[str]) -> Iterator[AccountOwnership]:
     with ExitStack() as owners:
         for sub_account_id in sorted(sub_accounts):
             path = data_dir / "accounts" / sub_account_id / "owner.lock"
@@ -24,4 +45,8 @@ def hold_sub_accounts(data_dir: Path, sub_accounts: Sequence[str]) -> Iterator[N
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise AccountOwnershipError(f"子账户 {sub_account_id} 已被另一账户进程占用（{path}）") from None
-        yield
+        ownership = AccountOwnership()
+        try:
+            yield ownership
+        finally:
+            ownership._release()

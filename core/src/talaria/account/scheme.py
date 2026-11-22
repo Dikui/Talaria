@@ -16,6 +16,7 @@ from pydantic import Field, JsonValue, StrictInt, StringConstraints, model_valid
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
+from talaria.account.parameters import ParameterSchema
 from talaria.foundation.types import ContractModel
 
 INTERFACE_VERSION = 1
@@ -122,6 +123,7 @@ class SlotPlugin[T]:
     slot: Slot
     compatible_versions: tuple[int, ...]
     create: Callable[[PluginContext, PluginParams], T]
+    parameters_schema: ParameterSchema | None = None
 
 
 class PluginRegistry:
