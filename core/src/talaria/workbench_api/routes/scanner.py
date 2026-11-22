@@ -19,6 +19,7 @@ from talaria.foundation.scanner import (
     ScannerSeverity,
     ScannerTriggerListResponse,
 )
+from talaria.foundation.snapshot import ErrorResponse
 from talaria.workbench_api.scanner_service import HISTORY_LIMIT
 from talaria.workbench_api.routes import get_runtime
 
@@ -76,12 +77,14 @@ async def list_scanner_briefings(
 @router.post(
     "/api/scanner/briefings/{briefing_id}/read",
     response_model=ScannerBriefing,
+    responses={409: {"model": ErrorResponse, "description": "扫描功能已关闭"}},
 )
 async def mark_scanner_briefing_read(
     briefing_id: str, request: Request
 ) -> ScannerBriefing:
-    service = get_runtime(request).briefings
-    return await service.mark_read(briefing_id)
+    runtime = get_runtime(request)
+    runtime.require_scanner()
+    return await runtime.briefings.mark_read(briefing_id)
 
 
 @router.post(
@@ -102,14 +105,16 @@ async def consult_scanner_briefing(
 @router.post(
     "/api/scanner/briefings/{briefing_id}/result",
     response_model=ScannerBriefing,
+    responses={409: {"model": ErrorResponse, "description": "扫描功能已关闭"}},
 )
 async def submit_scanner_briefing_result(
     briefing_id: str,
     payload: BriefingResultRequest,
     request: Request,
 ) -> ScannerBriefing:
-    service = get_runtime(request).briefings
-    return await service.submit_result(briefing_id, payload)
+    runtime = get_runtime(request)
+    runtime.require_scanner()
+    return await runtime.briefings.submit_result(briefing_id, payload)
 
 
 @router.post("/api/scanner/scan", response_model=ScannerScanResponse)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 from talaria.foundation.bars import CompactBar
 from talaria.foundation.types import PrecisionTier
 from talaria.workbench_api.app import create_app
+from talaria.workbench_api.service_config import FeatureToggles
 from talaria.workbench_api.settings import AppSettings
 
 pytestmark = pytest.mark.medium
@@ -210,3 +212,34 @@ def test_consult_requires_ready_briefing(client: TestClient) -> None:
         f"/api/scanner/briefings/{briefing['id']}/consult", headers=AUTH
     )
     assert response.status_code == 422
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize(
+    ("action", "payload"),
+    [("read", None), ("result", {"error": "宿主返回失败"})],
+)
+def test_disabled_scanner_keeps_existing_briefing_read_only(
+    tmp_path, dist_dir, action, payload
+) -> None:
+    # platform/01: 已经生成的简报仍可查，但关闭扫描后不再写入简报表。
+    settings = _settings(tmp_path, dist_dir)
+    with TestClient(create_app(settings)) as client:
+        _install_fake_host(client)
+        briefing = _trigger_briefing(client)
+        assert briefing["status"] == "PENDING"
+        assert briefing["read_ts"] is None
+
+    disabled = replace(settings, features=FeatureToggles(scanner=False))
+    with TestClient(create_app(disabled)) as client:
+        response = client.post(
+            f"/api/scanner/briefings/{briefing['id']}/{action}",
+            json=payload,
+            headers=AUTH,
+        )
+        assert response.status_code == 409, response.text
+        assert response.json()["code"] == "FEATURE_DISABLED"
+        listing = client.get("/api/scanner/briefings")
+
+    assert listing.status_code == 200, listing.text
+    assert briefing in listing.json()["briefings"]

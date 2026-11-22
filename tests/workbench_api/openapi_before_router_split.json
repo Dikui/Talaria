@@ -2602,6 +2602,26 @@
         "title": "DrawingVersionList",
         "type": "object"
       },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "description": "所有非 2xx 响应的统一包裹。",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
       "EvidenceClass": {
         "description": "证据等级：直接观测得到，或由假设推算。",
         "enum": [
@@ -6677,6 +6697,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "扫描功能已关闭"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -6725,6 +6755,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "扫描功能已关闭"
           },
           "422": {
             "content": {
@@ -6932,6 +6972,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "行情采集已关闭，且缺少本地历史"
           },
           "422": {
             "content": {
