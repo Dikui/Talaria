@@ -168,6 +168,32 @@ def test_key_levels_ws_projection_broadcasts_new_snapshot(client) -> None:
         assert message["data"]["snapshot_id"] == meta["snapshot_id"]
 
 
+def test_future_cutoff_is_readable_but_never_projected_to_the_chart(client) -> None:
+    current = _snapshot(client)
+    subscription = {"op": "subscribe", "instrument_id": INSTRUMENT, "timeframe": "1m"}
+    with client.websocket_connect("/ws/desk") as websocket:
+        assert websocket.receive_json()["type"] == "hello"
+        websocket.send_json(subscription)
+        assert websocket.receive_json()["data"]["snapshot_id"] == current["snapshot_id"]
+
+        future = client.post(
+            "/api/snapshots",
+            json={"instrument_id": INSTRUMENT, "timeframes": ["1m"], "cutoff_ts": NOW_MS + 1},
+            headers=AUTH,
+        )
+        assert future.status_code == 200, future.text
+        assert _levels(client, future.json()["snapshot_id"])["cutoff_ts"] == NOW_MS + 1
+
+        replacement = _snapshot(client)
+        message = websocket.receive_json()
+        assert message["data"]["snapshot_id"] == replacement["snapshot_id"]
+
+    with client.websocket_connect("/ws/desk") as websocket:
+        assert websocket.receive_json()["type"] == "hello"
+        websocket.send_json(subscription)
+        assert websocket.receive_json()["data"]["snapshot_id"] == replacement["snapshot_id"]
+
+
 def test_ignored_key_levels_persist_across_restart(
     tmp_path, fixture_dir, dist_dir
 ) -> None:

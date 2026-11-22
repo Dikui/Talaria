@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from talaria.foundation.connector import MarketDataConnector, RawBar
-from talaria.perception.raw_store import RawStore
+from talaria.perception.raw_store import RawStore, latest_visible_bars
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,11 +32,14 @@ def ensure_history(
     timeframe: str,
     cutoff_ts: int,
     policy: BackfillPolicy,
+    cold_bars: Sequence[RawBar] = (),
 ) -> list[RawBar]:
     """确保本地至少缓存 ``target_bars`` 根可用柱，返回可用柱（升序）。"""
 
     def usable() -> list[RawBar]:
-        return raw_store.read(symbol, timeframe, as_of=cutoff_ts)
+        return latest_visible_bars(
+            [*cold_bars, *raw_store.revisions(symbol, timeframe)], as_of=cutoff_ts
+        )
 
     existing = usable()
     pages = 0

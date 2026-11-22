@@ -39,6 +39,7 @@ from talaria.foundation.operators import (
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.alerts import AlertEngine
+from talaria.perception.alerts.engine import KeyLevelProvider
 from talaria.workbench_api.drawing_service import DrawingService
 from talaria.workbench_api.indicator_defaults import IndicatorDefaultsService
 from talaria.workbench_api.state_store import StateStore, StateWriterQueue
@@ -81,7 +82,7 @@ class AlertService:
         now_ms: Callable[[], int],
         bar_history: Callable[[str, str], Sequence[Any]] | None = None,
         session_history: Callable[[str, str], Awaitable[Sequence[CompactBar]]] | None = None,
-        key_level_provider: Callable[[str, str, str, int], Any] | None = None,
+        key_level_provider: KeyLevelProvider | None = None,
         freeze_snapshot: Callable[[AlertRecord, int], str] | None = None,
         on_change: Callable[[], Awaitable[None]] | None = None,
         on_trigger: Callable[[AlertTriggerRecord], None] | None = None,

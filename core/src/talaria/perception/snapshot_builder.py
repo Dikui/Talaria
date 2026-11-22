@@ -15,10 +15,11 @@ from talaria.foundation.derivatives import (
     DerivativePoint,
     RawDerivativePoint,
 )
-from talaria.foundation.errors import FeatureDisabledError, FeedUnavailableError
+from talaria.foundation.errors import ColdStoreError, FeatureDisabledError, FeedUnavailableError
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.snapshot import SnapshotMeta, SnapshotRequest
 from talaria.perception.backfill import BackfillPolicy, ensure_history
+from talaria.perception.cold_store import ColdReader
 from talaria.perception.compaction import compact_series
 from talaria.perception.hot_buffer import HotBarProvider
 from talaria.perception.raw_store import RawStore, latest_visible_bars
@@ -71,6 +72,7 @@ class SnapshotBuilder:
         self._policy = policy
         self._now_ms = now_ms
         self._hot_bars = hot_bars
+        self._cold_reader = ColdReader(data_dir)
 
     def build(
         self,
@@ -83,16 +85,29 @@ class SnapshotBuilder:
         frames: list[tuple[str, Sequence[SnapshotBar]]] = []
 
         for timeframe in request.timeframes:
+            try:
+                cold = self._cold_reader.read_bars(instrument, timeframe, as_of=cutoff, end_ts=cutoff)
+            except ColdStoreError as exc:
+                logger.warning("读取冷库快照输入失败，继续使用常规数据源：%s", exc)
+                cold = []
             if self._connector is not None:
-                ensure_history(
-                    raw_store=self._raw_store,
-                    connector=self._connector,
-                    symbol=instrument.symbol,
-                    timeframe=timeframe,
-                    cutoff_ts=cutoff,
-                    policy=self._policy,
-                )
-            archived = self._raw_store.revisions(instrument.symbol, timeframe)
+                try:
+                    archived = ensure_history(
+                        raw_store=self._raw_store,
+                        connector=self._connector,
+                        symbol=instrument.symbol,
+                        timeframe=timeframe,
+                        cutoff_ts=cutoff,
+                        policy=self._policy,
+                        cold_bars=cold,
+                    )
+                except FeedUnavailableError as exc:
+                    if not cold:
+                        raise
+                    logger.warning("历史回填失败，继续使用本地快照输入：%s", exc)
+                    archived = [*cold, *self._raw_store.revisions(instrument.symbol, timeframe)]
+            else:
+                archived = [*cold, *self._raw_store.revisions(instrument.symbol, timeframe)]
             hot = (
                 self._hot_bars.recent_bars(
                     instrument_id=instrument.instrument_id, timeframe=timeframe
@@ -101,7 +116,10 @@ class SnapshotBuilder:
                 else ()
             )
             revisions = [*archived, *hot]
-            raw_bars = latest_visible_bars(revisions, as_of=cutoff)
+            # 已过预计收盘时刻的进行中柱也必须等到确认后才能冻结。
+            raw_bars = latest_visible_bars(
+                (bar for bar in revisions if bar.confirmed), as_of=cutoff
+            )
             if self._connector is None and not raw_bars:
                 raise FeatureDisabledError(
                     f"行情采集已在 service.json 中关闭，缺少本地历史："
@@ -116,24 +134,6 @@ class SnapshotBuilder:
         )
         return self._freeze(
             instrument, request, frames, cutoff, now, derivative_points=derivative_points
-        )
-
-    def build_from_cold_bars(
-        self,
-        *,
-        instrument: InstrumentSpec,
-        timeframe: str,
-        cutoff_ts: int,
-        bars: Sequence[RawBar],
-    ) -> SnapshotMeta:
-        """冻结冷库已选版的收盘柱，供启动时计算关键位。"""
-        request = SnapshotRequest(
-            instrument_id=instrument.instrument_id, timeframes=[timeframe], cutoff_ts=cutoff_ts
-        )
-        compact = compact_series(bars, timeframe=timeframe, cutoff_ts=cutoff_ts)
-        entries = _snapshot_entries(compact, bars, cutoff_ts=cutoff_ts)
-        return self._freeze(
-            instrument, request, [(timeframe, entries)], cutoff_ts, self._now_ms()
         )
 
     def _freeze(

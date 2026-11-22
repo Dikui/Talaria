@@ -32,6 +32,27 @@ export interface UseKeyLevelsOptions {
   streamed: KeyLevelSet | null;
 }
 
+type LevelScope = Pick<UseKeyLevelsOptions, "instrumentId" | "timeframe">;
+
+function matchesScope(levelSet: KeyLevelSet | null, scope: LevelScope): levelSet is KeyLevelSet {
+  return levelSet?.instrument_id === scope.instrumentId && levelSet.timeframe === scope.timeframe;
+}
+
+export function selectKeyLevelSet(
+  current: KeyLevelSet | null,
+  incoming: KeyLevelSet,
+  scope: LevelScope,
+  source: "rest" | "stream",
+): KeyLevelSet | null {
+  if (!matchesScope(incoming, scope)) {
+    return current;
+  }
+  if (!matchesScope(current, scope) || incoming.cutoff_ts > current.cutoff_ts) {
+    return incoming;
+  }
+  return source === "stream" && incoming.cutoff_ts === current.cutoff_ts ? incoming : current;
+}
+
 function describe(caught: unknown): string {
   if (caught instanceof ApiError) {
     return caught.message;
@@ -48,7 +69,8 @@ export function useKeyLevels({
   timeframe,
   streamed,
 }: UseKeyLevelsOptions): KeyLevelsController {
-  const [levelSet, setLevelSet] = useState<KeyLevelSet | null>(null);
+  const [received, setReceived] = useState<KeyLevelSet | null>(null);
+  const levelSet = matchesScope(received, { instrumentId, timeframe }) ? received : null;
   const [ignoredIds, setIgnoredIds] = useState<Set<string>>(() => new Set());
   const [adoptedIds, setAdoptedIds] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
@@ -60,7 +82,6 @@ export function useKeyLevels({
     let cancelled = false;
     setLoading(snapshotId !== null);
     setError(null);
-    setLevelSet(null);
     if (snapshotId === null) {
       setLoading(false);
       return () => {
@@ -71,7 +92,9 @@ export function useKeyLevels({
       .keyLevels(snapshotId, timeframe, { limit: 200 })
       .then((bundle) => {
         if (!cancelled) {
-          setLevelSet(bundle);
+          setReceived((current) =>
+            selectKeyLevelSet(current, bundle, { instrumentId, timeframe }, "rest"),
+          );
         }
       })
       .catch((caught) => {
@@ -87,7 +110,7 @@ export function useKeyLevels({
     return () => {
       cancelled = true;
     };
-  }, [snapshotId, timeframe]);
+  }, [snapshotId, instrumentId, timeframe]);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,15 +135,12 @@ export function useKeyLevels({
   }, [instrumentId]);
 
   useEffect(() => {
-    if (
-      streamed !== null &&
-      streamed.snapshot_id === snapshotId &&
-      streamed.instrument_id === instrumentId &&
-      streamed.timeframe === timeframe
-    ) {
-      setLevelSet(streamed);
+    if (streamed !== null) {
+      setReceived((current) =>
+        selectKeyLevelSet(current, streamed, { instrumentId, timeframe }, "stream"),
+      );
     }
-  }, [streamed, snapshotId, instrumentId, timeframe]);
+  }, [streamed, instrumentId, timeframe]);
 
   const ignore = useCallback(
     async (levelId: string) => {
@@ -146,7 +166,7 @@ export function useKeyLevels({
 
   const adopt = useCallback(
     async (level: KeyLevel) => {
-      if (snapshotId === null) {
+      if (levelSet === null) {
         return null;
       }
       setAdoptingId(level.level_id);
@@ -154,7 +174,7 @@ export function useKeyLevels({
       try {
         const drawing = await api.adoptKeyLevel(
           level.level_id,
-          snapshotId,
+          levelSet.snapshot_id,
           timeframe,
         );
         setAdoptedIds((current) => new Set(current).add(level.level_id));
@@ -166,7 +186,7 @@ export function useKeyLevels({
         setAdoptingId(null);
       }
     },
-    [snapshotId, timeframe],
+    [levelSet, timeframe],
   );
 
   const clearError = useCallback(() => setError(null), []);

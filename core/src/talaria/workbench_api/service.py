@@ -93,6 +93,7 @@ class WorkbenchService:
         self._feed_mode = feed_mode
         self._cold_publisher = cold_publisher
         self._key_levels = key_levels
+        self._background_freeze = asyncio.Lock()
 
     @property
     def feed_mode(self) -> str:
@@ -106,6 +107,12 @@ class WorkbenchService:
         return self._pack.instruments()
 
     def create_snapshot(self, request: SnapshotRequest) -> SnapshotMeta:
+        meta, versions = self._prepare_snapshot(request)
+        for version in versions:
+            self._key_levels.register(version)
+        return meta
+
+    def _prepare_snapshot(self, request: SnapshotRequest) -> tuple[SnapshotMeta, list[KeyLevelSet]]:
         if request.mode is SnapshotMode.OBSERVED_REPLAY:
             raise FeatureNotImplementedError(
                 "OBSERVED_REPLAY 快照将在 M3 提供；当前仅支持 HISTORICAL_PIT"
@@ -119,34 +126,44 @@ class WorkbenchService:
                 raise InvalidRequestError(f"不支持的周期：{timeframe}")
         normalized = request.model_copy(update={"timeframes": timeframes})
         meta = self._builder.build(instrument=instrument, request=normalized)
-        self._register_key_levels(meta)
-        return meta
+        return meta, self._snapshot_key_levels(meta)
 
-    def _register_key_levels(self, meta: SnapshotMeta) -> None:
-        for timeframe in meta.timeframes:
-            self._key_levels.register(
-                self.get_key_levels(meta.snapshot_id, timeframe=timeframe)
-            )
+    def _snapshot_key_levels(self, meta: SnapshotMeta) -> list[KeyLevelSet]:
+        return [
+            self.get_key_levels(meta.snapshot_id, timeframe=timeframe)
+            for timeframe in meta.timeframes
+        ]
+
+    async def freeze_key_levels(self, instrument_id: str, timeframe: str, *, cutoff_ts: int) -> None:
+        request = SnapshotRequest(
+            instrument_id=instrument_id, timeframes=[timeframe], cutoff_ts=cutoff_ts,
+        )
+        async with self._background_freeze:
+            _, versions = await asyncio.to_thread(self._prepare_snapshot, request)
+            for version in versions:
+                self._key_levels.register(version)
 
     async def warm_key_levels(
         self, pairs: set[tuple[str, str]], *, cutoff_ts: int
-    ) -> None:
+    ) -> set[tuple[str, str]]:
+        pending = set()
         reader = ColdReader(self._data_dir)
         for instrument_id, timeframe in sorted(pairs):
             instrument = self._pack.instrument(instrument_id)
             if instrument is None:
                 continue
             try:
-                bars = await asyncio.to_thread(
-                    reader.read_bars, instrument, timeframe, as_of=cutoff_ts
-                )
-                if bars:
-                    meta = self._builder.build_from_cold_bars(
-                        instrument=instrument, timeframe=timeframe, cutoff_ts=cutoff_ts, bars=bars
+                if self._cold_publisher is not None:
+                    bars = await asyncio.to_thread(
+                        reader.read_bars, instrument, timeframe, as_of=cutoff_ts, end_ts=cutoff_ts,
                     )
-                    self._register_key_levels(meta)
+                    if not bars:
+                        pending.add((instrument_id, timeframe))
+                        continue
+                await self.freeze_key_levels(instrument_id, timeframe, cutoff_ts=cutoff_ts)
             except Exception:
-                logger.exception("冷库预热关键位失败：%s %s", instrument_id, timeframe)
+                logger.exception("预热关键位失败：%s %s", instrument_id, timeframe)
+        return pending
 
     def get_snapshot(self, snapshot_id: str) -> SnapshotMeta:
         record = self._snapshot_store.get(snapshot_id)

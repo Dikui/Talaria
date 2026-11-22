@@ -403,12 +403,13 @@ class FeedSupervisor(MarketEventFeed):
         )
         self._mark_activity(key[0], now, timeframe=key[1], event_ts=now)
         self._emit(
-            KlineEvent(
+            ReceivedKlineEvent(
                 instrument_id=key[0],
                 timeframe=key[1],
                 bar=bar,
                 confirmed=confirmed,
                 revision=revision,
+                ts_ingested=now if received_ts is None else received_ts,
             )
         )
 

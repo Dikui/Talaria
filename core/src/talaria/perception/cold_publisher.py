@@ -32,12 +32,14 @@ class ColdPublisher:
         connector: MarketDataConnector | None,
         policy: BackfillPolicy,
         now_ms: Callable[[], int],
+        on_history_complete: Callable[[str, str], None] | None = None,
     ) -> None:
         self._store = store
         self._instruments = instruments
         self._connector = connector
         self._policy = policy
         self._now_ms = now_ms
+        self._on_history_complete = on_history_complete
         self._writes = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-writer")
         self._history = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cold-history")
         self._pending_history: set[tuple[str, str, int, int]] = set()
@@ -151,6 +153,8 @@ class ColdPublisher:
         finally:
             with self._history_lock:
                 self._pending_history.discard(key)
+            if self._on_history_complete is not None:
+                self._on_history_complete(instrument.instrument_id, timeframe)
 
     def _publish(
         self, instrument: InstrumentSpec, timeframe: str, candidates: Sequence[RawBar],

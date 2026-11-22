@@ -131,15 +131,13 @@ class LevelProvider:
 
     def __init__(self, level: KeyLevel) -> None:
         self.level = level
-        self.calls: list[tuple[str, str, str, int]] = []
+        self.calls: list[tuple[str, str, int]] = []
 
     def __call__(
-        self, instrument_id: str, timeframe: str, level_id: str, cutoff_ts: int
-    ) -> KeyLevel | None:
-        self.calls.append((instrument_id, timeframe, level_id, cutoff_ts))
-        if level_id != self.level.level_id:
-            return None
-        return self.level
+        self, instrument_id: str, timeframe: str, cutoff_ts: int
+    ) -> list[KeyLevel]:
+        self.calls.append((instrument_id, timeframe, cutoff_ts))
+        return [self.level]
 
 
 def _level_alert(
@@ -345,16 +343,16 @@ def test_stale_feed_suspends_and_recovery_resets_baseline() -> None:
 
 def test_provider_receives_only_available_cutoff() -> None:
     provider = LevelProvider(_level())
-    engine, _, _ = _engine(provider)
+    clock = Clock()
+    engine, _, _ = _engine(provider, clock=clock)
     alert = _level_alert(AlertLevelEvent.TOUCH)
     _put(engine, alert)
 
     engine.handle_event(_kline(BASE_TS, "105", confirmed=True))
-    assert provider.calls[-1] == (INSTRUMENT, TIMEFRAME, LEVEL_ID, BASE_TS + MINUTE)
-    # 未确认柱：cutoff 停在该柱开盘时刻，形成中的柱对关键位不可见。
+    assert provider.calls[-1] == (INSTRUMENT, TIMEFRAME, BASE_TS + MINUTE)
+    clock.now = BASE_TS + MINUTE + 1_000
     engine.handle_event(_kline(BASE_TS + MINUTE, "100.5", high="101", low="99", confirmed=False))
-    assert provider.calls[-1][3] == BASE_TS + MINUTE
-    assert all(call[3] <= BASE_TS + MINUTE for call in provider.calls)
+    assert provider.calls[-1][2] == clock.now
 
 
 def test_level_kind_mismatch_is_ignored() -> None:

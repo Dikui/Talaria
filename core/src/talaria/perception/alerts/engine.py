@@ -35,6 +35,7 @@ from talaria.foundation.feed import (
     FeedHealthStatus,
     KlineEvent,
     OrderBookEvent,
+    ReceivedKlineEvent,
 )
 from talaria.foundation.key_levels import (
     KeyLevel,
@@ -74,8 +75,8 @@ _OVERLAY_LABELS = {
 
 _THICK_OVERLAYS = frozenset({DrawingKind.PARALLEL_CHANNEL, DrawingKind.RECTANGLE})
 
-#: 关键位来源：instrument、timeframe、level_id、cutoff → 该 cutoff 已可见的最新关键位。
-KeyLevelProvider = Callable[[str, str, str, int], KeyLevel | None]
+#: 关键位来源：instrument、timeframe、cutoff → 该 cutoff 已可见的一版关键位。
+KeyLevelProvider = Callable[[str, str, int], Sequence[KeyLevel]]
 
 _LEVEL_EVENT_LABELS = {
     AlertLevelEvent.TOUCH: "触及",
@@ -127,7 +128,6 @@ class AlertEngine:
         self._overlay_geometry = overlay_geometry
         self._history_provider = history_provider
         self._key_level_provider = key_level_provider
-        self._level_cache: dict[tuple[str, str, int], list[KeyLevel]] = {}
         self._freeze_snapshot = freeze_snapshot
         self._on_trigger = on_trigger
         self._bar_limit = max(bar_limit, 32)
@@ -217,15 +217,21 @@ class AlertEngine:
             self._handle_health(event)
             return []
         self._store_event_bars(event)
-        self._level_cache.clear()
         instrument_id = event.instrument_id
         if instrument_id in self._stale:
             return []
         now = self._now_ms()
+        alerts = [alert for alert in self.list_alerts() if alert.instrument_id == instrument_id]
+        levels: dict[str, KeyLevel] = {}
+        if isinstance(event, KlineEvent) and any(
+            alert.timeframe == event.timeframe
+            and alert.condition.kind is AlertConditionKind.LEVEL_EVENT
+            and alert.status in {AlertStatus.ARMED, AlertStatus.COOLDOWN}
+            for alert in alerts
+        ):
+            levels = {level.level_id: level for level in self._levels_for_event(event, now)}
         changed: dict[str, AlertRecord] = {}
-        for alert in self.list_alerts():
-            if alert.instrument_id != instrument_id:
-                continue
+        for alert in alerts:
             if self._advance(alert, now):
                 changed[alert.alert_id] = alert
             if alert.status is not AlertStatus.ARMED:
@@ -234,7 +240,7 @@ class AlertEngine:
                 instrument_id, -1
             ):
                 continue
-            if self._evaluate(alert, event, now):
+            if self._evaluate(alert, event, now, levels):
                 # 触发后的规则由回调持久化，避免同一事件写两次。
                 changed.pop(alert.alert_id, None)
         return list(changed.values())
@@ -367,7 +373,9 @@ class AlertEngine:
             alert.updated_ts = now
         return changed
 
-    def _evaluate(self, alert: AlertRecord, event: FeedEvent, now: int) -> bool:
+    def _evaluate(
+        self, alert: AlertRecord, event: FeedEvent, now: int, levels: dict[str, KeyLevel]
+    ) -> bool:
         condition = alert.condition
         runtime = self._runtime_for(alert)
 
@@ -379,7 +387,7 @@ class AlertEngine:
             if runtime.last_bar_key == bar_key:
                 return False
 
-        observation = self._observe(alert, event)
+        observation = self._observe(alert, event, levels)
         if observation is None or observation.value is None:
             return False
         if isinstance(event, KlineEvent):
@@ -404,7 +412,9 @@ class AlertEngine:
             runtime.level_breakout_ts = None
         return True
 
-    def _observe(self, alert: AlertRecord, event: FeedEvent) -> _Observation | None:
+    def _observe(
+        self, alert: AlertRecord, event: FeedEvent, levels: dict[str, KeyLevel]
+    ) -> _Observation | None:
         condition = alert.condition
         if condition.kind is AlertConditionKind.METRIC_THRESHOLD:
             value = self._metric_value(condition.metric, event)
@@ -476,11 +486,13 @@ class AlertEngine:
         if condition.kind is AlertConditionKind.LEVEL_EVENT:
             if not isinstance(event, KlineEvent):
                 return None
-            return self._observe_level(alert, event)
+            return self._observe_level(alert, event, levels)
 
         return None
 
-    def _observe_level(self, alert: AlertRecord, event: KlineEvent) -> _Observation | None:
+    def _observe_level(
+        self, alert: AlertRecord, event: KlineEvent, levels: dict[str, KeyLevel]
+    ) -> _Observation | None:
         """按 ``level_id`` 读取 cutoff 前最新状态，判定触及/突破/回踩。"""
 
         condition = alert.condition
@@ -493,8 +505,7 @@ class AlertEngine:
             return None
         if bar.close is None or bar.high is None or bar.low is None:
             return None
-        cutoff_ts = bar.ts_available if event.confirmed else bar.timestamp
-        level = self._key_level(alert.instrument_id, alert.timeframe, level_id, cutoff_ts)
+        level = levels.get(level_id)
         if level is None:
             return None
         if condition.level_kind is not None and level.kind is not condition.level_kind:
@@ -576,30 +587,30 @@ class AlertEngine:
             level_direction=direction,
         )
 
-    def _key_level(
-        self, instrument_id: str, timeframe: str, level_id: str, cutoff_ts: int
-    ) -> KeyLevel | None:
+    def _levels_for_event(self, event: KlineEvent, now: int) -> Sequence[KeyLevel]:
+        instrument_id, timeframe = event.instrument_id, event.timeframe
+        if event.confirmed:
+            cutoff_ts = event.bar.timestamp + TIMEFRAME_MS[timeframe]
+        else:
+            cutoff_ts = event.ts_ingested if isinstance(event, ReceivedKlineEvent) else now
         provider = self._key_level_provider
         if provider is not None:
-            return provider(instrument_id, timeframe, level_id, cutoff_ts)
-        cache_key = (instrument_id, timeframe, cutoff_ts)
-        cached = self._level_cache.get(cache_key)
-        if cached is None:
-            window = self._windows.get((instrument_id, timeframe))
-            if not window:
-                return None
-            try:
-                cached = compute_key_levels(
-                    instrument_id=instrument_id,
-                    timeframe=timeframe,
-                    bars=list(window)[-self._bar_limit:],
-                    cutoff_ts=cutoff_ts,
-                )
-            except Exception:
-                logger.exception("重算关键位失败：%s %s", instrument_id, timeframe)
-                return None
-            self._level_cache[cache_key] = cached
-        return next((level for level in cached if level.level_id == level_id), None)
+            return provider(instrument_id, timeframe, cutoff_ts)
+        window = self._windows.get((instrument_id, timeframe))
+        if not window:
+            return []
+        if not event.confirmed:
+            cutoff_ts = min(cutoff_ts, event.bar.timestamp)
+        try:
+            return compute_key_levels(
+                instrument_id=instrument_id,
+                timeframe=timeframe,
+                bars=list(window)[-self._bar_limit:],
+                cutoff_ts=cutoff_ts,
+            )
+        except Exception:
+            logger.exception("重算关键位失败：%s %s", instrument_id, timeframe)
+            return []
 
     @staticmethod
     def _metric_value(metric: AlertMetric | None, event: FeedEvent) -> Decimal | None:
