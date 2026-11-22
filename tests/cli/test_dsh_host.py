@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -131,3 +134,84 @@ def test_mark_unavailable_reports_offline_without_process(tmp_path: Path) -> Non
     assert payload["host"] == "offline"
     assert "未找到 DSH" in str(payload["detail"])
     assert payload["pid"] is None
+
+
+def _wait_for_state(host: DshHost, state: str, *, detail: str = ""):
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        info = host.info()
+        if info.state == state and detail in info.detail:
+            return info
+        time.sleep(0.02)
+    pytest.fail(f"期望 DSH 状态为 {state}，实际为 {host.info().state}")
+
+
+@pytest.mark.spec
+def test_host_restarts_with_backoff_and_republishes_private_entry(tmp_path, monkeypatch):
+    # platform/03: use the M2 fake DSH with a scripted server and injected HTTP probe.
+    fixture = Path(__file__).resolve().parents[1] / "fixtures/m2/fake_dsh_host.py"
+    attempts = tmp_path / "attempts"
+    recording = tmp_path / "recording.jsonl"
+    recording.touch()
+    monkeypatch.setenv("TALARIA_M2_RECORDING", str(recording))
+    monkeypatch.setenv("TALARIA_M2_LOG", str(tmp_path / "m2.log"))
+    script = _fake_host_script(
+        tmp_path,
+        f"""
+import runpy
+import sys
+import time
+from pathlib import Path
+
+class ScriptedServer:
+    def __init__(self, address, handler):
+        path = Path({str(attempts)!r})
+        attempt = len(path.read_text().splitlines()) if path.exists() else 0
+        with path.open("a") as log:
+            print(time.monotonic(), file=log)
+        if attempt == 1:
+            print("failed http://127.0.0.1:1/?token=example", flush=True)
+            sys.exit(7)
+
+    def serve_forever(self, poll_interval):
+        time.sleep(60)
+
+    def server_close(self):
+        pass
+
+sys.exit(runpy.run_path({str(fixture)!r})["main"](sys.argv[1:], server_factory=ScriptedServer))
+""",
+    )
+    monkeypatch.setattr(DshHost, "probe", lambda self: True)
+    host = _host(tmp_path, script)
+    runtime = tmp_path / "data/runtime"
+    bridge = write_bridge_descriptor(
+        runtime / "dsh-bridge.json", base_url="http://127.0.0.1:8765",
+        token="bridge", daemon_pid=os.getpid(),
+    )
+    entry = runtime / "dsh-entry.json"
+    host.supervise()
+    try:
+        first = _wait_for_state(host, "online")
+        assert json.loads(entry.read_text())["url"] == "http://127.0.0.1:1/?token=recorded"
+        assert stat.S_IMODE(entry.stat().st_mode) == 0o600
+        assert stat.S_IMODE(runtime.stat().st_mode) == 0o700
+        crashed_at = time.monotonic()
+        os.kill(first.pid, signal.SIGKILL)
+        _wait_for_state(host, "offline", detail="意外退出")
+        assert not entry.exists()
+        last_failure = _wait_for_state(host, "offline", detail="退出码 7")
+        assert last_failure.pid is None
+        assert not entry.exists()
+        recovered = _wait_for_state(host, "online")
+        assert recovered.pid != first.pid
+        assert json.loads(entry.read_text())["pid"] == recovered.pid
+        _, second_start, third_start = map(float, attempts.read_text().splitlines())
+        assert second_start - crashed_at >= 1.0
+        assert third_start - second_start >= 2.0
+        assert "token=recorded" not in Path(recovered.log_path).read_text()
+        assert "token=example" not in last_failure.detail
+        assert bridge.exists()
+    finally:
+        host.stop()
+    assert not entry.exists()

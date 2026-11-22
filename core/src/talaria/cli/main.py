@@ -14,6 +14,7 @@ import threading
 import time
 import traceback
 import urllib.request
+import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
@@ -26,10 +27,14 @@ from talaria.cli.contracts_io import (
     write_contracts,
 )
 from talaria.cli.dsh_host import (
+    DEFAULT_DSH_PORT,
     DshHost,
     DshHostError,
     DshHostInfo,
     bridge_descriptor_path,
+    dsh_entry_path,
+    read_dsh_entry,
+    redact_dsh_token,
     remove_bridge_descriptor,
     resolve_dsh_bin,
     write_bridge_descriptor,
@@ -41,6 +46,8 @@ from talaria.cli.service import (
     ServiceStatus,
     ServiceUninstallError,
     install_service,
+    open_data_dir,
+    read_service_dsh_status,
     service_status,
     uninstall_service,
 )
@@ -76,7 +83,6 @@ if TYPE_CHECKING:
     from talaria.workbench_api.usage_scan import UsageScanResult
 
 DEFAULT_PORT = 8765
-DEFAULT_DSH_PORT = 8766
 DEFAULT_DSH_PROFILE = "talaria-desk"
 
 
@@ -340,6 +346,10 @@ def _run_up(
     data_dir = settings.data_dir
     bridge_path = bridge_descriptor_path(data_dir)
     descriptor_path = service_descriptor_path(data_dir)
+    try:
+        dsh_entry_path(data_dir).unlink(missing_ok=True)
+    except OSError as exc:
+        print(redact_dsh_token(f"警告：无法移除旧的 DSH 入口：{exc}"), file=sys.stderr)
     dsh_host: DshHost | None = None
     if dual:
         assert dsh_bin is not None
@@ -381,6 +391,7 @@ def _run_up(
     # solo 守护进程需要可预测的 0 退出码，因此把服务器放到工作线程、由主线程
     # 接收信号并翻转 should_exit；工作线程里的 uvicorn 不会安装信号处理器。
     worker_error: BaseException | None = None
+    shutdown_requested = False
 
     def run_server() -> None:
         nonlocal worker_error
@@ -390,7 +401,8 @@ def _run_up(
             worker_error = exc
 
     def stop_server(signum: int, frame: object) -> None:
-        server.should_exit = True
+        nonlocal shutdown_requested
+        shutdown_requested = True
 
     previous_handlers = {
         sig: signal.signal(sig, stop_server)
@@ -398,23 +410,23 @@ def _run_up(
     }
     worker = threading.Thread(target=run_server, name="talaria-uvicorn", daemon=False)
     worker.start()
-    host_started = False
     startup_failed = False
     try:
         deadline = time.monotonic() + 20
         while (
             not server.started
+            and not shutdown_requested
             and worker.is_alive()
             and time.monotonic() < deadline
         ):
             time.sleep(0.05)
-        if not server.started:
+        if not server.started and not shutdown_requested:
             startup_failed = True
             print(
                 "Talaria 守护进程启动失败；请检查端口占用与日志。",
                 file=sys.stderr,
             )
-        else:
+        elif server.started:
             base_url = loopback_base_url(host, args.port)
             try:
                 write_service_descriptor(
@@ -433,52 +445,37 @@ def _run_up(
                 )
 
             if dsh_host is not None:
-                write_bridge_descriptor(
-                    bridge_path,
-                    base_url=base_url,
-                    token=token,
-                    daemon_pid=os.getpid(),
-                )
-                if dsh_start_error is None:
-                    try:
-                        info = dsh_host.start()
-                        host_started = True
-                    except DshHostError as exc:
-                        dsh_host.mark_unavailable(str(exc))
-                        print(
-                            f"警告：{exc}\n"
-                            "Talaria 守护进程继续提供图表快通道；"
-                            "可修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
-                            file=sys.stderr,
-                        )
-                        info = dsh_host.info()
-                else:
-                    dsh_host.mark_unavailable(dsh_start_error)
-                    print(
-                        f"警告：{dsh_start_error}\n"
-                        "Talaria 守护进程继续提供图表快通道；"
-                        "修复 DSH 后重启，或使用 --solo 跳过协同宿主。",
-                        file=sys.stderr,
+                try:
+                    write_bridge_descriptor(
+                        bridge_path,
+                        base_url=base_url,
+                        token=token,
+                        daemon_pid=os.getpid(),
                     )
-                    info = dsh_host.info()
-                _print_ready(host, args.port, info, bridge_path, features)
+                except OSError as exc:
+                    dsh_start_error = f"无法写入 DSH 桥接凭据：{exc}"
+                if dsh_start_error is not None:
+                    dsh_host.mark_unavailable(dsh_start_error)
+                elif not shutdown_requested:
+                    dsh_host.supervise()
+                _print_ready(host, args.port, dsh_host.info(), bridge_path, features)
 
-            while worker.is_alive():
+            while worker.is_alive() and not shutdown_requested:
                 worker.join(timeout=0.2)
-    except KeyboardInterrupt:  # pragma: no cover - 主线程信号由 stop_server 接管
-        server.should_exit = True
     finally:
-        server.should_exit = True
         try:
-            if host_started and dsh_host is not None:
+            if dsh_host is not None:
                 dsh_host.stop()
-            remove_bridge_descriptor(bridge_path)
-            remove_service_descriptor(descriptor_path)
         finally:
+            server.should_exit = True
             # _cmd_up 退出时会释放数据目录锁，必须先等服务线程关闭存储。
-            worker.join()
-            for sig, handler in previous_handlers.items():
-                signal.signal(sig, handler)
+            try:
+                remove_bridge_descriptor(bridge_path)
+                remove_service_descriptor(descriptor_path)
+            finally:
+                worker.join()
+                for sig, handler in previous_handlers.items():
+                    signal.signal(sig, handler)
     if isinstance(worker_error, SystemExit):  # 端口占用等启动失败
         code = worker_error.code
         if isinstance(code, int) and code != 0:
@@ -494,7 +491,7 @@ def _run_up(
 
 def _report_host_offline(info: DshHostInfo) -> None:
     print(
-        f"警告：{info.detail}；Talaria 守护进程继续提供图表快通道。\n"
+        f"DSH 协同宿主：离线（{info.detail}）；Talaria 守护进程继续提供图表快通道。\n"
         f"DSH 日志：{info.log_path}",
         file=sys.stderr,
     )
@@ -509,7 +506,9 @@ def _print_ready(
 ) -> None:
     print(f"Talaria 看盘：http://{host}:{port}/desk", file=sys.stderr)
     if info.state == "online" and info.url:
-        print(f"DSH 协同宿主：{info.url}", file=sys.stderr)
+        print(f"DSH 协同宿主：{redact_dsh_token(info.url)}", file=sys.stderr)
+    elif info.state == "starting":
+        print("DSH 协同宿主：启动中", file=sys.stderr)
     else:
         print(f"DSH 协同宿主：离线（{info.detail}）", file=sys.stderr)
     print(f"DSH 日志：{info.log_path}", file=sys.stderr)
@@ -734,6 +733,8 @@ def _cmd_service(args: argparse.Namespace) -> int:
                 pack=args.pack,
                 program=program,
                 launch_agents_dir=launch_agents_dir,
+                solo=args.solo,
+                dsh_bin=args.dsh_bin,
                 log_dir=args.log_dir,
                 label=label,
             )
@@ -809,6 +810,48 @@ def _print_service_status(status: ServiceStatus) -> None:
         pid = holder.pid if holder.pid is not None else "未知"
         print(f"数据目录锁：由 {holder.role or '未知角色'} 持有（pid={pid}）")
     print(f"写入接口：{status.endpoint or '不可用'}")
+    print(status.dsh.summary)
+
+
+def _cmd_open(args: argparse.Namespace) -> int:
+    try:
+        data_dir = open_data_dir(args.data_dir)
+        holder = probe_lock(data_dir)
+        descriptor = None
+        if holder is not None and holder.role == ROLE_SERVICE:
+            candidate = read_service_descriptor(data_dir)
+            if candidate is not None and candidate.pid == holder.pid:
+                descriptor = candidate
+    except (ValueError, OSError) as exc:
+        print(redact_dsh_token(str(exc)), file=sys.stderr)
+        descriptor = None
+
+    if descriptor is None:
+        print(
+            "常驻服务未就绪。请运行 talaria service install 或 talaria up，"
+            "并确认 --data-dir 指向同一数据目录。",
+            file=sys.stderr,
+        )
+        return 2
+
+    dsh = read_service_dsh_status(descriptor.base_url, data_dir)
+    url = None
+    if dsh.state == "online" and dsh.pid is not None:
+        url = read_dsh_entry(data_dir, daemon_pid=descriptor.pid, pid=dsh.pid)
+    if url is None:
+        detail = "入口文件缺失、损坏或已过期" if dsh.state == "online" else dsh.detail
+        print(f"{dsh.summary}。打开兜底页面。{detail}", file=sys.stderr)
+        url = f"{descriptor.base_url}/desk"
+    if args.print_url:
+        print(redact_dsh_token(url))
+        return 0
+    try:
+        if webbrowser.open(url):
+            return 0
+    except (OSError, webbrowser.Error):
+        pass
+    print("无法打开系统默认浏览器。", file=sys.stderr)
+    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -879,6 +922,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="DSH 启动与健康探针超时秒数（默认 40）",
     )
     up.set_defaults(func=_cmd_up)
+
+    open_cmd = subparsers.add_parser("open", help="打开 DSH 工作台或看盘兜底页面")
+    open_cmd.add_argument(
+        "--data-dir",
+        help="数据目录（默认取 $TALARIA_DATA_DIR、已安装作业或 ./.talaria）",
+    )
+    open_cmd.add_argument(
+        "--print", dest="print_url", action="store_true", help="只打印脱敏地址"
+    )
+    open_cmd.set_defaults(func=_cmd_open)
 
     install = subparsers.add_parser(
         "dsh-install", help="构建并安装 @talaria/dsh-plugin 到 DSH Profile"
@@ -1030,6 +1083,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--program",
         default=None,
         help="talaria 可执行文件绝对路径（默认取当前 Python 同目录的 talaria）",
+    )
+    service_install.add_argument(
+        "--solo", action="store_true", help="只安装常驻服务，不启动 DSH 宿主"
+    )
+    service_install.add_argument(
+        "--dsh-bin", help="DSH 可执行文件（默认取 TALARIA_DSH_BIN 或从 PATH 查找）"
     )
     service_install.add_argument(
         "--launch-agents-dir",

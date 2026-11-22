@@ -405,14 +405,14 @@ def _parse_port(argv: list[str]) -> int:
     return 18931
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str], *, server_factory=ThreadingHTTPServer) -> int:
     bridge_url, token = _load_bridge()
     turns = _load_recording()
     log_path = Path(os.environ["TALARIA_M2_LOG"])
     bridge = BridgeClient(bridge_url, token, log_path)
     replay = ReplayHost(bridge, turns)
     port = _parse_port(argv)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = server_factory(("127.0.0.1", port), Handler)
     server.replay = replay  # type: ignore[attr-defined]
     print(f"http://127.0.0.1:{port}/?token=recorded", flush=True)
     try:
