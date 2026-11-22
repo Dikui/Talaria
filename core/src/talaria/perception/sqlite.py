@@ -13,6 +13,8 @@ from pathlib import Path
 
 from talaria.foundation.errors import SingleWriterViolationError
 
+COLLABORATION_STATE_DB = Path("state") / "collaboration_state.sqlite"
+
 _CLAIMS: set[Path] = set()
 _CLAIMS_LOCK = threading.Lock()
 
