@@ -52,3 +52,37 @@
 
 - 并入 `integration/platform-redesign-batch-1`（merge commit `30ab564`）。
 - 复跑 `pytest tests/perception tests/foundation tests/workbench_api/test_runtime.py tests/workbench_api/test_app.py tests/evaluation tests/feed -q` → 335 passed。
+
+### 验收返工（2026-11-22）
+
+1. **快照选版与发布游标（已确认）**。原始 JSONL 和热缓冲保留截止时点所需的修订，由 `latest_visible_bars` 先截断再选版。热端已收盘柱的后续修订以上游可获取时间与本机接收时间的较晚者为可获取时间。快照同时向现有发布器提供所有可见版本，已覆盖事件时间的新修订按清单去重后追加。回归用例为 `test_hot_snapshot.py::test_snapshot_keeps_revision_visible_at_each_cutoff[archive/hot]`、`test_cold_publisher.py::test_publishes_unseen_revision_at_cursor_once` 和 `test_cold_publisher.py::test_first_publish_keeps_both_visible_revisions`。
+2. **原始归档引用（已确认）**。切换清单前验证原 JSONL 存在且字节哈希一致。清单事务原位更新 Parquet 引用与游标，保留 `content_sha256` 和清单行顺序。回归用例为 `test_cold_migrate.py::test_migration_preserves_raw_archive_references` 和 `test_cold_migrate.py::test_migration_rejects_unverifiable_raw_archive[missing/corrupt]`。
+3. **迁移排他锁（已确认）**。`migrate_cold_store` 复用 `ServiceLock`，从查看清单前持有到 SQLite 连接关闭。竞争命令非零退出并报告持有者 PID 与角色。`test_cold_migrate.py::test_cold_migrate_cli_rejects_competing_migration_process` 用不同进程分别在连接开启和关闭之前验证互斥，随后验证锁释放。
+4. **幂等与规格检查（两种故障均已确认）**。以调用方规格先校验批次，再用规范化十进制值计算 generation 标识。原始 JSONL 字节继续用独立内容哈希归档。旧标识按清单的时间范围、行数与提交时点查找候选，再逐值比对。回归用例为 `test_cold_store_decimal128.py::test_duplicate_batch_is_validated_against_requested_spec` 和 `test_cold_store_decimal128.py::test_read_back_batch_can_be_republished[current/legacy]`。
+5. **历史规格（已确认）**。`cold-migrate --source-specs <JSON>` 按 `venue/symbol/timeframe/旧 generation_id` 指定来源规格。JSON 值包含字符串 `tick_size`、`qty_step` 和整数 `price_precision`、`qty_precision`。未提供映射的 generation 使用市场包规格。迁移读回逐值校验并写入来源规格版本。回归用例为 `test_cold_migrate.py::test_cli_migrates_historical_generations_with_their_source_specs`，覆盖当前一位精度下拒绝历史两位价格、提供映射后混读及幂等重跑。
+6. **补齐验收覆盖**。`test_cold_migrate.py::test_migrate_rewrites_legacy_generation_and_preserves_every_decimal` 对同一旧格式字符串 Parquet 前后走公开 `ColdStore.read_bars`，成交额 `809038.73` 等值。`test_cold_migrate.py::test_migration_rolls_back_manifest_after_mid_transaction_failure` 用 SQLite 触发器在第二代切换中注入失败，检查两代清单、游标及原文件并验证重跑。这两项既有行为经测试确认。其余覆盖见上列各回归用例。
+
+**实际运行命令和结果**
+
+以下 pytest 命令均从本 worktree 执行，命令前缀为 `PYTHONPATH=/Users/dikui/Project/Talaria-wt/data-access-01/core/src /Users/dikui/Project/Talaria/.venv/bin/pytest`。
+
+| 前缀后的参数 | 实际结果 |
+| --- | --- |
+| `tests/perception/test_hot_snapshot.py::test_snapshot_keeps_revision_visible_at_each_cutoff tests/perception/test_cold_publisher.py::test_publishes_unseen_revision_at_cursor_once tests/perception/test_cold_publisher.py::test_first_publish_keeps_both_visible_revisions -q -p no:cacheprovider` | 修前 4 failed |
+| `tests/perception/test_cold_migrate.py -k 'preserves_every_decimal or archive or mid_transaction' -q -p no:cacheprovider` | 修前 3 failed, 2 passed, 6 deselected |
+| `tests/perception/test_cold_migrate.py::test_cold_migrate_cli_rejects_competing_migration_process -q -p no:cacheprovider` | 修前 1 failed，竞争命令实际迁移成功 |
+| `tests/perception/test_cold_store_decimal128.py -k 'requested_spec or republished' -q -p no:cacheprovider` | 修前 3 failed |
+| `tests/perception/test_cold_migrate.py::test_cli_migrates_historical_generations_with_their_source_specs -q -p no:cacheprovider` | 修前 1 failed，已有规格校验拒绝旧规格数据且 CLI 无来源规格参数 |
+| `tests/perception tests/workbench_api/test_service_lock.py -q -p no:cacheprovider` | 修后 139 passed in 1.87s |
+| `tests/perception tests/foundation tests/workbench_api tests/cli tests/evaluation tests/feed -q -p no:cacheprovider` | 7 failed, 601 passed, 1 warning, 1 error in 22.71s |
+| 同上，另设 `DSH_HOME="$PWD/tests/fixtures/unused-dsh-profile"` | 6 failed, 601 passed, 1 skipped, 1 warning, 1 error in 22.40s |
+
+首次指定范围测试中，DSH 现装配置用例尝试写入本机 Profile，被沙箱拒绝。隔离 `DSH_HOME` 后该用例跳过，其余 6 个失败及 1 个 setup error 均为沙箱拒绝绑定回环端口。任务相关回归用例全部通过。
+
+`PYTHONPATH=/Users/dikui/Project/Talaria-wt/data-access-01/core/src /Users/dikui/Project/Talaria/.venv/bin/python -c 'from talaria.cli.main import main; raise SystemExit(main())' contract-check` 输出「契约生成物零漂移。」。`git diff --check` 通过。
+
+**未修项与未验证项**
+
+- 持续发布循环按任务边界留给 data-access/02。此前已使用旧实现切换且丢失原始归档映射的 decimal128 清单没有可靠映射来源，本次迁移保留尚待迁移的 generation 的原始引用。
+- 未在真实数据目录执行迁移，未运行 `launchctl`。
+- 提交受沙箱阻断。`git add -- <逐文件路径>` 无法在共享 Git 元数据目录创建 `index.lock`（`Operation not permitted`），分支 `fix/data-access-01` 的 HEAD 仍为 `af85480`。

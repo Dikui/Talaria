@@ -597,8 +597,10 @@ def _cmd_cold_migrate(args: argparse.Namespace) -> int:
 
     pack = get_market_pack(args.pack)
     try:
-        report = migrate_cold_store(Path(args.data_dir), pack=pack)
-    except ColdStoreError as exc:
+        report = migrate_cold_store(
+            Path(args.data_dir), pack=pack, source_specs=args.source_specs
+        )
+    except (ColdStoreError, ServiceLockError) as exc:
         print(f"冷库迁移失败：{exc}", file=sys.stderr)
         return 1
     if not report.manifest_switched:
@@ -974,6 +976,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-dir",
         default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
         help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
+    )
+    migrate.add_argument(
+        "--source-specs",
+        type=Path,
+        help=(
+            "历史来源规格 JSON 文件，键为 venue/symbol/timeframe/旧 generation_id，"
+            "值含 tick_size、qty_step（十进制字符串）及 price_precision、qty_precision（整数）"
+        ),
     )
     migrate.set_defaults(func=_cmd_cold_migrate)
 

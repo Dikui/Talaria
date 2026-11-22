@@ -119,7 +119,7 @@ def test_publish_commits_generation_and_preserves_committed_time(
     bars = _bars()
     generation = store.publish(_batch(bars))
 
-    assert generation.generation_id == store.archive(_batch(bars)).sha256
+    assert generation.content_sha256 == store.archive(_batch(bars)).sha256
     assert generation.parquet_path == (
         Path("data") / "cold" / "bybit" / "BTCUSDT" / TIMEFRAME / f"{generation.generation_id}.parquet"
     )

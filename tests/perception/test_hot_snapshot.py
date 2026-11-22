@@ -23,7 +23,9 @@ from talaria.foundation.snapshot import SnapshotRequest
 from talaria.foundation.types import PrecisionTier
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.perception.backfill import BackfillPolicy
-from talaria.perception.hot_buffer import HotStreamBuffer
+from talaria.perception.cold_publisher import ColdPublisher
+from talaria.perception.cold_store import ColdStore
+from talaria.perception.hot_buffer import HotBarProvider, HotStreamBuffer
 from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import (
@@ -90,7 +92,8 @@ def _builder(
     tmp_path: Path,
     *,
     history: list[RawBar],
-    hot: StubHotBars | None = None,
+    hot: HotBarProvider | None = None,
+    cold: ColdStore | None = None,
 ) -> tuple[SnapshotBuilder, RawStore, SnapshotStore]:
     raw_store = RawStore(tmp_path, raw_archive_id="test")
     raw_store.append(INSTRUMENT.symbol, TIMEFRAME, history)
@@ -103,6 +106,13 @@ def _builder(
         policy=BackfillPolicy(target_bars=2, max_pages=1),
         now_ms=lambda: NOW,
         hot_bars=hot,
+        cold_publishers=(
+            {(INSTRUMENT.instrument_id, TIMEFRAME): ColdPublisher(
+                cold, instrument=INSTRUMENT, timeframe=TIMEFRAME
+            )}
+            if cold is not None
+            else None
+        ),
     )
     return builder, raw_store, snapshot_store
 
@@ -179,6 +189,68 @@ def test_archived_higher_revision_wins_over_later_hot_bar(tmp_path: Path) -> Non
         assert entries[0].ts_committed == BASE + MINUTE + 10
     finally:
         snapshot_store.close()
+
+
+# data-access/01：快照先按可获取时间截断，再选择修订。
+@pytest.mark.regression
+@pytest.mark.parametrize("source", ["archive", "hot"])
+def test_snapshot_keeps_revision_visible_at_each_cutoff(tmp_path: Path, source: str) -> None:
+    first = _raw(BASE, close="100.0")
+    revised = replace(
+        _raw(BASE, close="101.0"),
+        revision=1,
+        ts_available=first.ts_available + 1_000,
+        ts_ingested=first.ts_available + 1_000,
+        ts_committed=first.ts_available + 1_000,
+    )
+    history = [first, revised]
+    hot = None
+    if source == "hot":
+        clock = {"now": first.ts_ingested}
+        hot = HotStreamBuffer(instruments=[INSTRUMENT], now_ms=lambda: clock["now"])
+        for raw in history:
+            clock["now"] = raw.ts_ingested
+            hot.ingest(
+                KlineEvent(
+                    instrument_id=INSTRUMENT.instrument_id,
+                    timeframe=TIMEFRAME,
+                    bar=CompactBar(
+                        timestamp=raw.ts_event,
+                        open=raw.open,
+                        high=raw.high,
+                        low=raw.low,
+                        close=raw.close,
+                        volume=raw.volume,
+                        turnover=raw.turnover,
+                        status=BarStatus.NORMAL,
+                        ts_available=first.ts_available,
+                        precision=raw.precision,
+                    ),
+                    confirmed=True,
+                    revision=raw.revision,
+                )
+            )
+        history = []
+    cold = ColdStore(tmp_path)
+    builder, _, snapshot_store = _builder(tmp_path, history=history, hot=hot, cold=cold)
+    try:
+        for bar in (revised, first):
+            meta = builder.build(
+                instrument=INSTRUMENT, request=_request(cutoff=bar.ts_available)
+            )
+            record = snapshot_store.get(meta.snapshot_id)
+            assert record is not None
+            snapshot = read_snapshot_bars(tmp_path, record.parquet_path, TIMEFRAME)
+            assert [(item.close, item.ts_available) for item in snapshot] == [
+                (bar.close, bar.ts_available)
+            ]
+            cold_bars = cold.read_bars(INSTRUMENT, TIMEFRAME, as_of=bar.ts_available)
+            assert [(item.close, item.revision) for item in cold_bars] == [
+                (bar.close, bar.revision)
+            ]
+    finally:
+        snapshot_store.close()
+        cold.close()
 
 
 def test_snapshot_is_byte_identical_after_store_restart(tmp_path: Path) -> None:

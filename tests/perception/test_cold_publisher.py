@@ -83,6 +83,41 @@ def test_returns_none_when_all_bars_are_at_or_before_cursor(cold: ColdStore) -> 
     assert len(cold.generations(INSTRUMENT, TIMEFRAME)) == 1
 
 
+# data-access/01：已覆盖的事件时间仍可追加新修订。
+@pytest.mark.regression
+def test_publishes_unseen_revision_at_cursor_once(cold: ColdStore) -> None:
+    original = _bar(BASE)
+    revised = replace(
+        original, close=Decimal("100.7"), revision=1, ts_available=BASE + MINUTE + 1_000
+    )
+    publisher = _publisher(cold)
+    assert publisher.publish_snapshot_bars([original]) is not None
+
+    generation = publisher.publish_snapshot_bars([original, revised])
+
+    assert generation is not None
+    assert generation.bars == 1
+    assert cold.read_bars(INSTRUMENT, TIMEFRAME, as_of=original.ts_available) == [original]
+    assert cold.read_bars(INSTRUMENT, TIMEFRAME) == [revised]
+    assert _publisher(cold).publish_snapshot_bars([original, revised]) is None
+
+
+# ADR-0018：首次发布时也保留同一事件的不同修订。
+@pytest.mark.regression
+def test_first_publish_keeps_both_visible_revisions(cold: ColdStore) -> None:
+    original = _bar(BASE)
+    revised = replace(
+        original, close=Decimal("100.7"), revision=1, ts_available=BASE + MINUTE + 1_000
+    )
+
+    generation = _publisher(cold).publish_snapshot_bars([revised, original])
+
+    assert generation is not None
+    assert generation.bars == 2
+    assert cold.read_bars(INSTRUMENT, TIMEFRAME, as_of=original.ts_available) == [original]
+    assert cold.read_bars(INSTRUMENT, TIMEFRAME) == [revised]
+
+
 def test_sorts_and_keeps_last_revision_per_timestamp(cold: ColdStore) -> None:
     revised = replace(_bar(BASE + 2 * MINUTE), close=Decimal("100.7"))
 
