@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from decimal import Decimal
-from typing import Protocol, Sequence
+from decimal import (
+    ROUND_HALF_EVEN, Context, Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext,
+)
+from functools import wraps
+from typing import Callable, Protocol, Sequence
 
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.operators.spec import (
@@ -26,6 +29,20 @@ Point = dict[str, Decimal | None]
 _QUANTILE_QUANT = Decimal("0.00000001")
 _RATIO_QUANT = Decimal("0.00000001")
 _ODDS_QUANT = Decimal("0.000001")
+_OPERATOR_CONTEXT = Context(
+    prec=28, rounding=ROUND_HALF_EVEN, Emin=-999999, Emax=999999,
+    capitals=1, clamp=0, flags=[], traps=[InvalidOperation, DivisionByZero, Overflow],
+)
+
+
+def with_operator_context[**P, T](compute: Callable[P, T]) -> Callable[P, T]:
+    """以黄金向量约定的 Decimal 精度执行算子。"""
+    @wraps(compute)
+    def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+        with localcontext(_OPERATOR_CONTEXT):
+            return compute(*args, **kwargs)
+
+    return wrapped
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +53,8 @@ class DerivativeSample:
     funding_ts: int | None = None
     open_interest: Decimal | None = None
     oi_ts: int | None = None
+    mark_price: Decimal | None = None
+    mark_ts: int | None = None
 
 
 class _Engine(Protocol):
@@ -372,14 +391,9 @@ class _NetOddsEngine:
         self._closes.append((bar.timestamp, close))
         if len(self._closes) > self._period + 1:
             self._closes.pop(0)
-        if (
-            sample.funding_ts is not None
-            and sample.funding_rate is not None
-            and (
-                not self._settlements
-                or self._settlements[-1][0] != sample.funding_ts
-            )
-        ):
+        if sample.funding_ts is None or sample.funding_rate is None:
+            return {"value": None}
+        if not self._settlements or self._settlements[-1][0] != sample.funding_ts:
             self._settlements.append((sample.funding_ts, sample.funding_rate))
         if len(self._closes) < self._period + 1 or len(self._true_ranges) < self._period:
             return {"value": None}
@@ -488,6 +502,7 @@ def _push(
     return points
 
 
+@with_operator_context
 def compute_series(
     bars: Sequence[CompactBar],
     spec: IndicatorSpec,
@@ -503,6 +518,7 @@ def compute_series(
     return OperatorState(spec=spec, points=tuple(points), _engine=engine)
 
 
+@with_operator_context
 def legacy_alert_points(bars: Sequence[CompactBar], spec: IndicatorSpec) -> list[Point]:
     """复现迁移前已保存预警的 EMA / ATR（5cd280c）。"""
     if spec.name is IndicatorName.EMA:
@@ -514,6 +530,7 @@ def legacy_alert_points(bars: Sequence[CompactBar], spec: IndicatorSpec) -> list
     return _push(engine, bars, spec, None)
 
 
+@with_operator_context
 def latest_session_vwap(bars: Sequence[CompactBar]) -> tuple[int, Decimal] | None:
     """Return the current session's first contributing window timestamp and VWAP."""
     spec = IndicatorSpec(IndicatorName.VWAP, anchor="session")
@@ -525,6 +542,7 @@ def latest_session_vwap(bars: Sequence[CompactBar]) -> tuple[int, Decimal] | Non
     return engine.anchor_ts, value
 
 
+@with_operator_context
 def update_series(
     previous_state: OperatorState,
     new_bars: Sequence[CompactBar],

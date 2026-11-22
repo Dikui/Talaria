@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from talaria.perception.sqlite import (
+    COLLABORATION_STATE_DB,
     checkpoint_and_close,
     claim_writer,
     release_writer,
@@ -32,8 +33,8 @@ from talaria.workbench_api.state_repositories import (
     watchlist,
 )
 
-STATE_SUBDIR = Path("state")
-STATE_DB = STATE_SUBDIR / "collaboration_state.sqlite"
+STATE_DB = COLLABORATION_STATE_DB
+STATE_SUBDIR = STATE_DB.parent
 
 T = TypeVar("T")
 

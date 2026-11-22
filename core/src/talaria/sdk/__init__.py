@@ -19,16 +19,19 @@ import httpx
 
 from talaria.foundation.bars import MAX_RANGE_BARS, BarsQuery, BarsResponse, RangeBar
 from talaria.foundation.errors import InstrumentNotFoundError, InvalidRequestError
+from talaria.foundation.indicators import IndicatorParams
+from talaria.foundation.operators import IndicatorName
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
 from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdReader
+from talaria.perception.indicator_defaults import read_indicator_defaults
 from talaria.perception.raw_store import latest_visible_bars
 from talaria.service_endpoint import DATA_DIR_HEADER, NOW_MS_HEADER, data_dir_id, read_service_endpoint
 
 if TYPE_CHECKING:
     from pandas import DataFrame
 
-__all__ = ["BarsResult", "bars"]
+__all__ = ["BarsResult", "bars", "indicator_defaults"]
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _MICROSECOND = timedelta(microseconds=1)
@@ -43,7 +46,10 @@ _ISO_SUBMICROSECONDS = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class BarsResult(Sequence[RangeBar]):
-    """按事件时间升序的 K 线；``tail_completed`` 表示服务已查询完整个范围。"""
+    """每个事件时间仅含最高可见确认修订，按事件时间升序排列。
+
+    ``tail_completed`` 表示服务已查询完整个范围。
+    """
 
     _bars: tuple[RangeBar, ...]
     tail_completed: bool
@@ -98,6 +104,15 @@ def _time_ms(value: int | str) -> int | Fraction:
         if offset_submicro:
             micros -= Fraction(Decimal(f"{offset_sign}0.{offset_submicro}"))
     return Fraction(micros, 1_000)
+
+
+def _data_root(data_dir: str | Path | None) -> Path:
+    return Path(data_dir or os.environ.get("TALARIA_DATA_DIR") or ".talaria").expanduser().resolve()
+
+
+def indicator_defaults(*, data_dir: str | Path | None = None) -> dict[IndicatorName, IndicatorParams]:
+    """读取同一数据目录下与工作台一致的指标默认值。"""
+    return read_indicator_defaults(_data_root(data_dir))
 
 
 def _fetch_tail(
@@ -176,7 +191,7 @@ def bars(
         return BarsResult((), tail_completed=False)
     query = query.model_copy(update={"start": start_ts})
 
-    root = Path(data_dir or os.environ.get("TALARIA_DATA_DIR") or ".talaria").expanduser().resolve()
+    root = _data_root(data_dir)
     endpoint = None if offline else read_service_endpoint(root)
     reader = ColdReader(root)
     if endpoint is not None:

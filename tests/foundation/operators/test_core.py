@@ -102,6 +102,31 @@ def test_sma_has_period_minus_one_leading_nones() -> None:
     assert result == [None, None, Decimal("2"), Decimal("3"), Decimal("4")]
 
 
+@pytest.mark.regression
+def test_late_older_derivatives_do_not_replace_newer_events() -> None:
+    # analysis/02: 图表和组件都应选开盘时已知的最新结算和持仓量。
+    from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
+    from talaria.foundation.operators.inputs import derivative_samples
+
+    def points(kind):
+        return [
+            DerivativePoint(
+                instrument_id="test", kind=kind, value=Decimal(value),
+                ts_event=BASE_TS + event, ts_available=BASE_TS + available,
+                ts_ingested=BASE_TS + available, ts_committed=BASE_TS + available,
+            )
+            for event, available, value in ((-1, 0, "2"), (-2, 1, "1"), (-1, MINUTE + 1, "3"))
+        ]
+
+    samples = derivative_samples(
+        [bar(i) for i in range(3)],
+        points(DerivativeKind.FUNDING_RATE), points(DerivativeKind.OPEN_INTEREST),
+    )
+    assert [(sample.funding_rate, sample.open_interest) for sample in samples] == [
+        (Decimal(2), Decimal(2)), (Decimal(2), Decimal(2)), (Decimal(3), Decimal(3)),
+    ]
+
+
 def test_sma_keeps_state_through_no_trades() -> None:
     bars = [
         bar(0, close="1"),

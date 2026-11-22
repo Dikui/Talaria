@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from decimal import Decimal
 from functools import partial
 from typing import Protocol
 
 from talaria.foundation.bars import BarStatus, CompactBar
+from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.operators import (
     DEFAULT_PERIODS,
     MAX_PERIOD,
@@ -18,6 +19,7 @@ from talaria.foundation.operators import (
     compute_series,
     spec_from_params,
 )
+from talaria.foundation.operators.core import legacy_alert_points, with_operator_context
 from talaria.foundation.operators.spec import VWAP_ANCHORS
 from talaria.foundation.types import PrecisionTier
 
@@ -44,6 +46,11 @@ class Operator:
     parameters_schema: Mapping[str, object]
     compute: OperatorCompute
     golden: GoldenVector | None
+    derivative_inputs: tuple[DerivativeKind, ...] = ()
+    indicator_name: IndicatorName | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "compute", with_operator_context(self.compute))
 
 
 class OperatorRegistry:
@@ -57,8 +64,7 @@ class OperatorRegistry:
         vector = operator.golden
         if vector is None or not vector.bars or len(vector.bars) != len(vector.expected):
             raise ValueError(f"算子 {operator.name} 必须附带非空且与输入对齐的黄金向量")
-        with localcontext(Context(prec=28, rounding=ROUND_HALF_EVEN)):
-            actual = operator.compute(vector.bars, vector.params, derivatives=vector.derivatives)
+        actual = operator.compute(vector.bars, vector.params, derivatives=vector.derivatives)
         if tuple(actual) != vector.expected:
             raise ValueError(f"算子 {operator.name} 的计算结果与黄金向量不一致")
         self._operators[key] = operator
@@ -72,6 +78,13 @@ def _compute(
     derivatives: Sequence[DerivativeSample] | None,
 ) -> tuple[Point, ...]:
     return compute_series(bars, spec_from_params(name, params), derivatives=derivatives).points
+
+
+def _compute_legacy(
+    name: IndicatorName, bars: Sequence[CompactBar], params: Mapping[str, object], *,
+    derivatives: Sequence[DerivativeSample] | None,
+) -> tuple[Point, ...]:
+    return tuple(legacy_alert_points(bars, spec_from_params(name, params)))
 
 
 def _parameters_schema(name: IndicatorName) -> dict[str, object]:
@@ -106,7 +119,9 @@ def _golden_vectors() -> dict[IndicatorName, GoldenVector]:
         )
         for ts, price in ((0, Decimal(10)), (60_000, Decimal(12)))
     )
-    derivatives = (DerivativeSample(funding_rate=Decimal(0), open_interest=Decimal(100)),) * 2
+    derivatives = (
+        DerivativeSample(funding_rate=Decimal(0), funding_ts=0, open_interest=Decimal(100)),
+    ) * 2
     return {
         IndicatorName.EMA: GoldenVector(bars, {"period": 3}, _value_pair("10", "11")),
         IndicatorName.SMA: GoldenVector(bars, {"period": 2}, _value_pair(None, "11")),
@@ -133,8 +148,28 @@ def _golden_vectors() -> dict[IndicatorName, GoldenVector]:
 
 
 OPERATORS = OperatorRegistry()
-for _name, _golden in _golden_vectors().items():
+_vectors = _golden_vectors()
+_derivative_inputs = {
+    IndicatorName.FUNDING_QUANTILE: (DerivativeKind.FUNDING_RATE,),
+    IndicatorName.OI_DIVERGENCE: (DerivativeKind.OPEN_INTEREST,),
+    IndicatorName.NET_ODDS: (DerivativeKind.FUNDING_RATE,),
+}
+for _name, _golden in _vectors.items():
     OPERATORS.register(Operator(
         name=_name, version="1", parameters_schema=_parameters_schema(_name),
         compute=partial(_compute, _name), golden=_golden,
+        derivative_inputs=_derivative_inputs.get(_name, ()),
+        indicator_name=_name,
+    ))
+
+# 旧预警迁移沿用已保存的显式周期和 legacy_sma 播种。
+for _alias, _name, _period, _value in (
+    ("legacy_ema", IndicatorName.EMA, 2, "11"),
+    ("legacy_atr", IndicatorName.ATR, 1, "2"),
+):
+    OPERATORS.register(Operator(
+        name=_alias, version="1", parameters_schema=_parameters_schema(_name),
+        compute=partial(_compute_legacy, _name),
+        golden=GoldenVector(_vectors[_name].bars, {"period": _period}, _value_pair(None, _value)),
+        indicator_name=_name,
     ))

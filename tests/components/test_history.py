@@ -9,6 +9,7 @@ import pytest
 from talaria import sdk
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.connector import RawBar
+from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.timeframes import timeframe_ms
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.perception.cold_store import ColdBatch, ColdStore
@@ -28,6 +29,14 @@ def _bar(ts, close, *, timeframe="1m", delay=0, revision=0, volume="1"):
         open=value, high=value, low=value, close=value, volume=Decimal(volume),
         turnover=value * Decimal(volume), ts_available=available, ts_ingested=available,
         ts_committed=available, revision=revision,
+    )
+
+
+def _derivative(ts, available, value, *, kind=DerivativeKind.FUNDING_RATE, timeframe=None):
+    return DerivativePoint(
+        instrument_id=INSTRUMENT.instrument_id, kind=kind, timeframe=timeframe,
+        ts_event=ts, ts_available=available, ts_ingested=available, ts_committed=available,
+        value=Decimal(value),
     )
 
 
@@ -99,12 +108,76 @@ def test_truncated_history_is_a_prefix_and_higher_timeframe_never_repaints(tmp_p
     assert full[9].output == (Decimal("99"), ((START + 5 * MINUTE, Decimal("90")),), (Decimal("90"),))
 
 
-@pytest.mark.parametrize(("name", "params"), [
-    ("EMA", None),
-    ("BOLL", {"period": 2, "std_dev": "2.5"}),
-    ("VWAP", {"period": 1, "anchor": "snapshot"}),
+@pytest.mark.regression
+def test_history_evaluates_late_confirmations_at_availability_in_event_order(tmp_path):
+    from talaria.components import run_history
+
+    available = START + 3 * MINUTE + 8_000
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", [
+            _bar(START, "10", delay=2 * MINUTE + 8_000),
+            _bar(START, "90", delay=3 * MINUTE, revision=1),
+            _bar(START + MINUTE, "20", delay=MINUTE + 8_000),
+            _bar(START + 2 * MINUTE, "30"),
+        ]))
+
+    def run(end):
+        return list(run_history(
+            lambda ctx: ctx.bars()[-1].close, INSTRUMENT.instrument_id, "1m",
+            start=START, end=end, read_bars=partial(sdk.bars, data_dir=tmp_path, offline=True),
+        ))
+
+    result = run(START + 5 * MINUTE)
+    assert [(step.as_of, step.output) for step in result] == [
+        (START + 3 * MINUTE, Decimal(30)), (available, Decimal(10)), (available, Decimal(20)),
+    ]
+    assert run(available - 1) == result[:1]
+    assert run(available) == result
+
+
+@pytest.mark.regression
+def test_higher_timeframe_warms_up_before_a_replay_window(tmp_path):
+    from talaria.components import run_history
+
+    window = START + 16 * MINUTE
+    with closing(ColdStore(tmp_path)) as store:
+        store.publish(ColdBatch(INSTRUMENT, "1m", [
+            _bar(START + i * MINUTE, "10") for i in range(17)
+        ]))
+        store.publish(ColdBatch(INSTRUMENT, "5m", [
+            _bar(START + i * 5 * MINUTE, close, timeframe="5m")
+            for i, close in enumerate(("10", "20", "30", "40"))
+        ]))
+
+    def evaluate(ctx):
+        return (
+            tuple(bar.close for bar in ctx.bars("5m")),
+            tuple(point.values["value"] for point in ctx.indicator("SMA", timeframe="5m", period=3)),
+        )
+
+    def run(start):
+        return list(run_history(
+            evaluate, INSTRUMENT.instrument_id, "1m", start=start, end=window + MINUTE,
+            read_bars=partial(sdk.bars, data_dir=tmp_path, offline=True),
+        ))
+
+    continuous = run(START)[-1:]
+    assert continuous[0].output == ((Decimal(30),), (Decimal(20),))
+    assert run(window) == continuous
+
+
+@pytest.mark.parametrize(("name", "params", "override"), [
+    ("EMA", None, None),
+    ("BOLL", {"period": 2, "std_dev": "2.5"}, None),
+    ("VWAP", {"period": 1, "anchor": "snapshot"}, None),
+    pytest.param("BOLL", None, {"period": 2, "std_dev": "3"}, marks=pytest.mark.regression),
+    pytest.param(
+        "BOLL", {"std_dev": "2.5"}, {"period": 2, "std_dev": "3"}, marks=pytest.mark.regression,
+    ),
 ])
-def test_python_indicator_points_equal_the_chart_indicator_api(tmp_path, name, params):
+def test_python_indicator_points_equal_the_chart_indicator_api(
+    tmp_path, monkeypatch, name, params, override,
+):
     from fastapi.testclient import TestClient
 
     from talaria.components import ComponentMeta, Indicator, run_history
@@ -115,6 +188,7 @@ def test_python_indicator_points_equal_the_chart_indicator_api(tmp_path, name, p
 
     cutoff = START + 5 * MINUTE
     data_dir = tmp_path / "data"
+    monkeypatch.setenv("TALARIA_DATA_DIR", str(data_dir))
     with closing(ColdStore(data_dir)) as store:
         store.publish(ColdBatch(INSTRUMENT, "1m", [
             _bar(START, "10"),
@@ -131,17 +205,19 @@ def test_python_indicator_points_equal_the_chart_indicator_api(tmp_path, name, p
             return ctx.indicator(name, **(params or {}))
 
     indicator: Indicator = PythonIndicator()
-    history = list(run_history(
-        indicator.compute, INSTRUMENT.instrument_id, "1m", start=START, end=cutoff,
-        read_bars=partial(sdk.bars, data_dir=data_dir, offline=True),
-    ))
-
     app = create_app(AppSettings(
         data_dir=data_dir, dist_dir=tmp_path / "dist", now_ms=lambda: cutoff, token="test-token",
         features=FeatureToggles(market_data=False, cold_store=False, alerts=False, scanner=False),
     ))
     auth = {"Authorization": "Bearer test-token"}
     with TestClient(app) as client:
+        if override is not None:
+            response = client.put(f"/api/indicator-defaults/{name}", headers=auth, json=override)
+            assert response.status_code == 200, response.text
+        history = list(run_history(
+            indicator.compute, INSTRUMENT.instrument_id, "1m", start=START, end=cutoff,
+            read_bars=partial(sdk.bars, offline=True),
+        ))
         snapshot = client.post("/api/snapshots", headers=auth, json={
             "instrument_id": INSTRUMENT.instrument_id, "timeframes": ["1m"], "cutoff_ts": cutoff,
         })
@@ -156,7 +232,8 @@ def test_python_indicator_points_equal_the_chart_indicator_api(tmp_path, name, p
             chart = IndicatorBundle.model_validate_json(response.content).series[0]
         else:
             response = client.post("/api/operators/compute", headers=auth, json={
-                "snapshot_id": snapshot_id, "timeframe": "1m", "operator": name, "params": params,
+                "snapshot_id": snapshot_id, "timeframe": "1m", "operator": name,
+                "params": (override or {}) | params,
             })
             assert response.status_code == 200, response.text
             chart = IndicatorSeries.model_validate_json(response.content)
@@ -170,18 +247,9 @@ def test_signal_and_strategy_use_only_derivatives_visible_at_the_evaluation(tmp_
     from talaria.components import (
         ComponentMeta, ControllerPatch, Signal, SignalEvent, Strategy, run_history,
     )
-    from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
-
-    def funding(ts, available, value):
-        return DerivativePoint(
-            instrument_id=INSTRUMENT.instrument_id, kind=DerivativeKind.FUNDING_RATE,
-            ts_event=ts, ts_available=available, ts_ingested=available, ts_committed=available,
-            value=Decimal(value),
-        )
-
-    first = funding(START, START, "0.01")
-    late = funding(START + 1, START + MINUTE + 1, "0.03")
-    second = funding(START + MINUTE, START + MINUTE, "0.02")
+    first = _derivative(START, START, "0.01")
+    late = _derivative(START + 1, START + MINUTE + 1, "0.03")
+    second = _derivative(START + MINUTE, START + MINUTE, "0.02")
 
     def read_derivatives(instrument, kind, *, start, end, as_of):
         # Supplies a late observation outside the cutoff as an injected snapshot source.
@@ -220,4 +288,165 @@ def test_signal_and_strategy_use_only_derivatives_visible_at_the_evaluation(tmp_
     ))
     assert [step.output.parameters for step in result] == [
         {"count": 2, "rank": Decimal(0)}, {"count": 3, "rank": Decimal("0.75")},
+    ]
+
+
+@pytest.mark.regression
+def test_replay_window_includes_the_latest_prior_derivative_value():
+    from talaria.components import run_history
+
+    latest = _derivative(START - MINUTE, START - 1, "0.02")
+    late = _derivative(START - 2 * MINUTE, START + 1, "0.03")
+
+    def read_derivatives(instrument, kind, *, start, end, as_of):
+        return [
+            point for point in (latest, late)
+            if point.kind == kind and start <= point.ts_event <= end and point.ts_available <= as_of
+        ]
+
+    def evaluate(ctx):
+        return (
+            ctx.derivatives("funding_rate"),
+            ctx.indicator("FUNDING_QUANTILE", period=1)[-1].values["value"],
+        )
+
+    row = RangeBar.model_validate(_bar(START, "10"), from_attributes=True)
+    result = list(run_history(
+        evaluate, INSTRUMENT.instrument_id, "1m", start=START, end=START + MINUTE,
+        read_bars=lambda *args, **kwargs: (row,), read_derivatives=read_derivatives,
+    ))
+    assert result[0].output == ((latest,), Decimal("0.5"))
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("name", ["FUNDING_QUANTILE", "OI_DIVERGENCE", "NET_ODDS"])
+def test_missing_derivative_source_produces_missing_indicator_values(name):
+    from talaria.components import run_history
+
+    rows = tuple(
+        RangeBar.model_validate(_bar(START + i * MINUTE, close), from_attributes=True)
+        for i, close in enumerate(("10", "11", "11"))
+    )
+    result = list(run_history(
+        lambda ctx: ctx.indicator(name, period=1), INSTRUMENT.instrument_id, "1m",
+        start=START, end=START + len(rows) * MINUTE, read_bars=lambda *args, **kwargs: rows,
+    ))
+    assert [point.values["value"] for point in result[-1].output] == [None, None, None]
+
+
+@pytest.mark.regression
+def test_net_odds_accepts_an_observed_zero_funding_rate():
+    from talaria.components import run_history
+
+    rows = tuple(
+        RangeBar.model_validate(_bar(START + i * MINUTE, close), from_attributes=True)
+        for i, close in enumerate(("10", "11"))
+    )
+    zero = _derivative(START, START, "0")
+    result = list(run_history(
+        lambda ctx: ctx.indicator("NET_ODDS", period=1), INSTRUMENT.instrument_id, "1m",
+        start=START, end=START + len(rows) * MINUTE, read_bars=lambda *args, **kwargs: rows,
+        read_derivatives=lambda instrument, kind, **kwargs: (zero,) if kind == zero.kind else (),
+    ))
+    assert result[-1].output[-1].values["value"] == Decimal(1)
+
+
+@pytest.mark.regression
+def test_funding_operator_can_use_a_reader_with_only_funding_data():
+    from talaria.components import run_history
+
+    row = RangeBar.model_validate(_bar(START, "10"), from_attributes=True)
+    point = _derivative(START, START, "0.01")
+
+    def funding_reader(instrument, kind, **kwargs):
+        if kind != point.kind:
+            raise ValueError(f"no series for {kind}")
+        return (point,)
+
+    result = list(run_history(
+        lambda ctx: ctx.indicator("FUNDING_QUANTILE", period=1), INSTRUMENT.instrument_id, "1m",
+        start=START, end=START + MINUTE, read_bars=lambda *args, **kwargs: (row,),
+        read_derivatives=funding_reader,
+    ))
+    assert result[0].output[0].values["value"] == Decimal("0.5")
+
+
+@pytest.mark.regression
+def test_registered_custom_operator_receives_its_declared_mark_price():
+    from talaria.components import run_history
+    from talaria.components.operators import OPERATORS, GoldenVector, Operator
+    from talaria.foundation.operators import DerivativeSample
+    from talaria.perception.compaction import compact_series
+
+    row = RangeBar.model_validate(_bar(START, "10"), from_attributes=True)
+    bars = tuple(compact_series((row,), timeframe="1m", cutoff_ts=START + MINUTE))
+    mark = _derivative(START, START, "11", kind=DerivativeKind.MARK_PRICE, timeframe="1m")
+    other_timeframe = mark.model_copy(update={"timeframe": "5m", "value": Decimal(99)})
+
+    def compute(bars, params, *, derivatives):
+        return tuple({"value": sample.mark_price} for sample in derivatives)
+
+    operator = Operator(
+        name="test_mark_price", version="1", parameters_schema={}, compute=compute,
+        golden=GoldenVector(
+            bars, {}, ({"value": Decimal(11)},), (DerivativeSample(mark_price=Decimal(11)),),
+        ),
+        derivative_inputs=(DerivativeKind.MARK_PRICE,),
+    )
+    OPERATORS.register(operator)
+    result = list(run_history(
+        lambda ctx: ctx.indicator(operator.name), INSTRUMENT.instrument_id, "1m",
+        start=START, end=START + MINUTE, read_bars=lambda *args, **kwargs: (row,),
+        read_derivatives=lambda *args, **kwargs: (mark, other_timeframe),
+    ))
+    assert result[0].output[0].values["value"] == Decimal(11)
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("incomplete", ["none", "schedule", "base", "higher"])
+def test_replay_reports_incomplete_sdk_reads_in_the_context_and_result(incomplete):
+    from talaria.components import run_history
+
+    base = RangeBar.model_validate(_bar(START, "10"), from_attributes=True)
+    higher = RangeBar.model_validate(
+        _bar(START - 5 * MINUTE, "9", timeframe="5m"), from_attributes=True,
+    )
+    end = START + 2 * MINUTE
+
+    def read_bars(instrument, timeframe, *, start, end, as_of):
+        if timeframe == "5m":
+            return sdk.BarsResult((higher,), tail_completed=incomplete != "higher")
+        source = "base" if as_of == START + MINUTE else "schedule"
+        return sdk.BarsResult((base,), tail_completed=incomplete != source)
+
+    def evaluate(ctx):
+        assert ctx.bars("5m") == (higher,)
+        return ctx.tail_completed
+
+    result, = run_history(
+        evaluate, INSTRUMENT.instrument_id, "1m", start=START, end=end, read_bars=read_bars,
+    )
+    assert result.tail_completed == result.output == (incomplete == "none")
+
+
+@pytest.mark.regression
+def test_replay_keeps_only_the_highest_visible_confirmed_revision_from_an_alternate_reader():
+    from talaria.components import run_history
+
+    def range_bar(ts, close, **kwargs):
+        return RangeBar.model_validate(_bar(ts, close, **kwargs), from_attributes=True)
+
+    current = range_bar(START + MINUTE, "20")
+    original = range_bar(START, "10")
+    revised = range_bar(START, "11", delay=1, revision=1)
+    future = range_bar(START, "99", delay=3 * MINUTE, revision=2)
+    preview = range_bar(START, "88", revision=3).model_copy(update={"confirmed": False})
+    rows = (current, future, preview, revised, original)
+    result = list(run_history(
+        lambda ctx: ctx.bars(), INSTRUMENT.instrument_id, "1m",
+        start=START, end=START + 2 * MINUTE, read_bars=lambda *args, **kwargs: rows,
+    ))
+    assert [(step.as_of, step.output) for step in result] == [
+        (START + MINUTE, (original,)),
+        (START + 2 * MINUTE, (revised, current)),
     ]
