@@ -36,6 +36,7 @@ from talaria.cli.dsh_host import (
     write_bridge_descriptor,
 )
 from talaria.cli.service import (
+    DEFAULT_DATA_DIR,
     DEFAULT_SERVICE_LABEL,
     ServiceInstallError,
     ServiceStatus,
@@ -73,7 +74,6 @@ if TYPE_CHECKING:
     from talaria.workbench_api.service_descriptor import ServiceDescriptor
     from talaria.workbench_api.usage_scan import UsageScanResult
 
-DEFAULT_DATA_DIR = Path(".talaria")
 DEFAULT_PORT = 8765
 DEFAULT_DSH_PORT = 8766
 DEFAULT_DSH_PROFILE = "talaria-desk"
@@ -722,12 +722,12 @@ def _default_service_program() -> str | None:
 def _cmd_service(args: argparse.Namespace) -> int:
     """install/uninstall/status 三个动作；launchctl 只在本机真实执行。"""
 
-    data_dir = Path(args.data_dir).expanduser().resolve()
     launch_agents_dir = Path(args.launch_agents_dir).expanduser()
     label = args.label
     command = args.service_command
 
     if command == "install":
+        data_dir = Path(args.data_dir).expanduser().resolve()
         program = args.program or _default_service_program()
         if program is None:
             print(
@@ -776,7 +776,7 @@ def _cmd_service(args: argparse.Namespace) -> int:
 
     try:
         status = service_status(
-            data_dir=data_dir,
+            data_dir=args.data_dir,
             launch_agents_dir=launch_agents_dir,
             label=label,
         )
@@ -789,17 +789,27 @@ def _cmd_service(args: argparse.Namespace) -> int:
 
 def _print_service_status(status: ServiceStatus) -> None:
     print(f"plist：{status.plist_path}")
-    hint = "" if status.config_exists else "（service.json 不存在，使用默认全开）"
-    print(f"功能开关：{describe_features(status.features)}{hint}")
     print(f"配置文件：{status.config_path}")
+    if status.features is None:
+        print("运行态功能开关：不可用")
+    else:
+        print(f"运行态功能开关：{describe_features(status.features)}")
+    if status.disk_features is not None:
+        hint = "" if status.config_exists else "（service.json 不存在，默认全开）"
+        if status.features is None:
+            print(f"磁盘配置：{describe_features(status.disk_features)}{hint}")
+        else:
+            changes = describe_features(status.disk_features, changed_from=status.features)
+            if changes:
+                print(f"待重启生效：{changes}{hint}")
     if not status.installed:
         print("状态：未安装（执行 talaria service install 后随登录启动）")
     else:
         state = status.state or ("已加载" if status.loaded else "未知")
         pid_hint = f"，pid={status.pid}" if status.pid is not None else ""
         print(f"状态：已安装，launchd={state}{pid_hint}")
-        if status.detail:
-            print(f"launchctl：{status.detail}")
+    if status.detail:
+        print(f"详情：{status.detail}")
     holder = status.lock_holder
     if holder is None:
         print("数据目录锁：空闲")
@@ -1057,8 +1067,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     service_status_parser.add_argument(
         "--data-dir",
-        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
-        help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
+        default=None,
+        help="数据目录（省略时读取作业配置，其次 $TALARIA_DATA_DIR 或 ./.talaria）",
     )
     service_status_parser.add_argument(
         "--launch-agents-dir",

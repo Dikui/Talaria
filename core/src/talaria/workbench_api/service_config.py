@@ -119,12 +119,15 @@ def write_default_service_config(data_dir: str | Path) -> Path:
     return path
 
 
-def describe_features(features: FeatureToggles) -> str:
+def describe_features(
+    features: FeatureToggles, *, changed_from: FeatureToggles | None = None
+) -> str:
     """给 ``talaria up`` / ``talaria service status`` 的一行中文摘要。"""
 
     return "；".join(
         f"{FEATURE_LABELS[name]}={'开' if getattr(features, name) else '关'}"
         for name in FEATURE_NAMES
+        if changed_from is None or getattr(features, name) != getattr(changed_from, name)
     )
 
 

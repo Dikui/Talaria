@@ -17,7 +17,11 @@ from talaria.cli.service import (
     service_status,
     uninstall_service,
 )
-from talaria.workbench_api.service_config import load_service_config, service_config_path
+from talaria.workbench_api.service_config import (
+    FeatureToggles,
+    load_service_config,
+    service_config_path,
+)
 from talaria.workbench_api.service_descriptor import (
     service_descriptor_path,
     write_service_descriptor,
@@ -279,8 +283,11 @@ def test_uninstall_cli_preserves_plist_on_bootout_failure(
         assert "已卸载" in output.out
 
 
-def test_status_reports_running_service_and_features(tmp_path):
+@pytest.mark.regression
+def test_status_reports_running_service_and_features(tmp_path, monkeypatch):
+    # platform/01: 未指定数据目录时，从安装的作业读取目录和运行态开关。
     data_dir = tmp_path / "data"
+    monkeypatch.setenv("TALARIA_DATA_DIR", str(tmp_path / "default"))
     launch_agents = tmp_path / "LaunchAgents"
     install_service(
         data_dir=data_dir,
@@ -311,10 +318,9 @@ def test_status_reports_running_service_and_features(tmp_path):
             base_url="http://127.0.0.1:8765",
             token="test-token",
             pid=os.getpid(),
-            features=load_service_config(data_dir).features,
+            features=FeatureToggles(),
         )
         status = service_status(
-            data_dir=data_dir,
             launch_agents_dir=launch_agents,
             label=DEFAULT_SERVICE_LABEL,
             runner=runner,
@@ -327,7 +333,9 @@ def test_status_reports_running_service_and_features(tmp_path):
     assert status.loaded is True
     assert status.state == "running"
     assert status.pid == 4321
-    assert status.features.scanner is False
+    assert status.features == FeatureToggles()
+    assert status.disk_features == FeatureToggles(scanner=False)
+    assert status.config_path == service_config_path(data_dir)
     assert status.config_exists is True
     assert status.lock_holder is not None
     assert status.lock_holder.pid == os.getpid()
@@ -348,7 +356,8 @@ def test_status_when_not_installed_does_not_invoke_launchctl(tmp_path):
 
     assert status.installed is False
     assert status.loaded is False
-    assert status.features == load_service_config(tmp_path / "data").features
+    assert status.features is None
+    assert status.disk_features == load_service_config(tmp_path / "data").features
     assert runner.calls == []
 
 
@@ -401,6 +410,58 @@ def test_service_status_cli_reports_features_without_launchctl(tmp_path, capsys)
     assert "冷库写入=开" in output
     assert "预警=开" in output
     assert "扫描=开" in output
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("descriptor_matches", [True, False])
+def test_status_cli_reports_matching_runtime_and_pending_changes(
+    tmp_path, monkeypatch, capsys, descriptor_matches
+):
+    # platform/01: launchd 的参数仍指向运行实例，磁盘 plist 可能已准备好下次安装。
+    data_dir = tmp_path / "loaded data"
+    monkeypatch.setenv("TALARIA_DATA_DIR", str(tmp_path / "default"))
+    launch_agents = tmp_path / "LaunchAgents"
+    install_service(
+        data_dir=tmp_path / "next install",
+        port=8765,
+        pack="crypto_perp",
+        program="/opt/talaria/bin/talaria",
+        launch_agents_dir=launch_agents,
+        runner=FakeRunner(),
+    )
+    data_dir.mkdir()
+    service_config_path(data_dir).write_text('{"features":{"scanner":false}}')
+    runner = FakeRunner({"print": _completed(
+        ["print"], 0,
+        f"job = {{\n\tstate = running\n\tpid = {os.getpid()}\n"
+        f"\targuments = {{\n\t\t/opt/talaria/bin/talaria\n\t\tup\n"
+        f"\t\t--data-dir\n\t\t{data_dir}\n\t}}\n}}\n",
+    )})
+    monkeypatch.setattr(service_module, "_run_launchctl", runner)
+
+    with ServiceLock(data_dir):
+        write_service_descriptor(
+            service_descriptor_path(data_dir),
+            base_url="http://127.0.0.1:8765",
+            token="test-token",
+            pid=os.getpid() if descriptor_matches else os.getpid() + 1,
+            features=FeatureToggles(),
+        )
+        code = main(["service", "status", "--launch-agents-dir", str(launch_agents)])
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert f"配置文件：{service_config_path(data_dir)}" in output
+    if descriptor_matches:
+        assert "运行态功能开关：行情采集=开；冷库写入=开；预警=开；扫描=开" in output
+        assert "待重启生效：扫描=关" in output
+        assert "写入接口：http://127.0.0.1:8765" in output
+    else:
+        assert "运行态功能开关：不可用" in output
+        assert "磁盘配置：行情采集=开；冷库写入=开；预警=开；扫描=关" in output
+        assert "不一致" in output
+        assert "待重启生效" not in output
+        assert "写入接口：不可用" in output
 
 
 def test_up_rejects_invalid_service_config_before_starting(tmp_path, capsys):
