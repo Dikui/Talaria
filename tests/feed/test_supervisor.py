@@ -228,6 +228,22 @@ def test_revision_of_same_timestamp_takes_last_write() -> None:
     assert bars[-1].bar.close == Decimal("100.5")
 
 
+@pytest.mark.regression
+@pytest.mark.parametrize("delay, first_offset", [(5_000, 0), (5_001, 5_001)])
+def test_close_availability_and_revisions_follow_receipt_time(delay, first_offset) -> None:
+    # ADR-0018: the grace period applies only to the first confirmed version.
+    supervisor, events = make()
+    end = ts(1)
+    supervisor.ingest(kline(ts(0), "99"), now=end - 1)
+    supervisor.ingest(kline(ts(0), "100", confirmed=True), now=end + delay)
+    supervisor.ingest(kline(ts(0), "101", confirmed=True), now=end + 7_000)
+    supervisor.ingest(kline(ts(0), "102", confirmed=True), now=end + 6_000)
+
+    assert [event.bar.ts_available for event in klines(events) if event.confirmed] == [
+        end + first_offset, end + 7_000, end + 7_000,
+    ]
+
+
 def test_missing_minutes_without_transport_loss_become_no_trades() -> None:
     clock = Clock(ts(0) + 1_000)
     supervisor, events = make(clock)

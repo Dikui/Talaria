@@ -23,8 +23,6 @@ from talaria.foundation.snapshot import SnapshotRequest
 from talaria.foundation.types import PrecisionTier
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.perception.backfill import BackfillPolicy
-from talaria.perception.cold_publisher import ColdPublisher
-from talaria.perception.cold_store import ColdStore
 from talaria.perception.hot_buffer import HotBarProvider, HotStreamBuffer
 from talaria.perception.raw_store import RawStore
 from talaria.perception.snapshot_builder import SnapshotBuilder
@@ -93,7 +91,6 @@ def _builder(
     *,
     history: list[RawBar],
     hot: HotBarProvider | None = None,
-    cold: ColdStore | None = None,
 ) -> tuple[SnapshotBuilder, RawStore, SnapshotStore]:
     raw_store = RawStore(tmp_path, raw_archive_id="test")
     raw_store.append(INSTRUMENT.symbol, TIMEFRAME, history)
@@ -106,13 +103,6 @@ def _builder(
         policy=BackfillPolicy(target_bars=2, max_pages=1),
         now_ms=lambda: NOW,
         hot_bars=hot,
-        cold_publishers=(
-            {(INSTRUMENT.instrument_id, TIMEFRAME): ColdPublisher(
-                cold, instrument=INSTRUMENT, timeframe=TIMEFRAME
-            )}
-            if cold is not None
-            else None
-        ),
     )
     return builder, raw_store, snapshot_store
 
@@ -231,8 +221,7 @@ def test_snapshot_keeps_revision_visible_at_each_cutoff(tmp_path: Path, source: 
                 )
             )
         history = []
-    cold = ColdStore(tmp_path)
-    builder, _, snapshot_store = _builder(tmp_path, history=history, hot=hot, cold=cold)
+    builder, _, snapshot_store = _builder(tmp_path, history=history, hot=hot)
     try:
         for bar in (revised, first):
             meta = builder.build(
@@ -244,13 +233,8 @@ def test_snapshot_keeps_revision_visible_at_each_cutoff(tmp_path: Path, source: 
             assert [(item.close, item.ts_available) for item in snapshot] == [
                 (bar.close, bar.ts_available)
             ]
-            cold_bars = cold.read_bars(INSTRUMENT, TIMEFRAME, as_of=bar.ts_available)
-            assert [(item.close, item.revision) for item in cold_bars] == [
-                (bar.close, bar.revision)
-            ]
     finally:
         snapshot_store.close()
-        cold.close()
 
 
 def test_snapshot_is_byte_identical_after_store_restart(tmp_path: Path) -> None:

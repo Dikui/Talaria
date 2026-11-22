@@ -2,11 +2,12 @@
 
 发布顺序与崩溃语义（docs/architecture.md §3.2）：
 
-1. 原始标准化柱按内容哈希写入 ``data/raw_archive/<sha256>.jsonl``；同内容复用；
+1. 原始标准化柱按内容哈希写入 ``data/raw_archive/<sha256>.jsonl``；
+   合并归档记录输入批次的内容哈希，复用原始归档；
 2. 写入 ``data/staging/<content_sha256>/bars.parquet``，读回后做完整性、单调性与
    精度质检；失败只留下未引用残片，绝不进入清单；
-3. ``fsync`` 后原子 rename 到 ``data/cold/<venue>/<symbol>/<timeframe>/<id>.parquet``；
-4. 在 ``data/data_manifest.sqlite`` 的短事务中插入 generation 清单并更新游标。
+3. ``fsync`` 后原子 rename 到 ``data/cold/<venue>/<symbol>/<timeframe>/<month>/``；
+4. 在 ``data/data_manifest.sqlite`` 的短事务中发布清单。
 
 ``data_manifest.sqlite`` 是读取侧唯一发布真相：读取只按清单显式列出的路径打开
 Parquet，禁止目录通配。任何阶段崩溃最多留下未引用的孤儿文件，读取侧看不到
@@ -21,10 +22,11 @@ import os
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
-from bisect import bisect_left
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 from enum import StrEnum
 from pathlib import Path
@@ -50,6 +52,8 @@ ARCHIVE_SUBDIR = Path("data") / "raw_archive"
 STAGING_SUBDIR = Path("data") / "staging"
 COLD_SUBDIR = Path("data") / "cold"
 MANIFEST_DB = Path("data") / "data_manifest.sqlite"
+RETENTION_MS = 24 * 60 * 60 * 1000
+RETAINED_MANIFESTS = 3
 
 #: Parquet 元数据键：格式标记、逐列 scale、标的规格版本。读取侧按文件还原，
 #: 不假设整个冷库只有一种 scale（ADR-0017）。
@@ -89,7 +93,7 @@ FaultHook = Callable[[ColdPhase], None]
 
 @dataclass(frozen=True, slots=True)
 class ColdBatch:
-    """一次待发布的标准化柱批次；时间戳非递减，同一时间戳按 revision 严格递增。"""
+    """同月的标准化柱批次；时间戳非递减，同一时间戳按 revision 严格递增。"""
 
     instrument: InstrumentSpec
     timeframe: str
@@ -124,7 +128,7 @@ class ColdGeneration:
 
 @dataclass(frozen=True, slots=True)
 class ColdCursor:
-    """每 ``(instrument, timeframe)`` 的最新已发布游标。"""
+    """兼容旧冷库迁移工具的末尾位置。"""
 
     venue: str
     symbol: str
@@ -232,6 +236,24 @@ _SCHEMA_SQL = (
         PRIMARY KEY (venue, symbol, timeframe)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS manifest_version (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL
+    )
+    """,
+    "INSERT OR IGNORE INTO manifest_version VALUES (1, 0)",
+    """
+    CREATE TABLE IF NOT EXISTS retired_files (
+        parquet_path TEXT PRIMARY KEY,
+        retired_ts INTEGER NOT NULL,
+        manifest_version INTEGER NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS generations_series_range
+    ON generations (venue, symbol, timeframe, first_ts, last_ts)
+    """,
 )
 
 _GENERATION_COLUMNS = (
@@ -321,6 +343,7 @@ def _validate_bars(
     *,
     instrument: InstrumentSpec,
     timeframe: str,
+    allow_equal_revisions: bool = False,
 ) -> None:
     """完整性、单调性、OHLC 合法性与价格/数量精度质检。"""
 
@@ -329,8 +352,7 @@ def _validate_bars(
     scales = cold_column_scales(instrument)
     tick_size = instrument.tick_size
     qty_step = instrument.qty_step
-    previous_ts: int | None = None
-    previous_revision: int | None = None
+    previous: tuple[int, int] | None = None
     for index, bar in enumerate(bars):
         where = f"第 {index} 根柱"
         if bar.symbol != instrument.symbol:
@@ -339,16 +361,11 @@ def _validate_bars(
             raise ColdStoreQualityError(f"{where} timeframe 与批次不一致")
         if bar.revision < 0:
             raise ColdStoreQualityError(f"{where} revision 为负")
-        if previous_ts is not None:
-            if bar.ts_event < previous_ts or (
-                bar.ts_event == previous_ts
-                and previous_revision is not None
-                and bar.revision <= previous_revision
-            ):
-                raise ColdStoreQualityError(
-                    f"{where} 时间戳与修订未严格递增："
-                    f"{bar.ts_event}/{bar.revision}"
-                )
+        current = (bar.ts_event, bar.revision)
+        if previous is not None and (
+            current < previous or (current == previous and not allow_equal_revisions)
+        ):
+            raise ColdStoreQualityError(f"{where} 时间戳与修订未递增：{current}")
         for name in _DECIMAL_COLUMNS:
             fits, reason = _fits_decimal128(getattr(bar, name), scales[name])
             if not fits:
@@ -375,8 +392,7 @@ def _validate_bars(
             raise ColdStoreQualityError(f"{where} ts_available 早于 ts_event")
         if bar.ts_committed < bar.ts_ingested:
             raise ColdStoreQualityError(f"{where} ts_committed 早于 ts_ingested")
-        previous_ts = bar.ts_event
-        previous_revision = bar.revision
+        previous = current
 
 
 def _write_cold_parquet(
@@ -463,8 +479,15 @@ def _cold_parquet_is_decimal128(path: Path) -> bool:
     return metadata.get(COLD_FORMAT_METADATA) == COLD_FORMAT_DECIMAL128
 
 
-def _read_cold_parquet(path: Path) -> list[RawBar]:
-    table = pq.read_table(path)
+def _read_cold_parquet(
+    path: Path, *, start_ts: int | None = None, end_ts: int | None = None
+) -> list[RawBar]:
+    filters = []
+    if start_ts is not None:
+        filters.append(("ts_event", ">=", start_ts))
+    if end_ts is not None:
+        filters.append(("ts_event", "<=", end_ts))
+    table = pq.read_table(path, filters=filters or None)
     metadata = table.schema.metadata or {}
     format_marker = metadata.get(COLD_FORMAT_METADATA)
     if format_marker is not None and format_marker != COLD_FORMAT_DECIMAL128:
@@ -498,6 +521,106 @@ def _read_cold_parquet(path: Path) -> list[RawBar]:
     ]
 
 
+def partition_month(ts_event: int) -> str:
+    return datetime.fromtimestamp(ts_event // 1000, tz=UTC).strftime("%Y-%m")
+
+
+def _generation_from_row(
+    instrument: InstrumentSpec, timeframe: str, row: tuple
+) -> ColdGeneration:
+    return ColdGeneration(
+        generation_id=str(row[0]),
+        venue=instrument.venue,
+        symbol=instrument.symbol,
+        timeframe=timeframe,
+        parquet_path=Path(str(row[1])),
+        sha256=str(row[2]),
+        content_sha256=str(row[3]),
+        first_ts=int(row[4]),
+        last_ts=int(row[5]),
+        bars=int(row[6]),
+        committed_ts=int(row[7]),
+    )
+
+
+def _select_generations(
+    connection: sqlite3.Connection,
+    instrument: InstrumentSpec,
+    timeframe: str,
+    *,
+    start_ts: int | None = None,
+    end_ts: int | None = None,
+) -> list[ColdGeneration]:
+    query = f"""
+        SELECT {_GENERATION_COLUMNS} FROM generations
+        WHERE venue = ? AND symbol = ? AND timeframe = ?
+    """
+    params: list[str | int] = [instrument.venue, instrument.symbol, timeframe]
+    if start_ts is not None:
+        query += " AND last_ts >= ?"
+        params.append(start_ts)
+    if end_ts is not None:
+        query += " AND first_ts <= ?"
+        params.append(end_ts)
+    return [
+        _generation_from_row(instrument, timeframe, row)
+        for row in connection.execute(query + " ORDER BY rowid", params)
+    ]
+
+
+def _path_under_root(data_dir: Path, relative: Path) -> Path:
+    root = data_dir.resolve()
+    candidate = (root / relative).resolve()
+    if not candidate.is_relative_to(root):
+        raise ColdStoreIntegrityError(f"清单路径越界：{relative}")
+    return candidate
+
+
+def _verify_generation_file(data_dir: Path, generation: ColdGeneration) -> Path:
+    path = _path_under_root(data_dir, generation.parquet_path)
+    if _sha256_file(path) != generation.sha256:
+        raise ColdStoreIntegrityError(f"generation 文件哈希不符：{generation.parquet_path}")
+    return path
+
+
+class ColdReader:
+    """按一次清单查询读取不可变文件，常驻服务停止后也可用。"""
+
+    def __init__(self, data_dir: Path | str) -> None:
+        self._data_dir = Path(data_dir).resolve()
+        self._db_path = self._data_dir / MANIFEST_DB
+
+    def read_bars(
+        self,
+        instrument: InstrumentSpec,
+        timeframe: str,
+        *,
+        as_of: int | None = None,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> list[RawBar]:
+        if not self._db_path.is_file():
+            return []
+        for attempt in range(2):
+            with closing(sqlite3.connect(f"{self._db_path.as_uri()}?mode=ro", uri=True)) as db:
+                generations = _select_generations(
+                    db, instrument, timeframe, start_ts=start_ts, end_ts=end_ts,
+                )
+            decoded: list[RawBar] = []
+            try:
+                for generation in generations:
+                    path = _verify_generation_file(self._data_dir, generation)
+                    decoded.extend(_read_cold_parquet(path, start_ts=start_ts, end_ts=end_ts))
+            except FileNotFoundError as exc:
+                if attempt:
+                    raise ColdStoreIntegrityError(
+                        f"generation 文件缺失：{generation.parquet_path}"
+                    ) from exc
+            else:
+                return latest_visible_bars(decoded, as_of=as_of)
+        raise AssertionError("清单读取重试结束")
+
+
 class ColdStore:
     """冷库单写者。``data_manifest.sqlite`` 是发布与读取的唯一真相。"""
 
@@ -507,7 +630,8 @@ class ColdStore:
         *,
         fault_hook: FaultHook | None = None,
     ) -> None:
-        self._data_dir = Path(data_dir)
+        self._data_dir = Path(data_dir).resolve()
+        self._reader = ColdReader(self._data_dir)
         self._fault_hook = fault_hook
         self._lock = threading.RLock()
         self._closed = False
@@ -515,8 +639,12 @@ class ColdStore:
         claim_writer(self._db_path)
         try:
             self._connection = open_writer_connection(self._db_path)
-            for statement in _SCHEMA_SQL:
-                self._connection.execute(statement)
+            try:
+                for statement in _SCHEMA_SQL:
+                    self._connection.execute(statement)
+            except BaseException:
+                self._connection.close()
+                raise
         except BaseException:
             release_writer(self._db_path)
             raise
@@ -532,64 +660,30 @@ class ColdStore:
             return self._archive_content(content, _sha256_bytes(content))
 
     def publish(self, batch: ColdBatch) -> ColdGeneration:
-        """原子发布一个批次；同内容重复发布返回已有 generation。"""
+        """原子发布同月的尾部批次，复用清单里同内容的 generation。"""
 
         with self._lock:
             self._ensure_open()
-            _validate_bars(
-                batch.bars,
-                instrument=batch.instrument,
-                timeframe=batch.timeframe,
-            )
+            _validate_bars(batch.bars, instrument=batch.instrument, timeframe=batch.timeframe)
+            if partition_month(batch.bars[0].ts_event) != partition_month(batch.bars[-1].ts_event):
+                raise ColdStoreQualityError("尾部批次不能跨月")
             generation_id = _sha256_bytes(_content_bytes(batch.bars, canonical_decimals=True))
             existing = self._select_generation(batch, generation_id)
             if existing is not None:
-                self._verify_generation_file(existing)
+                _verify_generation_file(self._data_dir, existing)
+                return existing
+            existing = self._select_matching_generation(batch)
+            if existing is not None:
                 return existing
 
-            committed_ts = max(bar.ts_committed for bar in batch.bars)
-            cursor = self.cursor(batch.instrument, batch.timeframe)
-            if cursor is not None and batch.bars[0].ts_event <= cursor.last_ts:
-                existing = self._select_matching_generation(batch, committed_ts)
-                if existing is not None:
-                    return existing
-                # 修订批次可以回写已覆盖的事件时间（ADR-0018），但 revision=0 的旧柱
-                # 仍然只能追加，防止普通发布悄悄改写历史。
-                if any(
-                    bar.ts_event <= cursor.last_ts and bar.revision == 0
-                    for bar in batch.bars
-                ):
-                    raise ColdStoreQualityError(
-                        "批次包含不晚于冷库游标且 revision=0 的柱，拒绝非追加发布"
-                        "（append-only monotonic cursor）"
-                    )
-
-            content = _content_bytes(batch.bars)
-            archived = self._archive_content(content, _sha256_bytes(content))
-            self._write_staging(archived, batch)
-            self._quality_check(archived, batch)
-            final = self._promote(archived, batch, generation_id)
-            generation = ColdGeneration(
-                generation_id=generation_id,
-                venue=batch.instrument.venue,
-                symbol=batch.instrument.symbol,
-                timeframe=batch.timeframe,
-                parquet_path=final.relative_to(self._data_dir),
-                sha256=_sha256_file(final),
-                content_sha256=archived.sha256,
-                first_ts=batch.bars[0].ts_event,
-                last_ts=batch.bars[-1].ts_event,
-                bars=len(batch.bars),
-                committed_ts=committed_ts,
-            )
+            generation = self._prepare_generation(batch, generation_id)
             self._commit_manifest(generation)
-            self._hook(ColdPhase.MANIFEST_AFTER)
             return generation
 
     def generations(self, instrument: InstrumentSpec, timeframe: str) -> list[ColdGeneration]:
         with self._lock:
             self._ensure_open()
-            return self._select_generations(instrument, timeframe)
+            return _select_generations(self._connection, instrument, timeframe)
 
     def read_bars(
         self,
@@ -597,36 +691,75 @@ class ColdStore:
         timeframe: str,
         *,
         as_of: int | None = None,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
     ) -> list[RawBar]:
-        """只读取清单列出的文件；逐文件校验哈希后按统一读取语义选版本。"""
+        self._ensure_open()
+        return self._reader.read_bars(
+            instrument, timeframe, as_of=as_of, start_ts=start_ts, end_ts=end_ts,
+        )
 
+    def compact(self, instruments: Sequence[InstrumentSpec], *, now_ms: int | None = None) -> None:
+        """合并同月、同标的规格的文件，保留每一行。"""
+
+        specs = {(spec.venue, spec.symbol): spec for spec in instruments}
         with self._lock:
             self._ensure_open()
-            decoded: list[RawBar] = []
-            for generation in self._select_generations(instrument, timeframe):
-                decoded.extend(self._read_generation(generation))
-            return latest_visible_bars(decoded, as_of=as_of)
+            series = self._connection.execute(
+                "SELECT DISTINCT venue, symbol, timeframe FROM generations"
+            ).fetchall()
+            for venue, symbol, timeframe in series:
+                instrument = specs.get((venue, symbol))
+                if instrument is None:
+                    continue
+                self._compact_series(instrument, timeframe, now_ms)
+            self._prune_retired(time.time_ns() // 1_000_000 if now_ms is None else now_ms)
 
-    def published_revisions(
-        self, instrument: InstrumentSpec, timeframe: str, timestamps: set[int]
-    ) -> set[tuple[int, int]]:
-        """返回指定事件时间已发布的 (事件时间, 修订号)，包括历史版本。"""
+    def _compact_series(
+        self, instrument: InstrumentSpec, timeframe: str, now_ms: int | None
+    ) -> None:
+        # 旧规格的文件保留。只合并同月中最后一段同规格文件，维持跨规格并列行的优先级。
+        version = instrument_spec_version(instrument)
+        tail_prefix = f"tail-{version}-"
+        partition_prefix = f"partition-{version}-"
+        groups: dict[str, list[ColdGeneration]] = {}
+        for generation in _select_generations(self._connection, instrument, timeframe):
+            month = partition_month(generation.first_ts)
+            if generation.parquet_path.name.startswith((tail_prefix, partition_prefix)):
+                groups.setdefault(month, []).append(generation)
+            else:
+                last_month = partition_month(generation.last_ts)
+                for group_month in list(groups):
+                    if month <= group_month <= last_month:
+                        groups.pop(group_month)
+        for group in groups.values():
+            if not any(item.parquet_path.name.startswith(tail_prefix) for item in group):
+                continue
+            rows = [bar for item in group for bar in self._read_generation(item)]
+            rows.sort(key=lambda bar: (bar.ts_event, bar.revision))
+            batch = ColdBatch(instrument=instrument, timeframe=timeframe, bars=rows)
+            # 与尾部批次的内容标识分开，清单交换前可安全重试。
+            generation_id = _sha256_bytes(
+                b"partition\n" + _content_bytes(rows, canonical_decimals=True)
+            )
+            archive = "".join(
+                json.dumps({"source_sha256": item.content_sha256}) + "\n" for item in group
+            ).encode("utf-8")
+            generation = self._prepare_generation(batch, generation_id, source_archive=archive)
+            self._commit_manifest(generation, replaced=group, retired_ts=now_ms)
 
-        with self._lock:
-            self._ensure_open()
-            sorted_times = sorted(timestamps)
-            revisions: set[tuple[int, int]] = set()
-            if not sorted_times:
-                return revisions
-            for generation in self._select_generations(instrument, timeframe):
-                index = bisect_left(sorted_times, generation.first_ts)
-                if index < len(sorted_times) and sorted_times[index] <= generation.last_ts:
-                    revisions.update(
-                        (bar.ts_event, bar.revision)
-                        for bar in self._read_generation(generation)
-                        if bar.ts_event in timestamps
-                    )
-            return revisions
+    def _prune_retired(self, now: int) -> None:
+        retired = self._connection.execute(
+            """
+            SELECT parquet_path FROM retired_files
+            WHERE retired_ts <= ?
+                AND manifest_version <= (SELECT version - ? FROM manifest_version)
+            """,
+            (now - RETENTION_MS, RETAINED_MANIFESTS),
+        ).fetchall()
+        for (relative,) in retired:
+            _path_under_root(self._data_dir, Path(relative)).unlink(missing_ok=True)
+            self._connection.execute("DELETE FROM retired_files WHERE parquet_path = ?", (relative,))
 
     def cursor(self, instrument: InstrumentSpec, timeframe: str) -> ColdCursor | None:
         with self._lock:
@@ -695,32 +828,56 @@ class ColdStore:
         _fsync_directory(staging_dir)
         self._hook(ColdPhase.STAGING_AFTER)
 
-    def _quality_check(self, archived: ArchivedBatch, batch: ColdBatch) -> None:
+    def _quality_check(
+        self, archived: ArchivedBatch, batch: ColdBatch, *, compacted: bool
+    ) -> None:
         self._hook(ColdPhase.QC_BEFORE)
-        _validate_bars(batch.bars, instrument=batch.instrument, timeframe=batch.timeframe)
-        # 读回落盘后的列式文件再做一次，防止写出形状本身破坏精度/时点。
         decoded = _read_cold_parquet(self._staging_file(archived))
-        _validate_bars(decoded, instrument=batch.instrument, timeframe=batch.timeframe)
+        _validate_bars(
+            decoded, instrument=batch.instrument, timeframe=batch.timeframe,
+            allow_equal_revisions=compacted,
+        )
         if decoded != list(batch.bars):
             raise ColdStoreIntegrityError("staging Parquet 读回内容与输入批次不一致")
         self._hook(ColdPhase.QC_AFTER)
 
-    def _generation_file(self, batch: ColdBatch, generation_id: str) -> Path:
-        venue = _safe_path_part(batch.instrument.venue, "venue")
-        symbol = _safe_path_part(batch.instrument.symbol, "symbol")
-        timeframe = _safe_path_part(batch.timeframe, "timeframe")
-        return (
-            self._data_dir
-            / COLD_SUBDIR
-            / venue
-            / symbol
-            / timeframe
-            / f"{generation_id}.parquet"
+    def _prepare_generation(
+        self, batch: ColdBatch, generation_id: str, *, source_archive: bytes | None = None
+    ) -> ColdGeneration:
+        compacted = source_archive is not None
+        content = _content_bytes(batch.bars) if source_archive is None else source_archive
+        archived = self._archive_content(content, _sha256_bytes(content))
+        self._write_staging(archived, batch)
+        self._quality_check(archived, batch, compacted=compacted)
+        final = self._promote(archived, batch, generation_id, compacted=compacted)
+        return ColdGeneration(
+            generation_id=generation_id,
+            venue=batch.instrument.venue,
+            symbol=batch.instrument.symbol,
+            timeframe=batch.timeframe,
+            parquet_path=final.relative_to(self._data_dir),
+            sha256=_sha256_file(final),
+            content_sha256=archived.sha256,
+            first_ts=batch.bars[0].ts_event,
+            last_ts=batch.bars[-1].ts_event,
+            bars=len(batch.bars),
+            committed_ts=max(bar.ts_committed for bar in batch.bars),
         )
 
-    def _promote(self, archived: ArchivedBatch, batch: ColdBatch, generation_id: str) -> Path:
+    def _promote(
+        self, archived: ArchivedBatch, batch: ColdBatch, generation_id: str, *, compacted: bool
+    ) -> Path:
         self._hook(ColdPhase.RENAME_BEFORE)
-        final = self._generation_file(batch, generation_id)
+        kind = "partition" if compacted else "tail"
+        version = instrument_spec_version(batch.instrument)
+        final = (
+            self._data_dir / COLD_SUBDIR
+            / _safe_path_part(batch.instrument.venue, "venue")
+            / _safe_path_part(batch.instrument.symbol, "symbol")
+            / _safe_path_part(batch.timeframe, "timeframe")
+            / partition_month(batch.bars[0].ts_event)
+            / f"{kind}-{version}-{generation_id}.parquet"
+        )
         final.parent.mkdir(parents=True, exist_ok=True)
         staging = self._staging_file(archived)
         if final.exists():
@@ -736,74 +893,96 @@ class ColdStore:
             shutil.rmtree(staging.parent)
         return final
 
-    def _commit_manifest(self, generation: ColdGeneration) -> None:
+    def _commit_manifest(
+        self,
+        generation: ColdGeneration,
+        *,
+        replaced: Sequence[ColdGeneration] = (),
+        retired_ts: int | None = None,
+    ) -> None:
         self._hook(ColdPhase.MANIFEST_BEFORE)
         connection = self._connection
         try:
             connection.execute("BEGIN IMMEDIATE")
-            existing = self._select_generation_by_parts(generation)
-            if existing is None:
-                connection.execute(
-                    """
-                    INSERT INTO generations (
-                        generation_id, venue, symbol, timeframe, parquet_path,
-                        sha256, content_sha256, first_ts, last_ts, bars, committed_ts
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        generation.generation_id,
-                        generation.venue,
-                        generation.symbol,
-                        generation.timeframe,
-                        generation.parquet_path.as_posix(),
-                        generation.sha256,
-                        generation.content_sha256,
-                        generation.first_ts,
-                        generation.last_ts,
-                        generation.bars,
-                        generation.committed_ts,
-                    ),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO cursors (
-                        venue, symbol, timeframe, generation_id, last_ts, bars, updated_ts
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(venue, symbol, timeframe) DO UPDATE SET
-                        generation_id = CASE
-                            WHEN excluded.last_ts >= cursors.last_ts
-                            THEN excluded.generation_id
-                            ELSE cursors.generation_id
-                        END,
-                        last_ts = MAX(cursors.last_ts, excluded.last_ts),
-                        bars = CASE
-                            WHEN excluded.last_ts >= cursors.last_ts
-                            THEN excluded.bars
-                            ELSE cursors.bars
-                        END,
-                        updated_ts = MAX(cursors.updated_ts, excluded.updated_ts)
-                    """,
-                    (
-                        generation.venue,
-                        generation.symbol,
-                        generation.timeframe,
-                        generation.generation_id,
-                        generation.last_ts,
-                        generation.bars,
-                        generation.committed_ts,
-                    ),
-                )
+            (version,) = connection.execute(
+                "UPDATE manifest_version SET version = version + 1 RETURNING version"
+            ).fetchone()
+            if retired_ts is None:
+                retired_ts = time.time_ns() // 1_000_000
+            connection.executemany(
+                "INSERT INTO retired_files VALUES (?, ?, ?)",
+                [(item.parquet_path.as_posix(), retired_ts, version) for item in replaced],
+            )
+            connection.executemany(
+                "DELETE FROM generations WHERE venue = ? AND symbol = ? AND timeframe = ? "
+                "AND generation_id = ?",
+                [(item.venue, item.symbol, item.timeframe, item.generation_id) for item in replaced],
+            )
+            # 重发已被合并的原批次时，重新引用完整文件并取消其回收。
+            connection.execute(
+                "DELETE FROM retired_files WHERE parquet_path = ?",
+                (generation.parquet_path.as_posix(),),
+            )
+            connection.execute(
+                """
+                INSERT INTO generations (
+                    generation_id, venue, symbol, timeframe, parquet_path,
+                    sha256, content_sha256, first_ts, last_ts, bars, committed_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    generation.generation_id,
+                    generation.venue,
+                    generation.symbol,
+                    generation.timeframe,
+                    generation.parquet_path.as_posix(),
+                    generation.sha256,
+                    generation.content_sha256,
+                    generation.first_ts,
+                    generation.last_ts,
+                    generation.bars,
+                    generation.committed_ts,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO cursors (
+                    venue, symbol, timeframe, generation_id, last_ts, bars, updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(venue, symbol, timeframe) DO UPDATE SET
+                    generation_id = CASE
+                        WHEN excluded.last_ts >= cursors.last_ts
+                        THEN excluded.generation_id
+                        ELSE cursors.generation_id
+                    END,
+                    last_ts = MAX(cursors.last_ts, excluded.last_ts),
+                    bars = CASE
+                        WHEN excluded.last_ts >= cursors.last_ts
+                        THEN excluded.bars
+                        ELSE cursors.bars
+                    END,
+                    updated_ts = MAX(cursors.updated_ts, excluded.updated_ts)
+                """,
+                (
+                    generation.venue,
+                    generation.symbol,
+                    generation.timeframe,
+                    generation.generation_id,
+                    generation.last_ts,
+                    generation.bars,
+                    generation.committed_ts,
+                ),
+            )
             connection.execute("COMMIT")
         except BaseException:
             with suppress(sqlite3.Error):
                 connection.execute("ROLLBACK")
             raise
+        self._hook(ColdPhase.MANIFEST_AFTER)
 
     # ------------------------------------------------------------------ 清单查询
 
-    def _select_matching_generation(
-        self, batch: ColdBatch, committed_ts: int
-    ) -> ColdGeneration | None:
+    def _select_matching_generation(self, batch: ColdBatch) -> ColdGeneration | None:
         """查找旧标识下数值等价的批次，只读时间范围和行数匹配的文件。"""
 
         rows = self._connection.execute(
@@ -820,12 +999,12 @@ class ColdStore:
                 batch.bars[0].ts_event,
                 batch.bars[-1].ts_event,
                 len(batch.bars),
-                committed_ts,
+                max(bar.ts_committed for bar in batch.bars),
             ),
         )
         bars = list(batch.bars)
         for row in rows:
-            generation = self._generation_from_row(batch.instrument, batch.timeframe, row)
+            generation = _generation_from_row(batch.instrument, batch.timeframe, row)
             if generation is not None and self._read_generation(generation) == bars:
                 return generation
         return None
@@ -845,93 +1024,10 @@ class ColdStore:
                 generation_id,
             ),
         ).fetchone()
-        return self._generation_from_row(batch.instrument, batch.timeframe, row)
-
-    def _select_generation_by_parts(self, generation: ColdGeneration) -> ColdGeneration | None:
-        row = self._connection.execute(
-            f"""
-            SELECT {_GENERATION_COLUMNS} FROM generations
-            WHERE venue = ? AND symbol = ? AND timeframe = ? AND generation_id = ?
-            """,
-            (
-                generation.venue,
-                generation.symbol,
-                generation.timeframe,
-                generation.generation_id,
-            ),
-        ).fetchone()
-        if row is None:
-            return None
-        return ColdGeneration(
-            generation_id=str(row[0]),
-            venue=generation.venue,
-            symbol=generation.symbol,
-            timeframe=generation.timeframe,
-            parquet_path=Path(str(row[1])),
-            sha256=str(row[2]),
-            content_sha256=str(row[3]),
-            first_ts=int(row[4]),
-            last_ts=int(row[5]),
-            bars=int(row[6]),
-            committed_ts=int(row[7]),
-        )
-
-    def _select_generations(
-        self, instrument: InstrumentSpec, timeframe: str
-    ) -> list[ColdGeneration]:
-        rows = self._connection.execute(
-            f"""
-            SELECT {_GENERATION_COLUMNS} FROM generations
-            WHERE venue = ? AND symbol = ? AND timeframe = ?
-            ORDER BY rowid
-            """,
-            (instrument.venue, instrument.symbol, timeframe),
-        ).fetchall()
-        return [
-            self._generation_from_row(instrument, timeframe, row)
-            for row in rows
-            if row is not None
-        ]
-
-    @staticmethod
-    def _generation_from_row(
-        instrument: InstrumentSpec, timeframe: str, row: tuple | None
-    ) -> ColdGeneration | None:
-        if row is None:
-            return None
-        return ColdGeneration(
-            generation_id=str(row[0]),
-            venue=instrument.venue,
-            symbol=instrument.symbol,
-            timeframe=timeframe,
-            parquet_path=Path(str(row[1])),
-            sha256=str(row[2]),
-            content_sha256=str(row[3]),
-            first_ts=int(row[4]),
-            last_ts=int(row[5]),
-            bars=int(row[6]),
-            committed_ts=int(row[7]),
-        )
-
-    # ------------------------------------------------------------------ 辅助
+        return _generation_from_row(batch.instrument, batch.timeframe, row) if row else None
 
     def _read_generation(self, generation: ColdGeneration) -> list[RawBar]:
-        return _read_cold_parquet(self._verify_generation_file(generation))
-
-    def _verify_generation_file(self, generation: ColdGeneration) -> Path:
-        path = self._path_under_root(generation.parquet_path)
-        if not path.is_file() or _sha256_file(path) != generation.sha256:
-            raise ColdStoreIntegrityError(
-                f"generation 文件缺失或哈希不符：{generation.parquet_path}"
-            )
-        return path
-
-    def _path_under_root(self, relative: Path) -> Path:
-        root = self._data_dir.resolve()
-        candidate = (self._data_dir / relative).resolve()
-        if not candidate.is_relative_to(root):
-            raise ColdStoreIntegrityError(f"清单路径越界：{relative}")
-        return candidate
+        return _read_cold_parquet(_verify_generation_file(self._data_dir, generation))
 
     def _hook(self, phase: ColdPhase) -> None:
         if self._fault_hook is not None:

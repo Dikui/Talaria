@@ -55,7 +55,8 @@ from talaria.foundation.snapshot import (
     SnapshotMode,
     SnapshotRequest,
 )
-from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
+from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
+from talaria.perception.cold_publisher import ColdPublisher
 from talaria.perception.snapshot_builder import SnapshotBuilder
 from talaria.perception.snapshot_store import (
     SnapshotRecord,
@@ -75,6 +76,7 @@ class WorkbenchService:
         snapshot_store: SnapshotStore,
         builder: SnapshotBuilder,
         feed_mode: str | None = None,
+        cold_publisher: ColdPublisher | None = None,
     ) -> None:
         self._pack = pack
         self._connector = connector
@@ -82,6 +84,7 @@ class WorkbenchService:
         self._snapshot_store = snapshot_store
         self._builder = builder
         self._feed_mode = feed_mode
+        self._cold_publisher = cold_publisher
 
     @property
     def feed_mode(self) -> str:
@@ -128,6 +131,20 @@ class WorkbenchService:
             bar for bar in all_bars if before_ts is None or bar.timestamp < before_ts
         ]
         window = eligible[-limit:]
+        if self._cold_publisher is not None:
+            instrument = self._pack.instrument(meta.instrument_id)
+            if instrument is not None:
+                interval = timeframe_ms(timeframe)
+                end = meta.cutoff_ts - interval
+                if before_ts is not None:
+                    end = min(end, before_ts - 1)
+                end = end // interval * interval
+                start = end - (limit - 1) * interval
+                if window:
+                    start = min(start, window[0].timestamp)
+                self._cold_publisher.request_history(
+                    instrument, timeframe, start_ts=start, end_ts=end,
+                )
         has_more_forward = len(eligible) > len(window)
         has_more_backward = bool(
             all_bars

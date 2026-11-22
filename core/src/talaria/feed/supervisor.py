@@ -36,6 +36,7 @@ from talaria.foundation.feed import (
     KlineEvent,
     MarketEventFeed,
     OrderBookEvent,
+    ReceivedKlineEvent,
     worst_status,
 )
 from talaria.foundation.market import InstrumentSpec
@@ -45,6 +46,7 @@ from talaria.foundation.types import PrecisionTier
 logger = logging.getLogger(__name__)
 
 DEFAULT_STALE_AFTER_MS = 12_000
+BAR_CLOSE_GRACE_MS = 5_000
 TICK_INTERVAL_SECONDS = 0.5
 BACKOFF_INITIAL_SECONDS = 0.2
 BACKOFF_MAX_SECONDS = 5.0
@@ -61,6 +63,7 @@ class _BarVersion:
     bar: CompactBar
     confirmed: bool
     revision: int
+    source_confirmed: bool
 
 
 @dataclass(slots=True)
@@ -90,6 +93,7 @@ class _SubscriptionOp:
 class _Inbound:
     kind: str
     payload: object | None = None
+    received_ts: int | None = None
 
 
 class FeedSupervisor(MarketEventFeed):
@@ -104,6 +108,9 @@ class FeedSupervisor(MarketEventFeed):
         feed_mode: str | None = None,
         now_ms: Callable[[], int] | None = None,
         stale_after_ms: int = DEFAULT_STALE_AFTER_MS,
+        on_subscribe: Callable[[InstrumentSpec, str, int], None] | None = None,
+        on_bar_close: Callable[[InstrumentSpec, str, CompactBar, int], None] | None = None,
+        on_recovered_bar: Callable[[InstrumentSpec, RawBar], None] | None = None,
         tick_interval_seconds: float = TICK_INTERVAL_SECONDS,
         backoff_initial_seconds: float = BACKOFF_INITIAL_SECONDS,
         backoff_max_seconds: float = BACKOFF_MAX_SECONDS,
@@ -116,6 +123,9 @@ class FeedSupervisor(MarketEventFeed):
         self.feed_mode = feed_mode or getattr(stream, "feed_mode", "unknown")
         self._now_ms = now_ms or _default_now_ms
         self._stale_after_ms = stale_after_ms
+        self._on_subscribe = on_subscribe
+        self._on_bar_close = on_bar_close
+        self._on_recovered_bar = on_recovered_bar
         self._tick_interval_seconds = tick_interval_seconds
         self._backoff_initial_seconds = backoff_initial_seconds
         self._backoff_max_seconds = backoff_max_seconds
@@ -154,6 +164,8 @@ class FeedSupervisor(MarketEventFeed):
         self._series.setdefault(key, {})
         self._ops.put_nowait(_SubscriptionOp("subscribe", instrument_id, timeframe))
         self._emit_health(channel, now)
+        if self._on_subscribe is not None:
+            self._on_subscribe(self._instruments[instrument_id], timeframe, now)
 
     def unsubscribe(self, *, instrument_id: str, timeframe: str) -> None:
         if self._channels.pop((instrument_id, timeframe), None) is None:
@@ -244,7 +256,12 @@ class FeedSupervisor(MarketEventFeed):
                 close=bar.close,
                 volume=bar.volume,
             )
-            self._apply_bar(key, bar.to_compact(status=status), confirmed=True, now=now)
+            self._apply_bar(
+                key, bar.to_compact(status=status), confirmed=True, now=now, source=True,
+                received_ts=bar.ts_ingested, recovered=True,
+            )
+            if self._on_recovered_bar is not None:
+                self._on_recovered_bar(self._instruments[key[0]], bar)
 
         for channel in self._channels.values():
             self._fill_outage_windows(channel, now)
@@ -321,7 +338,10 @@ class FeedSupervisor(MarketEventFeed):
                 force_gap=key in self._resume_pending,
             )
         self._resume_pending.discard(key)
-        self._apply_bar(key, event.bar, confirmed=event.confirmed, now=now)
+        self._apply_bar(
+            key, event.bar, confirmed=event.confirmed, now=now, source=True,
+            received_ts=event.ts_ingested if isinstance(event, ReceivedKlineEvent) else now,
+        )
 
     def _accept_derivative_tick(self, event: DerivativeTickEvent, now: int) -> None:
         if not any(
@@ -350,13 +370,37 @@ class FeedSupervisor(MarketEventFeed):
         *,
         confirmed: bool,
         now: int,
+        source: bool = False,
+        received_ts: int | None = None,
+        recovered: bool = False,
     ) -> None:
         series = self._series.setdefault(key, {})
         record = series.get(bar.timestamp)
-        if record is not None and record.bar == bar and record.confirmed == confirmed:
-            return
+        # 交易所也可能确认零量柱，合成柱通过来源标记区分。
+        source_confirmed = source and confirmed and bar.status is not BarStatus.FEED_GAP
+        if source_confirmed:
+            received = now if received_ts is None else received_ts
+            close_ts = bar.timestamp + timeframe_ms(key[1])
+            if record is not None and record.source_confirmed:
+                previous = record.bar.ts_available
+                unchanged = bar.model_copy(update={"ts_available": previous}) == record.bar
+                available = previous if unchanged else max(previous, received)
+            else:
+                available = close_ts if recovered or received <= close_ts + BAR_CLOSE_GRACE_MS else received
+            bar = bar.model_copy(update={"ts_available": available})
+            if not recovered and self._on_bar_close is not None:
+                # 重发可补一次失败的写入，沿用已知版本的可获取时刻。
+                self._on_bar_close(self._instruments[key[0]], key[1], bar, received)
+        if record is not None:
+            if record.source_confirmed and not confirmed:
+                return  # 已收盘的柱不能退回进行中
+            same_kind = record.confirmed == confirmed and record.source_confirmed == source_confirmed
+            if same_kind and record.bar == bar:
+                return
         revision = 0 if record is None else record.revision + 1
-        series[bar.timestamp] = _BarVersion(bar=bar, confirmed=confirmed, revision=revision)
+        series[bar.timestamp] = _BarVersion(
+            bar=bar, confirmed=confirmed, revision=revision, source_confirmed=source_confirmed,
+        )
         self._mark_activity(key[0], now, timeframe=key[1], event_ts=now)
         self._emit(
             KlineEvent(
@@ -576,7 +620,7 @@ class FeedSupervisor(MarketEventFeed):
             if inbound.kind == "op":
                 await self._apply_op(inbound.payload)  # type: ignore[arg-type]
                 continue
-            self.ingest(inbound.payload, now=self._now_ms())  # type: ignore[arg-type]
+            self.ingest(inbound.payload, now=inbound.received_ts)  # type: ignore[arg-type]
 
     async def _pump_stream(self) -> None:
         while True:
@@ -588,7 +632,7 @@ class FeedSupervisor(MarketEventFeed):
             if event is None:
                 await self._inbound.put(_Inbound("heartbeat"))
             else:
-                await self._inbound.put(_Inbound("event", event))
+                await self._inbound.put(_Inbound("event", event, self._now_ms()))
 
     async def _pump_ops(self) -> None:
         while True:
@@ -647,6 +691,6 @@ class FeedSupervisor(MarketEventFeed):
                 logger.exception("重连回填失败：%s %s", spec.symbol, channel.timeframe)
                 continue
             if last_ts is not None:
-                fetched = [bar for bar in fetched if bar.ts_event > last_ts]
+                fetched = [bar for bar in fetched if bar.ts_event >= last_ts]
             bars.extend(fetched)
         return bars

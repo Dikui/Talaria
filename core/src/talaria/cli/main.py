@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import secrets
 import shutil
 import signal
@@ -16,6 +17,7 @@ import traceback
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
+from xml.parsers.expat import ExpatError
 
 import uvicorn
 
@@ -40,7 +42,13 @@ from talaria.cli.service import (
     ServiceInstallError,
     ServiceStatus,
     ServiceUninstallError,
+    _domain,
+    _job_data_dir,
+    _launchctl_arguments,
+    _launchctl_value,
+    _run_launchctl,
     install_service,
+    plist_path,
     service_status,
     uninstall_service,
 )
@@ -261,7 +269,10 @@ def _cmd_up(args: argparse.Namespace) -> int:
             dsh_start_error = str(exc)
             dsh_bin = args.dsh_bin or "dsh"
 
-    data_dir = Path(args.data_dir).expanduser().resolve()
+    default_data_dir = os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR))
+    data_dir = Path(
+        args.data_dir if args.data_dir is not None else default_data_dir
+    ).expanduser().resolve()
     fixture_dir = (
         Path(args.fixture_dir).expanduser().resolve() if args.fixture_dir else None
     )
@@ -279,6 +290,14 @@ def _cmd_up(args: argparse.Namespace) -> int:
     if args.replay_speed <= 0:
         print(f"回放速度必须为正数：{args.replay_speed}", file=sys.stderr)
         return 2
+    if replay_events is not None:
+        if args.data_dir is None:
+            print("回放模式必须显式指定 --data-dir", file=sys.stderr)
+            return 2
+        protected_dirs = [Path(default_data_dir).expanduser().resolve(), *_launchd_data_dirs()]
+        if any(_data_dirs_overlap(data_dir, protected) for protected in protected_dirs):
+            print(f"回放数据目录不能与日常数据目录重叠：{data_dir}", file=sys.stderr)
+            return 2
     if args.realtime_quota <= 0:
         print(f"实时订阅配额必须为正数：{args.realtime_quota}", file=sys.stderr)
         return 2
@@ -324,6 +343,53 @@ def _cmd_up(args: argparse.Namespace) -> int:
         )
     finally:
         service_lock.release()
+
+
+def _data_dirs_overlap(left: Path, right: Path) -> bool:
+    """比较已规范化的路径；尚不存在的路径也可能在大小写不敏感的卷上重叠。"""
+    folded_left, folded_right = Path(str(left).casefold()), Path(str(right).casefold())
+    try:
+        same_directory = os.path.samefile(left, right)
+    except OSError:
+        same_directory = folded_left == folded_right
+    return (
+        same_directory or folded_left in folded_right.parents or folded_right in folded_left.parents
+    )
+
+
+def _launchd_data_dirs() -> list[Path]:
+    """尽力读取当前作业和磁盘 plist，各自解析相对路径。"""
+    directories = []
+    try:
+        result = _run_launchctl(["print", f"{_domain(None)}/{DEFAULT_SERVICE_LABEL}"])
+        if result.returncode == 0:
+            active = _job_data_dir(
+                _launchctl_arguments(result.stdout),
+                _launchctl_value(result.stdout, "working directory"),
+            )
+            if active is not None:
+                directories.append(active.resolve())
+    except (OSError, RuntimeError):
+        pass
+    try:
+        path = plist_path(Path.home() / "Library" / "LaunchAgents")
+        with path.open("rb") as handle:
+            config = plistlib.load(handle)
+        if isinstance(config, dict):
+            arguments = config.get("ProgramArguments", [])
+            working_dir = config.get("WorkingDirectory")
+            working_dir = working_dir if isinstance(working_dir, str) else None
+            if isinstance(arguments, list) and all(isinstance(arg, str) for arg in arguments):
+                installed = _job_data_dir(arguments, working_dir)
+                if installed is None:
+                    env = config.get("EnvironmentVariables")
+                    configured = env.get("TALARIA_DATA_DIR") if isinstance(env, dict) else None
+                    value = configured if isinstance(configured, str) else str(DEFAULT_DATA_DIR)
+                    installed = Path(working_dir or "/") / Path(value).expanduser()
+                directories.append(installed.resolve())
+    except (OSError, RuntimeError, ValueError, plistlib.InvalidFileException, ExpatError):
+        pass
+    return directories
 
 
 def _run_up(
@@ -823,8 +889,8 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--port", type=int, default=DEFAULT_PORT, help="监听端口")
     up.add_argument(
         "--data-dir",
-        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
-        help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
+        default=None,
+        help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria，回放时必须显式指定）",
     )
     up.add_argument("--dist-dir", default=None, help="前端构建产物目录")
     up.add_argument("--fixture-dir", default=None, help="离线 fixture 目录")
