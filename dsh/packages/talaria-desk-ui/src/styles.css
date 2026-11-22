@@ -81,9 +81,11 @@ body:has(.talaria-desk--standalone) {
   grid-template-rows: auto minmax(var(--chart-layout-min-height, 0px), 1fr) auto;
 }
 
-.app-shell:has(.rule-editor-content:not([hidden])) {
-  /* 视口放不下编辑器和图表时，让外层页面滚动。 */
+.app-shell:has(> .workspace :is(.rule-editor-content, .paper-draft-form):not([hidden])) {
+  /* 视口放不下展开的面板和图表时，让外层页面滚动。 */
   --chart-layout-min-height: min-content;
+  --chart-stage-min-height: 480px;
+  --chart-sidebar-contain: size;
 }
 
 .app-header {
@@ -504,15 +506,15 @@ body:has(.talaria-desk--standalone) {
 }
 
 @media (width > 720px) {
-  .workspace:has(.rule-editor-content:not([hidden])):not(:has(> .workspace-copilot)) > .workspace-sidebar {
-    contain: size;
+  .workspace:not(:has(> .workspace-copilot)) > .workspace-sidebar {
+    contain: var(--chart-sidebar-contain, none);
   }
 }
 
 @media (width > 1100px) {
-  .workspace:has(.rule-editor-content:not([hidden])) > :is(.workspace-sidebar, .workspace-copilot) {
+  .workspace > :is(.workspace-sidebar, .workspace-copilot) {
     /* 同一行的侧栏继续在各自的区域内滚动。 */
-    contain: size;
+    contain: var(--chart-sidebar-contain, none);
   }
 }
 
@@ -792,13 +794,9 @@ body:has(.talaria-desk--standalone) {
   position: relative;
   display: flex;
   flex: 1 1 0;
-  min-height: 0;
+  min-height: var(--chart-stage-min-height, 0px);
   min-width: 0;
   overflow: hidden;
-}
-
-.chart-workbench:has(.rule-editor-content:not([hidden])) .chart-stage {
-  min-height: 480px;
 }
 
 .chart-rule-editor {
