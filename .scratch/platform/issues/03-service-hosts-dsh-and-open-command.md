@@ -37,6 +37,13 @@
 - 入口文件原子写入 `runtime/dsh-entry.json`（0600，目录 0700）。DSH 离线和正常退出时清理。异常强退可能留有旧文件，下一次服务启动会清理，`open` 也会检查服务锁和进程 PID。日志与 `open --print` 遮盖 token，原 API 继续只发布无查询串的 DSH 基址。
 - `open` 按 `--data-dir`、`TALARIA_DATA_DIR`、默认作业 plist、`./.talaria` 查找服务。服务在线时，通过协同接口获取宿主状态，对照服务与 DSH 的 PID 后读取入口。入口不可用时打开 `/desk`，终端显示宿主状态和日志位置。未找到可用服务描述时退出 2。README 与架构 §8.1 已更新。本单与指定 ADR 无冲突。
 
+### 审查修复
+
+- DSH 探针异常脱敏后按启动失败处理。每次重试重新写桥接凭据和解析 DSH 可执行文件，准备失败时保留最近一次离线原因。离线与就绪信息写入 stderr 失败时，服务继续监督和关停。
+- 入口和桥接描述记录 DSH 的 PGID。服务取得数据目录锁后，按描述文件清理原服务 PID 已消失的 DSH 进程组。正常关停也等待整个进程组，超时后补发 SIGKILL。
+- `talaria open` 在服务持锁期间静默轮询，最多等待 10 秒获取与锁持有者 PID 一致的服务描述。
+- 六项修复均先复现再验证。指定的 `tests/cli` 运行有 95 项通过，6 项受回环端口绑定限制，另 1 项真实 DSH 配置快照测试因沙箱禁止写入本机 Profile 而受阻。
+
 ### 自动验证
 
 从本 worktree 使用 `PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest`，各次运行均加 `-q -p no:cacheprovider`。

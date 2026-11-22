@@ -4,6 +4,7 @@ import json
 import os
 import plistlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -85,6 +86,39 @@ def test_open_passes_original_entry_only_to_browser(tmp_path, service, monkeypat
         assert cli.main(["open"]) == 0
     assert opened == [DSH_URL]
     assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.regression
+@pytest.mark.parametrize("publish_after", [3.0, None], ids=["published", "timed-out"])
+def test_open_waits_up_to_ten_seconds_for_starting_service(
+    tmp_path, service, monkeypatch, capsys, publish_after
+):
+    # platform/03: keep the actual service lock and simulate the passage of time.
+    path = service_descriptor_path(tmp_path)
+    contents = path.read_bytes()
+    path.unlink()
+    elapsed = 0.0
+
+    def sleep(seconds):
+        nonlocal elapsed
+        assert capsys.readouterr() == ("", "")
+        elapsed += seconds
+        if publish_after is not None and elapsed >= publish_after and not path.exists():
+            path.write_bytes(contents)
+
+    monkeypatch.setattr(cli, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep))
+    with ServiceLock(tmp_path):
+        result = cli.main(["open", "--data-dir", str(tmp_path), "--print"])
+
+    output = capsys.readouterr()
+    if publish_after is None:
+        assert elapsed == pytest.approx(10.0)
+        assert result == 2
+        assert "常驻服务未就绪" in output.err
+    else:
+        assert publish_after <= elapsed < 10
+        assert result == 0
+        assert output == ("http://127.0.0.1:8766/?token=***\n", "")
 
 
 def test_open_uses_installed_data_dir_from_another_working_directory(

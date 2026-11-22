@@ -34,6 +34,7 @@ from talaria.cli.dsh_host import (
     bridge_descriptor_path,
     dsh_entry_path,
     read_dsh_entry,
+    reap_stale_dsh_groups,
     redact_dsh_token,
     remove_bridge_descriptor,
     resolve_dsh_bin,
@@ -251,8 +252,6 @@ def _cmd_up(args: argparse.Namespace) -> int:
         print(f"端口必须在 1..65535 之间：{args.port}", file=sys.stderr)
         return 2
 
-    dsh_bin = None
-    dsh_start_error: str | None = None
     if dual:
         if not 1 <= args.dsh_port <= 65535:
             print(f"DSH 端口必须在 1..65535 之间：{args.dsh_port}", file=sys.stderr)
@@ -260,12 +259,6 @@ def _cmd_up(args: argparse.Namespace) -> int:
         if args.dsh_port == args.port:
             print("DSH 端口不能与 Talaria 守护进程端口相同", file=sys.stderr)
             return 2
-        try:
-            dsh_bin = resolve_dsh_bin(args.dsh_bin)
-        except DshHostError as exc:
-            # 宿主缺失不应阻塞看盘快通道：守护进程照常启动，仅标记协同离线。
-            dsh_start_error = str(exc)
-            dsh_bin = args.dsh_bin or "dsh"
 
     data_dir = Path(args.data_dir).expanduser().resolve()
     fixture_dir = (
@@ -324,8 +317,6 @@ def _cmd_up(args: argparse.Namespace) -> int:
             token=token,
             settings=settings,
             features=service_config.features,
-            dsh_bin=dsh_bin,
-            dsh_start_error=dsh_start_error,
             dual=dual,
         )
     finally:
@@ -339,22 +330,30 @@ def _run_up(
     token: str,
     settings: AppSettings,
     features: FeatureToggles,
-    dsh_bin: str | None,
-    dsh_start_error: str | None,
     dual: bool,
 ) -> int:
     data_dir = settings.data_dir
+    base_url = loopback_base_url(host, args.port)
     bridge_path = bridge_descriptor_path(data_dir)
     descriptor_path = service_descriptor_path(data_dir)
+    reap_stale_dsh_groups(data_dir)
     try:
         dsh_entry_path(data_dir).unlink(missing_ok=True)
     except OSError as exc:
         print(redact_dsh_token(f"警告：无法移除旧的 DSH 入口：{exc}"), file=sys.stderr)
+
+    def prepare_bridge() -> None:
+        try:
+            write_bridge_descriptor(
+                bridge_path, base_url=base_url, token=token, daemon_pid=os.getpid()
+            )
+        except (OSError, ValueError) as exc:
+            raise DshHostError(f"无法写入 DSH 桥接凭据：{exc}") from exc
+
     dsh_host: DshHost | None = None
     if dual:
-        assert dsh_bin is not None
         dsh_host = DshHost(
-            dsh_bin=dsh_bin,
+            dsh_bin=args.dsh_bin,
             profile=args.dsh_profile,
             host=host,
             port=args.dsh_port,
@@ -362,9 +361,8 @@ def _run_up(
             log_dir=data_dir / "logs",
             startup_timeout=args.dsh_startup_timeout,
             on_offline=_report_host_offline,
+            prepare_bridge=prepare_bridge,
         )
-        if dsh_start_error is not None:
-            dsh_host.mark_unavailable(dsh_start_error)
 
     from talaria.workbench_api.app import create_app
 
@@ -427,7 +425,6 @@ def _run_up(
                 file=sys.stderr,
             )
         elif server.started:
-            base_url = loopback_base_url(host, args.port)
             try:
                 write_service_descriptor(
                     descriptor_path,
@@ -445,20 +442,12 @@ def _run_up(
                 )
 
             if dsh_host is not None:
-                try:
-                    write_bridge_descriptor(
-                        bridge_path,
-                        base_url=base_url,
-                        token=token,
-                        daemon_pid=os.getpid(),
-                    )
-                except OSError as exc:
-                    dsh_start_error = f"无法写入 DSH 桥接凭据：{exc}"
-                if dsh_start_error is not None:
-                    dsh_host.mark_unavailable(dsh_start_error)
-                elif not shutdown_requested:
+                if not shutdown_requested:
                     dsh_host.supervise()
-                _print_ready(host, args.port, dsh_host.info(), bridge_path, features)
+                try:
+                    _print_ready(host, args.port, dsh_host.info(), bridge_path, features)
+                except OSError:
+                    pass
 
             while worker.is_alive() and not shutdown_requested:
                 worker.join(timeout=0.2)
@@ -816,12 +805,17 @@ def _print_service_status(status: ServiceStatus) -> None:
 def _cmd_open(args: argparse.Namespace) -> int:
     try:
         data_dir = open_data_dir(args.data_dir)
-        holder = probe_lock(data_dir)
         descriptor = None
-        if holder is not None and holder.role == ROLE_SERVICE:
+        deadline = time.monotonic() + 10.0
+        while (holder := probe_lock(data_dir)) is not None and holder.role == ROLE_SERVICE:
             candidate = read_service_descriptor(data_dir)
             if candidate is not None and candidate.pid == holder.pid:
                 descriptor = candidate
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.1, remaining))
     except (ValueError, OSError) as exc:
         print(redact_dsh_token(str(exc)), file=sys.stderr)
         descriptor = None
