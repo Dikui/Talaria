@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, nullcontext
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, replace
+from functools import cache
 from decimal import Decimal
 from pathlib import Path
+import json
 import sys
 from threading import RLock
 from typing import Literal, Protocol
@@ -128,7 +130,7 @@ def _assemble(
     }
     definitions = []
     for slot in (Slot.DATA, Slot.STRATEGY, Slot.SIZING, Slot.RISK, Slot.FILL):
-        selection = scheme.slots.selection(slot)
+        selection = scheme.slots.selection(slot, context.mode)
         plugin = file_plugins.get(slot) or registry.resolve(
             slot, selection.reference, scheme.interface_version, scheme_dir, mode=context.mode,
         )
@@ -210,6 +212,12 @@ class AccountLedger(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class _Pipeline:
+    consume: Callable[[MarketEvent, int, Ctx | None, Callable], None]
+    finish: Callable[[], None]
+
+
+@dataclass(frozen=True, slots=True)
 class AccountProcess:
     scheme: TradingScheme
     _plugins: _Plugins
@@ -232,45 +240,39 @@ class AccountProcess:
         with guard():
             pass
 
-        def record(events: Sequence[ExecutionEvent]) -> None:
-            with guard():
-                if default_fill and isinstance(ledger, LedgerWriter):
-                    ledger.record(events, allow_late_events=True)
-                else:
-                    ledger.record(events)
-
         plugins = self._plugins
-        accounts = self.scheme.sub_accounts
-        default_risk = isinstance(plugins.risk, SevenStepRisk) or isinstance(plugins.sizing, RUnitSizer)
-        default_fill = isinstance(plugins.fill, BarSim1m)
-        if valuation is None and (default_risk or default_fill):
-            valuation = get_market_pack(DEFAULT_PACK).margin_valuation()
-        if valuation is not None and getattr(valuation, "interface_version", None) != MARGIN_VALUATION_VERSION:
-            raise SchemeError(f"保证金估值须兼容接口版本 {MARGIN_VALUATION_VERSION}")
-        gate = ExecutionGate(
-            accounts, plugins.sizing, plugins.risk, plugins.fill,
-            balances=ledger.balances, valuation=valuation, record=record,
-            allow_late_events=default_fill,
-        )
-        self._initialize_risk_accounts(ledger, gate, default_risk=default_risk or default_fill)
-
-        def submit_draft(candidate: EntryCandidate):
-            receipt = gate.submit_candidate(candidate)
-            gate.poll_events(candidate.ts_decision)
-            return receipt
-
-        intake = (
-            DraftIntake(inbox.freeze, submit_draft, gate.record_host_event, ledger.previous)
-            if inbox is not None and isinstance(ledger, PaperLedger) else None
-        )
-        now = 0
         data = plugins.data
-        execution_replay = default_fill and isinstance(data, ParquetReplay)
-        execution_through = 0
-        if inbox is not None:
-            resources.callback(lambda: self._reduce_paper(gate, now, "PAPER_STOPPING"))
+        execution_replay = isinstance(plugins.fill, BarSim1m) and isinstance(data, ParquetReplay)
+        paper = isinstance(ledger, PaperLedger)
+        # 各账本独立提交。同一输入中途宕机时，只有游标相同的子账户共享订阅。
+        streams = {}
+        groups = [(account,) for account in self.scheme.sub_accounts] if paper else [self.scheme.sub_accounts]
+        for accounts in groups:
+            state = ledger.checkpoint(accounts[0]) if paper else None
+            feed_state = state.get("feed") if state else None
+            key = json.dumps(feed_state, sort_keys=True)
+            if state is None and paper and isinstance(data, LiveWS) and any(
+                event.position is not None and event.sub_account_id == accounts[0] for event in ledger.previous
+            ):
+                key = accounts[0]  # 首次升级时按该账本的历史覆盖起点补齐资金费。
+            if key not in streams:
+                source = copy(data) if isinstance(data, LiveWS) else data
+                if isinstance(source, LiveWS):
+                    source.restore_checkpoint(feed_state if feed_state is not None else data.checkpoint())
+                streams[key] = source, []
+            source, pipelines = streams[key]
+            risk = plugins.risk
+            fill = plugins.fill
+            if len(groups) > 1:
+                risk = (SevenStepRisk(get_market_pack(DEFAULT_PACK), self.scheme.account_risk, paper=True)
+                        if isinstance(risk, SevenStepRisk) else deepcopy(risk))
+                fill = deepcopy(fill)
+            process = replace(self, scheme=self.scheme.model_copy(update={"sub_accounts": accounts}),
+                              _plugins=replace(plugins, data=source, risk=risk, fill=fill))
+            pipeline = process._pipeline(ledger, valuation, inbox, execution_replay, state)
+            pipelines.append(pipeline)
 
-        def read_events() -> Iterator[MarketEvent]:
+        def read_events(data) -> Iterator[MarketEvent]:
             events = data.events(execution=True) if execution_replay else data.events()
             if not isinstance(data, LiveWS):
                 return events
@@ -292,30 +294,140 @@ class AccountProcess:
             resources.callback(close)
             return iterate()
 
-        markets = (
-            plugins.strategy.market_events(read_events)
-            if isinstance(plugins.strategy, IsolatedStrategy) else read_events()
-        )
-        for market in markets:
+        subscriptions = []
+        for source, pipelines in streams.values():
+            markets = (plugins.strategy.market_events(lambda feed=source: read_events(feed))
+                       if isinstance(plugins.strategy, IsolatedStrategy) else read_events(source))
+            subscriptions.append((iter(markets), pipelines))
+
+        def deliveries():
+            while subscriptions:
+                for subscription in tuple(subscriptions):
+                    markets, pipelines = subscription
+                    try:
+                        market = next(markets, None)
+                    except KeyboardInterrupt:
+                        for _, active in subscriptions:
+                            for pipeline in active:
+                                pipeline.finish()
+                        raise
+                    if market is None:
+                        for pipeline in pipelines:
+                            pipeline.finish()
+                        subscriptions.remove(subscription)
+                    else:
+                        yield market, pipelines
+
+        last_delivery = 0
+        for market, pipelines in deliveries():
             with guard():
-                pass
-            try:
                 if not isinstance(market, MarketEvent):
                     raise AccountProcessError("数据入口须返回 MarketEvent")
+                if len(streams) > 1 and market.as_of < last_delivery:
+                    market = replace(market, as_of=last_delivery)
+                last_delivery = market.as_of
                 self._clock.advance(market.as_of)
                 now = self._clock.now()
-                if not isinstance(market, PaperPulse):
-                    signal_close, ctx = self._prepare_market(market, now)
-            except AccountProcessError as exc:
-                gate.record_host_event(ExecutionEvent(
-                    kind="DATA_REJECTED", sub_account_id=accounts[0], ts_event=now, reason=str(exc),
-                ))
-                raise
+                try:
+                    signal_close, ctx = (now, None) if isinstance(market, PaperPulse) else self._prepare_market(market, now)
+                except AccountProcessError as exc:
+                    account = self.scheme.sub_accounts[0]
+                    with ledger.transaction(account) if paper else nullcontext():
+                        previous = ledger.checkpoint(account) if paper else None
+                        ledger.record([ExecutionEvent(kind="DATA_REJECTED", sub_account_id=account,
+                                                      ts_event=now, reason=str(exc))])
+                        if previous is not None:
+                            ledger.save_checkpoint(account, previous)
+                    raise
 
-            if isinstance(market, PaperPulse):
-                self._handle_paper_pulse(market, gate, inbox, intake, execution_through)
-                continue
+                @cache
+                def decide():
+                    return plugins.strategy.on_bar(ctx)
 
+                for pipeline in pipelines:
+                    pipeline.consume(market, signal_close, ctx, decide)
+
+    def _pipeline(
+        self, ledger: AccountLedger, valuation: MarginValuation | None, inbox: PaperInbox | None,
+        execution_replay: bool, state: dict | None,
+    ) -> _Pipeline:
+        plugins = self._plugins
+        accounts = self.scheme.sub_accounts
+        account = accounts[0]
+        data = plugins.data
+        paper = isinstance(ledger, PaperLedger)
+        default_risk = isinstance(plugins.risk, SevenStepRisk) or isinstance(plugins.sizing, RUnitSizer)
+        default_fill = isinstance(plugins.fill, BarSim1m)
+        if valuation is None and (default_risk or default_fill):
+            valuation = get_market_pack(DEFAULT_PACK).margin_valuation()
+        if valuation is not None and getattr(valuation, "interface_version", None) != MARGIN_VALUATION_VERSION:
+            raise SchemeError(f"保证金估值须兼容接口版本 {MARGIN_VALUATION_VERSION}")
+
+        def record(events):
+            guard = self._ownership.guard if self._ownership is not None else nullcontext
+            with guard():
+                if default_fill and isinstance(ledger, LedgerWriter):
+                    ledger.record(events, allow_late_events=True)
+                else:
+                    ledger.record(events)
+
+        gate = ExecutionGate(accounts, plugins.sizing, plugins.risk, plugins.fill, balances=ledger.balances,
+                             valuation=valuation, record=record, allow_late_events=default_fill)
+        now = 0
+        execution_through = 0
+        signal_through = -1
+        previous = [e for e in ledger.previous if e.sub_account_id == account] if paper else []
+        if state is not None:
+            if state["version"] != 1:
+                raise AccountProcessError("不支持的模拟盘检查点版本")
+            if isinstance(data, LiveWS) and state["instrument"] != data.params.instrument:
+                raise AccountProcessError("恢复账本所需的实时标的与方案不符")
+            if state["fill"] is not None:
+                plugins.fill.restore_checkpoint(state["fill"])
+            if state["risk"] is not None:
+                plugins.risk.restore_checkpoint(state["risk"])
+            now, execution_through, signal_through = state["now"], state["execution_through"], state["signal_through"]
+        elif any(e.position is not None for e in previous):
+            if not default_fill:
+                raise AccountProcessError("旧模拟盘账本需要原成交插件的恢复支持")
+            plugins.fill.restore_closed_history(previous)
+            gate.restore_closed_history(previous)
+            if isinstance(data, LiveWS):
+                first = min(e.ts_event for e in previous if e.position is not None)
+                data.resume_history(first)
+
+        def checkpoint():
+            if paper:
+                ledger.save_checkpoint(account, {
+                    "version": 1, "now": now, "execution_through": execution_through, "signal_through": signal_through,
+                    "instrument": data.params.instrument if isinstance(data, LiveWS) else None,
+                    "feed": data.checkpoint() if isinstance(data, LiveWS) else None,
+                    "gate": gate.checkpoint(),
+                    "fill": plugins.fill.checkpoint() if default_fill else None,
+                    "risk": plugins.risk.checkpoint() if isinstance(plugins.risk, SevenStepRisk) else None,
+                })
+
+        with ledger.transaction(account) if paper else nullcontext():
+            if state is not None:
+                gate.restore_checkpoint(state["gate"])
+            else:
+                self._initialize_risk_accounts(ledger, gate, default_risk=default_risk or default_fill)
+                for event in previous:
+                    if event.kind == "TRADING_STATE_CHANGED" and event.reason:
+                        reason, _, value = event.reason.rpartition(":")
+                        if reason != "PAPER_STOPPING":
+                            gate.set_trading_state(account, TradingState(value), reason)
+            checkpoint()
+
+        def submit_draft(candidate):
+            receipt = gate.submit_candidate(candidate)
+            gate.poll_events(candidate.ts_decision)
+            return receipt
+
+        intake = DraftIntake(inbox.freeze, submit_draft, gate.record_host_event, previous) if paper and inbox else None
+
+        def process_market(market, now, signal_close, ctx, decide):
+            nonlocal execution_through, signal_through
             visible = tuple(
                 point for point in market.derivative_points if point.visible_at(now)
             )
@@ -341,9 +453,10 @@ class AccountProcess:
             else:
                 plugins.fill.on_market(fill_market, valuation)
                 gate.poll_events(now, points=visible)
-            if ctx is not None:
+            if ctx is not None and (not paper or signal_close > signal_through):
+                signal_through = signal_close
                 rejected = []
-                decision = plugins.strategy.on_bar(ctx)
+                decision = decide()
                 try:
                     for account in accounts:
                         try:
@@ -359,11 +472,40 @@ class AccountProcess:
                 finally:
                     for rejection in rejected:
                         gate.record_host_event(rejection)
-        if execution_replay:
-            end = data.end_event()
-            self._clock.advance(end.as_of)
-            for points in plugins.fill.market_steps(end, valuation, balances=ledger.balances):
-                gate.poll_events(end.as_of, points=points)
+
+        def consume(market, signal_close, ctx, decide):
+            nonlocal now
+            now = market.as_of
+            with ledger.transaction(account) if paper else nullcontext():
+                if isinstance(market, PaperPulse):
+                    self._handle_paper_pulse(market, gate, execution_through)
+                elif not (paper and market.bar is not None and market.timeframe == "1m" and signal_close <= execution_through):
+                    process_market(market, now, signal_close, ctx, decide)
+                checkpoint()
+            if isinstance(market, PaperPulse) and market.ready and intake is not None:
+                draft = inbox.claim(account, market.instrument_id, now)
+                if draft is not None:
+                    with ledger.transaction(account):
+                        intake.stage(draft, now)
+                        checkpoint()
+                    with ledger.transaction(account):
+                        receipt = intake.receive(draft, now)
+                        checkpoint()
+                    if receipt is not None:
+                        inbox.acknowledge(account, receipt)
+
+        def finish():
+            if paper and inbox and now:
+                with ledger.transaction(account):
+                    self._reduce_paper(gate, now, "PAPER_STOPPING")
+                    checkpoint()
+            if execution_replay:
+                end = data.end_event()
+                self._clock.advance(end.as_of)
+                for points in plugins.fill.market_steps(end, valuation, balances=ledger.balances):
+                    gate.poll_events(end.as_of, points=points)
+
+        return _Pipeline(consume, finish)
 
     def _reduce_paper(self, gate: ExecutionGate, now: int, reason: str) -> None:
         for account in self.scheme.sub_accounts:
@@ -376,8 +518,7 @@ class AccountProcess:
         gate.poll_events(now)
 
     def _handle_paper_pulse(
-        self, market: PaperPulse, gate: ExecutionGate, inbox: PaperInbox | None,
-        intake: DraftIntake | None, execution_through: int,
+        self, market: PaperPulse, gate: ExecutionGate, execution_through: int,
     ) -> None:
         now = market.as_of
         fill = self._plugins.fill
@@ -387,9 +528,6 @@ class AccountProcess:
             for points in fill.market_steps(market, None, execution_through=execution_through):
                 gate.poll_events(now, points=points)
         else:
-            gate.poll_events(now)
-        if market.ready and intake is not None and inbox is not None:
-            inbox.poll(market.instrument_id, now, intake)
             gate.poll_events(now)
 
     def _initialize_risk_accounts(
@@ -433,8 +571,11 @@ class AccountProcess:
             return close, None
         if not bar.confirmed or not 0 <= source.history_start <= bar.ts_event:
             raise AccountProcessError("策略只能在已确认柱的可获取时点求值")
+        signal_as_of = now if source.signal_as_of is None else source.signal_as_of
+        if not max(close, bar.ts_available) <= signal_as_of <= now:
+            raise AccountProcessError("信号求值截止时刻须位于确认与下单时钟之间")
         ctx = Ctx(
-            market.instrument_id, market.timeframe, source.history_start, now,
+            market.instrument_id, market.timeframe, source.history_start, signal_as_of,
             _read_bars=source.read_bars, _read_derivatives=source.read_derivatives,
             _bar_ts=bar.ts_event, _discovery_tail_completed=source.tail_completed,
             _indicator_defaults=self._indicator_defaults, _data_dir=self._data_dir,
@@ -451,7 +592,7 @@ def _prepare_files(config: _RunConfig, mode: Mode) -> dict[Slot, tuple[Path, str
     snapshots = {}
     files = {}
     for slot in (Slot.STRATEGY, Slot.DATA, Slot.SIZING, Slot.RISK, Slot.FILL):
-        reference = config.scheme.slots.selection(slot).reference
+        reference = config.scheme.slots.selection(slot, mode).reference
         if ":" not in reference:
             continue
         if mode == "paper" and slot != Slot.STRATEGY:

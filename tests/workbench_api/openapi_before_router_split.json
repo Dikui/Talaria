@@ -2198,6 +2198,16 @@
             "title": "Entry Low",
             "type": "string"
           },
+          "inherited_barriers": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExitBarrierSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "instrument_id": {
             "maxLength": 128,
             "minLength": 1,
@@ -2208,6 +2218,18 @@
             "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
             "title": "Invalidation Stop",
             "type": "string"
+          },
+          "round_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Round Id"
           },
           "snapshot_id": {
             "maxLength": 64,
@@ -2341,6 +2363,17 @@
           "draft_id": {
             "title": "Draft Id",
             "type": "string"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
           },
           "reason": {
             "anyOf": [
@@ -2901,6 +2934,47 @@
           "label"
         ],
         "title": "EvidenceRef",
+        "type": "object"
+      },
+      "ExitBarrierSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "max_holding_ms": {
+            "exclusiveMinimum": 0.0,
+            "title": "Max Holding Ms",
+            "type": "integer"
+          },
+          "stop": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Stop",
+            "type": "string"
+          },
+          "take_profit": {
+            "items": {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Take Profit",
+            "type": "array"
+          },
+          "trailing_stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrailingStopSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "stop",
+          "take_profit",
+          "max_holding_ms"
+        ],
+        "title": "ExitBarrierSpec",
         "type": "object"
       },
       "FeedHealthEvent": {
@@ -3882,6 +3956,16 @@
       "PaperRound": {
         "additionalProperties": false,
         "properties": {
+          "barriers": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExitBarrierSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "direction": {
             "$ref": "#/components/schemas/Direction"
           },
@@ -5497,6 +5581,27 @@
           "timeframes"
         ],
         "title": "SnapshotRequest",
+        "type": "object"
+      },
+      "TrailingStopSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "activation_pct": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Activation Pct",
+            "type": "string"
+          },
+          "distance_pct": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "title": "Distance Pct",
+            "type": "string"
+          }
+        },
+        "required": [
+          "activation_pct",
+          "distance_pct"
+        ],
+        "title": "TrailingStopSpec",
         "type": "object"
       },
       "UsageReport": {

@@ -112,3 +112,45 @@ PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest
 - `tests/account/test_paper.py`
 - `tests/workbench_api/openapi_before_router_split.json`
 - `tests/workbench_api/test_paper_api.py`
+
+### 审查修复
+
+基于 `ticket/trading-04` 的 `dfa73fe`。以下记录更新前次实现记录中的投递、过期和续写行为。
+
+| 审查项 | 实现与验证 |
+| --- | --- |
+| 1、10 | 人工打开草案时按图表标的和周期重新冻结快照，会诊入口沿用会诊快照。审阅页展示证据快照和有效期，确认表单绑定审阅时的版本和 SHA-256。轮询读到新版本时重新挂载表单，清空确认人和提交状态。 |
+| 2、3 | 服务在同一 SQLite 事务中写入不可变确认和递增提交序号，先重投已领取项，再按确认顺序领取。账户先提交 `DRAFT_PENDING`，将审批、成交事件、唯一计划 ID、执行检查点和终态回执原子提交，然后才发回执。已提交的重投直接返回原结果。测试分别在提交前及提交后丢回执处中断，随后重启，并在部分成交后再次中断。两个场景均只产生一个计划和两笔正确的部分成交。 |
+| 4 | 人工与协同表单均可选择同账户、同标的、同方向的目标回合。确认哈希覆盖回合、止损、止盈、最长持仓时间及移动止损。宿主核对当前屏障，随后走原有 R 定仓和七步风控，按已有敞口、挂单预留与新增数量计算回合总风险。 |
+| 5–8 | 实时入口按分钟保存待处理柱，迟到的首次确认可以填补空位，已推进分钟的修订不会再次撮合。缺口通过范围接口补齐。信号上下文保留首次确认柱和它的可见截止时刻，计划抵达成交插槽时仍受实际时间延迟墙约束。订阅遇配额或临时无行情时退避重订；握手补发完毕且分钟序列追平后才接收新草案。资金费预测立即进入审批，结算按持仓时间线入账。行情恢复时继续执行已生效的风控限制。 |
+| 9 | 过期窗口从草案创建和原证据截止时刻中较晚者开始，在重新冻结的截止时刻结束。沿同一快照向前翻页，分钟中段检查真实进行中柱。若首分钟整体高低价越界，取实际窗口内的逐笔核对；需要证明区间内价格安全时，校验逐笔成交量与高低价。缺分钟、缺进行中柱或缺必要的逐笔证明时继续待处理。重复领取可以补证。 |
+| 11、12 | 每个子账户在自己的锁与 SQLite 事务内写账本、事件序号和版本化 JSON 检查点。检查点包括执行器、挂单余量、持仓成本和保证金、退出屏障、预留、已平回合的持仓时间线、资金费入账记录、交易状态与原因、UTC 日初权益和历史峰值。行情检查点含每个通道的游标、待补分钟和待按时间线交付的衍生品点。草案处理状态由同账本事件恢复。多账户进程按相同的已提交行情检查点共享订阅。正常停机撤销挂单并记录停机降险；恢复时只有停机原因允许恢复交易。 |
+| 13、14、16 | 持锁写者可续建初始化中断的空库；续写前核对锁令牌的数据目录和账户集合。旧协同库测试保留历史 `legacy_schema.sql`，检查旧对象与数据、升级后与全新库结构一致、升级库能保存和读回草案。 |
+| 15、17 | `slots.data.backtest` 和 `slots.data.paper` 各自接受插件名或带参数的选择。测试用同一份 YAML 运行回测和模拟盘两个入口。账户页接入图表停靠列表，补齐账户图标。 |
+
+同一方案的数据插槽示例。其余插槽及策略批准沿用原方案。
+
+```yaml
+slots:
+  data:
+    backtest:
+      plugin: parquet_replay
+      params: {instrument: BTC-USDT-PERP, timeframe: 1m, start: 0, end: 60000}
+    paper:
+      plugin: live_ws
+      params: {instrument: BTC-USDT-PERP, timeframe: 1m, history_bars: 500}
+```
+
+**旧账本兼容性。** 已平旧回合可以根据历史成交重建资金费归属，并抵扣历史资金费流水。旧临时接收标记后已有明确提交或拒单事件时，重投取回该结果。升级前仍有在途挂单或持仓、且没有执行检查点的旧账本，未记录原批准数量、排队余量或完整执行器状态，启动会指出对应回合并停止。新格式的在途恢复已覆盖。升级前未落盘的历史权益峰值也无法精确补造。
+
+**暂缓的本地鉴权加固。** 确认、领取、回执与普通服务调用共用同一 Bearer。持有服务凭据的本机进程可冒充交易员确认，当前确认人字段不能证明交易员身份。后续应分别绑定交互式交易员身份与账户进程身份，给确认以及指定子账户的领取、回执授予独立权限，审计记录关联实际认证主体。
+
+#### 审查修复验证
+
+- 红测通过公开的账户入口、领取接口、行情迭代器、账本及前端表单复现。观察到的失败包括：先保存的草案抢先领取；确认写入失败后重试撞唯一键；中断标记被当作拒单；跳过迟到分钟；信号读到修订；配额拒绝后没有第二次订阅；当前分钟缺失仍批准；首分钟沿用创建前低点；空库缺表；目录或账户不匹配的令牌仍可打开账本。修复后的回归保留在对应测试模块。
+- Python 使用 `PYTHONPATH=$PWD/core/src /Users/dikui/Project/Talaria/.venv/bin/python -m pytest`。按要求运行 `tests -q -p no:cacheprovider` 后，查明 15 项回环监听及 1 项真实 DSH Profile 写入受沙箱限制。排除这 16 项复跑后为 **1257 通过、1 失败、5 跳过、17 未选**。5 项为嵌套 Seatbelt，未选数另含仓库默认排除的在线测试。唯一失败是 `tests/acceptance/test_m1_solo.py::test_m1_solo_acceptance_flow` 等待扫描器的 `LIQUIDITY_ANOMALY` 超时；用 `git archive dfa73fe` 导出的干净基线单独复跑，同样在第 558 行超时。
+- 定向命令 `pytest tests/account tests/workbench_api/test_paper_api.py tests/workbench_api/state_repositories/test_legacy_database.py tests/workbench_api/test_strategy_subscription.py tests/workbench_api/test_openapi.py tests/foundation/test_import_boundaries.py tests/cli/test_contract_check.py -q -p no:cacheprovider` 为 **318 通过、5 跳过**。最后缩小重订时所需的历史范围后，再跑 `tests/account/test_paper.py tests/workbench_api/test_strategy_subscription.py tests/sdk` 为 **93 通过**。
+- `pnpm -C dsh --filter @talaria/desk-ui test` 为 **211 通过**。`pnpm -C dsh --filter @talaria/dsh-plugin test` 为 **25 通过、9 失败**，9 项均为监听 `127.0.0.1` 遇到 `EPERM`。单独运行插件的 guard 和 panels 两个套件为 **17 通过**。`pnpm -C dsh typecheck`、`pnpm -C dsh build` 成功，构建保留既有的 500 kB 分块提示。`contract-check` 零漂移，`git diff --check` 通过。
+- 真实交易所长跑、沙箱外端口与 Seatbelt 场景、1440/390 浅深色截图待本机验收。截图由调用方检查。
+
+审查改动涉及账户宿主、执行门控、账本与新建的 `account/checkpoint.py`，默认成交及风控插件、实时订阅客户端与服务握手、草案仓储和共享契约、账户与图表表单、DSH 停靠注册，以及相应的测试、生成契约与 OpenAPI 基准。工作区保留在 `ticket/trading-04`，HEAD 为 `dfa73fe`。

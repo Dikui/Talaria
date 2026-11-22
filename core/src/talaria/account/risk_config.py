@@ -5,20 +5,12 @@ from typing import Annotated, Literal, Self
 
 from pydantic import ConfigDict, Field, model_validator
 
+from talaria.foundation.paper import TrailingStopSpec
 from talaria.foundation.types import ContractModel, DecimalStr
 
 type Positive = Annotated[DecimalStr, Field(strict=False, gt=0)]
 type Rate = Annotated[DecimalStr, Field(strict=False, ge=0, lt=1)]
 type RiskPercent = Annotated[DecimalStr, Field(strict=False, gt=0, lt=1)]
-
-
-class TrailingStopSpec(ContractModel):
-    """相对于入场价的激活幅度与相对于有利极值的回撤距离。"""
-
-    model_config = ConfigDict(frozen=True, strict=True)
-
-    activation_pct: RiskPercent
-    distance_pct: RiskPercent
 
 
 class QuietWindow(ContractModel):

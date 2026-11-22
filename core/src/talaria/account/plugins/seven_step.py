@@ -9,6 +9,7 @@ from itertools import count
 from zoneinfo import ZoneInfo
 from uuid import uuid4
 
+from talaria.account.checkpoint import RuntimeCheckpoint
 from talaria.account.contracts import (
     AccountState, ApprovedBarrierAmendment, ApprovedExecutionPlan, BarrierChangeRequest,
     EntryCandidate, ExitBarrierSpec, RejectedPlanRecord, RoundExposure, SizingDecision,
@@ -39,6 +40,10 @@ class _Drawdown:
     peak: Decimal
 
 
+class _RiskCheckpoint(RuntimeCheckpoint):
+    drawdowns: dict[str, _Drawdown]
+
+
 class SevenStepRisk:
     def __init__(
         self, pack: MarketPack, accounts: Mapping[str, AccountRiskConfig], *, paper: bool = False,
@@ -48,6 +53,12 @@ class SevenStepRisk:
         self._ids = count(1)
         self._id_prefix = f"{uuid4().hex}-" if paper else ""
         self._drawdowns: dict[str, _Drawdown] = {}
+
+    def checkpoint(self) -> dict:
+        return _RiskCheckpoint.capture(self)
+
+    def restore_checkpoint(self, state: dict) -> None:
+        _RiskCheckpoint.restore(self, state)
 
     def evaluate_candidate(
         self, candidate: EntryCandidate, sizing: SizingDecision, account_state: AccountState,

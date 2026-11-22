@@ -9,6 +9,18 @@
       "title": "Draft Id",
       "type": "string"
     },
+    "plan_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plan Id"
+    },
     "reason": {
       "anyOf": [
         {

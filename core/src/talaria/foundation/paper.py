@@ -16,6 +16,20 @@ ContentHash = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 Trader = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
 
 
+class TrailingStopSpec(ContractModel):
+    model_config = ConfigDict(frozen=True, strict=True)
+    activation_pct: Annotated[DecimalStr, Field(strict=False, gt=0, lt=1)]
+    distance_pct: Annotated[DecimalStr, Field(strict=False, gt=0, lt=1)]
+
+
+class ExitBarrierSpec(ContractModel):
+    model_config = ConfigDict(frozen=True)
+    stop: DecimalStr
+    take_profit: tuple[DecimalStr, ...] = Field(min_length=1)
+    max_holding_ms: int = Field(gt=0)
+    trailing_stop: TrailingStopSpec | None = None
+
+
 class DraftContent(ContractModel):
     model_config = ConfigDict(frozen=True)
 
@@ -30,8 +44,16 @@ class DraftContent(ContractModel):
     take_profit: tuple[Price, ...] = Field(min_length=1, max_length=4)
     valid_until: int | None = Field(default=None, ge=0)
 
+    round_id: str | None = Field(default=None, min_length=1)
+    inherited_barriers: ExitBarrierSpec | None = None
+
     @model_validator(mode="after")
     def _geometry(self) -> Self:
+        barriers = self.inherited_barriers
+        if (self.round_id is None) != (barriers is None):
+            raise ValueError("加仓需要目标回合和沿用的屏障")
+        if barriers and (barriers.stop, barriers.take_profit) != (self.invalidation_stop, self.take_profit):
+            raise ValueError("加仓止损、止盈须与沿用的屏障一致")
         if self.entry_high < self.entry_low:
             raise ValueError("入场价带上下界倒置")
         if self.direction == "LONG":
@@ -43,7 +65,9 @@ class DraftContent(ContractModel):
         return self
 
     def digest(self) -> str:
-        return sha256(self.model_dump_json().encode()).hexdigest()
+        # 已确认的旧版开仓草案沿用原规范化字节。
+        excluded = {"round_id", "inherited_barriers"} if self.round_id is None else set()
+        return sha256(self.model_dump_json(exclude=excluded).encode()).hexdigest()
 
 
 class DraftEdit(ContractModel):
@@ -63,6 +87,7 @@ class DraftReceipt(ContractModel):
     draft_id: str
     version: int = Field(ge=1)
     accepted: bool
+    plan_id: str | None = None
     reason: str | None = None
     snapshot_id: str | None = None
 
@@ -118,6 +143,7 @@ class PaperRound(ContractModel):
     stop: DecimalStr
     take_profit: tuple[DecimalStr, ...] = ()
     phase: str | None = None
+    barriers: ExitBarrierSpec | None = None
 
 
 class PaperFill(ContractModel):

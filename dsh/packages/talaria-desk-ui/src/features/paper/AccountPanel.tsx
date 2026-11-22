@@ -64,7 +64,7 @@ export function LedgerSections({ view }: { view: PaperAccountView }) {
   );
 }
 
-function DraftReview({ draft, refresh }: { draft: DraftRecord; refresh: () => void }) {
+export function DraftReview({ draft, refresh }: { draft: DraftRecord; refresh: () => void }) {
   const [editing, setEditing] = useState<DraftRecord>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -81,6 +81,7 @@ function DraftReview({ draft, refresh }: { draft: DraftRecord; refresh: () => vo
     event.preventDefault();
     if (busy) return;
     const field = event.currentTarget.elements.namedItem("confirmed_by") as HTMLInputElement;
+    const reviewed = new FormData(event.currentTarget);
     const confirmedBy = field.value.trim();
     if (!confirmedBy) {
       setError("请输入确认人。");
@@ -91,7 +92,7 @@ function DraftReview({ draft, refresh }: { draft: DraftRecord; refresh: () => vo
     setError(undefined);
     try {
       await api.confirmPaperDraft(draft.draft_id, {
-        version: draft.version, content_hash: draft.content_hash, confirmed_by: confirmedBy,
+        version: Number(reviewed.get("version")), content_hash: String(reviewed.get("content_hash")), confirmed_by: confirmedBy,
       });
       refresh();
     } catch (reason) {
@@ -114,12 +115,25 @@ function DraftReview({ draft, refresh }: { draft: DraftRecord; refresh: () => vo
     </header>
     <p className="paper-muted">版本 {draft.version} · {content.consultation_id ? "协同会诊" : "人工"} · {content.direction === "LONG" ? "做多" : "做空"}</p>
     <dl>
+      {receipt?.plan_id && <div><dt>执行计划</dt><dd>{receipt.plan_id}</dd></div>}
+      {content.inherited_barriers && <>
+        <div><dt>加仓回合</dt><dd>{content.round_id}</dd></div>
+        <div><dt>最长持仓</dt><dd>{content.inherited_barriers.max_holding_ms / 1000} 秒</dd></div>
+        <div><dt>移动止损</dt><dd>{content.inherited_barriers.trailing_stop
+          ? `激活幅度 ${content.inherited_barriers.trailing_stop.activation_pct}，回撤幅度 ${content.inherited_barriers.trailing_stop.distance_pct}`
+          : "未启用"}</dd></div>
+      </>}
+      <div><dt>证据快照</dt><dd>{content.snapshot_id}</dd></div>
+      <div><dt>有效期</dt><dd>{content.valid_until == null ? "未设截止时刻" :
+        <time dateTime={new Date(content.valid_until).toISOString()}>{new Date(content.valid_until).toLocaleString()}</time>}</dd></div>
       <div><dt>入场价带</dt><dd>{content.entry_low}–{content.entry_high}</dd></div>
       <div><dt>止损</dt><dd>{content.invalidation_stop}</dd></div>
       <div><dt>止盈</dt><dd>{content.take_profit.join(" / ")}</dd></div>
     </dl>
     {!draft.claimed && <form className="paper-actions" noValidate onSubmit={confirm} aria-busy={busy}>
       {draft.status !== "CONFIRMED" && <>
+        <input type="hidden" name="version" value={draft.version} />
+        <input type="hidden" name="content_hash" value={draft.content_hash} />
         <label>确认人<input name="confirmed_by" maxLength={80} required aria-describedby={error ? problem : undefined} /></label>
         <button type="submit" className="primary-button" disabled={busy}>{busy ? "正在确认…" : "确认并提交模拟盘"}</button>
       </>}
@@ -165,7 +179,7 @@ export function AccountPanel({ theme, tools }: { theme: Theme; tools?: ReactNode
         {drafts.error ? <p role="alert">{drafts.error} <button type="button" className="ghost-button" onClick={drafts.refresh}>重试</button></p>
           : !drafts.value ? <p role="status">正在读取草案…</p>
             : matching.length === 0 ? <p className="paper-muted">暂无交易草案</p>
-              : matching.map((draft) => <DraftReview key={draft.draft_id} draft={draft} refresh={drafts.refresh} />)}
+              : matching.map((draft) => <DraftReview key={`${draft.draft_id}:${draft.version}:${draft.content_hash}`} draft={draft} refresh={drafts.refresh} />)}
       </section>}
     </div>
   </section>;

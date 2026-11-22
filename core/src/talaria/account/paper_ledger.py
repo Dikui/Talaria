@@ -40,7 +40,9 @@ def account_view(data_dir: Path, account: str) -> PaperAccountView | None:
             continue
         previous = rounds.get(position.round_id)
         targets = event.take_profit or (previous.take_profit if previous else ())
-        rounds[position.round_id] = PaperRound(**position.model_dump(), take_profit=targets)
+        rounds[position.round_id] = PaperRound(
+            **position.model_dump(), take_profit=targets, barriers=event.barriers or (previous.barriers if previous else None),
+        )
         if event.kind in ("ENTRY_FILLED", "EXIT_FILLED") and event.price is not None and event.quantity is not None:
             fills.append(PaperFill(
                 event_id=event.event_id, kind=event.kind, ts_event=event.ts_event, round_id=position.round_id,
@@ -58,6 +60,18 @@ class PaperLedger:
         self._ledgers = ledgers
         self._ownership = ownership
         self.previous = tuple(event for ledger in ledgers.values() for event in ledger.previous)
+
+    @contextmanager
+    def transaction(self, account: str) -> Iterator[None]:
+        with self._ownership.guard(), self._ledgers[account].transaction():
+            yield
+
+    def checkpoint(self, account: str) -> dict | None:
+        return self._ledgers[account].checkpoint()
+
+    def save_checkpoint(self, account: str, payload: dict) -> None:
+        with self._ownership.guard():
+            self._ledgers[account].save_checkpoint(payload)
 
     def balances(self, sub_account_id: str) -> Mapping[tuple[str, str], Decimal]:
         return self._ledgers[sub_account_id].balances(sub_account_id)
@@ -78,10 +92,7 @@ def open_paper_ledger(
     data_dir: Path, accounts: Sequence[str], ownership: AccountOwnership,
 ) -> Iterator[PaperLedger]:
     with ownership.guard(), ExitStack() as stack:
-        for account in accounts:
-            view = account_view(data_dir, account)
-            if view is not None and (view.positions or any(row.phase == "PENDING_ENTRY" for row in view.rounds)):
-                raise LedgerError(f"子账户 {account} 有未结束的回合，无法安全恢复模拟盘")
+        ownership.check_scope(data_dir, accounts)
         ledgers = {
             account: stack.enter_context(open_ledger(
                 data_dir / "accounts" / account / "ledger.sqlite", None, (account,), resume=True,

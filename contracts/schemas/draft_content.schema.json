@@ -6,6 +6,69 @@
         "SHORT"
       ],
       "type": "string"
+    },
+    "ExitBarrierSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "max_holding_ms": {
+          "exclusiveMinimum": 0,
+          "title": "Max Holding Ms",
+          "type": "integer"
+        },
+        "stop": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Stop",
+          "type": "string"
+        },
+        "take_profit": {
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Take Profit",
+          "type": "array"
+        },
+        "trailing_stop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrailingStopSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "stop",
+        "take_profit",
+        "max_holding_ms"
+      ],
+      "title": "ExitBarrierSpec",
+      "type": "object"
+    },
+    "TrailingStopSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_pct": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Activation Pct",
+          "type": "string"
+        },
+        "distance_pct": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Distance Pct",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_pct",
+        "distance_pct"
+      ],
+      "title": "TrailingStopSpec",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -37,6 +100,17 @@
       "title": "Entry Low",
       "type": "string"
     },
+    "inherited_barriers": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExitBarrierSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "instrument_id": {
       "maxLength": 128,
       "minLength": 1,
@@ -47,6 +121,19 @@
       "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
       "title": "Invalidation Stop",
       "type": "string"
+    },
+    "round_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Round Id"
     },
     "snapshot_id": {
       "maxLength": 64,

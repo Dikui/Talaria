@@ -63,16 +63,23 @@ type NamedSelection = NonEmpty | PluginSelection
 type Selection = PluginSelection | PythonStrategySelection
 
 
+class ModeDataSelection(ContractModel):
+    backtest: NamedSelection
+    paper: NamedSelection
+
+
 class SchemeSlots(ContractModel):
-    data: NamedSelection
+    data: NamedSelection | ModeDataSelection
     strategy: NamedSelection | PythonStrategySelection
     sizing: NamedSelection
     risk: NamedSelection
     fill: NamedSelection
     tools: tuple[NonEmpty, ...] = Field(default=(), max_length=0)
 
-    def selection(self, slot: Slot) -> Selection:
+    def selection(self, slot: Slot, mode: Mode = "backtest") -> Selection:
         selection = getattr(self, slot.value)
+        if isinstance(selection, ModeDataSelection):
+            selection = getattr(selection, mode)
         return PluginSelection(plugin=selection) if isinstance(selection, str) else selection
 
 

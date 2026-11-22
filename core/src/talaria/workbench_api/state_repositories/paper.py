@@ -7,6 +7,8 @@ from uuid import uuid4
 from talaria.foundation.errors import NotFoundError, TalariaError
 from talaria.foundation.paper import ConfirmedDraft, DraftConfirmation, DraftContent, DraftRecord, DraftReceipt
 
+from ._sqlite import write_transaction
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS paper_drafts (
     draft_id TEXT PRIMARY KEY,
@@ -20,6 +22,17 @@ CREATE TABLE IF NOT EXISTS paper_drafts (
     claimed INTEGER NOT NULL DEFAULT 0,
     receipt TEXT
 );
+CREATE TABLE IF NOT EXISTS paper_submissions (
+    seq INTEGER PRIMARY KEY,
+    draft_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    UNIQUE (draft_id, version)
+);
+INSERT OR IGNORE INTO paper_submissions(draft_id, version)
+    SELECT draft_id, version FROM paper_drafts WHERE confirmation IS NOT NULL
+    ORDER BY json_extract(confirmation, '$.confirmed_ts'), rowid;
+UPDATE paper_drafts SET receipt = NULL
+    WHERE json_extract(receipt, '$.reason') IN ('DRAFT_INTERRUPTED', 'DRAFT_DATA_UNAVAILABLE');
 CREATE INDEX IF NOT EXISTS paper_draft_inbox
     ON paper_drafts (sub_account_id, instrument_id) WHERE confirmation IS NOT NULL AND receipt IS NULL;
 """
@@ -91,16 +104,18 @@ class DraftRepository:
             **confirmation.model_dump(), draft_id=draft_id, content=record.content, basis_cutoff_ts=basis,
             created_ts=created, confirmed_ts=max(created, self._now()),
         )
-        self._db.execute(
-            "UPDATE paper_drafts SET confirmation = ? WHERE draft_id = ?", (confirmed.model_dump_json(), draft_id),
-        )
+        with write_transaction(self._db):
+            self._db.execute("INSERT INTO paper_submissions(draft_id, version) VALUES (?, ?)", (draft_id, record.version))
+            self._db.execute(
+                "UPDATE paper_drafts SET confirmation = ? WHERE draft_id = ?", (confirmed.model_dump_json(), draft_id),
+            )
         return self.get(draft_id)
 
     def claim(self, account: str, instrument: str) -> ConfirmedDraft | None:
         row = self._db.execute(
-            """SELECT draft_id, confirmation, claimed FROM paper_drafts
+            """SELECT draft_id, confirmation, claimed FROM paper_drafts JOIN paper_submissions USING (draft_id, version)
                WHERE sub_account_id = ? AND instrument_id = ? AND confirmation IS NOT NULL AND receipt IS NULL
-               ORDER BY claimed DESC, rowid LIMIT 1""",
+               ORDER BY claimed DESC, seq LIMIT 1""",
             (account, instrument),
         ).fetchone()
         if row is None:
@@ -111,6 +126,8 @@ class DraftRepository:
         return ConfirmedDraft.model_validate_json(confirmation)
 
     def acknowledge(self, account: str, receipt: DraftReceipt) -> DraftReceipt:
+        if receipt.reason in {"DRAFT_INTERRUPTED", "DRAFT_DATA_UNAVAILABLE"}:
+            raise DraftConflict("缺证据或处理中断的草案仍待处理")
         record = self.get(receipt.draft_id)
         if not record.claimed or (record.content.sub_account_id, record.version) != (account, receipt.version):
             raise DraftConflict("回执与已送达的草案版本不一致")

@@ -886,3 +886,36 @@ def test_holding_deadline_cancels_the_remainder_before_an_open_after_a_gap(tmp_p
         ("EXIT_FILLED", D(1), D("97.9")),
     ]
     assert any(e.kind == "PLAN_CANCELLED" and e.reason == "MAX_HOLDING_TIME" for e in events)
+
+
+def test_checkpoint_resumes_partial_order_and_preserves_closed_round_funding_timeline(tmp_path):
+    fill = engine(tmp_path)
+    assert fill.submit_plan(approved()).accepted
+    [first] = step(fill, market(2 * MINUTE))
+    assert first.position.quantity == 1
+    recovered = engine(tmp_path)
+    recovered.restore_checkpoint(fill.checkpoint())
+    assert step(recovered, market(2 * MINUTE)) == []
+    remaining = step(recovered, market(3 * MINUTE))
+    assert [(event.kind, event.position.quantity) for event in remaining] == [
+        ("ENTRY_FILLED", D(2)), ("PLAN_COMPLETED", D(2))]
+    step(recovered, market(4 * MINUTE, low="85", volume="30"))
+    after_close = engine(tmp_path)
+    after_close.restore_checkpoint(recovered.checkpoint())
+    points = (derivative("mark_price", 3 * MINUTE, "100"), derivative("funding_rate", 3 * MINUTE, ".01", settled=True))
+    event = MarketEvent(6 * MINUTE, INSTRUMENT, "1m", None, derivative_points=points)
+    [flow] = step(after_close, event)
+    assert flow.kind == "FUNDING_SETTLED" and flow.position.quantity == 0
+    assert [flow] == step(recovered, event)
+
+
+def test_flat_legacy_journal_restores_holdings_for_a_late_settlement(tmp_path):
+    original = engine(tmp_path)
+    original.submit_plan(approved(qty="1"))
+    events = step(original, market(2 * MINUTE)) + step(original, market(4 * MINUTE, low="85"))
+    restored = engine(tmp_path)
+    restored.restore_closed_history(events)
+    points = (derivative("mark_price", 3 * MINUTE, "100"), derivative("funding_rate", 3 * MINUTE, ".01", settled=True))
+    [flow] = step(restored, MarketEvent(6 * MINUTE, INSTRUMENT, "1m", None, derivative_points=points))
+    assert (flow.kind, flow.position.round_id, flow.position.quantity) == ("FUNDING_SETTLED", "r", 0)
+    assert next(p.amount for p in flow.postings if p.account == "CASH_AVAILABLE") == D("-1")

@@ -7,6 +7,48 @@
       ],
       "type": "string"
     },
+    "ExitBarrierSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "max_holding_ms": {
+          "exclusiveMinimum": 0,
+          "title": "Max Holding Ms",
+          "type": "integer"
+        },
+        "stop": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Stop",
+          "type": "string"
+        },
+        "take_profit": {
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Take Profit",
+          "type": "array"
+        },
+        "trailing_stop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrailingStopSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "stop",
+        "take_profit",
+        "max_holding_ms"
+      ],
+      "title": "ExitBarrierSpec",
+      "type": "object"
+    },
     "PaperFill": {
       "additionalProperties": false,
       "properties": {
@@ -60,6 +102,17 @@
     "PaperRound": {
       "additionalProperties": false,
       "properties": {
+        "barriers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExitBarrierSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "direction": {
           "$ref": "#/$defs/Direction"
         },
@@ -117,6 +170,27 @@
         "stop"
       ],
       "title": "PaperRound",
+      "type": "object"
+    },
+    "TrailingStopSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_pct": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Activation Pct",
+          "type": "string"
+        },
+        "distance_pct": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Distance Pct",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_pct",
+        "distance_pct"
+      ],
+      "title": "TrailingStopSpec",
       "type": "object"
     }
   },

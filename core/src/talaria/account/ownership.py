@@ -13,10 +13,16 @@ class AccountOwnershipError(ValueError):
 
 
 class AccountOwnership:
-    def __init__(self) -> None:
+    def __init__(self, directory: Path, accounts: Sequence[str]) -> None:
+        self._directory = directory.resolve()
+        self._accounts = frozenset(accounts)
         self._lock = RLock()
         self._pid = os.getpid()
         self._active = True
+
+    def check_scope(self, directory: Path, accounts: Sequence[str]) -> None:
+        if directory.resolve() != self._directory or not set(accounts) <= self._accounts:
+            raise AccountOwnershipError("子账户或数据目录不在 owner.lock 的持有范围内")
 
     @contextmanager
     def guard(self) -> Iterator[None]:
@@ -45,7 +51,7 @@ def hold_sub_accounts(data_dir: Path, sub_accounts: Sequence[str]) -> Iterator[A
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise AccountOwnershipError(f"子账户 {sub_account_id} 已被另一账户进程占用（{path}）") from None
-        ownership = AccountOwnership()
+        ownership = AccountOwnership(data_dir, sub_accounts)
         try:
             yield ownership
         finally:

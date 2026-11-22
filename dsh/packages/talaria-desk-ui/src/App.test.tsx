@@ -32,3 +32,10 @@ it("renders the chart rule editor directly above the chart panel as a sibling", 
     link.close();
   }
 });
+
+it("freezes current chart evidence when starting a manual draft", async () => {
+  const { newManualDraft } = await import("./features/paper/DraftForm");
+  const freeze = vi.fn().mockResolvedValue({ instrument_id: "BTC", snapshot_id: "new" });
+  expect(await newManualDraft("BTC", "1h", freeze)).toEqual({ instrument_id: "BTC", snapshot_id: "new" });
+  expect(freeze).toHaveBeenCalledWith("BTC", ["1h"]);
+});

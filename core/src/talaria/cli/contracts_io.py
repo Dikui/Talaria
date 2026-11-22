@@ -116,7 +116,7 @@ from talaria.foundation.briefings import (
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.paper import (
-    ConfirmedDraft, DraftConfirmation, DraftContent, DraftDeliveryRequest, DraftEdit, DraftEvidence,
+    ExitBarrierSpec, TrailingStopSpec, ConfirmedDraft, DraftConfirmation, DraftContent, DraftDeliveryRequest, DraftEdit, DraftEvidence,
     DraftReceipt, DraftRecord, PaperAccountView, PaperFill, PaperRound,
 )
 from talaria.foundation.scanner import (
@@ -661,7 +661,7 @@ def _render_ts() -> str:
     for enum_type in ENUM_TYPES:
         members = " | ".join(json.dumps(member.value, ensure_ascii=False) for member in enum_type)
         lines.append(f"export type {enum_type.__name__} = {members};\n\n")
-    for model in (*SCHEMA_MODELS.values(), *RULE_NODE_TYPES):
+    for model in (*SCHEMA_MODELS.values(), ExitBarrierSpec, TrailingStopSpec, *RULE_NODE_TYPES):
         schema = _schema_for(model)
         if "$ref" in schema:
             schema = schema["$defs"][model.__name__]

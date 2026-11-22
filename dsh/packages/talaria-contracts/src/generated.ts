@@ -104,6 +104,8 @@ export interface DraftContent {
   invalidation_stop: DecimalString;
   take_profit: DecimalString[];
   valid_until?: number | null;
+  round_id?: string | null;
+  inherited_barriers?: ExitBarrierSpec | null;
 }
 export interface DraftEdit {
   version: number;
@@ -128,6 +130,7 @@ export interface DraftReceipt {
   draft_id: string;
   version: number;
   accepted: boolean;
+  plan_id?: string | null;
   reason?: string | null;
   snapshot_id?: string | null;
 }
@@ -164,6 +167,7 @@ export interface PaperRound {
   stop: DecimalString;
   take_profit?: DecimalString[];
   phase?: string | null;
+  barriers?: ExitBarrierSpec | null;
 }
 export interface CompactBar {
   timestamp: number;
@@ -901,6 +905,16 @@ export interface AnnotationClearResponse {
   instrument_id: string;
   session_id: string | null;
   cleared: number;
+}
+export interface ExitBarrierSpec {
+  stop: DecimalString;
+  take_profit: DecimalString[];
+  max_holding_ms: number;
+  trailing_stop?: TrailingStopSpec | null;
+}
+export interface TrailingStopSpec {
+  activation_pct: DecimalString;
+  distance_pct: DecimalString;
 }
 export interface RuleGroup {
   op: "all" | "any" | "not";

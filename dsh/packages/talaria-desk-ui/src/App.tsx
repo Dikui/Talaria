@@ -1,4 +1,4 @@
-import { DraftForm, type DraftSeed } from "./features/paper/DraftForm";
+import { DraftForm, newManualDraft, type DraftSeed } from "./features/paper/DraftForm";
 import { ExecutionBarrierLayer } from "./features/paper/ExecutionBarrierLayer";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { Chart } from "klinecharts";
@@ -141,6 +141,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
   const [indicatorBundle, setIndicatorBundle] = useState<IndicatorBundle | null>(null);
   const [indicatorsLoading, setIndicatorsLoading] = useState(false);
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
+  const [freezingDraft, setFreezingDraft] = useState(false);
   const [paperDraft, setPaperDraft] = useState<DraftSeed | null>(null);
   const [savedPaperDraft, setSavedPaperDraft] = useState(false);
   const [chart, setChart] = useState<Chart | null>(null);
@@ -173,6 +174,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
   useEffect(() => {
     setSelection(null);
     setSelecting(false);
+    setPaperDraft(null);
   }, [instrumentId, timeframe]);
 
   useEffect(() => {
@@ -697,9 +699,19 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
             {tools}
             {!readOnlyViewport && snapshot && (
               <button type="button" className="ghost-button" aria-expanded={paperDraft !== null}
-                onClick={() => {
+                disabled={freezingDraft} onClick={async () => {
                   setSavedPaperDraft(false);
-                  setPaperDraft(paperDraft ? null : { instrument_id: snapshot.instrument_id, snapshot_id: snapshot.snapshot_id });
+                  if (paperDraft) { setPaperDraft(null); return; }
+                  setFreezingDraft(true);
+                  try {
+                    const seed = await newManualDraft(instrumentId, timeframe);
+                    const chart = link.getSnapshot();
+                    if (chart.instrumentId === instrumentId && chart.timeframe === timeframe) setPaperDraft(seed);
+                  } catch (caught) {
+                    setError(describeError(caught));
+                  } finally {
+                    setFreezingDraft(false);
+                  }
                 }}>
                 模拟盘草案
               </button>

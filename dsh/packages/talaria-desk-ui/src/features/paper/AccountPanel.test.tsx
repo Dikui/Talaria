@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PaperRound } from "@talaria/contracts";
-import { LedgerSections } from "./AccountPanel";
+import { DraftReview, LedgerSections } from "./AccountPanel";
 
 it("keeps closed rounds and their long instrument name visible with no positions", () => {
   const round: PaperRound = {
@@ -18,4 +18,17 @@ it("keeps closed rounds and their long instrument name visible with no positions
   expect(html).toContain(round.instrument_id);
   expect(html).toContain("0.00001");
   expect(html).toContain("125.001");
+});
+
+it("shows the immutable evidence and deadline being confirmed", () => {
+  const html = renderToStaticMarkup(<DraftReview refresh={() => {}} draft={{
+    draft_id: "draft", version: 2, content_hash: "reviewed-hash", status: "MODIFIED", claimed: false,
+    content: {sub_account_id: "one", instrument_id: "BTC", snapshot_id: "frozen-evidence",
+      valid_until: 120000, direction: "LONG", entry_low: "10", entry_high: "11",
+      invalidation_stop: "9", take_profit: ["13"]},
+  }} />);
+  expect(html).toContain('name="content_hash" value="reviewed-hash"');
+  expect(html).toContain('name="version" value="2"');
+  expect(html).toContain("frozen-evidence");
+  expect(html).toContain(new Date(120000).toISOString());
 });
