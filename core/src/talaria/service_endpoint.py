@@ -16,6 +16,9 @@ DESCRIPTOR_NAME = "service-descriptor.json"
 DESCRIPTOR_VERSION = 1
 DATA_DIR_HEADER = "X-Talaria-Data-Dir"
 NOW_MS_HEADER = "X-Talaria-Now-Ms"
+BARS_MANIFEST_HEADER = "X-Talaria-Bars-Manifest"
+BARS_HOT_REVISION_HEADER = "X-Talaria-Bars-Hot-Revision"
+BARS_HOT_REVISION_UNSTABLE = "unstable"
 
 
 class ServiceDescriptorError(ValueError):

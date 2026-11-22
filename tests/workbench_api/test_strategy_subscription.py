@@ -983,7 +983,7 @@ def test_last_release_discards_journal_while_range_worker_is_reading(tmp_path, m
     async def run():
         async with app.router.lifespan_context(app):
             entered, finish = Event(), Event()
-            read = ColdReader.read_manifest_revisions
+            read = ColdReader.read_manifest_snapshot
             def hold(*args, **kwargs):
                 entered.set()
                 assert finish.wait(3)
@@ -992,7 +992,7 @@ def test_last_release_discards_journal_while_range_worker_is_reading(tmp_path, m
                 async with asgi_socket(app) as ws:
                     await ws.send(json.dumps(request()))
                     ready = json.loads(await ws.recv())
-                    monkeypatch.setattr(ColdReader, "read_manifest_revisions", hold)
+                    monkeypatch.setattr(ColdReader, "read_manifest_snapshot", hold)
                     app.state.runtime.supervisor.ingest(kline())
                     assert await asyncio.to_thread(entered.wait, 1)
             finally:
