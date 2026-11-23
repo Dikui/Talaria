@@ -27,9 +27,9 @@ uv run talaria open
 
 `talaria dsh-install` 构建插件，并将服务启动参数写入 `~/.dsh/profiles/desktop/cordis.patch.yml` 中带标记的 Talaria 段。每次改写前，原文件会备份到 `~/.dsh/profiles-backup/desktop-<时间戳>/`。升级插件后重新运行安装命令即可。需要移除桌面插件时，退出桌面应用并运行 `uv run talaria dsh-uninstall`。
 
-日常用 `talaria open` 打开桌面应用，从侧边栏进入图表、预警、扫描和关键位。插件随应用启动服务，退出应用时停止服务。应用关闭期间，行情采集、冷库写入、预警和扫描随之停止。用 `talaria service status` 查看应用、插件、数据目录锁和服务写入接口。服务日志位于数据目录下的 `logs/service.out.log` 和 `logs/service.err.log`。
+日常用 `talaria open` 打开桌面应用，从侧边栏打开 **Talaria**，在工作台内切换图表、预警、扫描、关键位和账户。工作台记住上次使用的标签，界面语言跟随 DSH；会话右栏的独立面板仍可使用。插件随应用启动服务，退出应用时停止服务。应用关闭期间，行情采集、冷库写入、预警和扫描随之停止。用 `talaria service status` 查看应用、插件、数据目录锁和服务写入接口。服务日志位于数据目录下的 `logs/service.out.log` 和 `logs/service.err.log`。
 
-未安装桌面应用时，先运行 `talaria up --solo`，再用 `talaria open` 打开服务托管的 `/desk`。使用自定义数据目录时，可给相关命令传入同一个 `--data-dir`。省略 `--data-dir` 时，`dsh-install` 与 `open` 的浏览器兜底依次查看 `TALARIA_DATA_DIR`、桌面插件配置、旧作业配置与 `./.talaria`。`service status` 优先查看托管配置所指向的目录。
+未安装桌面应用时，先运行 `talaria up --solo`，再用 `talaria open` 打开服务托管的 `/desk`。独立页面跟随浏览器语言，也可以用 `/desk?lang=en` 或 `/desk?lang=zh` 指定语言；原有 `/desk/chart` 等直达链接继续有效。使用自定义数据目录时，可给相关命令传入同一个 `--data-dir`。省略 `--data-dir` 时，`dsh-install` 与 `open` 的浏览器兜底依次查看 `TALARIA_DATA_DIR`、桌面插件配置、旧作业配置与 `./.talaria`。`service status` 优先查看托管配置所指向的目录。
 
 ### 离线确定性样本
 

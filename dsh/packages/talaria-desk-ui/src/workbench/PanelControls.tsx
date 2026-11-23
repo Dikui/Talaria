@@ -1,8 +1,12 @@
 import { InstrumentSelect } from "../features/instruments/InstrumentSelect";
 import type { InstrumentSpec } from "@talaria/contracts";
 import { GROUP_LABELS, type LinkGroup, type PanelLink } from "./link";
-import { PANEL_LABELS, TIMEFRAMES } from "./panels";
+import { t } from "../lib/i18n";
+import { panelLabel, TIMEFRAMES } from "./panels";
 import { useLinkSnapshot } from "./usePanelLink";
+
+const englishGroups: Record<LinkGroup, string> = { red: "Red", blue: "Blue", green: "Green", none: "Unlinked" };
+function groupLabel(id: LinkGroup) { return t(GROUP_LABELS[id], englishGroups[id]); }
 
 export function LinkControls({ link }: { link: PanelLink }) {
   const { group, peers } = useLinkSnapshot(link);
@@ -12,21 +16,21 @@ export function LinkControls({ link }: { link: PanelLink }) {
       <label className="link-group">
         <span className="link-dot" aria-hidden="true" />
         <select
-          aria-label="颜色联动组"
+          aria-label={t("颜色联动组", "Color link group")}
           value={group}
           onChange={(event) => link.setGroup(event.target.value as LinkGroup)}
         >
-          {Object.entries(GROUP_LABELS).map(([id, label]) => (
-            <option key={id} value={id}>{label}</option>
+          {(Object.keys(GROUP_LABELS) as LinkGroup[]).map((id) => (
+            <option key={id} value={id}>{groupLabel(id)}</option>
           ))}
         </select>
       </label>
       <details className="link-peers">
-        <summary>同组 {sameGroupPeers.length}</summary>
+        <summary>{t("同组", "Linked panels")} {sameGroupPeers.length}</summary>
         <ul>
-          {sameGroupPeers.length === 0 ? <li>暂无其他面板</li> : sameGroupPeers.map((peer) => (
+          {sameGroupPeers.length === 0 ? <li>{t("暂无其他面板", "No other panels")}</li> : sameGroupPeers.map((peer) => (
             <li key={peer.from}>
-              <span>{PANEL_LABELS[peer.panel]} · {GROUP_LABELS[peer.group]}</span>
+              <span>{panelLabel(peer.panel)} · {groupLabel(peer.group)}</span>
               <span title={peer.instrumentId}>{peer.instrumentId} · {peer.timeframe}</span>
             </li>
           ))}
@@ -48,7 +52,7 @@ export function SymbolControls({
         disabled={disabled}
         onChange={(next) => link.setSymbol(next, timeframe)}
       />
-      <div className="timeframes" role="group" aria-label="K 线周期">
+      <div className="timeframes" role="group" aria-label={t("K 线周期", "Candle timeframe")}>
         {TIMEFRAMES.map((item) => (
           <button
             key={item}

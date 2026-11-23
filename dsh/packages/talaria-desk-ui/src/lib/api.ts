@@ -49,6 +49,8 @@ import type {
   Watchlist,
 } from "@talaria/contracts";
 
+import { t } from "./i18n";
+
 export interface HealthStatus {
   ok: boolean;
   version: string;
@@ -116,7 +118,7 @@ export async function initializeStandaloneApi(): Promise<void> {
     const response = await fetch("/desk", { cache: "no-store" });
     token = response.ok ? readSessionToken() : "";
   }
-  if (!token) throw new Error("无法获取 Talaria 会话凭据，请刷新页面后重试。");
+  if (!token) throw new Error(t("无法获取 Talaria 会话凭据，请刷新页面后重试。", "Unable to obtain Talaria session credentials. Refresh the page and try again."));
   configureApi({});
 }
 
@@ -130,7 +132,7 @@ async function parseError(response: Response): Promise<ApiError> {
   return new ApiError(
     response.status,
     body?.code ?? "HTTP_ERROR",
-    body?.message ?? `请求失败（HTTP ${response.status}）`,
+    body?.message ?? t(`请求失败（HTTP ${response.status}）`, `Request failed (HTTP ${response.status})`),
   );
 }
 

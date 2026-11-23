@@ -1,4 +1,5 @@
 import type { CompactBar } from "@talaria/contracts";
+import { t } from "./i18n";
 import type { KLineData, Period } from "klinecharts";
 
 /**
@@ -58,7 +59,7 @@ export function toKLineSeries(bars: CompactBar[]): KLineSeries {
 export function toPeriod(timeframe: string): Period {
   const match = /^(\d+)([mhd])$/.exec(timeframe);
   if (!match) {
-    throw new Error(`不支持的周期：${timeframe}`);
+    throw new Error(t(`不支持的周期：${timeframe}`, `Unsupported timeframe: ${timeframe}`));
   }
   const span = Number(match[1]);
   switch (match[2]) {

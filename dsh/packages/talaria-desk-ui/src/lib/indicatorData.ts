@@ -1,5 +1,6 @@
 import type { IndicatorSeries } from "@talaria/contracts";
 
+import { getLocale, t } from "./i18n";
 import { INDICATOR_CHANNELS } from "../features/indicators/config";
 
 export type IndicatorValueMap = Map<number, Record<string, string | null>>;
@@ -66,7 +67,7 @@ export function describeParams(series: IndicatorSeries): string {
     return `BOLL(${period}, ${trimNumber(Number(series.params.std_dev ?? "2"))}σ)`;
   }
   if (series.name === "VWAP") {
-    return `VWAP(${series.params.anchor === "session" ? "UTC 日界" : "快照起点"})`;
+    return `VWAP(${series.params.anchor === "session" ? t("UTC 日界", "UTC day boundary") : t("快照起点", "snapshot start")})`;
   }
   return `${series.name}(${period})`;
 }
@@ -82,7 +83,7 @@ export function formatIndicatorValue(
   if (!Number.isFinite(number)) {
     return "—";
   }
-  return new Intl.NumberFormat("zh-CN", {
+  return new Intl.NumberFormat(getLocale(), {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   }).format(number);

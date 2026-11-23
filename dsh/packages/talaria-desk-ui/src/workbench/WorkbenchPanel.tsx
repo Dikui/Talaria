@@ -10,7 +10,8 @@ import { api } from "../lib/api";
 import type { Theme } from "../lib/theme";
 import type { LinkTransport, PanelLink } from "./link";
 import { LinkControls, SymbolControls } from "./PanelControls";
-import { PANEL_LABELS, type PanelName } from "./panels";
+import { t, useLocale } from "../lib/i18n";
+import { panelLabel, type PanelName } from "./panels";
 import { useLinkSnapshot, usePanelLink } from "./usePanelLink";
 
 interface WorkbenchPanelProps {
@@ -26,6 +27,7 @@ interface WorkbenchPanelProps {
 export function WorkbenchPanel({
   panel, persistenceKey, theme, embedded = false, fullWorkbench = false, transport, tools,
 }: WorkbenchPanelProps) {
+  useLocale();
   if (panel === "accounts") return <AccountPanel theme={theme} tools={tools} />;
   return <LinkedWorkbench panel={panel} persistenceKey={persistenceKey} theme={theme}
     embedded={embedded} fullWorkbench={fullWorkbench} transport={transport} tools={tools} />;
@@ -35,7 +37,7 @@ function LinkedWorkbench({
   panel, persistenceKey, theme, embedded = false, fullWorkbench = false, transport, tools,
 }: WorkbenchPanelProps & { panel: Exclude<PanelName, "accounts"> }) {
   const link = usePanelLink(panel, persistenceKey, transport);
-  if (link === null) return <p role="status">正在打开{PANEL_LABELS[panel]}…</p>;
+  if (link === null) return <p role="status">{t(`正在打开${panelLabel(panel)}…`, `Opening ${panelLabel(panel)}…`)}</p>;
   if (panel === "chart") {
     return <ChartWorkbench embedded={embedded} link={link} theme={theme} fullWorkbench={fullWorkbench} tools={tools} />;
   }
@@ -72,16 +74,16 @@ function FeatureWorkbench({
   }
 
   return (
-    <section className="talaria-desk feature-workbench" data-theme={theme} aria-label={PANEL_LABELS[panel]}>
+    <section className="talaria-desk feature-workbench" data-theme={theme} aria-label={panelLabel(panel)}>
       <header className="feature-workbench-header">
         <div className="feature-workbench-title">
-          <h1>Talaria {PANEL_LABELS[panel]}</h1>
+          <h1>Talaria {panelLabel(panel)}</h1>
           <LinkControls link={link} />
           {tools}
         </div>
         <div className="feature-workbench-symbol">
           <SymbolControls link={link} instruments={instruments} />
-          {instrumentError && <span role="status">无法读取标的列表。</span>}
+          {instrumentError && <span role="status">{t("无法读取标的列表。", "Unable to load instruments.")}</span>}
         </div>
       </header>
       <div className="feature-workbench-body">
