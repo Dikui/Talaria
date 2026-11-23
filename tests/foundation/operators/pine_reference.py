@@ -5,7 +5,7 @@
 
     .venv/bin/python -m tests.foundation.operators.pine_reference --write
 
-语义依据见 ``docs/research/tradingview-borrowing-list.md``/ADR-0010：
+语义依据见 ``docs/research/tradingview-borrowing-list.md``（仅本地）/ADR-0010：
 EMA 第一根有效柱用收盘价播种；ATR 首根 TR 为 high-low，种子为前 N 根 TR 的
 SMA，之后用 Wilder RMA；VWAP 按 UTC 自然日锚定，首个锚点之前为 na。
 """

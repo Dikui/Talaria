@@ -9,7 +9,7 @@
 - 每张任务单一个文件：`.scratch/<feature-slug>/issues/<NN>-<slug>.md`，从 `01` 开始编号。不要把多张任务单合并成一个文件。
 - 分流状态写在任务单文件顶部附近的 `Status:` 行（标签字符串见 `triage-labels.md`）。
 - 评论和讨论记录追加到文件底部的 `## Comments` 标题下。
-- `.scratch/<feature-slug>/` 纳入版本库提交（临时执行目录 `.scratch/tasks/` 与 `.scratch/prototype/` 不提交，见 `layout.md`）；功能目录不删除。
+- `.scratch/` 整个目录不提交，只在本机保留（见 `layout.md`）；功能目录不删除。
 
 ## 技能关闭任务单时
 

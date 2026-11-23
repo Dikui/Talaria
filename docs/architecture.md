@@ -2,7 +2,7 @@
 
 Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美股。产品按功能组织，参照 TradingView 的使用方式：行情数据、图表、指标与关键位、预警、扫描各自可以单独打开，也可以组合使用；出策略时，Notebook、策略、agent 和图表拿到的是同一份、同一口径的数据。策略走历史回测和模拟盘，暂不接实盘。
 
-本文档描述目标架构、模块接口、可替换的插槽、数据模型、仿真法则与单机部署。每节标明当前状态：**已实现**、**改造中**（现有代码需要按新架构调整）或**规划中**。领域术语以根目录 [GLOSSARY.md](../GLOSSARY.md) 为准。需求与决策过程见 `.scratch/platform-redesign/spec.md`。
+本文档描述目标架构、模块接口、可替换的插槽、数据模型、仿真法则与单机部署。每节标明当前状态：**已实现**、**改造中**（现有代码需要按新架构调整）或**规划中**。领域术语以根目录 [GLOSSARY.md](../GLOSSARY.md) 为准。需求与决策过程见 `.scratch/platform-redesign/spec.md`（仅本地）。
 
 架构决策：
 
@@ -29,7 +29,7 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 - [ADR-0021：DSH 桌面应用作为工作台宿主](./adr/0021-dsh-desktop-app-as-host.md)
 - [ADR-0022：常驻服务由 DSH 桌面应用启停](./adr/0022-dsh-desktop-app-owns-service-lifecycle.md)
 
-调研证据存档于 [`docs/research/`](./research/)。
+调研证据存档于 `docs/research/`（仅本地）。
 
 ---
 
@@ -126,7 +126,7 @@ flowchart TB
 
 ### 1.4 实施状态与路线
 
-M1（数据接入、冷库、指标、关键位、看盘页、价位预警）与 M2（DSH 协同会诊、标注、扫描简报）已交付。按“数据 + 策略取数优先”，后续按以下顺序推进，任务单按九类分在 `.scratch/<分类>/issues/`，总览见 `.scratch/platform-redesign/map.md`：
+M1（数据接入、冷库、指标、关键位、看盘页、价位预警）与 M2（DSH 协同会诊、标注、扫描简报）已交付。按“数据 + 策略取数优先”，后续按以下顺序推进，任务单按九类分在 `.scratch/<分类>/issues/`，总览见 `.scratch/platform-redesign/map.md`（仅本地）：
 
 | 阶段 | 内容 |
 |---|---|
@@ -241,7 +241,7 @@ Talaria/
 | 买一卖一 | `标的/日` | 实时订阅标的的 L1 盘口；多档盘口暂不存 |
 | 衍生品 | `标的/类别/月` | 标记价、资金费率、持仓量；实时来自 `tickers.{symbol}`，历史经 REST 回填；资金费率结算点生成结算事件 |
 | 公司行为（美股，规划中） | `标的` | 拆股、分红；读取时按 `as_of` 复权 |
-| 快讯（暂缓） | `来源/日` | 见 `.scratch/platform-redesign/spec.md` D5 的设计约束 |
+| 快讯（暂缓） | `来源/日` | 见 `.scratch/platform-redesign/spec.md`（仅本地） D5 的设计约束 |
 
 3. **数值与列**（ADR-0017）：每个标的一个文件，数值列为 `decimal128(18, s)`，物理 INT64。scale 按列：价格类取价格精度，数量类取数量精度，`turnover` 取两者之和，资金费率固定 8；超出 scale 或 18 位整批拒绝。列：`ts_event`、OHLCV 与 `turnover`、`ts_available`、`ts_ingested`、`ts_committed`（int64 毫秒）、`precision`（字典编码）、`revision`。
 4. **容量**：BTC 永续逐笔约 255 万笔/天，Parquet 约 15 MB/天；加买一卖一估算约 30–65 MB/天。落盘后用容量统计命令持续记录，满 1–2 周再定存储预算（以后）。
@@ -289,7 +289,7 @@ async for ev in sdk.subscribe("BTC-USDT-PERP", "1m"):   # 策略订阅语义，�
 
 ### 4.6 快讯
 
-**暂缓。** 设计约束（统一快讯契约、每个数据源一个插件、按来源/日分区、逐条标记能否供策略与 agent 使用、删除同步用追加标记加定期重写）与备选数据源组合记录在 `.scratch/platform-redesign/spec.md` 的 D5 与 `docs/research/news-feed-data-sources.md`。
+**暂缓。** 设计约束（统一快讯契约、每个数据源一个插件、按来源/日分区、逐条标记能否供策略与 agent 使用、删除同步用追加标记加定期重写）与备选数据源组合记录在 `.scratch/platform-redesign/spec.md`（仅本地） 的 D5 与 `docs/research/news-feed-data-sources.md`（仅本地）。
 
 ---
 

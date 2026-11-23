@@ -12,10 +12,10 @@
 | `tests/<模块>/` | 单元测试和性质测试，按模块一个测试文件 | local-test | 是 | 契约改变或代码删除时更新或删除 |
 | `tests/cases/<功能>/` | 场景和回归用例，一个用例一个文件 | local-test | 是 | 同上 |
 | `design/` | 界面设计稿 | mockup | 否 | 不清理 |
-| `docs/research/` | 调研结论 | research | 是 | 不清理 |
+| `docs/research/` | 调研结论 | research | 否 | 不清理 |
 | `docs/experiments/` | 实验记录 | ablation、trial | 否 | 不清理 |
 | `.out-of-scope/` | 拒绝记录 | triage | 否 | 重新考虑时删除或更新 |
-| `.scratch/<feature>/` | 需求和任务单（本地 tracker）；目标约定和进展记录 | to-spec、to-tickets、wayfinder、pursue | 是 | 不清理；任务单全部关闭时做收尾检查 |
+| `.scratch/<feature>/` | 需求和任务单（本地 tracker）；目标约定和进展记录 | to-spec、to-tickets、wayfinder、pursue | 否 | 不清理；任务单全部关闭时做收尾检查 |
 | `.scratch/tasks/<任务号>/` | 执行说明、报告、证据 | 执行者 | 否 | 随意 |
 | `.scratch/prototype/` | 逻辑原型 | prototype | 否 | 结论落地后删除 |
 

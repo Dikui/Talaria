@@ -37,4 +37,4 @@ scale 按列的含义定，不是全文件统一：
 - **继续存字符串**：精确但慢，其他工具无法直接做数值运算。否决。
 - **float64**：快，但不精确，违背 ADR-0010。否决。
 
-依据：`docs/research/data-access-and-numeric-types.md`。
+依据：`docs/research/data-access-and-numeric-types.md`（仅本地）。

@@ -1,8 +1,8 @@
 design/
 docs/experiments/
 .out-of-scope/
-.scratch/tasks/
-.scratch/prototype/
+.scratch/
+docs/research/
 .agents/
 
 # Python

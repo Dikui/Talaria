@@ -24,4 +24,4 @@ Talaria 从“一个整体工作台”改为按产品功能组织：行情数据
 - `talaria up` 的前台模式保留用于开发和回放验收；日常使用改为安装 launchd Agent 后常驻。
 - 每个功能页面必须能在只打开它自己的情况下工作，不能假设同一页面里有其他功能的状态。
 
-依据：`docs/research/local-multi-frontend-product-form.md`。
+依据：`docs/research/local-multi-frontend-product-form.md`（仅本地）。

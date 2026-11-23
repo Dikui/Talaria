@@ -23,4 +23,4 @@ status: accepted
 - **采用 DuckLake 作为表格式**：并发实验中一写两读无锁错误，但所有读者必须经 DuckDB（pyarrow 直读结果不对）、存在跨版本兼容事故（#1924 未修）、出现过 flush 静默回滚的未解释现象。否决，等其稳定后可迁移。
 - **用 DuckDB 文件作为主存储**：单写者锁会让 Notebook 与服务互相阻塞。否决；DuckDB 仍可作为查询 Parquet 的工具。
 
-依据：`docs/research/ducklake-evaluation.md`、`docs/research/data-access-and-numeric-types.md`、`docs/research/unified-strategy-runtime-sources.md`。
+依据：`docs/research/ducklake-evaluation.md`（仅本地）、`docs/research/data-access-and-numeric-types.md`（仅本地）、`docs/research/unified-strategy-runtime-sources.md`（仅本地）。

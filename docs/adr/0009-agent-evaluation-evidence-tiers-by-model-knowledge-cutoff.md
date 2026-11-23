@@ -4,7 +4,7 @@ status: accepted
 
 # 以模型知识截止日划分智能体评估证据等级，历史回放默认仅作诊断
 
-数据层的时点纪律（五重时间戳、冻结快照、工具层按 `cutoff_ts` 过滤）挡不住模型权重中对回测区间的记忆，因此凡评估 `AGENT` / `CO_PILOT` 表现，均按所用模型的 `model_knowledge_cutoff` 划分证据等级：回放区间与“截止日 + 缓冲期（默认 30 天）”有任何重叠，结果一律标记为 `DIAGNOSTIC`，只用于调试、提示词对比与执行/风控/格式缺陷排查；策略或提示词晋升、`Co-Pilot Lift` 与跨子账户对比报告只采信 `POST_CUTOFF_REPLAY`（区间严格晚于全部参与模型截止日 + 缓冲期）与 `SHADOW_FORWARD`（Shadow Run 实时前向）两类证据。调研依据见 [docs/research/llm-trading-lookahead-contamination.md](../research/llm-trading-lookahead-contamination.md)。
+数据层的时点纪律（五重时间戳、冻结快照、工具层按 `cutoff_ts` 过滤）挡不住模型权重中对回测区间的记忆，因此凡评估 `AGENT` / `CO_PILOT` 表现，均按所用模型的 `model_knowledge_cutoff` 划分证据等级：回放区间与“截止日 + 缓冲期（默认 30 天）”有任何重叠，结果一律标记为 `DIAGNOSTIC`，只用于调试、提示词对比与执行/风控/格式缺陷排查；策略或提示词晋升、`Co-Pilot Lift` 与跨子账户对比报告只采信 `POST_CUTOFF_REPLAY`（区间严格晚于全部参与模型截止日 + 缓冲期）与 `SHADOW_FORWARD`（Shadow Run 实时前向）两类证据。调研依据见 `docs/research/llm-trading-lookahead-contamination.md`（仅本地）。
 
 ## Considered Options
 

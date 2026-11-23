@@ -34,4 +34,4 @@ status: accepted
 - **混合模式（可信策略进程内、其余独立进程）**：省下约 1 ms，却要维护两种运行方式。否决。
 - **保留原 L1→L5 单向分层作为固定流水线**：只支持“有止损的单标的择时”，网格、定投、目标权重等交易方式都要改框架。否决；分层设计改为默认插件保留。
 
-依据：`docs/research/unified-strategy-runtime-sources.md`；延迟实测记录在 `.scratch/platform-redesign/spec.md` 的 D2。
+依据：`docs/research/unified-strategy-runtime-sources.md`（仅本地）；延迟实测记录在 `.scratch/platform-redesign/spec.md`（仅本地） 的 D2。

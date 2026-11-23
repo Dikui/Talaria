@@ -1,6 +1,6 @@
 """单一指标算子核：预热、NO_TRADES、FEED_GAP 与批量/增量一致性。
 
-来源：任务单 04（.scratch/v1-analysis-workbench/issues/04-technical-indicators-and-chart-panes.md）。
+来源：任务单 04（.scratch/v1-analysis-workbench/issues/04-technical-indicators-and-chart-panes.md，仅本地）。
 """
 
 from __future__ import annotations

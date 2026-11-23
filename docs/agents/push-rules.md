@@ -15,7 +15,6 @@ dsh/packages/talaria-dsh-plugin/index.js  token: (config|descriptor)\.token
 dsh/packages/talaria-dsh-plugin/test/**  token: '(test|file|secret)-token'
 tests/**  (TOKEN = "(test|scanner|briefing|m1-acceptance)-token"|token="(test|secret)-token"|token = (client\.cookies\.get\("talaria_token"\)|descriptor\["token"\]|_wait_for\()|token: 'test-token')
 tests/cli/test_dsh_host.py  (token=(super-secret|recorded)|\?token=(super-secret|recorded|probe-secret))
-docs/research/news-feed-data-sources.md  https://data\.coindesk\.com/blogs/changes-to-coindesk-data-indices-api-free-tier-access
 tests/fixtures/m2/fake_dsh_host.py  (bridge_url, token = _load_bridge\(\)|\?token=recorded)
 core/src/talaria/service_endpoint.py  token = payload\.get\("token"\)
 core/src/talaria/workbench_api/routes/strategy_ws.py  scheme, _, token = websocket\.headers\.get\("authorization", ""\)\.partition\(" "\)

@@ -37,4 +37,4 @@ status: accepted
 - **所有规则一律收盘求值**：口径最统一，但盘中穿越后回落的触碰和盘口阈值会漏报，改变现有预警行为。否决。
 - **每种写法各有自己的运行时**：最快上手，但防前视规则要在每种写法里重新实现一遍，口径会分叉。否决。
 
-依据：`docs/research/chart-rule-scripting-sources.md`。
+依据：`docs/research/chart-rule-scripting-sources.md`（仅本地）。
