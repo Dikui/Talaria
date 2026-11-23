@@ -17,4 +17,10 @@ tests/**  (TOKEN = "(test|scanner|briefing|m1-acceptance)-token"|token="(test|se
 tests/cli/test_dsh_host.py  (token=(super-secret|recorded)|\?token=(super-secret|recorded|probe-secret))
 docs/research/news-feed-data-sources.md  https://data\.coindesk\.com/blogs/changes-to-coindesk-data-indices-api-free-tier-access
 tests/fixtures/m2/fake_dsh_host.py  (bridge_url, token = _load_bridge\(\)|\?token=recorded)
+core/src/talaria/service_endpoint.py  token = payload\.get\("token"\)
+core/src/talaria/workbench_api/routes/strategy_ws.py  scheme, _, token = websocket\.headers\.get\("authorization", ""\)\.partition\(" "\)
+tests/cli/test_cli.py  "token": descriptor\.token
+tests/cli/test_service.py  "HTTP_PROXY": "http://test-user:(p&ss|secret)@proxy\.example:8080
+tests/cli/test_trade_backfill.py  (token="local-token"|token=settings\.token)
+tests/workbench_api/test_paper_api.py  token="trader-session"
 ```
