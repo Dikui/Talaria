@@ -68,6 +68,8 @@ it("localizes indicator titles, anchors and channels on the chart", () => {
   expect(english).toContain("Funding rate quantile");
   expect(english).toContain("Upper");
   expect(english).toContain("last 600 bars");
+  // Future backend channels must not be mislabeled as the middle band.
+  expect(ruleIndicatorLabel({ operand: { ...operand, channel: "custom-band" } } as never)).toContain("custom-band");
 
   setLocale("zh-CN");
   const chinese = ruleIndicatorLabel({ operand } as never);

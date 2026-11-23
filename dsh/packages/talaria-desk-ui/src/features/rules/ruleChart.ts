@@ -12,7 +12,8 @@ function channelLabel(channel: string): string {
   switch (channel) {
     case "upper": return t("上轨", "Upper");
     case "lower": return t("下轨", "Lower");
-    default: return t("中轨", "Middle");
+    case "mid": return t("中轨", "Middle");
+    default: return channel;
   }
 }
 
