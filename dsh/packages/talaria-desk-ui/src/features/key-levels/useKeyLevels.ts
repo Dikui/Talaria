@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { DrawingRecord, KeyLevel, KeyLevelSet } from "@talaria/contracts";
 
 import { ApiError, api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 
 /**
  * 关键位只读数据源：REST 首帧 + WS `levels` 增量覆盖 + 忽略反馈。
@@ -60,7 +61,7 @@ function describe(caught: unknown): string {
   if (caught instanceof Error) {
     return caught.message;
   }
-  return "关键位读取失败";
+  return t("关键位读取失败", "Failed to load key levels");
 }
 
 export function useKeyLevels({

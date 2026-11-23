@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import type { KeyLevel } from "@talaria/contracts";
 
+import { setLocale } from "../../lib/i18n";
 import {
+  categoryMeta,
   countByEvidence,
   defaultKeyLevelFilter,
   formatLevelPrice,
@@ -15,6 +17,8 @@ import {
   toggleEvidenceClass,
   visibleKeyLevels,
 } from "./model";
+
+afterEach(() => setLocale("zh"));
 
 function level(overrides: Partial<KeyLevel> = {}): KeyLevel {
   return {
@@ -215,4 +219,18 @@ describe("key level actions", () => {
     expect(showLevelActions(false)).toBe(true);
     expect(showLevelActions(true)).toBe(false);
   });
+});
+
+
+it("re-localizes category, status and level labels after a locale switch", () => {
+  setLocale("en-US");
+  expect(categoryMeta("LIQUIDATION").label).toBe("Liquidation estimate");
+  expect(levelTitle(level(), 1)).toBe("Swing high 120.0 · Active");
+  expect(levelLabel(level({ level_id: "kl_a", status: "BROKEN" }), 1)).toBe(
+    "Swing high 120.0 · Broken",
+  );
+
+  setLocale("zh-CN");
+  expect(categoryMeta("LIQUIDATION").label).toBe("清算估算");
+  expect(levelTitle(level(), 1)).toBe("摆动高点 120.0 · 生效");
 });

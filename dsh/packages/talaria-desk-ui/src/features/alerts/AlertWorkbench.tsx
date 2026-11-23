@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { DrawingRecord, InstrumentSpec } from "@talaria/contracts";
 import { api } from "../../lib/api";
+import { t, useLocale } from "../../lib/i18n";
 import type { Theme } from "../../lib/theme";
 import type { LocateTarget, PanelLink } from "../../workbench/link";
 import { useMarketStream } from "../feed/useMarketStream";
@@ -21,6 +22,7 @@ interface AlertWorkbenchProps {
 export function AlertWorkbench({
   instrumentId, timeframe, instruments, theme, onLocate, link, formSeed, onClose,
 }: AlertWorkbenchProps) {
+  useLocale();
   const controller = useAlerts();
   const { alert, deniedAlerts } = useMarketStream(instrumentId, timeframe);
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
@@ -54,7 +56,7 @@ export function AlertWorkbench({
 
   return (
     <>
-      {drawingError && <p role="status">无法读取可用于预警的画线。</p>}
+      {drawingError && <p role="status">{t("无法读取可用于预警的画线。", "Unable to load drawings available for alerts.")}</p>}
       <AlertPanel
         controller={controller}
         deniedAlerts={deniedAlerts}

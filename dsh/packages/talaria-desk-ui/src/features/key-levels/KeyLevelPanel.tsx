@@ -1,16 +1,17 @@
 import { useState } from "react";
 import type { KeyLevel, KeyLevelCategory } from "@talaria/contracts";
 
+import { t, useLocale } from "../../lib/i18n";
 import {
-  CATEGORY_META,
   EVIDENCE_CLASSES,
-  EVIDENCE_META,
   KEY_LEVEL_CATEGORIES,
-  KIND_LABELS,
-  STATUS_LABELS,
+  categoryMeta,
   countByCategory,
   countByEvidence,
+  evidenceMeta,
   formatLevelPrice,
+  keyLevelKindLabel,
+  keyLevelStatusLabel,
   levelEvidenceClass,
   levelTitle,
   selectedEvidenceClasses,
@@ -63,6 +64,7 @@ export function KeyLevelPanel({
   onClose,
   notes = [],
 }: KeyLevelPanelProps) {
+  useLocale();
   const [menuLevelId, setMenuLevelId] = useState<string | null>(null);
   const counts = countByCategory(allLevels);
   const evidenceCounts = countByEvidence(allLevels);
@@ -72,11 +74,11 @@ export function KeyLevelPanel({
     <aside
       className="key-level-panel"
       data-testid="key-level-panel"
-      aria-label="关键位过滤面板"
+      aria-label={t("关键位过滤面板", "Key level filter panel")}
     >
       <header className="key-level-panel-head">
         <div>
-          <strong>关键位</strong>
+          <strong>{t("关键位", "Key levels")}</strong>
           <span className="key-level-count" data-testid="key-level-count">
             {levels.length} / {allLevels.length}
           </span>
@@ -85,7 +87,7 @@ export function KeyLevelPanel({
           <button
             type="button"
             className="key-level-close"
-            aria-label="收起关键位面板"
+            aria-label={t("收起关键位面板", "Collapse key level panel")}
             onClick={onClose}
           >
             ×
@@ -95,14 +97,14 @@ export function KeyLevelPanel({
 
       {readOnly && (
         <p className="key-level-readonly" data-testid="key-level-readonly">
-          只读视图 · 筛选可查看，不可修改
+          {t("只读视图 · 筛选可查看，不可修改", "Read-only view · Filtering is available, changes are not")}
         </p>
       )}
 
-      <section className="key-level-filters" aria-label="关键位筛选">
-        <div className="key-level-category-row" role="group" aria-label="关键位类别">
+      <section className="key-level-filters" aria-label={t("关键位筛选", "Key level filters")}>
+        <div className="key-level-category-row" role="group" aria-label={t("关键位类别", "Key level categories")}>
           {KEY_LEVEL_CATEGORIES.map((category: KeyLevelCategory) => {
-            const meta = CATEGORY_META[category];
+            const meta = categoryMeta(category);
             const selected = filter.categories.includes(category);
             return (
               <button
@@ -131,7 +133,7 @@ export function KeyLevelPanel({
         <div
           className="key-level-evidence-row"
           role="group"
-          aria-label="证据类别"
+          aria-label={t("证据类别", "Evidence classes")}
         >
           {EVIDENCE_CLASSES.map((evidence) => {
             const selected = selectedEvidenceClasses(filter).includes(evidence);
@@ -153,7 +155,7 @@ export function KeyLevelPanel({
                   className={`key-level-evidence-mark key-level-evidence-mark--${evidence.toLowerCase()}`}
                   aria-hidden="true"
                 />
-                {EVIDENCE_META[evidence].label}
+                {evidenceMeta(evidence).label}
                 <span className="key-level-chip-count">
                   {evidenceCounts[evidence]}
                 </span>
@@ -164,7 +166,8 @@ export function KeyLevelPanel({
 
         <label className="key-level-strength">
           <span>
-            强度阈值 <output data-testid="key-level-strength-value">{filter.minStrength.toFixed(2)}</output>
+            {t("强度阈值", "Strength threshold")}{" "}
+            <output data-testid="key-level-strength-value">{filter.minStrength.toFixed(2)}</output>
           </span>
           <input
             type="range"
@@ -173,7 +176,7 @@ export function KeyLevelPanel({
             step={5}
             value={strengthValue}
             disabled={readOnly}
-            aria-label="最低强度阈值"
+            aria-label={t("最低强度阈值", "Minimum strength threshold")}
             data-testid="key-level-strength"
             onChange={(event) =>
               onFilterChange({
@@ -184,30 +187,30 @@ export function KeyLevelPanel({
           />
         </label>
 
-        <div className="key-level-legend" aria-label="关键位图例">
+        <div className="key-level-legend" aria-label={t("关键位图例", "Key level legend")}>
           {KEY_LEVEL_CATEGORIES.map((category) => (
             <span key={category} className="key-level-legend-item">
               <span
                 className="key-level-swatch"
-                style={{ background: CATEGORY_META[category].color }}
+                style={{ background: categoryMeta(category).color }}
                 aria-hidden="true"
               />
-              {CATEGORY_META[category].label}
+              {categoryMeta(category).label}
             </span>
           ))}
           <span className="key-level-legend-item key-level-legend-item--muted">
             <span className="key-level-line-sample" aria-hidden="true" />
-            观测 实线
+            {t("观测 实线", "Observed solid")}
           </span>
           <span className="key-level-legend-item key-level-legend-item--muted">
             <span
               className="key-level-line-sample key-level-line-sample--estimated"
               aria-hidden="true"
             />
-            估算 虚线/半透明
+            {t("估算 虚线/半透明", "Estimated dashed/translucent")}
           </span>
           <span className="key-level-legend-item key-level-legend-item--muted">
-            虚线=已破/缺口
+            {t("虚线=已破/缺口", "Dashed = broken/gap")}
           </span>
         </div>
       </section>
@@ -227,11 +230,11 @@ export function KeyLevelPanel({
       )}
 
       {loading ? (
-        <p className="key-level-hint">正在计算关键位…</p>
+        <p className="key-level-hint">{t("正在计算关键位…", "Computing key levels…")}</p>
       ) : levels.length === 0 ? (
         <div className="key-level-empty" data-testid="key-level-empty">
-          <strong>当前筛选没有匹配的关键位</strong>
-          <span>降低强度阈值或勾选更多类别后再试。</span>
+          <strong>{t("当前筛选没有匹配的关键位", "No key levels match the current filter")}</strong>
+          <span>{t("降低强度阈值或勾选更多类别后再试。", "Lower the strength threshold or select more categories.")}</span>
         </div>
       ) : (
         <ul className="key-level-list" data-testid="key-level-list">
@@ -243,21 +246,21 @@ export function KeyLevelPanel({
             >
               <span
                 className="key-level-dot"
-                style={{ background: CATEGORY_META[level.category].color }}
+                style={{ background: categoryMeta(level.category).color }}
                 aria-hidden="true"
               />
               <div className="key-level-row-main">
                 <span className="key-level-row-title">
-                  {KIND_LABELS[level.kind]}
+                  {keyLevelKindLabel(level.kind)}
                   <span className={statusClass(level.status)}>
-                    {STATUS_LABELS[level.status]}
+                    {keyLevelStatusLabel(level.status)}
                   </span>
                   {levelEvidenceClass(level) === "ESTIMATED" && (
                     <span
                       className="key-level-evidence-badge"
                       data-testid={`key-level-estimated-${level.level_id}`}
                     >
-                      估算
+                      {t("估算", "Est.")}
                     </span>
                   )}
                 </span>
@@ -265,10 +268,10 @@ export function KeyLevelPanel({
                   {formatLevelPrice(level, precision)}
                 </span>
                 <span className="key-level-row-meta">
-                  强度 {level.strength.toFixed(2)} ·{" "}
+                  {t("强度", "Strength")} {level.strength.toFixed(2)} ·{" "}
                   {levelEvidenceClass(level) === "ESTIMATED"
-                    ? "OI 推算"
-                    : `触及 ${level.touch_count}`}
+                    ? t("OI 推算", "OI estimate")
+                    : t(`触及 ${level.touch_count}`, `Touches ${level.touch_count}`)}
                 </span>
               </div>
               {/* 采纳写路径走 DrawingService（复制为独立人工画线），忽略仍走质量反馈。 */}
@@ -277,7 +280,7 @@ export function KeyLevelPanel({
                   className="key-level-adopted-badge"
                   data-testid={`key-level-adopted-${level.level_id}`}
                 >
-                  已采纳
+                  {t("已采纳", "Adopted")}
                 </span>
               )}
               {showLevelActions(readOnly) && (
@@ -286,7 +289,7 @@ export function KeyLevelPanel({
                     type="button"
                     className="key-level-actions-toggle"
                     title={levelTitle(level, precision)}
-                    aria-label={`关键位操作 ${levelTitle(level, precision)}`}
+                    aria-label={t(`关键位操作 ${levelTitle(level, precision)}`, `Key level actions ${levelTitle(level, precision)}`)}
                     aria-haspopup="menu"
                     aria-expanded={menuLevelId === level.level_id}
                     onClick={() =>
@@ -313,7 +316,7 @@ export function KeyLevelPanel({
                       onAttachAlert(level);
                     }}
                   >
-                    挂预警
+                    {t("挂预警", "Attach alert")}
                   </button>
                   <button
                     type="button"
@@ -328,10 +331,10 @@ export function KeyLevelPanel({
                     }}
                   >
                     {adoptedIds.has(level.level_id)
-                      ? "已采纳"
+                      ? t("已采纳", "Adopted")
                       : adoptingId === level.level_id
-                        ? "采纳中…"
-                        : "采纳为画线"}
+                        ? t("采纳中…", "Adopting…")
+                        : t("采纳为画线", "Adopt as drawing")}
                   </button>
                   <button
                     type="button"
@@ -342,7 +345,7 @@ export function KeyLevelPanel({
                       onIgnore(level.level_id);
                     }}
                   >
-                    {ignoringId === level.level_id ? "忽略中…" : "忽略"}
+                    {ignoringId === level.level_id ? t("忽略中…", "Ignoring…") : t("忽略", "Ignore")}
                   </button>
                 </div>
               )}
@@ -353,7 +356,10 @@ export function KeyLevelPanel({
 
       {ignoredCount > 0 && (
         <p className="key-level-ignored-note" data-testid="key-level-ignored-note">
-          已忽略 {ignoredCount} 个关键位（刷新后仍保持隐藏）
+          {t(
+            `已忽略 ${ignoredCount} 个关键位（刷新后仍保持隐藏）`,
+            `${ignoredCount} key levels ignored (stay hidden after refresh)`,
+          )}
         </p>
       )}
     </aside>

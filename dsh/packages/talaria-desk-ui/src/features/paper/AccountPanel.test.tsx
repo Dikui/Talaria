@@ -1,7 +1,10 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PaperRound } from "@talaria/contracts";
+import { setLocale } from "../../lib/i18n";
 import { DraftReview, LedgerSections } from "./AccountPanel";
+
+afterEach(() => setLocale("zh"));
 
 it("keeps closed rounds and their long instrument name visible with no positions", () => {
   const round: PaperRound = {
@@ -31,4 +34,25 @@ it("shows the immutable evidence and deadline being confirmed", () => {
   expect(html).toContain('name="version" value="2"');
   expect(html).toContain("frozen-evidence");
   expect(html).toContain(new Date(120000).toISOString());
+});
+
+
+it("renders phases, labels and dates in English after a locale switch", () => {
+  const round: PaperRound = {
+    round_id: "first", sub_account_id: "test", instrument_id: "BTC",
+    direction: "SHORT", quantity: "0", stop: "150", take_profit: ["125"], phase: "CLOSED",
+  };
+  setLocale("en-US");
+  const html = renderToStaticMarkup(<LedgerSections view={{
+    sub_account_id: "test", positions: [], rounds: [round],
+    fills: [{ event_id: "event-1", round_id: "first", instrument_id: "BTC",
+      kind: "EXIT_FILLED", ts_event: 1_795_022_974_103, quantity: "1", price: "125" }],
+  }} />);
+  expect(html).toContain("No open positions");
+  expect(html).toContain("Closed");
+  expect(html).toContain("Direction");
+  expect(html).toContain("Short");
+  expect(html).toContain("Exit");
+  expect(html).not.toContain("已平仓");
+  expect(html).not.toMatch(/[\u4e00-\u9fff]/);
 });

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { t } from "../../lib/i18n";
+
 export function usePaperQuery<T>(query: () => Promise<T>, interval = 5000) {
   const [result, setResult] = useState<{ query: typeof query; value?: T; error?: string }>();
   const [revision, setRevision] = useState(0);
@@ -11,7 +13,7 @@ export function usePaperQuery<T>(query: () => Promise<T>, interval = 5000) {
         const value = await query();
         if (!cancelled) setResult({ query, value });
       } catch (error) {
-        if (!cancelled) setResult({ query, error: error instanceof Error ? error.message : "读取模拟盘失败" });
+        if (!cancelled) setResult({ query, error: error instanceof Error ? error.message : t("读取模拟盘失败", "Failed to load paper trading") });
       } finally {
         if (!cancelled && interval > 0) timer = setTimeout(load, interval);
       }

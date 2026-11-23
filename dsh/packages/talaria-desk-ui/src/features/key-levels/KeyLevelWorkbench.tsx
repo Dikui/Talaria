@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { KeyLevel } from "@talaria/contracts";
 import { api } from "../../lib/api";
+import { t, useLocale } from "../../lib/i18n";
 import { useReadOnlyViewport } from "../drawings/useReadOnlyViewport";
 import { useMarketStream } from "../feed/useMarketStream";
 import { KeyLevelPanel } from "./KeyLevelPanel";
@@ -18,6 +19,7 @@ interface KeyLevelWorkbenchProps {
 export function KeyLevelWorkbench({
   instrumentId, timeframe, precision, cutoff, onAttachAlert,
 }: KeyLevelWorkbenchProps) {
+  useLocale();
   const [snapshotId, setSnapshotId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -31,7 +33,7 @@ export function KeyLevelWorkbench({
     api.createSnapshot(instrumentId, [timeframe], cutoff).then((snapshot) => {
       if (!cancelled) setSnapshotId(snapshot.snapshot_id);
     }).catch((reason: unknown) => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : "无法创建关键位快照");
+      if (!cancelled) setError(reason instanceof Error ? reason.message : t("无法创建关键位快照", "Failed to create a key level snapshot"));
     });
     return () => { cancelled = true; };
   }, [instrumentId, timeframe, cutoff, attempt]);
@@ -42,7 +44,7 @@ export function KeyLevelWorkbench({
       <button type="button" className="ghost-button" onClick={() => {
         setError(null);
         setAttempt((count) => count + 1);
-      }}>重试</button>
+      }}>{t("重试", "Retry")}</button>
     </div>
   );
 

@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { RULE_EDITOR_SCHEMA as schema } from "@talaria/contracts";
 import type { AlertRecord, DrawingRecord, KeyLevel, Rule, RulePreviewResponse, RulePreviewSignal } from "@talaria/contracts";
 import { api } from "../../lib/api";
+import { t, useLocale } from "../../lib/i18n";
 import { errorMessage } from "../alerts/model";
 import type { IndicatorDefaults } from "../indicators/config";
 import { RuleEditorForm, RuleTiming } from "./RuleEditor";
@@ -36,16 +37,17 @@ interface ChartRuleEditorProps {
 export function RuleHits({ conditions, triggers }: {
   conditions: RulePreviewSignal[]; triggers: RulePreviewSignal[];
 }) {
+  useLocale();
   if (!conditions.length && !triggers.length) return null;
   return <details className="rule-hit-details">
-    <summary>命中明细</summary>
-    {([["条件成立", conditions], ["触发预警", triggers]] as const).map(([kind, hits]) => (
-      <section key={kind} aria-label={kind}><strong>{kind}（{hits.length}）</strong><ul>
+    <summary>{t("命中明细", "Matched details")}</summary>
+    {([[t("条件成立", "Conditions met"), conditions], [t("触发预警", "Alert triggers"), triggers]] as const).map(([kind, hits]) => (
+      <section key={kind} aria-label={kind}><strong>{kind}{t("（", " (")}{hits.length}{t("）", ")")}</strong><ul>
         {hits.map((hit, index) => {
           const time = new Date(hit.observed_at).toISOString();
           return <li tabIndex={0} key={`${hit.timestamp}/${hit.observed_at}/${index}`}>
-            {kind} · 柱 <time dateTime={new Date(hit.timestamp).toISOString()}>{new Date(hit.timestamp).toISOString()}</time>
-            {" · "}观察 <time dateTime={time}>{time}</time> · 价格 {hit.price ?? "未记录"}
+            {kind} · {t("柱", "Bar")} <time dateTime={new Date(hit.timestamp).toISOString()}>{new Date(hit.timestamp).toISOString()}</time>
+            {" · "}{t("观察", "Observed")} <time dateTime={time}>{time}</time> · {t("价格", "Price")} {hit.price ?? t("未记录", "not recorded")}
           </li>;
         })}
       </ul></section>
@@ -57,6 +59,7 @@ export function ChartRuleEditor({
   drafts, scope, alerts, instrumentId, timeframe, snapshotId, loadedSlots, defaults, drawings, levels, levelSnapshotId, pricePrecision,
   onPreview, onSaved, onViewAlerts,
 }: ChartRuleEditorProps) {
+  useLocale();
   const panelId = useId();
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState(() => drafts.read(scope));
@@ -143,20 +146,23 @@ export function ChartRuleEditor({
 
   let status = "";
   if (expression !== null) {
-    if (!complete) status = "请补全条件并检查数值范围。";
-    else if (!snapshotId) status = "等待图表快照。";
+    if (!complete) status = t("请补全条件并检查数值范围。", "Complete the conditions and check the numeric ranges.");
+    else if (!snapshotId) status = t("等待图表快照。", "Waiting for the chart snapshot.");
     else if (current?.error) status = current.error;
-    else if (!response) status = "正在计算规则…";
-    else if (response.history_incomplete) status = "部分时段的关键位历史版本不可用。图上和明细仅列出已确认的结果。";
-    else status = `${timing === "event" ? "快照内已记录事件 · " : ""}${response.condition_true.length} 根条件成立 · ${response.would_trigger.length} 次触发预警${loadedSlots > limit ? `（最近 ${limit} 个时间槽）` : ""}`;
+    else if (!response) status = t("正在计算规则…", "Evaluating rule…");
+    else if (response.history_incomplete) status = t("部分时段的关键位历史版本不可用。图上和明细仅列出已确认的结果。", "Key level history is unavailable for some periods. Only confirmed results are shown on the chart and in the details.");
+    else status = t(
+      `${timing === "event" ? "快照内已记录事件 · " : ""}${response.condition_true.length} 根条件成立 · ${response.would_trigger.length} 次触发预警${loadedSlots > limit ? `（最近 ${limit} 个时间槽）` : ""}`,
+      `${timing === "event" ? "Events recorded in snapshot · " : ""}${response.condition_true.length} bars matched · ${response.would_trigger.length} alert triggers${loadedSlots > limit ? ` (latest ${limit} time slots)` : ""}`,
+    );
   }
 
   return (
-    <section className="chart-rule-editor" aria-label="图表规则编辑器">
+    <section className="chart-rule-editor" aria-label={t("图表规则编辑器", "Chart rule editor")}>
       <div className="rule-editor-header">
         <button type="button" className={`drawing-action${expanded ? " is-active" : ""}`}
           aria-expanded={expanded} aria-controls={panelId} onClick={() => setExpanded(!expanded)}>
-          图表规则
+          {t("图表规则", "Chart rules")}
         </button>
         {expanded && <RuleTiming timing={timing} onChange={next => edit(next, expressions)} />}
         <span className="rule-status" role="status">{status}</span>
@@ -164,7 +170,7 @@ export function ChartRuleEditor({
           <button type="button" className="drawing-action" onClick={() => {
             setPreview(null);
             setRetry((value) => value + 1);
-          }}>重试预览</button>
+          }}>{t("重试预览", "Retry preview")}</button>
         )}
       </div>
       <div className="rule-editor-content" id={panelId} hidden={!expanded}>
@@ -175,17 +181,17 @@ export function ChartRuleEditor({
         </div>
         <div className="rule-editor-footer">
           <button type="button" className="primary-button" disabled={!response || saving || saved || missingLevels.length > 0}
-            aria-busy={saving} onClick={() => void save()}>保存为预警</button>
-          {missingLevels.length > 0 && <span role="status">当前版本缺少关键位（{missingLevels.join("、")}），请选择当前关键位后保存。</span>}
+            aria-busy={saving} onClick={() => void save()}>{t("保存为预警", "Save as alert")}</button>
+          {missingLevels.length > 0 && <span role="status">{t(`当前版本缺少关键位（${missingLevels.join("、")}），请选择当前关键位后保存。`, `Missing key levels (${missingLevels.join(", ")}), select current key levels before saving.`)}</span>}
           {saved && (
-            <button type="button" className="drawing-action" onClick={onViewAlerts}>已保存 · 查看预警</button>
+            <button type="button" className="drawing-action" onClick={onViewAlerts}>{t("已保存 · 查看预警", "Saved · View alerts")}</button>
           )}
           <span className="rule-status" role="status">
-            {saving ? "正在保存…" : saveError?.fingerprint === fingerprint ? saveError.message : ""}
+            {saving ? t("正在保存…", "Saving…") : saveError?.fingerprint === fingerprint ? saveError.message : ""}
           </span>
           {warmup.length > 0 && (
             <p className="rule-warmup" role="status">
-              指标暂无可用值（可能仍在预热） · {warmup.map(ruleIndicatorLabel).join("、")}
+              {t("指标暂无可用值（可能仍在预热） · ", "Indicator values unavailable (possibly warming up) · ")}{warmup.map(ruleIndicatorLabel).join(t("、", ", "))}
             </p>
           )}
         </div>

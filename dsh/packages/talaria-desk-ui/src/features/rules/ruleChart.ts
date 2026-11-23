@@ -1,21 +1,36 @@
 import type { IndicatorName, RulePreviewIndicator, RulePreviewResponse } from "@talaria/contracts";
 import type { IndicatorCreate } from "klinecharts";
-import { INDICATOR_COLORS, INDICATOR_LABELS } from "../indicators/config";
+import { t } from "../../lib/i18n";
+import { indicatorNameLabel } from "../alerts/model";
+import { INDICATOR_COLORS } from "../indicators/config";
 import { CANDLE_PANE_ID } from "../market-chart/crosshair";
 
 export const OVERLAY_TEMPLATE = "talaria_overlay";
 export const STUDY_TEMPLATE = "talaria_study";
 
+function channelLabel(channel: string): string {
+  switch (channel) {
+    case "upper": return t("上轨", "Upper");
+    case "lower": return t("下轨", "Lower");
+    default: return t("中轨", "Middle");
+  }
+}
+
 export function ruleIndicatorLabel({ operand }: RulePreviewIndicator): string {
   const name = operand.name as IndicatorName;
-  const label = INDICATOR_LABELS[name] ?? operand.name;
+  const label = indicatorNameLabel(name);
   const params = operand.params;
-  const length = params?.anchor === "session" ? "UTC 日界" : params?.anchor === "snapshot" ? (operand.window === "chart" ? "快照起点" : "预警窗口起点") : params?.period;
+  const length = params?.anchor === "session"
+    ? t("UTC 日界", "UTC day boundary")
+    : params?.anchor === "snapshot"
+      ? (operand.window === "chart" ? t("快照起点", "Snapshot start") : t("预警窗口起点", "Alert window start"))
+      : params?.period;
   const deviation = params?.std_dev == null ? "" : `, ${params.std_dev}σ`;
-  const channel = operand.channel && operand.channel !== "value" ? ` · ${operand.channel}` : "";
+  const channel = operand.channel && operand.channel !== "value"
+    ? ` · ${channelLabel(operand.channel)}` : "";
   const legacyWindow = (operand.window ?? "alert") === "alert" && params?.anchor !== "session"
-    ? ` · 最近 ${Math.max(600, (params?.period ?? 1) + 2)} 根` : "";
-  return `${label}(${length ?? "默认"}${deviation})${channel}${legacyWindow}`;
+    ? t(` · 最近 ${Math.max(600, (params?.period ?? 1) + 2)} 根`, ` · last ${Math.max(600, (params?.period ?? 1) + 2)} bars`) : "";
+  return `${label}(${length ?? t("默认", "Default")}${deviation})${channel}${legacyWindow}`;
 }
 
 export function ruleChartIndicators(
@@ -36,7 +51,7 @@ export function ruleChartIndicators(
       series: isMain ? "price" : "normal",
       paneId: isMain ? CANDLE_PANE_ID : undefined,
       figures: [{
-        key: "value", title: "规则指标 ", type: "line",
+        key: "value", title: t("规则指标 ", "Rule indicator "), type: "line",
         attrs: ({ data, coordinate }) => {
           const current = data.current as { index: number };
           const next = data.next as { index: number } | null;
@@ -52,7 +67,7 @@ export function ruleChartIndicators(
   for (const kind of ["condition_true", "would_trigger"] as const) {
     if (!preview[kind].length) continue;
     const trigger = kind === "would_trigger";
-    const label = trigger ? "触发预警" : "条件成立";
+    const label = trigger ? t("触发预警", "Alert trigger") : t("条件成立", "Condition met");
     indicators.push({
       id: `talaria-rule-${kind}`,
       name: OVERLAY_TEMPLATE,
