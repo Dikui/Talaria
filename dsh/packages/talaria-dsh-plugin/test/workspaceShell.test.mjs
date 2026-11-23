@@ -17,12 +17,13 @@ function between(start, end) {
 test('keeps the workspace tab bar outside the single connection boundary', () => {
   const view = between('function WorkspaceView(', 'function Workspace(')
   const tablist = view.indexOf('role="tablist"')
-  const boundary = view.indexOf('<Surface chrome={false}')
+  const panel = view.indexOf('role="tabpanel"')
+  const boundary = view.indexOf('<SurfaceBody ')
   assert.ok(tablist >= 0, 'workspace tablist is missing')
-  assert.ok(boundary > tablist, 'connection boundary must follow the tab bar')
+  assert.ok(panel > tablist && boundary > panel, 'only the selected panel content may depend on the connection')
+  assert.equal(view.match(/<SurfaceBody\s/g)?.length, 1)
 
-  const content = view.slice(boundary)
-  assert.match(content, /role="tabpanel"/)
+  const content = view.slice(boundary, view.indexOf('</SurfaceBody>', boundary))
   assert.match(content, /ChartWithDock/)
   assert.match(content, /WorkbenchPanel/)
 

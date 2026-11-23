@@ -17,6 +17,10 @@ import type {
 } from "@talaria/contracts";
 
 import { t } from "../../lib/i18n";
+import { drawingKindLabel } from "../drawings/tools";
+import { indicatorLabel as localizedIndicatorLabel } from "../indicators/config";
+
+export { drawingKindLabel };
 
 /** 规则列表的四个页签；DISABLED 与 EXPIRED 都归入“已结束”。 */
 export const ALERT_TABS = ["active", "cooling", "expired", "draft"] as const;
@@ -93,25 +97,8 @@ export function alertLevelEventLabels(): Record<AlertLevelEvent, string> {
   };
 }
 
-export function drawingKindLabel(kind: DrawingKind): string {
-  switch (kind) {
-    case "HORIZONTAL_LINE": return t("水平线", "Horizontal line");
-    case "RAY": return t("射线", "Ray");
-    case "SEGMENT": return t("线段", "Segment");
-    case "PARALLEL_CHANNEL": return t("平行通道", "Parallel channel");
-    case "FIB_RETRACEMENT": return t("斐波那契回撤", "Fibonacci retracement");
-    case "RECTANGLE": return t("矩形区间", "Rectangle");
-    case "TEXT_LABEL": return t("文本标签", "Text label");
-  }
-}
-
-export function indicatorNameLabel(name: string): string {
-  switch (name) {
-    case "FUNDING_QUANTILE": return t("资金费率分位", "Funding rate quantile");
-    case "OI_DIVERGENCE": return t("OI 背离", "OI divergence");
-    case "NET_ODDS": return t("净赔率", "Net odds");
-    default: return name;
-  }
+export function indicatorNameLabel(name: RuleIndicator["name"]): string {
+  return name === "legacy_ema" || name === "legacy_atr" ? name : localizedIndicatorLabel(name);
 }
 
 export const ALERT_OVERLAY_KINDS: DrawingKind[] = [

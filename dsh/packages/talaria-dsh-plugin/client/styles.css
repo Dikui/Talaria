@@ -59,8 +59,7 @@
 
 /* The tab bar stays above the connection boundary; its status occupies the
    remaining panel while the service reconnects. */
-.talaria-dsh-workspace > .desk-connect {
-  flex: 1;
+.talaria-dsh-tab-panel > .desk-connect {
   align-content: start;
 }
 
@@ -95,23 +94,13 @@
   outline-offset: 2px;
 }
 
-.talaria-dsh-tab-panel[hidden] {
-  display: none;
-}
-
 .talaria-dsh-tab-panel {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
-}
-
-.talaria-dsh-tab-panel > * {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
+  overflow: auto;
 }
 
 .talaria-dsh-chart {

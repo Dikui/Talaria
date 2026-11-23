@@ -88,7 +88,7 @@ export const INDICATOR_LABELS: Partial<Record<IndicatorName, string>> = {
 };
 
 export const INDICATOR_LABELS_EN: Partial<Record<IndicatorName, string>> = {
-  FUNDING_QUANTILE: "Funding quantile",
+  FUNDING_QUANTILE: "Funding rate quantile",
   OI_DIVERGENCE: "OI divergence",
   NET_ODDS: "Net odds",
 };

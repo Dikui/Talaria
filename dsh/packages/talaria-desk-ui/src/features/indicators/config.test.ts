@@ -119,7 +119,7 @@ describe("indicator labels (English)", () => {
 
   it("localizes indicator names and anchor labels", () => {
     setLocale("en");
-    expect(indicatorLabel("FUNDING_QUANTILE")).toBe("Funding quantile");
+    expect(indicatorLabel("FUNDING_QUANTILE")).toBe("Funding rate quantile");
     expect(anchorLabel("session")).toBe("UTC day boundary");
     expect(anchorLabel("snapshot")).toBe("Snapshot start");
     setLocale("zh");

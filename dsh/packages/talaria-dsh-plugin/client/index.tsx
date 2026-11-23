@@ -176,22 +176,16 @@ function SurfaceBody({
  * component so the five tabs stay usable while the service is down; the
  * session tab keeps the themed Surface wrapper.
  */
-function Surface({
-  connection, children, chrome = true, theme: themeOverride,
-}: {
+function Surface({ connection, children }: {
   connection: ReturnType<typeof createConnection>;
   children: (value: Connection, theme: Theme) => ReactNode;
-  chrome?: boolean;
-  theme?: Theme;
 }) {
-  const hostTheme = useHostTheme();
-  const theme = themeOverride ?? hostTheme;
-  const body = (
-    <SurfaceBody connection={connection}>
-      {(value) => children(value, theme)}
-    </SurfaceBody>
+  const theme = useHostTheme();
+  return (
+    <div className="talaria-desk talaria-dsh-surface" data-theme={theme}>
+      <SurfaceBody connection={connection}>{(value) => children(value, theme)}</SurfaceBody>
+    </div>
   );
-  return chrome ? <div className="talaria-desk talaria-dsh-surface" data-theme={theme}>{body}</div> : <>{body}</>;
 }
 
 const ICONS: Record<PanelName, string> = {
@@ -305,7 +299,11 @@ function ChartWithDock({
                 <button type="button" className="ghost-button"
                   onClick={() => onOpenTab(panel)}>{copy.openMain}</button>
                 <button type="button" className="ghost-button"
-                  onClick={() => window.open(new URL(panelPath(panel), connection.baseUrl), "_blank", "popup,noopener,width=560,height=710")}>
+                  onClick={() => {
+                    const url = new URL(panelPath(panel), connection.baseUrl);
+                    url.searchParams.set("lang", locale);
+                    window.open(url, "_blank", "popup,noopener,width=560,height=710");
+                  }}>
                   {copy.openWindow}
                 </button>
               </div>
@@ -388,38 +386,26 @@ function WorkspaceView({
           );
         })}
       </div>
-      <Surface chrome={false} connection={connection} theme={theme}>
-        {(value, contentTheme) => PANELS.map((panel) => {
-          const selected = panel === tab;
-          return (
-            <div
-              key={panel}
-              role="tabpanel"
-              id={panelDomId(panel)}
-              aria-labelledby={tabDomId(panel)}
-              hidden={!selected}
-              tabIndex={selected ? 0 : -1}
-              className="talaria-dsh-tab-panel"
-            >
-              {!selected ? null : panel === "chart" ? (
-                <ChartWithDock connection={value} ctx={ctx} theme={contentTheme} onOpenTab={openTab} />
-              ) : (
-                <WorkbenchPanel
-                  panel={panel}
-                  theme={contentTheme}
-                  transport={value.relay}
-                  persistenceKey={panelLinkKey(panel, "main")}
-                  tools={
-                    <button type="button" className="ghost-button" onClick={() => dockToChart(panel)}>
-                      {copy.dockToChart}
-                    </button>
-                  }
-                />
-              )}
-            </div>
-          );
-        })}
-      </Surface>
+      <div role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}
+        tabIndex={0} className="talaria-dsh-tab-panel">
+        <SurfaceBody connection={connection}>
+          {(value) => tab === "chart" ? (
+            <ChartWithDock connection={value} ctx={ctx} theme={theme} onOpenTab={openTab} />
+          ) : (
+            <WorkbenchPanel key={tab} panel={tab} theme={theme} transport={value.relay}
+              persistenceKey={panelLinkKey(tab, "main")}
+              tools={
+                <button type="button" className="ghost-button" onClick={() => dockToChart(tab)}>
+                  {copy.dockToChart}
+                </button>
+              }
+            />
+          )}
+        </SurfaceBody>
+      </div>
+      {PANELS.filter((panel) => panel !== tab).map((panel) => (
+        <div key={panel} role="tabpanel" id={panelDomId(panel)} aria-labelledby={tabDomId(panel)} hidden />
+      ))}
     </div>
   );
 }
