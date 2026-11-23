@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { setLocale } from "../../lib/i18n";
 
 import {
   DEFAULT_ENABLED,
@@ -8,6 +10,8 @@ import {
   enabledIndicatorNames,
   operatorParams,
   indicatorRequests,
+  indicatorLabel,
+  anchorLabel,
   updateIndicatorSetting,
 } from "./config";
 
@@ -107,5 +111,19 @@ describe("indicator instances", () => {
     const enabled = updateIndicatorSetting(settings, defaults, "NET_ODDS", { enabled: true });
     expect(enabledIndicatorNames(enabled)).toContain("NET_ODDS");
     expect(operatorParams("NET_ODDS", enabled.NET_ODDS)).toEqual({ period: 28 });
+  });
+});
+
+describe("indicator labels (English)", () => {
+  afterEach(() => setLocale("zh"));
+
+  it("localizes indicator names and anchor labels", () => {
+    setLocale("en");
+    expect(indicatorLabel("FUNDING_QUANTILE")).toBe("Funding quantile");
+    expect(anchorLabel("session")).toBe("UTC day boundary");
+    expect(anchorLabel("snapshot")).toBe("Snapshot start");
+    setLocale("zh");
+    expect(indicatorLabel("FUNDING_QUANTILE")).toBe("资金费率分位");
+    expect(anchorLabel("session")).toBe("UTC 日界");
   });
 });

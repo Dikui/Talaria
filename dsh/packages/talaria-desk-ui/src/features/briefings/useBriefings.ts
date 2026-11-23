@@ -5,6 +5,7 @@ import type {
 } from "@talaria/contracts";
 
 import { ApiError, api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 
 const POLL_MS = 5000;
 const LIST_LIMIT = 50;
@@ -26,7 +27,7 @@ export interface BriefingsController {
 function describeError(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
-  return "读取简报失败";
+  return t("读取简报失败", "Failed to load briefings");
 }
 
 export function useBriefings(): BriefingsController {

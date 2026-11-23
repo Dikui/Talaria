@@ -1,5 +1,7 @@
 import type { IndicatorName, IndicatorParams, OperatorRequest } from "@talaria/contracts";
 
+import { getLocale, type Locale } from "../../lib/i18n";
+
 /** 与后端 operators/spec.py 的默认值一一对应；前端只做展示与参数收集。 */
 export const INDICATOR_ORDER: IndicatorName[] = [
   "EMA",
@@ -85,6 +87,18 @@ export const INDICATOR_LABELS: Partial<Record<IndicatorName, string>> = {
   NET_ODDS: "净赔率",
 };
 
+export const INDICATOR_LABELS_EN: Partial<Record<IndicatorName, string>> = {
+  FUNDING_QUANTILE: "Funding quantile",
+  OI_DIVERGENCE: "OI divergence",
+  NET_ODDS: "Net odds",
+};
+
+/** 运行时按语言取指标显示名；未配置的名称沿用后端代号。 */
+export function indicatorLabel(name: IndicatorName, locale: Locale = getLocale()): string {
+  const labels = locale === "zh" ? INDICATOR_LABELS : INDICATOR_LABELS_EN;
+  return labels[name] ?? name;
+}
+
 export interface IndicatorSetting {
   enabled: boolean;
   period: number;
@@ -158,8 +172,14 @@ export function operatorParams(
   return params;
 }
 
-export function anchorLabel(anchor: "snapshot" | "session"): string {
-  return anchor === "session" ? "UTC 日界" : "快照起点";
+export function anchorLabel(
+  anchor: "snapshot" | "session",
+  locale: Locale = getLocale(),
+): string {
+  if (locale === "zh") {
+    return anchor === "session" ? "UTC 日界" : "快照起点";
+  }
+  return anchor === "session" ? "UTC day boundary" : "Snapshot start";
 }
 
 export function indicatorRequests(

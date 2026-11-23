@@ -8,6 +8,7 @@ import type {
 } from "@talaria/contracts";
 
 import { api } from "../../lib/api";
+import { t, useLocale } from "../../lib/i18n";
 import type { PanelLink } from "../../workbench/link";
 import {
   applyDrawingPatch,
@@ -73,7 +74,7 @@ function describeError(error: unknown): string {
   if (error instanceof Error && error.message.length > 0) {
     return error.message;
   }
-  return "画线同步失败，请重试";
+  return t("画线同步失败，请重试", "Drawing sync failed. Please retry.");
 }
 
 let optimisticSeq = 0;
@@ -112,6 +113,7 @@ function samePoints(a: DrawingPoint[], b: DrawingPoint[]): boolean {
 /** 画线状态机：乐观重绘 + 单一异步串行写队列 + 前端版本链撤销/重做。 */
 export function useDrawings(options: UseDrawingsOptions): DrawingsController {
   const { chart, instrumentId, timeframe, pricePrecision, readOnly, link } = options;
+  const locale = useLocale();
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
   const [allDrawings, setAllDrawings] = useState<DrawingRecord[]>([]);
   const [catalogRevision, setCatalogRevision] = useState(0);
@@ -311,7 +313,7 @@ export function useDrawings(options: UseDrawingsOptions): DrawingsController {
     (definition: DrawingToolDefinition, points: DrawingPoint[]) => {
       const kind = definition.kind;
       if (kind == null) return;
-      const text = kind === "TEXT_LABEL" ? "标注" : "";
+      const text = kind === "TEXT_LABEL" ? t("标注", "Annotation") : "";
       const optimistic = optimisticRecord(
         instrumentId,
         kind,
@@ -683,9 +685,14 @@ export function useDrawings(options: UseDrawingsOptions): DrawingsController {
 
   const toolHint = useMemo(() => {
     const definition = toolDefinition(activeTool);
-    if (definition == null) return "选择画线可拖拽移动，Esc 取消选中";
-    return `${definition.label}：${definition.hint}，已完成 ${draft.length}/${definition.anchors}`;
-  }, [activeTool, draft.length]);
+    if (definition == null) return t("选择画线可拖拽移动，Esc 取消选中", "Select a drawing to drag it. Press Esc to deselect.");
+    const label = locale === "zh" ? definition.label : definition.labelEn;
+    const hint = locale === "zh" ? definition.hint : definition.hintEn;
+    return t(
+      `${label}：${hint}，已完成 ${draft.length}/${definition.anchors}`,
+      `${label}: ${hint}. ${draft.length}/${definition.anchors} points placed.`,
+    );
+  }, [activeTool, draft.length, locale]);
 
   return {
     drawings, allDrawings,

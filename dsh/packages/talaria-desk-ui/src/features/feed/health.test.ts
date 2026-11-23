@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { setLocale } from "../../lib/i18n";
 
 import {
   feedAlertView,
@@ -137,5 +139,30 @@ describe("健康计时纯函数", () => {
     expect(healthTone("LIVE")).toBe("live");
     expect(healthTone("RECOVERING")).toBe("recovering");
     expect(healthTone("STALE")).toBe("stale");
+  });
+});
+
+describe("feed health (English)", () => {
+  afterEach(() => setLocale("zh"));
+
+  it("formats durations and labels in English", () => {
+    setLocale("en");
+    const now = 1_763_596_808_000;
+    expect(formatDuration(8_400)).toBe("8s");
+    expect(formatDuration(125_000)).toBe("2m 5s");
+    expect(healthLabel(health({ status: "LIVE" }), now)).toBe("Live");
+    expect(healthLabel(health({ status: "RECOVERING" }), now)).toBe("Recovering");
+    expect(
+      healthLabel(
+        health({ status: "STALE", stale_since: now - 8_000, ts: now }),
+        now,
+      ),
+    ).toBe("Stream stale 8s");
+    expect(healthLabel(null, now)).toBe("Waiting for market data");
+    expect(feedBadgeView(null, now, false, "open")).toEqual({
+      status: "OFFLINE",
+      label: "No live stream",
+      tone: "offline",
+    });
   });
 });

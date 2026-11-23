@@ -1,4 +1,6 @@
 import { useState, type ReactNode } from "react";
+
+import { t, useLocale } from "../../lib/i18n";
 import type { ScannerBriefing } from "@talaria/contracts";
 
 import {
@@ -40,6 +42,7 @@ function BriefingCard({
   onLocate,
   onBringToCollab,
 }: BriefingCardProps) {
+  const locale = useLocale();
   const [expanded, setExpanded] = useState(false);
   const reason = briefing.summary?.trigger_reason ?? "";
   const needsCollapse = briefingNeedsCollapse(briefing);
@@ -53,20 +56,20 @@ function BriefingCard({
     >
       <div className="briefing-meta">
         <span className={`briefing-status is-${briefingStatusTone(briefing.status)}`}>
-          {briefingStatusLabel(briefing.status)}
+          {briefingStatusLabel(briefing.status, locale)}
         </span>
         <time dateTime={new Date(briefing.created_ts).toISOString()}>
-          {briefingTime(briefing.created_ts, now)}
+          {briefingTime(briefing.created_ts, now, locale)}
         </time>
         {unread && (
-          <span className="briefing-unread-dot" aria-label="未读">
-            未读
+          <span className="briefing-unread-dot" aria-label={t("未读", "Unread")}>
+            {t("未读", "Unread")}
           </span>
         )}
       </div>
-      <h3 className="briefing-title">{briefingTitle(briefing)}</h3>
+      <h3 className="briefing-title">{briefingTitle(briefing, locale)}</h3>
       <p className="briefing-symbol">
-        {briefing.instrument_id} · {briefing.timeframe} · 快照{" "}
+        {briefing.instrument_id} · {briefing.timeframe} · {t("快照", "Snapshot")}{" "}
         {briefing.snapshot_id.slice(0, 8)}
       </p>
 
@@ -84,13 +87,13 @@ function BriefingCard({
               aria-expanded={expanded}
               onClick={() => setExpanded((value) => !value)}
             >
-              {expanded ? "收起摘要" : "展开摘要"}
+              {expanded ? t("收起摘要", "Collapse summary") : t("展开摘要", "Expand summary")}
             </button>
           )}
 
           {(briefing.summary?.key_levels?.length ?? 0) > 0 && (
             <div className="briefing-levels">
-              <span className="briefing-label">关键价位参考</span>
+              <span className="briefing-label">{t("关键价位参考", "Key levels")}</span>
               <ul>
                 {briefing.summary?.key_levels?.map((level, index) => (
                   <li key={`${level.label}-${index}`}>
@@ -105,7 +108,7 @@ function BriefingCard({
 
           {(briefing.summary?.risks?.length ?? 0) > 0 && (
             <div className="briefing-risks">
-              <span className="briefing-label">风险提示</span>
+              <span className="briefing-label">{t("风险提示", "Risks")}</span>
               <ul>
                 {briefing.summary?.risks?.map((risk, index) => (
                   <li key={`${risk}-${index}`}>{risk}</li>
@@ -120,21 +123,21 @@ function BriefingCard({
       {briefing.status === "ABSTAIN" && (
         <div className="briefing-abstain" data-testid="briefing-abstain">
           <strong>Abstain</strong>
-          <p>{abstainReasonLabel(briefing.abstain_reason)}</p>
+          <p>{abstainReasonLabel(briefing.abstain_reason, locale)}</p>
         </div>
       )}
 
       {briefing.status === "FAILED" && (
         <div className="briefing-abstain" data-testid="briefing-failed">
-          <strong>本轮未完成</strong>
-          <p>宿主没有完成本轮简报，等待下一次扫描命中。</p>
+          <strong>{t("本轮未完成", "This round did not finish")}</strong>
+          <p>{t("宿主没有完成本轮简报，等待下一次扫描命中。", "The host did not finish this briefing; waiting for the next scan hit.")}</p>
         </div>
       )}
 
       {(briefing.status === "READY" || briefing.status === "ABSTAIN") &&
         (briefing.evidence_refs?.length ?? 0) > 0 && (
           <details className="briefing-evidence" data-testid="briefing-evidence">
-            <summary>证据引用 · {briefing.evidence_refs?.length ?? 0}</summary>
+            <summary>{t("证据引用", "Evidence")} · {briefing.evidence_refs?.length ?? 0}</summary>
             <ul>
               {briefing.evidence_refs?.map((evidence) => (
                 <li key={evidence.evidence_id}>
@@ -156,7 +159,7 @@ function BriefingCard({
             onLocate(briefing);
           }}
         >
-          切到主图
+          {t("切到主图", "Open in chart")}
         </button>
         {briefing.status === "READY" && !readOnly && (
           <button
@@ -167,7 +170,7 @@ function BriefingCard({
               onBringToCollab(briefing);
             }}
           >
-            带入协同
+            {t("带入协同", "Bring to consultation")}
           </button>
         )}
         {unread && (
@@ -176,7 +179,7 @@ function BriefingCard({
             className="ghost-button"
             onClick={() => onRead(briefing)}
           >
-            标记已读
+            {t("标记已读", "Mark as read")}
           </button>
         )}
       </div>
@@ -194,6 +197,7 @@ export function BriefingInbox({
   now = Date.now(),
   tabBar,
 }: BriefingInboxProps) {
+  useLocale();
   if (!open) return null;
 
   return (
@@ -201,21 +205,21 @@ export function BriefingInbox({
       {tabBar}
       <div className="briefings-head">
         <div>
-          <h2 className="briefings-title">协同简报</h2>
+          <h2 className="briefings-title">{t("协同简报", "Collaborative briefings")}</h2>
           <p className="briefings-subtitle">
-            扫描命中 · 冻结快照 · 零轮询模型
+            {t("扫描命中 · 冻结快照 · 零轮询模型", "Scan hit · frozen snapshot · no-model polling")}
           </p>
         </div>
         <div className="briefings-head-actions">
           {controller.unread > 0 && (
-            <span className="briefings-unread" aria-label="未读简报">
-              {controller.unread} 条未读
+            <span className="briefings-unread" aria-label={t("未读简报", "Unread briefings")}>
+              {t(`${controller.unread} 条未读`, `${controller.unread} unread`)}
             </span>
           )}
           <button
             type="button"
             className="ghost-button"
-            aria-label="收起简报收件箱"
+            aria-label={t("收起简报收件箱", "Collapse briefing inbox")}
             onClick={onClose}
           >
             ×
@@ -226,7 +230,7 @@ export function BriefingInbox({
       {controller.error !== null && (
         <div className="briefings-error" role="alert" data-testid="briefings-error">
           <span>{controller.error}</span>
-          <button type="button" aria-label="关闭简报错误" onClick={controller.clearError}>
+          <button type="button" aria-label={t("关闭简报错误", "Dismiss briefing error")} onClick={controller.clearError}>
             ×
           </button>
         </div>
@@ -234,15 +238,15 @@ export function BriefingInbox({
 
       {controller.loading && controller.briefings.length === 0 && (
         <div className="briefings-loading" aria-live="polite">
-          正在读取简报…
+          {t("正在读取简报…", "Loading briefings…")}
         </div>
       )}
 
       {!controller.loading && controller.briefings.length === 0 && (
         <div className="briefings-empty" data-testid="briefings-empty">
-          <strong>暂无协同简报</strong>
-          <p>扫描命中且通过冷却与全局令牌桶后，简报才会出现在这里。</p>
-          <p>宿主离线或 --solo 时不生成简报，只保留纯数值异动卡。</p>
+          <strong>{t("暂无协同简报", "No collaborative briefings yet")}</strong>
+          <p>{t("扫描命中且通过冷却与全局令牌桶后，简报才会出现在这里。", "Briefings appear here after a scan hit passes the cooldown and the global token bucket.")}</p>
+          <p>{t("宿主离线或 --solo 时不生成简报，只保留纯数值异动卡。", "When the host is offline or in --solo mode, no briefing is generated; only the numeric move card is kept.")}</p>
         </div>
       )}
 

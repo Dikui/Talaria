@@ -68,19 +68,22 @@ import { useScanner } from "./features/scanner/useScanner";
 import { WatchlistPanel } from "./features/watchlist/WatchlistPanel";
 import { ApiError, api } from "./lib/api";
 import { toKLineSeries } from "./lib/chartData";
+import { getLocale, t, useLocale } from "./lib/i18n";
 import type { Theme } from "./lib/theme";
 import type { PanelLink } from "./workbench/link";
 import { LinkControls, SymbolControls } from "./workbench/PanelControls";
 import { useLinkSnapshot } from "./workbench/usePanelLink";
 const PAGE_SIZE = 300;
 
-const cutoffFormatter = new Intl.DateTimeFormat("zh-CN", {
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
+function formatCutoff(ts: number): string {
+  return new Intl.DateTimeFormat(getLocale() === "zh" ? "zh-CN" : "en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(ts));
+}
 
 interface ErrorInfo {
   code: string;
@@ -94,20 +97,20 @@ function describeError(error: unknown): ErrorInfo {
   if (error instanceof Error) {
     return { code: "CLIENT_ERROR", message: error.message };
   }
-  return { code: "UNKNOWN_ERROR", message: "未知错误" };
+  return { code: "UNKNOWN_ERROR", message: t("未知错误", "Unknown error") };
 }
 
 function feedLabel(feedMode: string | null): string {
   if (feedMode === "fixture") {
-    return "离线样本";
+    return t("离线样本", "Offline sample");
   }
   if (feedMode === "bybit") {
-    return "Bybit 实时";
+    return t("Bybit 实时", "Bybit live");
   }
   if (feedMode === "replay") {
-    return "回放";
+    return t("回放", "Replay");
   }
-  return "行情源未知";
+  return t("行情源未知", "Unknown feed");
 }
 
 interface ChartWorkbenchProps {
@@ -119,6 +122,7 @@ interface ChartWorkbenchProps {
 }
 
 export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: ChartWorkbenchProps) {
+  useLocale();
   const { group, instrumentId, timeframe, locateTs: snapshotCutoff } = useLinkSnapshot(link);
   const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
   const [feedMode, setFeedMode] = useState<string | null>(null);
@@ -514,10 +518,10 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
   const gapCount = stats.gaps + liveGapCount;
   const liveStatus =
     stream.hello === null
-      ? "实时流连接中"
+      ? t("实时流连接中", "Connecting live stream")
       : streamLive
-        ? `${badge.label} · 已推送 ${stream.bars.length} 根`
-        : "离线样本（无实时流）";
+        ? `${badge.label} · ${t(`已推送 ${stream.bars.length} 根`, `${stream.bars.length} bars pushed`)}`
+        : t("离线样本（无实时流）", "Offline sample (no live stream)");
   const drawings = useDrawings({
     chart,
     instrumentId,
@@ -587,7 +591,9 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
     >
       <header className="app-header">
         <div className="brand">
-          <h1>{fullWorkbench ? "Talaria 分析工作台" : "Talaria 图表"}</h1>
+          <h1>{fullWorkbench
+            ? t("Talaria 分析工作台", "Talaria Analysis Workbench")
+            : t("Talaria 图表", "Talaria Chart")}</h1>
           <LinkControls link={link} />
         </div>
         <div className="header-controls">
@@ -611,7 +617,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
               className={`host-badge host-badge--${collaboration.tone}`}
               data-testid="host-status"
               role="status"
-              title={collaboration.status?.message ?? "正在检测协同宿主"}
+              title={collaboration.status?.message ?? t("正在检测协同宿主", "Detecting collaboration host")}
             >
               {collaboration.label}
             </span>
@@ -637,7 +643,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                   }
                 }}
               >
-                异动 {scanner.triggers.length}
+                {t("异动", "Movers")} {scanner.triggers.length}
               </button>
             )}
             <button
@@ -650,7 +656,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                 setSelecting(false);
               }}
             >
-              简报{briefings.unread > 0 ? ` ${briefings.unread}` : ""}
+              {t("简报", "Briefings")}{briefings.unread > 0 ? ` ${briefings.unread}` : ""}
             </button>
             <button
               type="button"
@@ -663,7 +669,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                 }
               }}
             >
-              预警{alerts.unread > 0 ? ` ${alerts.unread}` : ""}
+              {t("预警", "Alerts")}{alerts.unread > 0 ? ` ${alerts.unread}` : ""}
             </button>
             <button
               type="button"
@@ -673,7 +679,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                 setRightTab(rightTab === "annotations" ? null : "annotations");
               }}
             >
-              标注{activeAnnotationCount > 0 ? ` ${activeAnnotationCount}` : ""}
+              {t("标注", "Annotations")}{activeAnnotationCount > 0 ? ` ${activeAnnotationCount}` : ""}
             </button>
             <button
               type="button"
@@ -684,16 +690,16 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                 setSelecting(false);
               }}
             >
-              协同会诊
+              {t("协同会诊", "Consultation")}
             </button>
             {snapshotCutoff !== null && (
               <button
                 type="button"
                 className="ghost-button locate-badge"
                 onClick={refresh}
-                title="回到最新快照"
+                title={t("回到最新快照", "Back to latest snapshot")}
               >
-                触发时刻 · 返回最新
+                {t("触发时刻 · 返回最新", "Trigger time · Back to latest")}
               </button>
             )}
             {tools}
@@ -713,7 +719,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                     setFreezingDraft(false);
                   }
                 }}>
-                模拟盘草案
+                {t("模拟盘草案", "Paper draft")}
               </button>
             )}
             <button
@@ -722,7 +728,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
               onClick={refresh}
               disabled={loading}
             >
-              刷新快照
+              {t("刷新快照", "Refresh snapshot")}
             </button>
           </div>
         </div>
@@ -734,15 +740,19 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
             setSavedPaperDraft(true);
             setPaperDraft(null);
           }} />}
-        {savedPaperDraft && <p className="paper-draft-saved" role="status">草案已保存。请在账户页审阅并确认。</p>}
+        {savedPaperDraft && <p className="paper-draft-saved" role="status">{t("草案已保存。请在账户页审阅并确认。", "Draft saved. Review and confirm it on the account page.")}</p>}
         {error !== null && (
           <div className="error-banner" role="alert" data-testid="error-banner">
             <strong>{error.code}</strong>
-            <span>{error.message}</span>
+            <span>
+              {error.code === "EMPTY_SNAPSHOT"
+                ? t("快照中没有可展示的历史 K 线。", "This snapshot has no historical candles to display.")
+                : error.message}
+            </span>
           </div>
         )}
 
-        {stream.chartQuotaDenied && <p role="status">图表实时行情配额不足，正在等待重订。</p>}
+        {stream.chartQuotaDenied && <p role="status">{t("图表实时行情配额不足，正在等待重订。", "The chart is out of live quote quota; waiting to resubscribe.")}</p>}
         <FeedAlert
           health={stream.feedHealth}
           now={stream.now}
@@ -873,7 +883,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
           />
           <section
             className={`chart-panel${keyLevelPanelOpen ? "" : " key-levels-collapsed"}`}
-            aria-label="K 线主图"
+            aria-label={t("K 线主图", "Candlestick chart")}
           >
             {loading ? (
               <div className="loading-state" data-testid="loading-state" aria-live="polite">
@@ -885,20 +895,21 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                   <span />
                   <span />
                 </div>
-                <p>正在回填历史 K 线…</p>
+                <p>{t("正在回填历史 K 线…", "Backfilling historical candles…")}</p>
               </div>
             ) : showEmpty ? (
               <div className="empty-state" data-testid="empty-state">
                 <div className="empty-mark" aria-hidden="true">
                   K
                 </div>
-                <h2>尚未加载到历史行情</h2>
+                <h2>{t("尚未加载到历史行情", "No historical market data yet")}</h2>
                 <p>
-                  请检查网络连接；也可以使用 <code>--fixture-dir</code>{" "}
-                  启动离线样本模式后再试。
+                  {t("请检查网络连接；也可以使用 ", "Check your network connection, or start offline sample mode with ")}
+                  <code>--fixture-dir</code>{" "}
+                  {t("启动离线样本模式后再试。", "and try again.")}
                 </p>
                 <button type="button" className="primary-button" onClick={refresh}>
-                  重试
+                  {t("重试", "Retry")}
                 </button>
               </div>
             ) : (
@@ -924,7 +935,7 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                       data-testid="derivative-pane-empty"
                       role="status"
                     >
-                      该合约暂无持仓量历史，OI 背离暂不可计算。
+                      {t("该合约暂无持仓量历史，OI 背离暂不可计算。", "This contract has no open-interest history, so OI divergence cannot be computed.")}
                     </div>
                   )}
                   {!readOnlyViewport && (
@@ -1048,13 +1059,13 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
                       data-testid="key-level-open"
                       onClick={() => setKeyLevelPanelOpen(true)}
                     >
-                      关键位 {visibleLevels.length}
+                      {t(`关键位 ${visibleLevels.length}`, `${visibleLevels.length} key levels`)}
                     </button>
                   ))}
                   {!readOnlyViewport && drawings.error !== null && (
                     <div className="drawing-error" role="alert" data-testid="drawing-error">
                       <span>{drawings.error}</span>
-                      <button type="button" aria-label="关闭画线错误" onClick={drawings.clearError}>
+                      <button type="button" aria-label={t("关闭画线错误", "Dismiss drawing error")} onClick={drawings.clearError}>
                         ×
                       </button>
                     </div>
@@ -1102,18 +1113,18 @@ export function ChartWorkbench({ embedded, link, theme, fullWorkbench, tools }: 
       <footer className="status-bar" data-testid="status-bar" aria-live="polite">
         {snapshot ? (
           <>
-            <span>快照 {snapshot.snapshot_id.slice(0, 8)}</span>
+            <span>{t("快照", "Snapshot")} {snapshot.snapshot_id.slice(0, 8)}</span>
             <span className="status-divider">·</span>
-            <span>截止 {cutoffFormatter.format(new Date(snapshot.cutoff_ts))}</span>
+            <span>{t("截止", "As of")} {formatCutoff(snapshot.cutoff_ts)}</span>
             <span className="status-divider">·</span>
-            <span data-testid="loaded-count">已加载 {stats.loaded} 根</span>
+            <span data-testid="loaded-count">{t("已加载", "Loaded")} {stats.loaded} {t("根", "bars")}</span>
             <span className="status-divider">·</span>
-            <span data-testid="gap-count">断流 {gapCount} 处</span>
+            <span data-testid="gap-count">{t(`断流 ${gapCount} 处`, `${gapCount} gaps`)}</span>
             <span className="status-divider">·</span>
             <span data-testid="live-status">{liveStatus}</span>
           </>
         ) : (
-          <span>{loading ? "正在准备快照…" : "尚未创建快照"}</span>
+          <span>{loading ? t("正在准备快照…", "Preparing snapshot…") : t("尚未创建快照", "No snapshot yet")}</span>
         )}
       </footer>
     </div>

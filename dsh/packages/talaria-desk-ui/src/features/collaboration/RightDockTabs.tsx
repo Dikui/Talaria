@@ -1,3 +1,5 @@
+import { t, useLocale } from "../../lib/i18n";
+
 export type RightDockTab = "collab" | "alerts" | "annotations" | "briefings";
 
 interface RightDockTabsProps {
@@ -18,9 +20,10 @@ export function RightDockTabs({
   onSelect,
   onClose,
 }: RightDockTabsProps) {
+  useLocale();
   return (
     <div className="right-dock-tabs" data-testid="right-dock-tabs">
-      <div className="right-dock-tablist" role="tablist" aria-label="右栏面板">
+      <div className="right-dock-tablist" role="tablist" aria-label={t("右栏面板", "Right dock panel")}>
         <button
           type="button"
           role="tab"
@@ -28,7 +31,7 @@ export function RightDockTabs({
           className={`right-dock-tab${active === "briefings" ? " is-active" : ""}`}
           onClick={() => onSelect("briefings")}
         >
-          简报{briefingUnread > 0 ? ` ${briefingUnread}` : ""}
+          {t(`简报${briefingUnread > 0 ? ` ${briefingUnread}` : ""}`, `Briefings${briefingUnread > 0 ? ` ${briefingUnread}` : ""}`)}
         </button>
         <button
           type="button"
@@ -37,7 +40,7 @@ export function RightDockTabs({
           className={`right-dock-tab${active === "collab" ? " is-active" : ""}`}
           onClick={() => onSelect("collab")}
         >
-          协同会诊
+          {t("协同会诊", "Consultation")}
         </button>
         <button
           type="button"
@@ -46,7 +49,7 @@ export function RightDockTabs({
           className={`right-dock-tab${active === "annotations" ? " is-active" : ""}`}
           onClick={() => onSelect("annotations")}
         >
-          标注{annotationCount > 0 ? ` ${annotationCount}` : ""}
+          {t(`标注${annotationCount > 0 ? ` ${annotationCount}` : ""}`, `Annotations${annotationCount > 0 ? ` ${annotationCount}` : ""}`)}
         </button>
         <button
           type="button"
@@ -55,13 +58,13 @@ export function RightDockTabs({
           className={`right-dock-tab${active === "alerts" ? " is-active" : ""}`}
           onClick={() => onSelect("alerts")}
         >
-          预警{alertUnread > 0 ? ` ${alertUnread}` : ""}
+          {t(`预警${alertUnread > 0 ? ` ${alertUnread}` : ""}`, `Alerts${alertUnread > 0 ? ` ${alertUnread}` : ""}`)}
         </button>
       </div>
       <button
         type="button"
         className="right-dock-close"
-        aria-label="收起右栏"
+        aria-label={t("收起右栏", "Collapse right dock")}
         onClick={onClose}
       >
         ×

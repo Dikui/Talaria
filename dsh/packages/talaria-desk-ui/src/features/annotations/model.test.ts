@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { setLocale } from "../../lib/i18n";
 import type { AgentAnnotationRecord } from "@talaria/contracts";
 
 import { isReadOnlyViewport } from "../drawings/responsive";
@@ -6,6 +8,8 @@ import {
   activeAnnotations,
   annotationPopoverLines,
   annotationPriceLabel,
+  annotationStatusLabel,
+  kindLabel,
   annotationZoneEnd,
   canManageAnnotations,
   evidenceLines,
@@ -111,5 +115,21 @@ describe("annotation model", () => {
     expect(isReadOnlyViewport(390)).toBe(true);
     expect(canManageAnnotations(isReadOnlyViewport(390))).toBe(false);
     expect(canManageAnnotations(isReadOnlyViewport(1440))).toBe(true);
+  });
+});
+
+describe("annotation model (English)", () => {
+  afterEach(() => setLocale("zh"));
+
+  it("localizes status, kind, evidence and popover lines", () => {
+    setLocale("en");
+    expect(annotationStatusLabel("ACTIVE")).toBe("Active");
+    expect(kindLabel("ZONE")).toBe("Price zone");
+    expect(annotationPopoverLines(annotation())).toEqual([
+      "Snapshot snap_abc",
+      "Round 2 · session-a",
+      "Evidence: Key level kl_1 (前低)",
+      expect.stringMatching(/^Evidence: Candle /),
+    ]);
   });
 });

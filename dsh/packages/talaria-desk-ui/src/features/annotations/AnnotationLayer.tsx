@@ -2,10 +2,11 @@ import { useEffect, useReducer, useState } from "react";
 import type { AgentAnnotationRecord } from "@talaria/contracts";
 import type { Chart } from "klinecharts";
 
+import { t, useLocale } from "../../lib/i18n";
 import { frameSignature, projectPoints, readChartFrame } from "../drawings/projection";
 import {
-  ANNOTATION_BADGE,
   activeAnnotations,
+  annotationBadge,
   annotationPopoverLines,
   annotationPriceLabel,
   annotationZoneEnd,
@@ -51,6 +52,7 @@ export function AnnotationLayer({
 }: AnnotationLayerProps) {
   const [, forceRender] = useReducer((value: number) => value + 1, 0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const locale = useLocale();
 
   useEffect(() => {
     if (chart == null) return;
@@ -158,7 +160,7 @@ export function AnnotationLayer({
               >
                 <rect x={0} y={-13} width={Math.min(148, 52 + annotation.label.length * 12)} height={18} rx={4} />
                 <text x={6} y={0}>
-                  {ANNOTATION_BADGE} · {kindLabel(annotation.kind)}
+                  {annotationBadge(locale)} · {kindLabel(annotation.kind, locale)}
                 </text>
                 <title>{`${annotation.label} ${annotationPriceLabel(annotation)}`}</title>
               </g>
@@ -173,24 +175,24 @@ export function AnnotationLayer({
           className="annotation-popover"
           data-testid="annotation-popover"
           role="dialog"
-          aria-label="智能体标注溯源"
+          aria-label={t("智能体标注溯源", "Agent annotation trace")}
         >
           <div className="annotation-popover-head">
             <strong>{selected.label}</strong>
             <button
               type="button"
               className="annotation-popover-close"
-              aria-label="关闭标注溯源"
+              aria-label={t("关闭标注溯源", "Close annotation trace")}
               onClick={() => setSelectedId(null)}
             >
               ×
             </button>
           </div>
           <p className="annotation-popover-price">
-            {kindLabel(selected.kind)} · {annotationPriceLabel(selected)}
+            {kindLabel(selected.kind, locale)} · {annotationPriceLabel(selected)}
           </p>
           <ul className="annotation-popover-lines">
-            {annotationPopoverLines(selected).map((line) => (
+            {annotationPopoverLines(selected, locale).map((line) => (
               <li key={line}>{line}</li>
             ))}
           </ul>
@@ -198,9 +200,9 @@ export function AnnotationLayer({
             <p className="annotation-popover-rationale">{selected.rationale}</p>
           )}
           <div className="annotation-evidence">
-            <span>证据 {evidenceLines(selected).length} 条</span>
+            <span>{t(`证据 ${evidenceLines(selected, locale).length} 条`, `${evidenceLines(selected, locale).length} evidence items`)}</span>
             <ol>
-              {evidenceLines(selected).map((line, index) => (
+              {evidenceLines(selected, locale).map((line, index) => (
                 <li key={`${index}-${line}`}>{line}</li>
               ))}
             </ol>
@@ -215,7 +217,7 @@ export function AnnotationLayer({
                   setSelectedId(null);
                 }}
               >
-                采纳为画线
+                {t("采纳为画线", "Adopt as drawing")}
               </button>
               <button
                 type="button"
@@ -225,12 +227,12 @@ export function AnnotationLayer({
                   setSelectedId(null);
                 }}
               >
-                忽略
+                {t("忽略", "Dismiss")}
               </button>
             </div>
           )}
           <p className="annotation-popover-hint">
-            快照 {selected.snapshot_id.slice(0, 8)} · 第 {selected.round} 轮 · 只读建议，禁止拖拽
+            {t(`快照 ${selected.snapshot_id.slice(0, 8)} · 第 ${selected.round} 轮 · 只读建议，禁止拖拽`, `Snapshot ${selected.snapshot_id.slice(0, 8)} · Round ${selected.round} · read-only suggestion, dragging disabled`)}
           </p>
         </div>
       )}

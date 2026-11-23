@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { setLocale } from "../../lib/i18n";
 import type { ScannerBriefing } from "@talaria/contracts";
 
 import {
@@ -9,6 +11,7 @@ import {
   briefingQuestion,
   briefingStatusLabel,
   briefingTime,
+  briefingTitle,
 } from "./model";
 
 const NOW = 1_795_023_000_000;
@@ -73,5 +76,22 @@ describe("briefing model", () => {
     expect(briefingTime(NOW - 30_000, NOW)).toBe("刚刚");
     expect(briefingTime(NOW - 120_000, NOW)).toBe("2 分钟前");
     expect(briefingTime(0, NOW)).toBe("时间未知");
+  });
+});
+
+describe("briefing model (English)", () => {
+  afterEach(() => setLocale("zh"));
+
+  it("localizes status, abstain reason, title and relative time", () => {
+    setLocale("en");
+    expect(briefingStatusLabel("READY")).toBe("Ready");
+    expect(abstainReasonLabel("MODEL_TIMEOUT")).toContain("timed out");
+    expect(briefingTitle(briefing())).toBe("ETH-USDT-PERP · 5m move briefing");
+    expect(briefingQuestion(briefing())).toContain(
+      "Using the frozen snapshot snap_1",
+    );
+    expect(briefingTime(NOW - 120_000, NOW)).toBe("2m ago");
+    expect(briefingTime(NOW - 7_200_000, NOW)).toBe("2h ago");
+    expect(briefingTime(0, NOW)).toBe("Time unknown");
   });
 });

@@ -7,12 +7,13 @@ import type {
 } from "@talaria/contracts";
 
 import { ApiError, api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { isPending } from "./model";
 
 function describe(caught: unknown): string {
   if (caught instanceof ApiError) return caught.message;
   if (caught instanceof Error) return caught.message;
-  return "协同会诊暂不可用";
+  return t("协同会诊暂不可用", "Consultation unavailable");
 }
 
 /** 面板挂载时拉最近会诊；有 PENDING 时快轮询，全部落定后降为低频同步。 */

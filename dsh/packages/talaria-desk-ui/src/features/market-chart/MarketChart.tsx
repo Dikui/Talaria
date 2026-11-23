@@ -20,6 +20,7 @@ import type {
 } from "@talaria/contracts";
 
 import { toKLineData, toKLineSeries, toPeriod } from "../../lib/chartData";
+import { getLocale, useLocale } from "../../lib/i18n";
 import { alignIndicatorRows } from "../../lib/indicatorData";
 import {
   INDICATOR_CHANNELS,
@@ -42,27 +43,28 @@ const INDICATOR_ID_PREFIX = "talaria-";
  */
 registerIndicator<IndicatorRow>({
   name: OVERLAY_TEMPLATE,
-  shortName: "指标",
+  shortName: "TALARIA",
   series: "price",
-  figures: [{ key: "value", title: "值", type: "line" }],
+  figures: [{ key: "value", title: "", type: "line" }],
   calc: () => [],
 });
 registerIndicator<IndicatorRow>({
   name: STUDY_TEMPLATE,
-  shortName: "指标",
+  shortName: "TALARIA",
   series: "normal",
-  figures: [{ key: "value", title: "值", type: "line" }],
+  figures: [{ key: "value", title: "", type: "line" }],
   calc: () => [],
 });
 
-function figuresFor(series: IndicatorSeries): IndicatorFigure[] {
+function figuresFor(series: IndicatorSeries, locale: "zh" | "en"): IndicatorFigure[] {
   const channels = INDICATOR_CHANNELS[series.name];
+  const bollTitles: Record<string, string> =
+    locale === "zh"
+      ? { mid: "中轨", upper: "上轨", lower: "下轨" }
+      : { mid: "Middle", upper: "Upper", lower: "Lower" };
   return channels.map((channel) => ({
     key: channel,
-    title:
-      series.name === "BOLL"
-        ? { mid: "中轨", upper: "上轨", lower: "下轨" }[channel]
-        : series.name,
+    title: series.name === "BOLL" ? bollTitles[channel] : series.name,
     type: "line",
     styles: () => ({ color: INDICATOR_COLORS[series.name] }),
   }));
@@ -75,6 +77,7 @@ function calcFor(series: IndicatorSeries) {
 
 function indicatorCreate(
   series: IndicatorSeries,
+  locale: "zh" | "en",
 ): IndicatorCreate {
   const isSub = series.pane === "sub";
   return {
@@ -84,7 +87,7 @@ function indicatorCreate(
     series: isSub ? "normal" : "price",
     // 主图指标覆盖在 K 线窗格；副图沿用已有窗格，首次创建交给 KLineChart 新建。
     paneId: isSub ? undefined : CANDLE_PANE_ID,
-    figures: figuresFor(series),
+    figures: figuresFor(series, locale),
     calc: calcFor(series),
   };
 }
@@ -186,6 +189,7 @@ export function MarketChart({
   const cursorRef = useRef<ReturnType<typeof observeLinkedCrosshair> | null>(null);
   const onChartReadyRef = useRef(onChartReady);
   onChartReadyRef.current = onChartReady;
+  const locale = useLocale();
 
   const flushLive = useCallback(() => {
     const callback = barCallbackRef.current;
@@ -228,7 +232,7 @@ export function MarketChart({
       return;
     }
     const chart = init(element, {
-      locale: "zh-CN",
+      locale: getLocale() === "zh" ? "zh-CN" : "en-US",
       timezone: "Asia/Shanghai",
     });
     if (!chart) {
@@ -330,6 +334,10 @@ export function MarketChart({
   }, []);
 
   useEffect(() => {
+    chartRef.current?.setLocale(locale === "zh" ? "zh-CN" : "en-US");
+  }, [locale]);
+
+  useEffect(() => {
     if (locateTs !== null && chartRef.current?.getDataList().length) {
       chartRef.current.scrollToTimestamp(locateTs);
     }
@@ -364,7 +372,7 @@ export function MarketChart({
     }
     const markerColor = getComputedStyle(element).getPropertyValue("--accent").trim();
     const configList = [
-      ...(indicatorSeries ?? []).map(indicatorCreate),
+      ...(indicatorSeries ?? []).map((series) => indicatorCreate(series, locale)),
       ...ruleChartIndicators(rulePreview, markerColor),
     ];
     const activeIds = new Set(configList.map(({ id }) => id));
@@ -389,7 +397,7 @@ export function MarketChart({
       }
     }
     fitIndicatorPanes(chart, element.clientHeight);
-  }, [indicatorSeries, rulePreview, theme]);
+  }, [indicatorSeries, rulePreview, theme, locale]);
 
   return (
     <div className="chart-stage">

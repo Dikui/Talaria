@@ -8,6 +8,8 @@ import type {
   ScannerTrigger,
 } from "@talaria/contracts";
 
+import { t } from "../../lib/i18n";
+
 /**
  * 快通道 `WS /ws/desk` 的服务端消息。
  *
@@ -120,7 +122,7 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
         ...(typeof record.timeframe === "string" && { timeframe: record.timeframe }),
         code: typeof record.code === "string" ? record.code : "INTERNAL",
         message:
-          typeof record.message === "string" ? record.message : "未知错误",
+          typeof record.message === "string" ? record.message : t("未知错误", "Unknown error"),
       };
     default:
       return null;
