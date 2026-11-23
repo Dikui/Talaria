@@ -7,6 +7,113 @@
   overflow: auto;
 }
 
+.talaria-dsh-workspace {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.talaria-dsh-workspace-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 2px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.talaria-dsh-brand {
+  flex: none;
+  /* Also rendered outside .talaria-desk (the sidebar rail), where the desk
+     tokens are absent; the Talaria gold keeps the brand mark visible there. */
+  color: var(--accent-strong, #9a6700);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .28));
+}
+
+.talaria-dsh-brand.is-active {
+  color: var(--accent, #b07800);
+}
+
+[data-ds-dark-theme] .talaria-dsh-brand,
+[data-theme="dark"] .talaria-dsh-brand {
+  color: var(--accent-strong, #f3cd73);
+}
+
+[data-ds-dark-theme] .talaria-dsh-brand.is-active,
+[data-theme="dark"] .talaria-dsh-brand.is-active {
+  color: var(--accent, #e8b84b);
+}
+
+.talaria-dsh-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 6px 10px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The tab bar stays above the connection boundary; its status occupies the
+   remaining panel while the service reconnects. */
+.talaria-dsh-workspace > .desk-connect {
+  flex: 1;
+  align-content: start;
+}
+
+.talaria-dsh-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius, 8px);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.talaria-dsh-tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.talaria-dsh-tab[aria-selected="true"] {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  font-weight: 600;
+}
+
+.talaria-dsh-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.talaria-dsh-tab-panel[hidden] {
+  display: none;
+}
+
+.talaria-dsh-tab-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.talaria-dsh-tab-panel > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
 .talaria-dsh-chart {
   flex: 1;
   min-width: 0;
