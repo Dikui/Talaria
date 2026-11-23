@@ -1,29 +1,56 @@
 import { RULE_EDITOR_SCHEMA as schema } from "@talaria/contracts";
 import type { DrawingRecord, KeyLevel, RuleIndicator, RuleIndicatorParams } from "@talaria/contracts";
-import { ALERT_LEVEL_EVENT_LABELS, METRIC_LABELS } from "../alerts/model";
-import { KIND_LABELS } from "../drawings/tools";
+import {
+  alertLevelEventLabels,
+  barFieldLabel,
+  drawingKindLabel,
+  indicatorNameLabel,
+  metricLabels,
+} from "../alerts/model";
 import { levelLabel } from "../key-levels/model";
-import { INDICATOR_LABELS, type IndicatorDefaults } from "../indicators/config";
+import { type IndicatorDefaults } from "../indicators/config";
+import { t, useLocale } from "../../lib/i18n";
 import {
   indicatorOperand, isGroup, newComparison, newOperand, nodeCount, operatorParams,
   validDecimal, validDeviation, validPeriod, validRatio,
   type Expression, type Operand, type OperatorName, type Timing,
 } from "./ruleForm";
 
-const expressionLabels = {
-  compare: "比较", all: "全部满足（且）", any: "任一满足（或）", not: "取反（非）",
-  overlay: "画线事件", level_event: "关键位事件",
-};
-const operandLabels = {
-  bar: "K 线字段", event: "当前行情", derivative: "衍生品读数", constant: "常量",
-  indicator: "指标算子", drawing_price: "画线价格", level_price: "关键位价格",
-};
-const comparisonLabels = {
-  lt: "小于", lte: "小于等于", gt: "大于", gte: "大于等于", eq: "等于",
-  cross_above: "上穿", cross_below: "下穿",
-};
-const barLabels = { open: "开盘价", high: "最高价", low: "最低价", close: "收盘价", volume: "成交量", turnover: "成交额" };
-const edgeLabels = { lower: "下沿", upper: "上沿" };
+function expressionLabels(): Record<string, string> {
+  return {
+    compare: t("比较", "Compare"),
+    all: t("全部满足（且）", "All of (AND)"),
+    any: t("任一满足（或）", "Any of (OR)"),
+    not: t("取反（非）", "Not"),
+    overlay: t("画线事件", "Drawing event"),
+    level_event: t("关键位事件", "Key level event"),
+  };
+}
+function operandLabels(): Record<string, string> {
+  return {
+    bar: t("K 线字段", "Bar field"),
+    event: t("当前行情", "Current market"),
+    derivative: t("衍生品读数", "Derivative reading"),
+    constant: t("常量", "Constant"),
+    indicator: t("指标算子", "Indicator"),
+    drawing_price: t("画线价格", "Drawing price"),
+    level_price: t("关键位价格", "Key level price"),
+  };
+}
+function comparisonLabels(): Record<string, string> {
+  return {
+    lt: t("小于", "Less than"),
+    lte: t("小于等于", "Less than or equal"),
+    gt: t("大于", "Greater than"),
+    gte: t("大于等于", "Greater than or equal"),
+    eq: t("等于", "Equal"),
+    cross_above: t("上穿", "Crosses above"),
+    cross_below: t("下穿", "Crosses below"),
+  };
+}
+function edgeLabels(): Record<string, string> {
+  return { lower: t("下沿", "Lower"), upper: t("上沿", "Upper") };
+}
 const operators = Object.keys(schema.operators) as OperatorName[];
 
 interface ChoiceProps<T extends string> {
@@ -36,6 +63,7 @@ interface ChoiceProps<T extends string> {
 }
 
 function Choice<T extends string>({ label, value, options, labels, placeholder, onChange }: ChoiceProps<T>) {
+  useLocale();
   const selected = options.includes(value);
   return (
     <label className="rule-field">
@@ -56,6 +84,7 @@ function DecimalField({ label, value, invalid, placeholder, onChange }: {
   placeholder?: string;
   onChange: (value: string) => void;
 }) {
+  useLocale();
   return (
     <label className="rule-field">
       <span>{label}</span>
@@ -80,16 +109,17 @@ function DrawingChoice({ id, drawings, ratio, onSelect, onRatio }: {
   onSelect: (id: string) => void;
   onRatio: (ratio: string | null) => void;
 }) {
+  useLocale();
   const options = drawings.map(({ drawing_id }) => drawing_id);
   return (
     <>
-      <Choice label="画线" value={id} options={options}
+      <Choice label={t("画线", "Drawing")} value={id} options={options}
         labels={Object.fromEntries(drawings.map((drawing) => [
-          drawing.drawing_id, `${KIND_LABELS[drawing.kind]} · ${drawing.drawing_id.slice(4, 10)}`,
+          drawing.drawing_id, `${drawingKindLabel(drawing.kind)} · ${drawing.drawing_id.slice(4, 10)}`,
         ]))}
-        placeholder={options.length ? "选择画线" : "当前图表没有可用画线"} onChange={onSelect} />
+        placeholder={options.length ? t("选择画线", "Select a drawing") : t("当前图表没有可用画线", "No drawings available on this chart")} onChange={onSelect} />
       {drawings.find((drawing) => drawing.drawing_id === id)?.kind === "FIB_RETRACEMENT" && (
-        <DecimalField label="回撤比例（0–1）" value={ratio ?? ""} placeholder="0.5"
+        <DecimalField label={t("回撤比例（0–1）", "Retracement ratio (0–1)")} value={ratio ?? ""} placeholder="0.5"
           invalid={!validRatio(ratio)} onChange={(value) => onRatio(value || null)} />
       )}
     </>
@@ -101,13 +131,14 @@ function LevelChoice({ id, context, onSelect }: {
   context: FormContext;
   onSelect: (level: KeyLevel) => void;
 }) {
+  useLocale();
   const levels = new Map(context.levels.map((level) => [level.level_id, level]));
   return (
-    <Choice label="关键位" value={id} options={id && !levels.has(id) ? [id, ...levels.keys()] : [...levels.keys()]}
+    <Choice label={t("关键位", "Key level")} value={id} options={id && !levels.has(id) ? [id, ...levels.keys()] : [...levels.keys()]}
       labels={Object.fromEntries(context.levels.map((level) => [
         level.level_id, levelLabel(level, context.pricePrecision ?? 2),
       ]))}
-      placeholder={levels.size ? "选择关键位" : "当前图表没有可用关键位"}
+      placeholder={levels.size ? t("选择关键位", "Select a key level") : t("当前图表没有可用关键位", "No key levels available on this chart")}
       onChange={(value) => {
         const level = levels.get(value);
         if (level) onSelect(level);
@@ -120,6 +151,8 @@ function IndicatorFields({ operand, defaults, onChange }: {
   defaults: IndicatorDefaults;
   onChange: (operand: RuleIndicator) => void;
 }) {
+  useLocale();
+  const operatorLabels = Object.fromEntries(operators.map((name) => [name, indicatorNameLabel(name)]));
   const params = operatorParams(operand.name);
   const channels = schema.operators[operand.name].channels;
   const setParams = (patch: RuleIndicatorParams) => onChange({
@@ -127,18 +160,21 @@ function IndicatorFields({ operand, defaults, onChange }: {
   });
   return (
     <>
-      <Choice label="算子" value={operand.name} options={operators} labels={INDICATOR_LABELS}
+      <Choice label={t("算子", "Indicator")} value={operand.name} options={operators} labels={operatorLabels}
         onChange={(name) => onChange(indicatorOperand(name, defaults))} />
       {(operand.window ?? "alert") === "alert" && operand.params?.anchor !== "session" && (
-        <span>预警窗口 · 最近 {Math.max(600, (operand.params?.period ?? 1) + 2)} 根</span>
+        <span>{t(`预警窗口 · 最近 ${Math.max(600, (operand.params?.period ?? 1) + 2)} 根`, `Alert window · last ${Math.max(600, (operand.params?.period ?? 1) + 2)} bars`)}</span>
       )}
       {channels.length > 1 && (
-        <Choice label="输出通道" value={operand.channel ?? channels[0]} options={channels}
-          labels={{ mid: "中轨", upper: "上轨", lower: "下轨" }}
+        <Choice label={t("输出通道", "Output channel")} value={operand.channel ?? channels[0]} options={channels}
+          labels={{ mid: t("中轨", "Middle"), upper: t("上轨", "Upper"), lower: t("下轨", "Lower") }}
           onChange={(channel) => onChange({ ...operand, channel })} />
       )}
       <label className="rule-field">
-        <span>周期（{params.period.minimum}–{params.period.maximum}）</span>
+        <span>{t(
+          `周期（${params.period.minimum}–${params.period.maximum}）`,
+          `Period (${params.period.minimum}–${params.period.maximum})`,
+        )}</span>
         <input type="number" min={params.period.minimum} max={params.period.maximum} step={1}
           value={operand.params?.period ?? ""} aria-invalid={!validPeriod(operand.name, operand.params?.period)}
           onChange={(event) => {
@@ -147,13 +183,16 @@ function IndicatorFields({ operand, defaults, onChange }: {
           }} />
       </label>
       {"std_dev" in params && (
-        <DecimalField label="标准差倍数（> 0）" value={operand.params?.std_dev ?? ""}
+        <DecimalField label={t("标准差倍数（> 0）", "Std-dev multiplier (> 0)")} value={operand.params?.std_dev ?? ""}
           invalid={!validDeviation(operand.params?.std_dev ?? "")}
           onChange={(std_dev) => setParams({ std_dev })} />
       )}
       {"anchor" in params && (
-        <Choice label="锚点" value={operand.params?.anchor ?? params.anchor.default}
-          options={params.anchor.enum} labels={{ snapshot: operand.window === "chart" ? "快照起点" : "预警窗口起点", session: "UTC 日界" }}
+        <Choice label={t("锚点", "Anchor")} value={operand.params?.anchor ?? params.anchor.default}
+          options={params.anchor.enum} labels={{
+            snapshot: operand.window === "chart" ? t("快照起点", "Snapshot start") : t("预警窗口起点", "Alert window start"),
+            session: t("UTC 日界", "UTC day boundary"),
+          }}
           onChange={(anchor) => setParams({ anchor })} />
       )}
     </>
@@ -166,6 +205,7 @@ function OperandFields({ label, operand, context, onChange }: {
   context: FormContext;
   onChange: (operand: Operand) => void;
 }) {
+  useLocale();
   const options = schema.operands.filter((source) => {
     if (context.timing === "bar_close") return source !== "event";
     if (operand.source === "event") return source === "event";
@@ -173,22 +213,22 @@ function OperandFields({ label, operand, context, onChange }: {
   });
   return (
     <div className="rule-operand">
-      <Choice label={label} value={operand.source} options={options} labels={operandLabels}
+      <Choice label={label} value={operand.source} options={options} labels={operandLabels()}
         onChange={(source) => onChange(newOperand(source, context.defaults))} />
       {operand.source === "constant" && (
-        <DecimalField label="数值" value={operand.value} invalid={!validDecimal(operand.value)}
+        <DecimalField label={t("数值", "Value")} value={operand.value} invalid={!validDecimal(operand.value)}
           onChange={(value) => onChange({ ...operand, value })} />
       )}
       {operand.source === "bar" && (
-        <Choice label="字段" value={operand.field} options={schema.barFields} labels={barLabels}
+        <Choice label={t("字段", "Field")} value={operand.field} options={schema.barFields} labels={Object.fromEntries(schema.barFields.map((field) => [field, barFieldLabel(field)]))}
           onChange={(field) => onChange({ ...operand, field })} />
       )}
       {operand.source === "event" && (
-        <Choice label="行情字段" value={operand.metric} options={schema.eventMetrics} labels={METRIC_LABELS}
+        <Choice label={t("行情字段", "Market field")} value={operand.metric} options={schema.eventMetrics} labels={metricLabels()}
           onChange={(metric) => onChange({ ...operand, metric })} />
       )}
       {operand.source === "derivative" && (
-        <Choice label="衍生品字段" value={operand.kind} options={schema.derivatives} labels={METRIC_LABELS}
+        <Choice label={t("衍生品字段", "Derivative field")} value={operand.kind} options={schema.derivatives} labels={metricLabels()}
           onChange={(kind) => onChange({ ...operand, kind })} />
       )}
       {operand.source === "indicator" && <IndicatorFields operand={operand} defaults={context.defaults} onChange={onChange} />}
@@ -202,7 +242,7 @@ function OperandFields({ label, operand, context, onChange }: {
           onSelect={(level) => onChange({ ...operand, level_id: level.level_id, level_kind: level.kind })} />
       )}
       {(operand.source === "drawing_price" || operand.source === "level_price") && (
-        <Choice label="边界" value={operand.edge ?? "upper"} options={schema.edges} labels={edgeLabels}
+        <Choice label={t("边界", "Edge")} value={operand.edge ?? "upper"} options={schema.edges} labels={edgeLabels()}
           onChange={(edge) => onChange({ ...operand, edge })} />
       )}
     </div>
@@ -219,6 +259,8 @@ interface NodeFieldsProps {
 }
 
 function NodeFields({ node, context, depth, canAdd, onChange, onRemove }: NodeFieldsProps) {
+  useLocale();
+  const expressionLabelsHere = expressionLabels();
   const intrabar = context.timing === "event";
   const group = isGroup(node);
   const canNest = depth < schema.maxDepth;
@@ -249,10 +291,10 @@ function NodeFields({ node, context, depth, canAdd, onChange, onRemove }: NodeFi
 
   return (
     <fieldset className="rule-node">
-      <legend className="rule-sr-only">{expressionLabels[node.op]}</legend>
+      <legend className="rule-sr-only">{expressionLabelsHere[node.op]}</legend>
       <div className="rule-node-header">
-        <Choice label="条件类型" value={node.op} options={types} labels={expressionLabels} onChange={changeType} />
-        {onRemove && <button type="button" className="drawing-action" onClick={onRemove}>移除</button>}
+        <Choice label={t("条件类型", "Condition type")} value={node.op} options={types} labels={expressionLabelsHere} onChange={changeType} />
+        {onRemove && <button type="button" className="drawing-action" onClick={onRemove}>{t("移除", "Remove")}</button>}
       </div>
       {group && (
         <div className="rule-children">
@@ -265,17 +307,17 @@ function NodeFields({ node, context, depth, canAdd, onChange, onRemove }: NodeFi
           ))}
           {node.op !== "not" && canNest && (
             <button type="button" className="drawing-action" disabled={!canAdd}
-              onClick={() => onChange({ ...node, args: [...node.args, newComparison(context.timing)] })}>添加条件</button>
+              onClick={() => onChange({ ...node, args: [...node.args, newComparison(context.timing)] })}>{t("添加条件", "Add condition")}</button>
           )}
         </div>
       )}
       {node.op === "compare" && (
         <div className="rule-comparison">
-          <OperandFields label="左侧" operand={node.left} context={context} onChange={(left) => onChange({ ...node, left })} />
-          <Choice label="比较" value={node.test}
+          <OperandFields label={t("左侧", "Left")} operand={node.left} context={context} onChange={(left) => onChange({ ...node, left })} />
+          <Choice label={t("比较", "Comparison")} value={node.test}
             options={schema.comparisons.filter((test) => !intrabar || !test.startsWith("cross_"))}
-            labels={comparisonLabels} onChange={(test) => onChange({ ...node, test })} />
-          <OperandFields label="右侧" operand={node.right} context={context} onChange={(right) => onChange({ ...node, right })} />
+            labels={comparisonLabels()} onChange={(test) => onChange({ ...node, test })} />
+          <OperandFields label={t("右侧", "Right")} operand={node.right} context={context} onChange={(right) => onChange({ ...node, right })} />
         </div>
       )}
       {node.op === "overlay" && (
@@ -283,20 +325,20 @@ function NodeFields({ node, context, depth, canAdd, onChange, onRemove }: NodeFi
           <DrawingChoice id={node.drawing_id} drawings={context.drawings} ratio={node.ratio}
             onSelect={(drawing_id) => onChange({ ...node, drawing_id, ratio: null })}
             onRatio={(ratio) => onChange({ ...node, ratio })} />
-          <Choice label="画线事件" value={node.mode}
+          <Choice label={t("画线事件", "Drawing event")} value={node.mode}
             options={intrabar ? schema.overlayModes.filter((mode) => mode === "TOUCH") : schema.overlayModes}
-            labels={{ TOUCH: "触及", CLOSE_BREAK: "收盘突破" }} onChange={(mode) => onChange({ ...node, mode })} />
-          <Choice label="方向" value={node.direction} options={schema.directions}
-            labels={{ ABOVE: "向上", BELOW: "向下" }} onChange={(direction) => onChange({ ...node, direction })} />
+            labels={{ TOUCH: t("触及", "Touch"), CLOSE_BREAK: t("收盘突破", "Close break") }} onChange={(mode) => onChange({ ...node, mode })} />
+          <Choice label={t("方向", "Direction")} value={node.direction} options={schema.directions}
+            labels={{ ABOVE: t("向上", "Up"), BELOW: t("向下", "Down") }} onChange={(direction) => onChange({ ...node, direction })} />
         </div>
       )}
       {node.op === "level_event" && (
         <div className="rule-reference">
           <LevelChoice id={node.level_id} context={context}
             onSelect={(level) => onChange({ ...node, level_id: level.level_id, level_kind: level.kind })} />
-          <Choice label="关键位事件" value={node.event}
+          <Choice label={t("关键位事件", "Key level event")} value={node.event}
             options={intrabar ? schema.levelEvents.filter((event) => event === "TOUCH") : schema.levelEvents}
-            labels={ALERT_LEVEL_EVENT_LABELS} onChange={(event) => onChange({ ...node, event })} />
+            labels={alertLevelEventLabels()} onChange={(event) => onChange({ ...node, event })} />
         </div>
       )}
     </fieldset>
@@ -307,12 +349,13 @@ export function RuleEditorForm({ expression, onChange, ...context }: FormContext
   expression: Expression | null;
   onChange: (expression: Expression | null) => void;
 }) {
+  useLocale();
   if (expression === null) {
     return (
       <div className="rule-empty">
-        <p>添加条件后，图表会自动预览规则。</p>
+        <p>{t("添加条件后，图表会自动预览规则。", "Add a condition and the chart previews the rule automatically.")}</p>
         <button type="button" className="drawing-action" onClick={() => onChange(newComparison(context.timing))}>
-          添加条件
+          {t("添加条件", "Add condition")}
         </button>
       </div>
     );
@@ -324,8 +367,9 @@ export function RuleEditorForm({ expression, onChange, ...context }: FormContext
 }
 
 export function RuleTiming({ timing, onChange }: { timing: Timing; onChange: (timing: Timing) => void }) {
+  useLocale();
   return (
-    <Choice label="求值时机" value={timing} options={schema.timings}
-      labels={{ bar_close: "K 线收盘", event: "盘中行情事件" }} onChange={onChange} />
+    <Choice label={t("求值时机", "Evaluation timing")} value={timing} options={schema.timings}
+      labels={{ bar_close: t("K 线收盘", "Bar close"), event: t("盘中行情事件", "Intraday market event") }} onChange={onChange} />
   );
 }

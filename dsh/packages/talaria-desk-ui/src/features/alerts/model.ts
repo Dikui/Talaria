@@ -16,35 +16,54 @@ import type {
   RuleIndicator,
 } from "@talaria/contracts";
 
-import { KIND_LABELS } from "../drawings/tools";
-import { INDICATOR_LABELS } from "../indicators/config";
+import { t } from "../../lib/i18n";
 
 /** 规则列表的四个页签；DISABLED 与 EXPIRED 都归入“已结束”。 */
-export const ALERT_TABS = [
-  { id: "active", label: "活跃" },
-  { id: "cooling", label: "冷却" },
-  { id: "expired", label: "已过期" },
-  { id: "draft", label: "草案" },
-] as const;
+export const ALERT_TABS = ["active", "cooling", "expired", "draft"] as const;
 
-export type AlertTabId = (typeof ALERT_TABS)[number]["id"];
+export type AlertTabId = (typeof ALERT_TABS)[number];
 
-export const ALERT_STATUS_LABELS: Record<AlertStatus, string> = {
-  ARMED: "待命",
-  COOLDOWN: "冷却中",
-  EXPIRED: "已过期",
-  DISABLED: "已停用",
-  DRAFT: "草案",
-};
+export function alertTabLabel(tab: AlertTabId): string {
+  switch (tab) {
+    case "active": return t("活跃", "Active");
+    case "cooling": return t("冷却", "Cooling");
+    case "expired": return t("已过期", "Expired");
+    case "draft": return t("草案", "Drafts");
+  }
+}
 
-export const METRIC_LABELS: Record<AlertMetric, string> = {
-  last_price: "最新价",
-  bid_price: "买一价",
-  ask_price: "卖一价",
-  mark_price: "标记价格",
-  funding_rate: "资金费率",
-  open_interest: "持仓量",
-};
+export function alertStatusLabel(status: AlertStatus): string {
+  switch (status) {
+    case "ARMED": return t("待命", "Armed");
+    case "COOLDOWN": return t("冷却中", "Cooling down");
+    case "EXPIRED": return t("已过期", "Expired");
+    case "DISABLED": return t("已停用", "Disabled");
+    case "DRAFT": return t("草案", "Draft");
+  }
+}
+
+export function metricLabel(metric: AlertMetric): string {
+  switch (metric) {
+    case "last_price": return t("最新价", "Last price");
+    case "bid_price": return t("买一价", "Bid price");
+    case "ask_price": return t("卖一价", "Ask price");
+    case "mark_price": return t("标记价格", "Mark price");
+    case "funding_rate": return t("资金费率", "Funding rate");
+    case "open_interest": return t("持仓量", "Open interest");
+  }
+}
+
+/** Built at render time so a runtime locale switch refreshes every option. */
+export function metricLabels(): Record<AlertMetric, string> {
+  return {
+    last_price: metricLabel("last_price"),
+    bid_price: metricLabel("bid_price"),
+    ask_price: metricLabel("ask_price"),
+    mark_price: metricLabel("mark_price"),
+    funding_rate: metricLabel("funding_rate"),
+    open_interest: metricLabel("open_interest"),
+  };
+}
 
 /** 快捷预警表单提供常见的技术指标。 */
 export const ALERT_INDICATORS: IndicatorName[] = [
@@ -58,11 +77,42 @@ export const ALERT_INDICATORS: IndicatorName[] = [
 
 export const ALERT_LEVEL_EVENTS: AlertLevelEvent[] = ["TOUCH", "BREAK", "RETEST"];
 
-export const ALERT_LEVEL_EVENT_LABELS: Record<AlertLevelEvent, string> = {
-  TOUCH: "触及关键位",
-  BREAK: "收盘突破关键位",
-  RETEST: "突破后回踩确认",
-};
+export function alertLevelEventLabel(event: AlertLevelEvent): string {
+  switch (event) {
+    case "TOUCH": return t("触及关键位", "Touches key level");
+    case "BREAK": return t("收盘突破关键位", "Closes beyond key level");
+    case "RETEST": return t("突破后回踩确认", "Retests after breakout");
+  }
+}
+
+export function alertLevelEventLabels(): Record<AlertLevelEvent, string> {
+  return {
+    TOUCH: alertLevelEventLabel("TOUCH"),
+    BREAK: alertLevelEventLabel("BREAK"),
+    RETEST: alertLevelEventLabel("RETEST"),
+  };
+}
+
+export function drawingKindLabel(kind: DrawingKind): string {
+  switch (kind) {
+    case "HORIZONTAL_LINE": return t("水平线", "Horizontal line");
+    case "RAY": return t("射线", "Ray");
+    case "SEGMENT": return t("线段", "Segment");
+    case "PARALLEL_CHANNEL": return t("平行通道", "Parallel channel");
+    case "FIB_RETRACEMENT": return t("斐波那契回撤", "Fibonacci retracement");
+    case "RECTANGLE": return t("矩形区间", "Rectangle");
+    case "TEXT_LABEL": return t("文本标签", "Text label");
+  }
+}
+
+export function indicatorNameLabel(name: string): string {
+  switch (name) {
+    case "FUNDING_QUANTILE": return t("资金费率分位", "Funding rate quantile");
+    case "OI_DIVERGENCE": return t("OI 背离", "OI divergence");
+    case "NET_ODDS": return t("净赔率", "Net odds");
+    default: return name;
+  }
+}
 
 export const ALERT_OVERLAY_KINDS: DrawingKind[] = [
   "HORIZONTAL_LINE",
@@ -122,57 +172,83 @@ export function tabCounts(alerts: AlertRecord[]): Record<AlertTabId, number> {
 export function relativeTime(ts: number, now: number): string {
   const delta = Math.max(0, now - ts);
   if (delta < 5_000) {
-    return "刚刚";
+    return t("刚刚", "just now");
   }
   const seconds = Math.floor(delta / 1_000);
   if (seconds < 60) {
-    return `${seconds} 秒前`;
+    return t(`${seconds} 秒前`, `${seconds}s ago`);
   }
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) {
-    return `${minutes} 分钟前`;
+    return t(`${minutes} 分钟前`, `${minutes}m ago`);
   }
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return `${hours} 小时前`;
+    return t(`${hours} 小时前`, `${hours}h ago`);
   }
-  return `${Math.floor(hours / 24)} 天前`;
+  return t(`${Math.floor(hours / 24)} 天前`, `${Math.floor(hours / 24)}d ago`);
+}
+
+/** 未来时刻（例如冷却结束回到待命）。 */
+export function timeUntil(ts: number, now: number): string {
+  const delta = Math.max(0, ts - now);
+  if (delta < 5_000) {
+    return t("即将", "very soon");
+  }
+  const seconds = Math.floor(delta / 1_000);
+  if (seconds < 60) {
+    return t(`${seconds} 秒后`, `in ${seconds}s`);
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return t(`${minutes} 分钟后`, `in ${minutes}m`);
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return t(`${hours} 小时后`, `in ${hours}h`);
+  }
+  return t(`${Math.floor(hours / 24)} 天后`, `in ${Math.floor(hours / 24)}d`);
 }
 
 export function formatCooldown(cooldownMs: number): string {
   if (cooldownMs <= 0) {
-    return "无冷却";
+    return t("无冷却", "No cooldown");
   }
   if (cooldownMs % 60_000 === 0) {
-    return `${cooldownMs / 60_000} 分钟`;
+    return t(`${cooldownMs / 60_000} 分钟`, `${cooldownMs / 60_000} min`);
   }
   if (cooldownMs % 1_000 === 0) {
-    return `${cooldownMs / 1_000} 秒`;
+    return t(`${cooldownMs / 1_000} 秒`, `${cooldownMs / 1_000} s`);
   }
-  return `${cooldownMs} 毫秒`;
+  return t(`${cooldownMs} 毫秒`, `${cooldownMs} ms`);
 }
 
-const COMPARISON_LABELS: Record<RuleComparison["test"], string> = {
+const COMPARISON_SYMBOLS: Record<RuleComparison["test"], string> = {
   lt: "<",
   lte: "≤",
   gt: ">",
   gte: "≥",
   eq: "=",
-  cross_above: "上穿",
-  cross_below: "下穿",
+  cross_above: "cross_above",
+  cross_below: "cross_below",
 };
 
-const CROSS_LABEL: Record<AlertDirection, string> = {
-  ABOVE: "上穿",
-  BELOW: "下穿",
-};
+function crossLabel(direction: AlertDirection): string {
+  return direction === "ABOVE" ? t("上穿", "crosses above") : t("下穿", "crosses below");
+}
+
+function comparisonLabel(test: RuleComparison["test"]): string {
+  if (test === "cross_above") return t("上穿", "crosses above");
+  if (test === "cross_below") return t("下穿", "crosses below");
+  return COMPARISON_SYMBOLS[test];
+}
 
 export function indicatorLabel(
   name: IndicatorName,
   period: number | null | undefined,
   channel: string | null | undefined,
 ): string {
-  const label = INDICATOR_LABELS[name] ?? name;
+  const label = indicatorNameLabel(name);
   const suffix = channel !== null && channel !== undefined && channel !== "value" ? ` ${channel}` : "";
   return `${label}${period ? `(${period})` : ""}${suffix}`;
 }
@@ -183,19 +259,38 @@ function indicatorName(operator: RuleIndicator["name"]): IndicatorName {
   return operator;
 }
 
-const BAR_FIELDS = {
-  open: "开盘价", high: "最高价", low: "最低价", close: "收盘价",
-  volume: "成交量", turnover: "成交额",
+export function barFieldLabel(field: keyof typeof BAR_FIELD_KEYS): string {
+  switch (field) {
+    case "open": return t("开盘价", "Open");
+    case "high": return t("最高价", "High");
+    case "low": return t("最低价", "Low");
+    case "close": return t("收盘价", "Close");
+    case "volume": return t("成交量", "Volume");
+    case "turnover": return t("成交额", "Turnover");
+  }
+}
+
+const BAR_FIELD_KEYS = {
+  open: true, high: true, low: true, close: true,
+  volume: true, turnover: true,
 };
 
 function operandSummary(operand: RuleComparison["left"]): string {
   switch (operand.source) {
     case "constant": return operand.value;
-    case "drawing_price": return `画线 ${operand.drawing_id} ${operand.edge === "lower" ? "下沿" : "上沿"}`;
-    case "level_price": return `关键位 ${operand.level_id} ${operand.edge === "lower" ? "下沿" : "上沿"}`;
-    case "bar": return BAR_FIELDS[operand.field];
-    case "event": return METRIC_LABELS[operand.metric];
-    case "derivative": return METRIC_LABELS[operand.kind];
+    case "drawing_price":
+      return t(
+        `画线 ${operand.drawing_id} ${operand.edge === "lower" ? "下沿" : "上沿"}`,
+        `Drawing ${operand.drawing_id} ${operand.edge === "lower" ? "lower edge" : "upper edge"}`,
+      );
+    case "level_price":
+      return t(
+        `关键位 ${operand.level_id} ${operand.edge === "lower" ? "下沿" : "上沿"}`,
+        `Key level ${operand.level_id} ${operand.edge === "lower" ? "lower edge" : "upper edge"}`,
+      );
+    case "bar": return barFieldLabel(operand.field);
+    case "event": return metricLabel(operand.metric);
+    case "derivative": return metricLabel(operand.kind);
     case "indicator":
       return indicatorLabel(indicatorName(operand.name), operand.params?.period, operand.channel);
   }
@@ -207,24 +302,32 @@ export function conditionSummary(rule: Rule, drawingKind?: DrawingKind | null): 
       case "compare": {
         const operator = node.left.source === "indicator" && node.right.source === "indicator"
           && (node.test === "gte" || node.test === "lte")
-          ? CROSS_LABEL[node.test === "gte" ? "ABOVE" : "BELOW"]
-          : COMPARISON_LABELS[node.test];
+          ? crossLabel(node.test === "gte" ? "ABOVE" : "BELOW")
+          : comparisonLabel(node.test);
         return `${operandSummary(node.left)} ${operator} ${operandSummary(node.right)}`;
       }
       case "overlay": {
-        const kind = drawingKind ? KIND_LABELS[drawingKind] : "画线";
+        const kind = drawingKind ? drawingKindLabel(drawingKind) : t("画线", "Drawing");
         const mode = node.mode === "TOUCH"
-          ? (rule.timing === "event" ? "盘中触碰" : "收盘确认触碰")
-          : "收盘突破";
-        return `${kind} ${mode}（${CROSS_LABEL[node.direction]}）`;
+          ? (rule.timing === "event"
+            ? t("盘中触碰", "intraday touch")
+            : t("收盘确认触碰", "close-confirmed touch"))
+          : t("收盘突破", "close break");
+        return t(
+          `${kind} ${mode}（${crossLabel(node.direction)}）`,
+          `${kind} ${mode} (${crossLabel(node.direction)})`,
+        );
       }
       case "level_event":
-        return `关键位 ${node.level_id} · ${ALERT_LEVEL_EVENT_LABELS[node.event]}`;
+        return `${t("关键位", "Key level")} ${node.level_id} · ${alertLevelEventLabel(node.event)}`;
       case "not":
-        return `非（${summarize(node.args[0])}）`;
+        return t(`非（${summarize(node.args[0])}）`, `not (${summarize(node.args[0])})`);
       case "all":
       case "any":
-        return `（${node.args.map(summarize).join(node.op === "all" ? " 且 " : " 或 ")}）`;
+        return t(
+          `（${node.args.map(summarize).join(node.op === "all" ? " 且 " : " 或 ")}）`,
+          `(${node.args.map(summarize).join(node.op === "all" ? " and " : " or ")})`,
+        );
     }
   }
   return summarize(rule.expression);
@@ -234,7 +337,10 @@ export function triggerSummary(trigger: AlertTriggerRecord): string {
   if (trigger.message.trim().length > 0) {
     return trigger.message;
   }
-  return `${trigger.instrument_id} ${trigger.timeframe} 条件触发`;
+  return t(
+    `${trigger.instrument_id} ${trigger.timeframe} 条件触发`,
+    `${trigger.instrument_id} ${trigger.timeframe} condition triggered`,
+  );
 }
 
 export type AlertFormKind = "metric" | "indicator" | "overlay" | "level" | "rule";
@@ -309,48 +415,63 @@ export function defaultAlertForm(
 
 export function validateAlertForm(form: AlertFormState): string | null {
   if (!form.instrumentId.trim()) {
-    return "请选择标的";
+    return t("请选择标的", "Select an instrument");
   }
   if (!form.timeframe.trim()) {
-    return "请选择周期";
+    return t("请选择周期", "Select a timeframe");
   }
   if (form.kind === "metric") {
     if (!isDecimalString(form.threshold)) {
-      return "请输入有效的阈值";
+      return t("请输入有效的阈值", "Enter a valid threshold");
     }
   }
   if (form.kind === "indicator") {
     if (!form.compareIndicator && !isDecimalString(form.threshold)) {
-      return "指标信号需要阈值或对比指标";
+      return t(
+        "指标信号需要阈值或对比指标",
+        "Indicator signals need a threshold or a comparison indicator",
+      );
     }
     if (form.compareIndicator && form.indicator === form.compareIndicator) {
-      return "对比指标不能与主指标相同";
+      return t(
+        "对比指标不能与主指标相同",
+        "The comparison indicator must differ from the main indicator",
+      );
     }
     if (
       form.indicatorPeriod !== 0 &&
       (form.indicatorPeriod < 1 || form.indicatorPeriod > 5_000)
     ) {
-      return "指标周期需在 1 到 5000 之间（0 表示服务端默认）";
+      return t(
+        "指标周期需在 1 到 5000 之间（0 表示服务端默认）",
+        "Indicator period must be between 1 and 5000 (0 uses the server default)",
+      );
     }
     if (
       form.compareIndicator &&
       form.comparePeriod !== 0 &&
       (form.comparePeriod < 1 || form.comparePeriod > 5_000)
     ) {
-      return "对比周期需在 1 到 5000 之间（0 表示服务端默认）";
+      return t(
+        "对比周期需在 1 到 5000 之间（0 表示服务端默认）",
+        "Comparison period must be between 1 and 5000 (0 uses the server default)",
+      );
     }
   }
   if (form.kind === "overlay" && !form.drawingId) {
-    return "请选择要挂载的画线";
+    return t("请选择要挂载的画线", "Select a drawing to attach");
   }
   if (form.kind === "level" && !form.levelId.trim()) {
-    return "请从关键位面板选择或填写 level_id";
+    return t(
+      "请从关键位面板选择或填写 level_id",
+      "Choose a key level or enter a level_id",
+    );
   }
   if (form.cooldownSeconds < 0) {
-    return "冷却时间不能为负";
+    return t("冷却时间不能为负", "Cooldown cannot be negative");
   }
   if (form.note.length > 500) {
-    return "备注最多 500 字";
+    return t("备注最多 500 字", "Note must be 500 characters or fewer");
   }
   return null;
 }
@@ -486,5 +607,5 @@ export function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
     return error.message;
   }
-  return "预警操作失败，请稍后重试";
+  return t("预警操作失败，请稍后重试", "Alert action failed. Please try again.");
 }

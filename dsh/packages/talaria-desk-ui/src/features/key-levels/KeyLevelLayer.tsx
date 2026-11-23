@@ -2,9 +2,10 @@ import { useEffect, useReducer } from "react";
 import type { Chart } from "klinecharts";
 import type { KeyLevel } from "@talaria/contracts";
 
+import { t, useLocale } from "../../lib/i18n";
 import { frameSignature, readChartFrame } from "../drawings/projection";
 import {
-  CATEGORY_META,
+  categoryMeta,
   isZoneLevel,
   layoutKeyLevelLabels,
   levelEvidenceClass,
@@ -51,6 +52,7 @@ export function KeyLevelLayer({
   pricePrecision,
   rightInset = 0,
 }: KeyLevelLayerProps) {
+  useLocale();
   const [, forceRender] = useReducer((value: number) => value + 1, 0);
 
   // 与画线覆盖层相同：KLineChart 的缩放/平移不保证发事件，用逐帧签名兜底。
@@ -165,7 +167,7 @@ export function KeyLevelLayer({
         aria-hidden="true"
       >
         {inPane.map(({ level, y, top, bottom }) => {
-          const meta = CATEGORY_META[level.category];
+          const meta = categoryMeta(level.category);
           const dash = statusDash(level.status);
           const estimated = levelEvidenceClass(level) === "ESTIMATED";
           return (
@@ -221,16 +223,16 @@ export function KeyLevelLayer({
               rx={3}
               fill="var(--surface)"
               fillOpacity={0.9}
-              stroke={CATEGORY_META[estimatedTag.level.category].color}
+              stroke={categoryMeta(estimatedTag.level.category).color}
               strokeOpacity={0.5}
               strokeDasharray="3 3"
             />
             <text
               x={frame.width - rightInset - 74}
               y={31}
-              fill={CATEGORY_META[estimatedTag.level.category].color}
+              fill={categoryMeta(estimatedTag.level.category).color}
             >
-              ESTIMATED
+              {t("估算", "ESTIMATED")}
             </text>
           </g>
         )}
@@ -242,7 +244,7 @@ export function KeyLevelLayer({
           if (level === undefined) {
             return null;
           }
-          const meta = CATEGORY_META[level.category];
+          const meta = categoryMeta(level.category);
           const estimated = levelEvidenceClass(level) === "ESTIMATED";
           const left =
             label.anchor === "end" ? label.x - label.width : label.x;

@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ScannerTrigger } from "@talaria/contracts";
 
+import { setLocale } from "../../lib/i18n";
 import { ScannerCard, ScannerPanel } from "./ScannerPanel";
 import type { ScannerController } from "./useScanner";
 
 const NOW = 1_000_060_000;
+
+afterEach(() => setLocale("zh"));
 
 function trigger(overrides: Partial<ScannerTrigger> = {}): ScannerTrigger {
   return {
@@ -142,4 +145,20 @@ describe("scanner panel", () => {
     );
     expect(html).toContain("定位到触发快照");
   });
+});
+
+
+it("renders cards and empty states in English after a locale switch", () => {
+  setLocale("en-US");
+  const withCard = panel({ triggers: [trigger()] });
+  expect(withCard).toContain("Liquidity anomaly");
+  expect(withCard).toContain("Watch");
+  expect(withCard).toContain("1m ago");
+  expect(withCard).toContain("Scan now");
+
+  const empty = panel();
+  expect(empty).toContain("Markets are calm — no structural anomalies");
+
+  setLocale("zh-CN");
+  expect(panel()).toContain("盘面平静，暂无结构性异动");
 });

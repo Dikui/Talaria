@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ScannerFocusResponse, ScannerTrigger } from "@talaria/contracts";
 
 import { ApiError, api } from "../../lib/api";
+import { t } from "../../lib/i18n";
 import { mergeTrigger, sortTriggers } from "./model";
 
 const POLL_MS = 4_000;
@@ -14,7 +15,7 @@ function describe(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }
-  return "扫描状态读取失败";
+  return t("扫描状态读取失败", "Failed to load scanner status");
 }
 
 export interface ScannerController {

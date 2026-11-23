@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useReducer } from "react";
 import type { Chart } from "klinecharts";
 import { api } from "../../lib/api";
+import { t, useLocale } from "../../lib/i18n";
 import { frameSignature, readChartFrame } from "../drawings/projection";
 import { usePaperQuery } from "./usePaperQuery";
 
 export function ExecutionBarrierLayer({ chart, instrument }: { chart: Chart | null; instrument: string }) {
+  useLocale();
   const query = useCallback(() => api.paperBarriers(instrument), [instrument]);
   const { value: positions } = usePaperQuery(query);
   const [, update] = useReducer((version: number) => version + 1, 0);
@@ -30,10 +32,10 @@ export function ExecutionBarrierLayer({ chart, instrument }: { chart: Chart | nu
   if (!visible || chart === null || !positions) return null;
   const frame = readChartFrame(chart);
   if (!frame) return null;
-  return <div className="paper-barriers" data-group-id="EXECUTION_BARRIER" aria-label="模拟盘保护屏障">
+  return <div className="paper-barriers" data-group-id="EXECUTION_BARRIER" aria-label={t("模拟盘保护屏障", "Paper protection barriers")}>
     {positions.flatMap((position) => [
-      { key: "stop", price: position.stop, label: "止损" },
-      ...(position.take_profit ?? []).map((price, index) => ({ key: `target-${index}`, price, label: "止盈" })),
+      { key: "stop", price: position.stop, label: t("止损", "Stop loss") },
+      ...(position.take_profit ?? []).map((price, index) => ({ key: `target-${index}`, price, label: t("止盈", "Take profit") })),
     ].map(({ key, price, label }) => {
       const pixel = chart.convertToPixel({ value: Number(price) }, { absolute: true }) as { y?: number };
       const y = pixel?.y;

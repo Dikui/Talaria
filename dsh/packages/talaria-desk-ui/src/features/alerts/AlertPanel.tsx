@@ -12,27 +12,30 @@ import type {
   KeyLevelKind,
 } from "@talaria/contracts";
 
+import { t, useLocale } from "../../lib/i18n";
 import type { Theme } from "../../lib/theme";
-import { KIND_LABELS } from "../drawings/tools";
-import { INDICATOR_LABELS } from "../indicators/config";
 import {
   ALERT_INDICATORS,
   ALERT_LEVEL_EVENTS,
-  ALERT_LEVEL_EVENT_LABELS,
   ALERT_OVERLAY_KINDS,
-  ALERT_STATUS_LABELS,
   ALERT_TABS,
-  METRIC_LABELS,
+  alertLevelEventLabel,
+  alertStatusLabel,
+  alertTabLabel,
   alertsForTab,
   buildAlertCreate,
   conditionSummary,
   defaultAlertForm,
   drawingKindFor,
+  drawingKindLabel,
   formatCooldown,
   formFromRecord,
+  indicatorNameLabel,
+  metricLabels,
   relativeTime,
   statusToTab,
   tabCounts,
+  timeUntil,
   triggerSummary,
   validateAlertForm,
   type AlertFormState,
@@ -77,6 +80,7 @@ export function AlertPanel({
   onClose,
   tabBar,
 }: AlertPanelProps) {
+  useLocale();
   const [tab, setTab] = useState<AlertTabId>("active");
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<AlertFormState>(() =>
@@ -160,7 +164,7 @@ export function AlertPanel({
             cooldown_ms: payload.cooldown_ms,
           });
     if (result === null) {
-      setFormError(controller.error ?? "保存预警失败");
+      setFormError(controller.error ?? t("保存预警失败", "Failed to save alert"));
       return;
     }
     setFormOpen(false);
@@ -185,8 +189,8 @@ export function AlertPanel({
       {tabBar}
       <div className="alerts-head">
         <div>
-          <h2 className="alerts-title">预警</h2>
-          <p className="alerts-subtitle">阈值 · 指标 · 画线 · 关键位</p>
+          <h2 className="alerts-title">{t("预警", "Alerts")}</h2>
+          <p className="alerts-subtitle">{t("阈值 · 指标 · 画线 · 关键位", "Threshold · Indicator · Drawing · Key level")}</p>
         </div>
         <div className="alerts-head-actions">
           <button
@@ -194,15 +198,15 @@ export function AlertPanel({
             className="ghost-button alerts-sound"
             aria-pressed={controller.soundEnabled}
             onClick={() => controller.setSoundEnabled(!controller.soundEnabled)}
-            title="触发提示音"
+            title={t("触发提示音", "Alert sound")}
           >
-            {controller.soundEnabled ? "声音开" : "声音关"}
+            {controller.soundEnabled ? t("声音开", "Sound on") : t("声音关", "Sound off")}
           </button>
           {onClose !== undefined && (
             <button
               type="button"
               className="ghost-button"
-              aria-label="收起预警面板"
+              aria-label={t("收起预警面板", "Collapse alerts panel")}
               onClick={onClose}
             >
               ×
@@ -217,14 +221,14 @@ export function AlertPanel({
           className="primary-button alerts-create"
           onClick={beginCreate}
         >
-          新建预警
+          {t("新建预警", "New alert")}
         </button>
       </div>
 
       {controller.error !== null && (
         <div className="alerts-error" role="alert" data-testid="alerts-error">
           <span>{controller.error}</span>
-          <button type="button" aria-label="关闭预警错误" onClick={controller.clearError}>
+          <button type="button" aria-label={t("关闭预警错误", "Dismiss alert error")} onClick={controller.clearError}>
             ×
           </button>
         </div>
@@ -232,9 +236,9 @@ export function AlertPanel({
 
       {formOpen && (
         <form className="alert-form" onSubmit={submit} data-testid="alert-form">
-          <div className="alert-form-title">{editingId === null ? "新建预警" : "编辑预警"}</div>
+          <div className="alert-form-title">{editingId === null ? t("新建预警", "New alert") : t("编辑预警", "Edit alert")}</div>
           <label>
-            标的
+            {t("标的", "Instrument")}
             <select
               value={form.instrumentId}
               onChange={(event) =>
@@ -249,7 +253,7 @@ export function AlertPanel({
             </select>
           </label>
           <label>
-            周期
+            {t("周期", "Timeframe")}
             <select
               value={form.timeframe}
               onChange={(event) =>
@@ -267,15 +271,15 @@ export function AlertPanel({
             <p className="alert-condition">{conditionSummary(form.savedRule)}</p>
           ) : (
             <label>
-              条件
+              {t("条件", "Condition")}
               <select
                 value={form.kind}
                 onChange={(event) => changeKind(event.target.value as AlertFormKind)}
               >
-                <option value="metric">指标阈值</option>
-                <option value="indicator">指标信号</option>
-                <option value="overlay">画线触碰</option>
-                <option value="level">关键位事件</option>
+                <option value="metric">{t("指标阈值", "Indicator threshold")}</option>
+                <option value="indicator">{t("指标信号", "Indicator signal")}</option>
+                <option value="overlay">{t("画线触碰", "Drawing touch")}</option>
+                <option value="level">{t("关键位事件", "Key level event")}</option>
               </select>
             </label>
           )}
@@ -283,7 +287,7 @@ export function AlertPanel({
           {form.kind === "metric" && (
             <>
               <label>
-                指标
+                {t("指标", "Metric")}
                 <select
                   value={form.metric}
                   onChange={(event) =>
@@ -293,7 +297,7 @@ export function AlertPanel({
                     }))
                   }
                 >
-                  {Object.entries(METRIC_LABELS).map(([value, label]) => (
+                  {Object.entries(metricLabels()).map(([value, label]) => (
                     <option key={value} value={value}>
                       {label}
                     </option>
@@ -301,11 +305,11 @@ export function AlertPanel({
                 </select>
               </label>
               <label>
-                阈值
+                {t("阈值", "Threshold")}
                 <input
                   value={form.threshold}
                   inputMode="decimal"
-                  placeholder="例如 42000.5"
+                  placeholder={t("例如 42000.5", "e.g. 42000.5")}
                   onChange={(event) =>
                     setForm((current) => ({ ...current, threshold: event.target.value }))
                   }
@@ -317,7 +321,7 @@ export function AlertPanel({
           {form.kind === "indicator" && (
             <>
               <label>
-                指标
+                {t("指标", "Indicator")}
                 <select
                   value={form.indicator}
                   onChange={(event) =>
@@ -329,18 +333,18 @@ export function AlertPanel({
                 >
                   {ALERT_INDICATORS.map((name) => (
                     <option key={name} value={name}>
-                      {INDICATOR_LABELS[name] ?? name}
+                      {indicatorNameLabel(name)}
                     </option>
                   ))}
                 </select>
               </label>
               <label>
-                周期
+                {t("周期", "Period")}
                 <input
                   type="number"
                   min={0}
                   max={5000}
-                  placeholder="0 = 服务端默认"
+                  placeholder={t("0 = 服务端默认", "0 = server default")}
                   value={form.indicatorPeriod}
                   onChange={(event) =>
                     setForm((current) => ({
@@ -352,7 +356,7 @@ export function AlertPanel({
               </label>
               {form.indicator === "VWAP" && (
                 <label>
-                  VWAP 锚点
+                  {t("VWAP 锚点", "VWAP anchor")}
                   <select
                     value={form.indicatorAnchor}
                     onChange={(event) =>
@@ -362,14 +366,14 @@ export function AlertPanel({
                       }))
                     }
                   >
-                    <option value="">使用默认值</option>
-                    <option value="session">UTC 日界</option>
-                    <option value="snapshot">快照起点</option>
+                    <option value="">{t("使用默认值", "Use default")}</option>
+                    <option value="session">{t("UTC 日界", "UTC day boundary")}</option>
+                    <option value="snapshot">{t("快照起点", "Snapshot start")}</option>
                   </select>
                 </label>
               )}
               <label>
-                对比指标
+                {t("对比指标", "Compare with")}
                 <select
                   value={form.compareIndicator}
                   onChange={(event) =>
@@ -379,21 +383,21 @@ export function AlertPanel({
                     }))
                   }
                 >
-                  <option value="">无（用阈值）</option>
+                  <option value="">{t("无（用阈值）", "None (use threshold)")}</option>
                   {ALERT_INDICATORS.map((name) => (
                     <option key={name} value={name}>
-                      {INDICATOR_LABELS[name] ?? name}
+                      {indicatorNameLabel(name)}
                     </option>
                   ))}
                 </select>
               </label>
               {form.compareIndicator === "" ? (
                 <label>
-                  阈值
+                  {t("阈值", "Threshold")}
                   <input
                     value={form.threshold}
                     inputMode="decimal"
-                    placeholder="例如 70"
+                    placeholder={t("例如 70", "e.g. 70")}
                     onChange={(event) =>
                       setForm((current) => ({ ...current, threshold: event.target.value }))
                     }
@@ -401,12 +405,12 @@ export function AlertPanel({
                 </label>
               ) : (
                 <label>
-                  对比周期
+                  {t("对比周期", "Comparison period")}
                   <input
                     type="number"
                     min={0}
                     max={5000}
-                    placeholder="0 = 服务端默认"
+                    placeholder={t("0 = 服务端默认", "0 = server default")}
                     value={form.comparePeriod}
                     onChange={(event) =>
                       setForm((current) => ({
@@ -419,7 +423,7 @@ export function AlertPanel({
               )}
               {form.compareIndicator === "VWAP" && (
                 <label>
-                  对比 VWAP 锚点
+                  {t("对比 VWAP 锚点", "Comparison VWAP anchor")}
                   <select
                     value={form.compareAnchor}
                     onChange={(event) =>
@@ -429,9 +433,9 @@ export function AlertPanel({
                       }))
                     }
                   >
-                    <option value="">使用默认值</option>
-                    <option value="session">UTC 日界</option>
-                    <option value="snapshot">快照起点</option>
+                    <option value="">{t("使用默认值", "Use default")}</option>
+                    <option value="session">{t("UTC 日界", "UTC day boundary")}</option>
+                    <option value="snapshot">{t("快照起点", "Snapshot start")}</option>
                   </select>
                 </label>
               )}
@@ -441,23 +445,23 @@ export function AlertPanel({
           {form.kind === "overlay" && (
             <>
               <label>
-                画线
+                {t("画线", "Drawing")}
                 <select
                   value={form.drawingId}
                   onChange={(event) =>
                     setForm((current) => ({ ...current, drawingId: event.target.value }))
                   }
                 >
-                  <option value="">选择画线</option>
+                  <option value="">{t("选择画线", "Select a drawing")}</option>
                   {selectableDrawings.map((drawing) => (
                     <option key={drawing.drawing_id} value={drawing.drawing_id}>
-                      {KIND_LABELS[drawing.kind]} · {drawing.drawing_id.slice(4, 10)}
+                      {drawingKindLabel(drawing.kind)} · {drawing.drawing_id.slice(4, 10)}
                     </option>
                   ))}
                 </select>
               </label>
               <label>
-                触发方式
+                {t("触发方式", "Trigger mode")}
                 <select
                   value={form.overlayMode}
                   onChange={(event) =>
@@ -467,8 +471,8 @@ export function AlertPanel({
                     }))
                   }
                 >
-                  <option value="CLOSE_BREAK">收盘突破</option>
-                  <option value="TOUCH">盘中触碰</option>
+                  <option value="CLOSE_BREAK">{t("收盘突破", "Close break")}</option>
+                  <option value="TOUCH">{t("盘中触碰", "Intraday touch")}</option>
                 </select>
               </label>
             </>
@@ -477,11 +481,11 @@ export function AlertPanel({
           {form.kind === "level" && (
             <>
               <label>
-                关键位 level_id
+                {t("关键位 level_id", "Key level level_id")}
                 <input
                   value={form.levelId}
-                  placeholder="例如 kl_0123456789abcdef"
-                  aria-label="关键位 level_id"
+                  placeholder="kl_0123456789abcdef"
+                  aria-label={t("关键位 level_id", "Key level level_id")}
                   onChange={(event) =>
                     setForm((current) => ({
                       ...current,
@@ -491,10 +495,10 @@ export function AlertPanel({
                 />
               </label>
               <label>
-                关键位事件
+                {t("关键位事件", "Key level event")}
                 <select
                   value={form.levelEvent}
-                  aria-label="关键位事件"
+                  aria-label={t("关键位事件", "Key level event")}
                   onChange={(event) =>
                     setForm((current) => ({
                       ...current,
@@ -505,14 +509,14 @@ export function AlertPanel({
                 >
                   {ALERT_LEVEL_EVENTS.map((event) => (
                     <option key={event} value={event}>
-                      {ALERT_LEVEL_EVENT_LABELS[event]}
+                      {alertLevelEventLabel(event)}
                     </option>
                   ))}
                 </select>
               </label>
               {form.levelKind !== null && (
                 <p className="alert-form-hint" data-testid="alert-level-kind">
-                  类型：{form.levelKind}
+                  {t("类型：", "Type: ")}{form.levelKind}
                 </p>
               )}
             </>
@@ -520,7 +524,7 @@ export function AlertPanel({
 
           {form.kind !== "level" && form.kind !== "rule" && (
           <label>
-            方向
+            {t("方向", "Direction")}
             <select
               value={form.direction}
               onChange={(event) =>
@@ -530,13 +534,13 @@ export function AlertPanel({
                 }))
               }
             >
-              <option value="ABOVE">上穿 / 高于</option>
-              <option value="BELOW">下穿 / 低于</option>
+              <option value="ABOVE">{t("上穿 / 高于", "Above / cross above")}</option>
+              <option value="BELOW">{t("下穿 / 低于", "Below / cross below")}</option>
             </select>
           </label>
           )}
           <label>
-            冷却（秒）
+            {t("冷却（秒）", "Cooldown (s)")}
             <input
               type="number"
               min={0}
@@ -550,12 +554,12 @@ export function AlertPanel({
             />
           </label>
           <label>
-            备注
+            {t("备注", "Note")}
             <textarea
               value={form.note}
               maxLength={500}
               rows={2}
-              placeholder="可选，最多 500 字"
+              placeholder={t("可选，最多 500 字", "Optional, up to 500 characters")}
               onChange={(event) =>
                 setForm((current) => ({ ...current, note: event.target.value }))
               }
@@ -570,7 +574,7 @@ export function AlertPanel({
                   setForm((current) => ({ ...current, repeat: event.target.checked }))
                 }
               />
-              重复提醒
+              {t("重复提醒", "Repeat alert")}
             </label>
             <label className="alert-check">
               <input
@@ -581,7 +585,7 @@ export function AlertPanel({
                   setForm((current) => ({ ...current, draft: event.target.checked }))
                 }
               />
-              保存为草案
+              {t("保存为草案", "Save as draft")}
             </label>
           </div>
           {formError !== null && (
@@ -591,7 +595,7 @@ export function AlertPanel({
           )}
           <div className="alert-form-actions">
             <button type="submit" className="primary-button">
-              保存
+              {t("保存", "Save")}
             </button>
             <button
               type="button"
@@ -602,35 +606,35 @@ export function AlertPanel({
                 setFormError(null);
               }}
             >
-              取消
+              {t("取消", "Cancel")}
             </button>
           </div>
         </form>
       )}
 
-      <div className="alerts-tabs" role="tablist" aria-label="预警规则分类">
-        {ALERT_TABS.map((item) => (
+      <div className="alerts-tabs" role="tablist" aria-label={t("预警规则分类", "Alert rule categories")}>
+        {ALERT_TABS.map((id) => (
           <button
-            key={item.id}
+            key={id}
             type="button"
             role="tab"
-            aria-selected={tab === item.id}
-            className={`alerts-tab${tab === item.id ? " is-active" : ""}`}
-            onClick={() => setTab(item.id)}
+            aria-selected={tab === id}
+            className={`alerts-tab${tab === id ? " is-active" : ""}`}
+            onClick={() => setTab(id)}
           >
-            {item.label}
-            <span className="alerts-tab-count">{counts[item.id]}</span>
+            {alertTabLabel(id)}
+            <span className="alerts-tab-count">{counts[id]}</span>
           </button>
         ))}
       </div>
 
       <div className="alerts-list" data-testid="alerts-list">
         {controller.loading ? (
-          <p className="alerts-empty">正在加载预警…</p>
+          <p className="alerts-empty">{t("正在加载预警…", "Loading alerts…")}</p>
         ) : visibleAlerts.length === 0 ? (
           <div className="alerts-empty" data-testid="alerts-empty">
-            <strong>{ALERT_TABS.find((item) => item.id === tab)?.label}暂无规则</strong>
-            <span>新建预警，或从画线属性一键挂载。</span>
+            <strong>{t(`${alertTabLabel(tab)}暂无规则`, `${alertTabLabel(tab)} — no rules`)}</strong>
+            <span>{t("新建预警，或从画线属性一键挂载。", "Create an alert, or attach one from drawing properties.")}</span>
           </div>
         ) : (
           visibleAlerts.map((alert) => (
@@ -654,13 +658,13 @@ export function AlertPanel({
           aria-expanded={showHistory}
           onClick={() => setShowHistory((open) => !open)}
         >
-          触发历史 {controller.triggers.length}
-          <span>{showHistory ? "收起" : "展开"}</span>
+          {t("触发历史", "Trigger history")} {controller.triggers.length}
+          <span>{showHistory ? t("收起", "Collapse") : t("展开", "Expand")}</span>
         </button>
         {showHistory &&
           (controller.triggers.length === 0 ? (
             <p className="alerts-empty" data-testid="triggers-empty">
-              暂无触发记录。
+              {t("暂无触发记录。", "No triggers yet.")}
             </p>
           ) : (
             <ul className="trigger-list" data-testid="trigger-list">
@@ -670,13 +674,13 @@ export function AlertPanel({
                     type="button"
                     className="trigger-main"
                     onClick={() => onLocate(trigger)}
-                    title="定位到触发时刻"
+                    title={t("定位到触发时刻", "Go to trigger time")}
                   >
                     <span className="trigger-message">{triggerSummary(trigger)}</span>
                     <span className="trigger-meta">
                       {trigger.instrument_id} · {trigger.timeframe} ·{" "}
                       {relativeTime(trigger.triggered_ts, now)}
-                      {trigger.snapshot_id !== "" ? " · 有快照" : ""}
+                      {trigger.snapshot_id !== "" ? t(" · 有快照", " · snapshot") : ""}
                     </span>
                   </button>
                 </li>
@@ -698,6 +702,7 @@ interface AlertCardProps {
 }
 
 function AlertCard({ quotaDenied, alert, drawings, now, controller, onEdit }: AlertCardProps) {
+  useLocale();
   const expression = alert.condition.expression;
   const kind = expression.op === "overlay" ? drawingKindFor(expression.drawing_id, drawings) : null;
   return (
@@ -708,7 +713,7 @@ function AlertCard({ quotaDenied, alert, drawings, now, controller, onEdit }: Al
     >
       <header className="alert-item-head">
         <span className={`alert-status alert-status--${alert.status.toLowerCase()}`}>
-          {quotaDenied ? "配额不足、未在监听" : ALERT_STATUS_LABELS[alert.status]}
+          {quotaDenied ? t("配额不足、未在监听", "Quota exceeded, not listening") : alertStatusLabel(alert.status)}
         </span>
         <span className="alert-instrument">
           {alert.instrument_id} · {alert.timeframe}
@@ -720,12 +725,17 @@ function AlertCard({ quotaDenied, alert, drawings, now, controller, onEdit }: Al
         <p className="alert-note">{alert.note}</p>
       )}
       <p className="alert-meta">
-        {alert.repeat ? `重复 · 冷却 ${formatCooldown(alert.cooldown_ms)}` : "单次触发"}
+        {alert.repeat
+          ? t(`重复 · 冷却 ${formatCooldown(alert.cooldown_ms)}`, `Repeating · cooldown ${formatCooldown(alert.cooldown_ms)}`)
+          : t("单次触发", "Single trigger")}
         {alert.next_arm_ts !== undefined && alert.next_arm_ts !== null
-          ? ` · ${relativeTime(alert.next_arm_ts, now).replace("前", "后")}回到待命`
+          ? t(
+              ` · ${timeUntil(alert.next_arm_ts, now)}回到待命`,
+              ` · re-arms ${timeUntil(alert.next_arm_ts, now)}`,
+            )
           : ""}
         {alert.trigger_count !== undefined && alert.trigger_count > 0
-          ? ` · 已触发 ${alert.trigger_count} 次`
+          ? t(` · 已触发 ${alert.trigger_count} 次`, ` · Triggered ${alert.trigger_count} times`)
           : ""}
       </p>
       <div className="alert-actions">
@@ -735,7 +745,7 @@ function AlertCard({ quotaDenied, alert, drawings, now, controller, onEdit }: Al
             className="primary-button alert-action"
             onClick={() => void controller.confirm(alert.alert_id)}
           >
-            确认激活
+            {t("确认激活", "Confirm and activate")}
           </button>
         )}
         {alert.status === "DISABLED" ? (
@@ -744,7 +754,7 @@ function AlertCard({ quotaDenied, alert, drawings, now, controller, onEdit }: Al
             className="ghost-button alert-action"
             onClick={() => void controller.setEnabled(alert.alert_id, true)}
           >
-            启用
+            {t("启用", "Enable")}
           </button>
         ) : (
           <button
@@ -752,22 +762,22 @@ function AlertCard({ quotaDenied, alert, drawings, now, controller, onEdit }: Al
             className="ghost-button alert-action"
             onClick={() => void controller.setEnabled(alert.alert_id, false)}
           >
-            停用
+            {t("停用", "Disable")}
           </button>
         )}
         <button type="button" className="ghost-button alert-action" onClick={onEdit}>
-          编辑
+          {t("编辑", "Edit")}
         </button>
         <button
           type="button"
           className="ghost-button alert-action alert-delete"
           onClick={() => {
-            if (window.confirm(`删除预警 ${alert.alert_id}？`)) {
+            if (window.confirm(t(`删除预警 ${alert.alert_id}？`, `Delete alert ${alert.alert_id}?`))) {
               void controller.remove(alert.alert_id);
             }
           }}
         >
-          删除
+          {t("删除", "Delete")}
         </button>
       </div>
     </article>
@@ -782,18 +792,19 @@ export interface AlertToastProps {
 }
 
 export function AlertToast({ trigger, theme, onLocate, onDismiss }: AlertToastProps) {
+  useLocale();
   // DSH keeps inactive panels mounted. Their alerts still need a visible toast.
   return createPortal(
     <div className="talaria-desk alert-toast" data-theme={theme} role="status" data-testid="alert-toast">
       <button type="button" className="alert-toast-main" onClick={() => onLocate(trigger)}>
-        <span className="alert-toast-title">预警触发</span>
+        <span className="alert-toast-title">{t("预警触发", "Alert triggered")}</span>
         <span className="alert-toast-message">{triggerSummary(trigger)}</span>
         <span className="alert-toast-meta">
           {trigger.instrument_id} · {trigger.timeframe}
-          {trigger.snapshot_id !== "" ? " · 点击查看快照" : ""}
+          {trigger.snapshot_id !== "" ? t(" · 点击查看快照", " · View snapshot") : ""}
         </span>
       </button>
-      <button type="button" className="alert-toast-close" aria-label="关闭预警通知" onClick={onDismiss}>
+      <button type="button" className="alert-toast-close" aria-label={t("关闭预警通知", "Dismiss alert notification")} onClick={onDismiss}>
         ×
       </button>
     </div>,

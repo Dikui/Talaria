@@ -1,7 +1,10 @@
 import type { RulePreviewResponse } from "@talaria/contracts";
 import type { KLineData } from "klinecharts";
-import { expect, it } from "vitest";
-import { ruleChartIndicators } from "./ruleChart";
+import { afterEach, expect, it } from "vitest";
+import { setLocale } from "../../lib/i18n";
+import { ruleChartIndicators, ruleIndicatorLabel } from "./ruleChart";
+
+afterEach(() => setLocale("zh"));
 
 // alerts-and-scanning/02: the chart consumes async calc output by K-line timestamp.
 it("aligns server markers and indicator values with the chart without filling warmup bars", async () => {
@@ -53,4 +56,21 @@ it("ends a rule line at a FEED_GAP omitted from the K-line data list", async () 
   const attrs = line.figures![0].attrs!({ data: { current: rows[0], next: rows[1] },
     coordinate: { current: { x: 1, value: 1 }, next: { x: 2, value: 3 } } } as never);
   expect(attrs?.coordinates).toEqual([{ x: 1, y: 1 }, { x: 1, y: 1 }]);
+});
+
+it("localizes indicator titles, anchors and channels on the chart", () => {
+  const operand = {
+    source: "indicator", name: "FUNDING_QUANTILE", channel: "upper",
+    params: { period: 20 },
+  } as const;
+  setLocale("en-US");
+  const english = ruleIndicatorLabel({ operand } as never);
+  expect(english).toContain("Funding rate quantile");
+  expect(english).toContain("Upper");
+  expect(english).toContain("last 600 bars");
+
+  setLocale("zh-CN");
+  const chinese = ruleIndicatorLabel({ operand } as never);
+  expect(chinese).toContain("资金费率分位");
+  expect(chinese).toContain("上轨");
 });

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ScannerTrigger } from "@talaria/contracts";
 
+import { setLocale } from "../../lib/i18n";
 import {
   evidenceLabel,
   focusLocatePayload,
@@ -8,9 +9,13 @@ import {
   mergeTrigger,
   summaryNeedsCollapse,
   summaryPreview,
+  scannerKindLabel,
+  scannerSeverityLabel,
   triggerTags,
   triggerTime,
 } from "./model";
+
+afterEach(() => setLocale("zh"));
 
 export function trigger(overrides: Partial<ScannerTrigger> = {}): ScannerTrigger {
   return {
@@ -94,4 +99,20 @@ describe("scanner card model", () => {
     expect(mergeTrigger([original], original)).toHaveLength(1);
     expect(mergeTrigger([], original)).toHaveLength(1);
   });
+});
+
+
+it("formats kind, severity, evidence and relative time in the active locale", () => {
+  setLocale("en-US");
+  expect(scannerKindLabel("LIQUIDITY_ANOMALY")).toBe("Liquidity anomaly");
+  expect(scannerSeverityLabel("CRITICAL")).toBe("Strong move");
+  expect(triggerTags(trigger())[0]).toBe("Liquidity anomaly");
+  expect(evidenceLabel({ metric: "quantile", value: "0.990" })).toBe("quantile 99%");
+  expect(triggerTime(1_000, 61_000)).toBe("1m ago");
+  expect(triggerTime(0, 2 * 86_400_000)).toMatch(/^\d{2}\/\d{2}, \d{2}:\d{2}$/);
+
+  setLocale("zh-CN");
+  expect(triggerTags(trigger())[0]).toBe("流动性异常");
+  expect(triggerTime(1_000, 61_000)).toBe("1 分钟前");
+  expect(triggerTime(0, 2 * 86_400_000)).toMatch(/^\d{2}\/\d{2} \d{2}:\d{2}$/);
 });

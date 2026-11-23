@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { AlertRecord, Rule } from "@talaria/contracts";
 
+import { setLocale } from "../../lib/i18n";
 import {
   ALERT_LEVEL_EVENTS,
+  alertStatusLabel,
+  alertTabLabel,
   alertsForTab,
   buildAlertRule,
   buildAlertCreate,
@@ -16,6 +19,8 @@ import {
   tabCounts,
   validateAlertForm,
 } from "./model";
+
+afterEach(() => setLocale("zh"));
 
 function metricRule(value: string, metric: "last_price" | "funding_rate" = "last_price",
   test: "gte" | "lte" = "gte"): Rule {
@@ -294,4 +299,27 @@ it("preserves an existing composite rule when saving alert settings", () => {
   };
   const form = formFromRecord(record({ condition }));
   expect(buildAlertCreate({ ...form, note: "新备注" }).condition).toEqual(condition);
+});
+
+
+it("re-localizes labels at render time when the locale switches", () => {
+  expect(alertTabLabel("cooling")).toBe("冷却");
+  expect(alertStatusLabel("ARMED")).toBe("待命");
+  expect(relativeTime(1_000, 61_000)).toBe("1 分钟前");
+
+  setLocale("en-US");
+  expect(alertTabLabel("cooling")).toBe("Cooling");
+  expect(alertStatusLabel("ARMED")).toBe("Armed");
+  expect(relativeTime(1_000, 61_000)).toBe("1m ago");
+  expect(formatCooldown(0)).toBe("No cooldown");
+  expect(conditionSummary(metricRule("100"))).toContain("Last price");
+  expect(conditionSummary({
+    version: "1", timing: "event", expression: {
+      op: "overlay", direction: "ABOVE", drawing_id: "drw_1", mode: "TOUCH",
+    },
+  }, "HORIZONTAL_LINE")).toBe("Horizontal line intraday touch (crosses above)");
+
+  setLocale("zh-CN");
+  expect(alertStatusLabel("ARMED")).toBe("待命");
+  expect(relativeTime(1_000, 61_000)).toBe("1 分钟前");
 });
