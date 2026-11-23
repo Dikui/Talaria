@@ -4,6 +4,7 @@ import type { Chart } from "klinecharts";
 
 import type { CollabWindow } from "@talaria/contracts";
 
+import { t, useLocale } from "../../lib/i18n";
 import { unprojectPoint } from "../drawings/projection";
 
 interface SelectionOverlayProps {
@@ -38,6 +39,7 @@ export function SelectionOverlay({
   onSelect,
 }: SelectionOverlayProps) {
   const [drag, setDrag] = useState<DragState | null>(null);
+  useLocale();
 
   const finish = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -89,7 +91,7 @@ export function SelectionOverlay({
       className={`collaboration-selection-layer${drag === null ? "" : " is-dragging"}`}
       data-testid="collaboration-selection"
       role="application"
-      aria-label="框选会诊区间：拖拽选择时间与价格范围"
+      aria-label={t("框选会诊区间：拖拽选择时间与价格范围", "Select a consultation range: drag to choose time and price")}
       onPointerDown={(event) => {
         if (event.button !== 0) return;
         const point = relativePoint(
@@ -117,7 +119,7 @@ export function SelectionOverlay({
     >
       {rect === null ? (
         <div className="collaboration-selection-hint">
-          拖拽框选时间与价格区间 · Esc 取消
+          {t("拖拽框选时间与价格区间 · Esc 取消", "Drag to select time and price range · Esc to cancel")}
         </div>
       ) : (
         <div

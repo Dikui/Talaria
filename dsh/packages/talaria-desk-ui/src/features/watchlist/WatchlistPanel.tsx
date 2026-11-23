@@ -9,6 +9,7 @@ import type {
 } from "@talaria/contracts";
 
 import { ApiError, api } from "../../lib/api";
+import { t, useLocale } from "../../lib/i18n";
 import {
   isEmptyWatchlist,
   isInstrumentSelected,
@@ -31,7 +32,7 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Watchlist 请求失败";
+  return t("自选观察池请求失败", "Watchlist request failed");
 }
 
 function precisionByInstrument(
@@ -64,7 +65,8 @@ function ItemRow({
   onMove: (direction: -1 | 1) => void;
   onRemove: () => void;
 }) {
-  const quote = quoteView(item, precision);
+  const locale = useLocale();
+  const quote = quoteView(item, precision, locale);
   const index = group.items.findIndex(
     (entry) => entry.instrument_id === item.instrument_id,
   );
@@ -109,8 +111,8 @@ function ItemRow({
           <button
             type="button"
             className="watchlist-icon-button"
-            title="上移标的"
-            aria-label={`上移 ${item.instrument_id}`}
+            title={t("上移标的", "Move instrument up")}
+            aria-label={t(`上移 ${item.instrument_id}`, `Move ${item.instrument_id} up`)}
             disabled={busy || index <= 0}
             onClick={() => onMove(-1)}
           >
@@ -119,8 +121,8 @@ function ItemRow({
           <button
             type="button"
             className="watchlist-icon-button"
-            title="下移标的"
-            aria-label={`下移 ${item.instrument_id}`}
+            title={t("下移标的", "Move instrument down")}
+            aria-label={t(`下移 ${item.instrument_id}`, `Move ${item.instrument_id} down`)}
             disabled={busy || index >= group.items.length - 1}
             onClick={() => onMove(1)}
           >
@@ -129,8 +131,8 @@ function ItemRow({
           <button
             type="button"
             className="watchlist-icon-button watchlist-icon-button--danger"
-            title="从自选中移除"
-            aria-label={`移除 ${item.instrument_id}`}
+            title={t("从自选中移除", "Remove from watchlist")}
+            aria-label={t(`移除 ${item.instrument_id}`, `Remove ${item.instrument_id}`)}
             disabled={busy}
             onClick={onRemove}
           >
@@ -147,6 +149,7 @@ export function WatchlistPanel({
   selectedInstrumentId,
   onSelect,
 }: WatchlistPanelProps) {
+  useLocale();
   const [data, setData] = useState<Watchlist | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -256,19 +259,19 @@ export function WatchlistPanel({
     <aside
       className="workspace-sidebar watchlist-panel"
       data-testid="watchlist-panel"
-      aria-label="自选观察池"
+      aria-label={t("自选观察池", "Watchlist")}
     >
       <header className="watchlist-header">
         <div>
-          <h2 className="watchlist-title">自选观察池</h2>
-          <p className="watchlist-subtitle">点击标的切换主图</p>
+          <h2 className="watchlist-title">{t("自选观察池", "Watchlist")}</h2>
+          <p className="watchlist-subtitle">{t("点击标的切换主图", "Click an instrument to switch the chart")}</p>
         </div>
         {data !== null && (
           <span
             className="watchlist-quota"
-            title={`实时订阅 ${data.realtime_used}/${data.realtime_quota}，当前图表永远优先`}
+            title={t(`实时订阅 ${data.realtime_used}/${data.realtime_quota}，当前图表永远优先`, `Live subscriptions ${data.realtime_used}/${data.realtime_quota}; the current chart always has priority`)}
           >
-            实时 {data.realtime_used}/{data.realtime_quota}
+            {t("实时", "Live")} {data.realtime_used}/{data.realtime_quota}
           </span>
         )}
       </header>
@@ -280,14 +283,14 @@ export function WatchlistPanel({
       )}
 
       {loading && data === null ? (
-        <p className="watchlist-loading">正在读取自选观察池…</p>
+        <p className="watchlist-loading">{t("正在读取自选观察池…", "Loading watchlist…")}</p>
       ) : (
         <>
           {empty && (
             <div className="watchlist-empty" data-testid="watchlist-empty">
-              <h2>自选观察池还是空的</h2>
+              <h2>{t("自选观察池还是空的", "Your watchlist is empty")}</h2>
               <p>
-                新建一个分组，把想持续跟踪的标的放进来；点击列表即可切换主图，实时配额会优先给当前图表。
+                {t("新建一个分组，把想持续跟踪的标的放进来；点击列表即可切换主图，实时配额会优先给当前图表。", "Create a group and add the instruments you want to follow. Clicking the list switches the chart, and live quota prioritizes the current chart.")}
               </p>
             </div>
           )}
@@ -329,7 +332,7 @@ export function WatchlistPanel({
                             value={renameDraft}
                             autoFocus
                             maxLength={60}
-                            aria-label="分组名称"
+                            aria-label={t("分组名称", "Group name")}
                             onChange={(event) =>
                               setRenameDraft(event.target.value)
                             }
@@ -343,7 +346,7 @@ export function WatchlistPanel({
                             type="submit"
                             className="watchlist-icon-button"
                             disabled={busy}
-                            title="保存分组名称"
+                            title={t("保存分组名称", "Save group name")}
                           >
                             ✓
                           </button>
@@ -351,7 +354,7 @@ export function WatchlistPanel({
                             type="button"
                             className="watchlist-icon-button"
                             disabled={busy}
-                            title="取消重命名"
+                            title={t("取消重命名", "Cancel rename")}
                             onClick={() => setRenamingId(null)}
                           >
                             ×
@@ -368,9 +371,9 @@ export function WatchlistPanel({
                           {isSystem && (
                             <span
                               className="watchlist-system-tag"
-                              title="扫描器动态分组，只读展示"
+                              title={t("扫描器动态分组，只读展示", "Scanner-generated group; read-only")}
                             >
-                              扫描器
+                              {t("扫描器", "Scanner")}
                             </span>
                           )}
                           <span className="watchlist-group-count">
@@ -381,8 +384,8 @@ export function WatchlistPanel({
                               <button
                                 type="button"
                                 className="watchlist-icon-button"
-                                title="分组上移"
-                                aria-label={`分组 ${group.name} 上移`}
+                                title={t("分组上移", "Move group up")}
+                                aria-label={t(`分组 ${group.name} 上移`, `Move group ${group.name} up`)}
                                 disabled={busy || groupIndex <= 0}
                                 onClick={() => {
                                   const ids = data.groups.map(
@@ -400,8 +403,8 @@ export function WatchlistPanel({
                               <button
                                 type="button"
                                 className="watchlist-icon-button"
-                                title="分组下移"
-                                aria-label={`分组 ${group.name} 下移`}
+                                title={t("分组下移", "Move group down")}
+                                aria-label={t(`分组 ${group.name} 下移`, `Move group ${group.name} down`)}
                                 disabled={
                                   busy ||
                                   groupIndex >= data.groups.length - 1 ||
@@ -424,8 +427,8 @@ export function WatchlistPanel({
                               <button
                                 type="button"
                                 className="watchlist-icon-button"
-                                title="重命名分组"
-                                aria-label={`重命名分组 ${group.name}`}
+                                title={t("重命名分组", "Rename group")}
+                                aria-label={t(`重命名分组 ${group.name}`, `Rename group ${group.name}`)}
                                 disabled={busy}
                                 onClick={() => {
                                   setRenamingId(group.group_id);
@@ -437,8 +440,8 @@ export function WatchlistPanel({
                               <button
                                 type="button"
                                 className="watchlist-icon-button"
-                                title="添加标的"
-                                aria-label={`向分组 ${group.name} 添加标的`}
+                                title={t("添加标的", "Add instrument")}
+                                aria-label={t(`向分组 ${group.name} 添加标的`, `Add an instrument to ${group.name}`)}
                                 disabled={busy || !canAdd}
                                 onClick={() => {
                                   setAddingTo(
@@ -454,8 +457,8 @@ export function WatchlistPanel({
                               <button
                                 type="button"
                                 className="watchlist-icon-button watchlist-icon-button--danger"
-                                title="删除分组"
-                                aria-label={`删除分组 ${group.name}`}
+                                title={t("删除分组", "Delete group")}
+                                aria-label={t(`删除分组 ${group.name}`, `Delete group ${group.name}`)}
                                 disabled={busy}
                                 onClick={() =>
                                   void mutate(() =>
@@ -473,7 +476,7 @@ export function WatchlistPanel({
 
                     {group.items.length === 0 ? (
                       <p className="watchlist-group-empty">
-                        这个分组还没有标的。
+                        {t("这个分组还没有标的。", "This group has no instruments yet.")}
                       </p>
                     ) : (
                       <ul className="watchlist-items">
@@ -520,7 +523,7 @@ export function WatchlistPanel({
                         <select
                           className="watchlist-select"
                           value={addValue}
-                          aria-label="选择要添加的标的"
+                          aria-label={t("选择要添加的标的", "Select an instrument to add")}
                           disabled={busy || available.length === 0}
                           onChange={(event) => setAddDraft(event.target.value)}
                         >
@@ -538,7 +541,7 @@ export function WatchlistPanel({
                           className="ghost-button"
                           disabled={busy || available.length === 0}
                         >
-                          添加
+                          {t("添加", "Add")}
                         </button>
                       </form>
                     )}
@@ -556,8 +559,8 @@ export function WatchlistPanel({
               className="watchlist-input"
               value={newGroupName}
               maxLength={60}
-              placeholder="新建分组名称"
-              aria-label="新建分组名称"
+              placeholder={t("新建分组名称", "New group name")}
+              aria-label={t("新建分组名称", "New group name")}
               onChange={(event) => setNewGroupName(event.target.value)}
             />
             <button
@@ -565,11 +568,11 @@ export function WatchlistPanel({
               className="ghost-button"
               disabled={busy || newGroupName.trim().length === 0}
             >
-              新建分组
+              {t("新建分组", "New group")}
             </button>
           </form>
           <p className="watchlist-hint watchlist-edit">
-            当前图表占用实时配额，其余按分组顺序分配；超出配额显示“配额降级”。
+            {t("当前图表占用实时配额，其余按分组顺序分配；超出配额显示“配额降级”。", "The current chart holds a live subscription; the rest are allocated in group order. Over-quota items show “Quota downgraded”.")}
           </p>
         </>
       )}

@@ -1,5 +1,6 @@
 import type { WatchlistGroup, WatchlistItem } from "@talaria/contracts";
 
+import { getLocale, type Locale } from "../../lib/i18n";
 import { formatPrice } from "../feed/format";
 
 /** 与 styles.css 中隐藏编辑控件的断点保持一致。 */
@@ -71,7 +72,11 @@ export function canEditGroup(
   );
 }
 
-export function quoteView(item: WatchlistItem, pricePrecision: number): QuoteView {
+export function quoteView(
+  item: WatchlistItem,
+  pricePrecision: number,
+  locale: Locale = getLocale(),
+): QuoteView {
   const price =
     item.latest_price === null || item.latest_price === undefined
       ? "—"
@@ -93,22 +98,21 @@ export function quoteView(item: WatchlistItem, pricePrecision: number): QuoteVie
           ? "down"
           : "flat";
 
-  const realtimeLabel = item.realtime ? "实时" : "非实时";
+  const realtimeLabel = item.realtime ? (locale === "zh" ? "实时" : "Live") : (locale === "zh" ? "非实时" : "Not live");
   const degradationLabel =
     item.degradation_reason === "QUOTA"
-      ? "配额降级"
+      ? locale === "zh" ? "配额降级" : "Quota downgraded"
       : item.degradation_reason === "NO_FEED"
-        ? "无实时源"
+        ? locale === "zh" ? "无实时源" : "No live source"
         : null;
   const staleLabel = item.stale ? "STALE" : null;
   const sourceLabel =
     item.quote_source === "SUPERVISOR"
-      ? "实时流"
+      ? locale === "zh" ? "实时流" : "Live stream"
       : item.quote_source === "SNAPSHOT"
-        ? "快照"
-        : "无报价";
-  const statusLabel =
-    degradationLabel ?? (item.realtime ? "实时" : "非实时");
+        ? locale === "zh" ? "快照" : "Snapshot"
+        : locale === "zh" ? "无报价" : "No quote";
+  const statusLabel = degradationLabel ?? realtimeLabel;
 
   return {
     price,

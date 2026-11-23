@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { setLocale } from "../../lib/i18n";
 import type {
   Abstain,
   ConsultationRecord,
@@ -174,5 +176,28 @@ describe("consultation state and usage", () => {
       "输入 120 · 缓存命中 40 · 输出 30 · 1 轮 · 未报 2 轮",
     );
     expect(usageLine(null)).toBe("Token 用量暂不可用");
+  });
+});
+
+describe("consultation presentation (English)", () => {
+  afterEach(() => setLocale("zh"));
+
+  it("localizes abstain, status, direction and usage copy", () => {
+    setLocale("en");
+    expect(abstainCopy(abstain({ reason_code: "HOST_OFFLINE" })).title).toBe(
+      "Collaboration host offline",
+    );
+    expect(consultationStatusLabel(record())).toBe(
+      "Waiting for collaboration host",
+    );
+    expect(consultationStatusLabel(record({ status: "FAILED" }))).toBe(
+      "Consultation failed",
+    );
+    expect(directionLabel("LONG")).toBe("Bullish watch");
+    expect(directionLabel("SHORT")).toBe("Bearish watch");
+    expect(usageLine(null)).toBe("Token usage unavailable");
+    expect(groupEvidence([evidence({ kind: "SNAPSHOT" })])[0].label).toBe(
+      "Snapshot",
+    );
   });
 });

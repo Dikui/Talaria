@@ -6,7 +6,14 @@ import type {
   DecimalString,
 } from "@talaria/contracts";
 
+import { getLocale, t, type Locale } from "../../lib/i18n";
+
 export const ANNOTATION_BADGE = "智能体";
+export const ANNOTATION_BADGE_EN = "Agent";
+
+export function annotationBadge(locale: Locale = getLocale()): string {
+  return locale === "zh" ? ANNOTATION_BADGE : ANNOTATION_BADGE_EN;
+}
 
 const UNIT_MS: Record<string, number> = {
   "1m": 60_000,
@@ -28,9 +35,28 @@ export const ANNOTATION_STATUS_LABEL: Record<AnnotationStatus, string> = {
   ARCHIVED: "已归档",
 };
 
+export const ANNOTATION_STATUS_LABEL_EN: Record<AnnotationStatus, string> = {
+  ACTIVE: "Active",
+  ADOPTED: "Adopted",
+  DISMISSED: "Dismissed",
+  ARCHIVED: "Archived",
+};
+
+export function annotationStatusLabel(
+  status: AnnotationStatus,
+  locale: Locale = getLocale(),
+): string {
+  return (locale === "zh" ? ANNOTATION_STATUS_LABEL : ANNOTATION_STATUS_LABEL_EN)[status];
+}
+
 const KIND_LABEL: Record<AgentAnnotationRecord["kind"], string> = {
   LEVEL: "水平线",
   ZONE: "价格带",
+};
+
+const KIND_LABEL_EN: Record<AgentAnnotationRecord["kind"], string> = {
+  LEVEL: "Horizontal line",
+  ZONE: "Price zone",
 };
 
 export function isActiveAnnotation(annotation: AgentAnnotationRecord): boolean {
@@ -78,35 +104,50 @@ export function summarizeSessions(
   return [...grouped.values()].sort((left, right) => right.latest_ts - left.latest_ts);
 }
 
-export function evidenceText(evidence: AnnotationEvidence): string {
+export function evidenceText(
+  evidence: AnnotationEvidence,
+  locale: Locale = getLocale(),
+): string {
   if (typeof evidence.level_id === "string" && evidence.level_id.length > 0) {
-    return `关键位 ${evidence.level_id}`;
+    return t(`关键位 ${evidence.level_id}`, `Key level ${evidence.level_id}`);
   }
   if (typeof evidence.kline_ts === "number") {
     const time = new Date(evidence.kline_ts);
-    return `K 线 ${time.toLocaleString("zh-CN", { hour12: false })}`;
+    const formatted = time.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { hour12: false });
+    return t(`K 线 ${formatted}`, `Candle ${formatted}`);
   }
-  return "未标注证据";
+  return t("未标注证据", "Unlabeled evidence");
 }
 
-export function evidenceLines(annotation: AgentAnnotationRecord): string[] {
+export function evidenceLines(
+  annotation: AgentAnnotationRecord,
+  locale: Locale = getLocale(),
+): string[] {
   return annotation.evidence_refs.map((evidence) => {
-    const base = evidenceText(evidence);
+    const base = evidenceText(evidence, locale);
     const note = evidence.note ?? "";
-    return note.length > 0 ? `${base}（${note}）` : base;
+    return note.length > 0
+      ? t(`${base}（${note}）`, `${base} (${note})`)
+      : base;
   });
 }
 
-export function annotationPopoverLines(annotation: AgentAnnotationRecord): string[] {
+export function annotationPopoverLines(
+  annotation: AgentAnnotationRecord,
+  locale: Locale = getLocale(),
+): string[] {
   return [
-    `快照 ${annotation.snapshot_id}`,
-    `第 ${annotation.round} 轮 · ${annotation.session_id}`,
-    ...evidenceLines(annotation).map((line) => `证据：${line}`),
+    t(`快照 ${annotation.snapshot_id}`, `Snapshot ${annotation.snapshot_id}`),
+    t(`第 ${annotation.round} 轮 · ${annotation.session_id}`, `Round ${annotation.round} · ${annotation.session_id}`),
+    ...evidenceLines(annotation, locale).map((line) => t(`证据：${line}`, `Evidence: ${line}`)),
   ];
 }
 
-export function kindLabel(kind: AgentAnnotationRecord["kind"]): string {
-  return KIND_LABEL[kind];
+export function kindLabel(
+  kind: AgentAnnotationRecord["kind"],
+  locale: Locale = getLocale(),
+): string {
+  return (locale === "zh" ? KIND_LABEL : KIND_LABEL_EN)[kind];
 }
 
 function decimalText(value: DecimalString): string {
@@ -118,8 +159,11 @@ export function annotationPriceLabel(annotation: AgentAnnotationRecord): string 
   return `${decimalText(annotation.price_low)}–${decimalText(annotation.price_high)}`;
 }
 
-export function annotationSummary(annotation: AgentAnnotationRecord): string {
-  return `${kindLabel(annotation.kind)} ${annotationPriceLabel(annotation)} · ${ANNOTATION_BADGE}`;
+export function annotationSummary(
+  annotation: AgentAnnotationRecord,
+  locale: Locale = getLocale(),
+): string {
+  return `${kindLabel(annotation.kind, locale)} ${annotationPriceLabel(annotation)} · ${annotationBadge(locale)}`;
 }
 
 /** 价格带在时间轴上从锚点向前延伸 100 根；与采纳为矩形画线的跨度一致。 */

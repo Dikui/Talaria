@@ -1,5 +1,6 @@
 import type { FeedHealthEvent, OrderBookEvent } from "@talaria/contracts";
 
+import { t, useLocale } from "../../lib/i18n";
 import { formatPrice } from "./format";
 import { feedAlertView, feedBadgeView } from "./health";
 import type { ConnectionState } from "./reducer";
@@ -18,7 +19,8 @@ export function FeedHealthBadge({
   live,
   connection,
 }: FeedHealthBadgeProps) {
-  const view = feedBadgeView(health, now, live, connection);
+  const locale = useLocale();
+  const view = feedBadgeView(health, now, live, connection, locale);
   return (
     <span
       className={`feed-health feed-health--${view.tone}`}
@@ -39,6 +41,7 @@ interface OrderBookSummaryProps {
 
 /** 顶栏盘口：最优一档 + 买卖价差，纵深留给后续订单流任务。 */
 export function OrderBookSummary({ book, pricePrecision }: OrderBookSummaryProps) {
+  useLocale();
   if (book === null) {
     return (
       <div
@@ -46,8 +49,8 @@ export function OrderBookSummary({ book, pricePrecision }: OrderBookSummaryProps
         data-testid="order-book"
         data-ready="false"
       >
-        <span className="order-book-title">盘口</span>
-        <span className="order-book-placeholder">等待盘口</span>
+        <span className="order-book-title">{t("盘口", "Order book")}</span>
+        <span className="order-book-placeholder">{t("等待盘口", "Waiting for order book")}</span>
       </div>
     );
   }
@@ -59,21 +62,21 @@ export function OrderBookSummary({ book, pricePrecision }: OrderBookSummaryProps
       : "—";
   return (
     <div className="order-book" data-testid="order-book" data-ready="true">
-      <span className="order-book-title">盘口</span>
+      <span className="order-book-title">{t("盘口", "Order book")}</span>
       <span className="order-book-row order-book-row--ask">
-        <span className="order-book-label">卖一</span>
+        <span className="order-book-label">{t("卖一", "Best ask")}</span>
         <span className="order-book-price">
           {formatPrice(book.ask_price, pricePrecision)}
         </span>
       </span>
       <span className="order-book-row order-book-row--bid">
-        <span className="order-book-label">买一</span>
+        <span className="order-book-label">{t("买一", "Best bid")}</span>
         <span className="order-book-price">
           {formatPrice(book.bid_price, pricePrecision)}
         </span>
       </span>
       <span className="order-book-row order-book-row--spread">
-        <span className="order-book-label">价差</span>
+        <span className="order-book-label">{t("价差", "Spread")}</span>
         <span className="order-book-price" data-testid="order-book-spread">
           {spread}
         </span>
@@ -96,7 +99,8 @@ export function FeedAlert({
   live,
   connection,
 }: FeedAlertProps) {
-  const view = feedAlertView(health, now, live, connection);
+  const locale = useLocale();
+  const view = feedAlertView(health, now, live, connection, locale);
   if (view === null) {
     return null;
   }

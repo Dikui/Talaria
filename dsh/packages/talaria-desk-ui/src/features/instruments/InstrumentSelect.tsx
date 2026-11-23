@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 
 import type { InstrumentSpec } from "@talaria/contracts";
 
+import { t, useLocale } from "../../lib/i18n";
+
 interface InstrumentSelectProps {
   instruments: InstrumentSpec[];
   value: string;
@@ -20,6 +22,7 @@ export function InstrumentSelect({
   onChange,
 }: InstrumentSelectProps) {
   const [open, setOpen] = useState(false);
+  useLocale();
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -37,13 +40,13 @@ export function InstrumentSelect({
 
   return (
     <div className="instrument-field" ref={rootRef} title={value}>
-      <span className="field-label">标的</span>
+      <span className="field-label">{t("标的", "Instrument")}</span>
       <button
         type="button"
         className="instrument-trigger"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label="选择标的"
+        aria-label={t("选择标的", "Select instrument")}
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
@@ -55,9 +58,9 @@ export function InstrumentSelect({
         </span>
       </button>
       {open && (
-        <ul className="instrument-menu" role="listbox" aria-label="候选标的">
+        <ul className="instrument-menu" role="listbox" aria-label={t("候选标的", "Instrument options")}>
           {instruments.length === 0 ? (
-            <li className="instrument-option is-empty">暂无可选标的</li>
+            <li className="instrument-option is-empty">{t("暂无可选标的", "No instruments available")}</li>
           ) : (
             instruments.map((instrument) => (
               <li key={instrument.instrument_id}>

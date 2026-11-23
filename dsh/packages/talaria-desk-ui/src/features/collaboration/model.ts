@@ -7,6 +7,8 @@ import type {
   UsageSummary,
 } from "@talaria/contracts";
 
+import { getLocale, type Locale } from "../../lib/i18n";
+
 /** Abstain 的四类主因 + 两类宿主/格式兜底；前端只做降级展示，不臆测结论。 */
 const ABSTAIN_COPY: Record<AbstainReason, { title: string; hint: string }> = {
   STALE_SNAPSHOT: {
@@ -35,28 +37,70 @@ const ABSTAIN_COPY: Record<AbstainReason, { title: string; hint: string }> = {
   },
 };
 
-export function abstainCopy(abstain: Abstain): { title: string; hint: string } {
-  return ABSTAIN_COPY[abstain.reason_code] ?? {
-    title: "本次会诊已放弃",
+const ABSTAIN_COPY_EN: Record<AbstainReason, { title: string; hint: string }> = {
+  STALE_SNAPSHOT: {
+    title: "Snapshot expired",
+    hint: "The frozen timestamp is outside the allowed window. Refresh the snapshot and run the consultation again.",
+  },
+  EVIDENCE_CONFLICT: {
+    title: "Conflicting evidence",
+    hint: "Tool results contradict the drawings or key levels, so no conclusion is produced this time.",
+  },
+  GEOMETRY_INVERTED: {
+    title: "Inverted geometry",
+    hint: "The stop or target points against the trade direction. Check the entry zone.",
+  },
+  MODEL_TIMEOUT: {
+    title: "Reasoning timed out",
+    hint: "The collaboration host did not respond in time. The chart and drawings are unaffected.",
+  },
+  HOST_OFFLINE: {
+    title: "Collaboration host offline",
+    hint: "The fast channel still works; retry later or continue local analysis.",
+  },
+  MODEL_INVALID_OUTPUT: {
+    title: "Unverifiable output",
+    hint: "The host response did not match the Setup Insight contract and was rejected.",
+  },
+};
+
+export function abstainCopy(
+  abstain: Abstain,
+  locale: Locale = getLocale(),
+): { title: string; hint: string } {
+  const copy = locale === "zh" ? ABSTAIN_COPY : ABSTAIN_COPY_EN;
+  return copy[abstain.reason_code] ?? {
+    title: locale === "zh" ? "本次会诊已放弃" : "This consultation was abandoned",
     hint: abstain.message,
   };
 }
 
-export function reasonTitle(reason: AbstainReason): string {
-  return ABSTAIN_COPY[reason]?.title ?? reason;
+export function reasonTitle(reason: AbstainReason, locale: Locale = getLocale()): string {
+  const copy = locale === "zh" ? ABSTAIN_COPY : ABSTAIN_COPY_EN;
+  return copy[reason]?.title ?? reason;
 }
 
-export function consultationStatusLabel(record: ConsultationRecord): string {
-  if (record.status === "PENDING") return "等待协同宿主";
+export function consultationStatusLabel(
+  record: ConsultationRecord,
+  locale: Locale = getLocale(),
+): string {
+  if (record.status === "PENDING") {
+    return locale === "zh" ? "等待协同宿主" : "Waiting for collaboration host";
+  }
   if (record.status === "READY") return "Setup Insight";
-  if (record.status === "ABSTAIN") return "已放弃（Abstain）";
-  return "会诊失败";
+  if (record.status === "ABSTAIN") {
+    return locale === "zh" ? "已放弃（Abstain）" : "Abstained";
+  }
+  return locale === "zh" ? "会诊失败" : "Consultation failed";
 }
 
-export function directionLabel(direction: SetupInsight["direction"]): string {
-  if (direction === "LONG") return "偏多观察";
-  if (direction === "SHORT") return "偏空观察";
-  return "中性观察";
+export function directionLabel(
+  direction: SetupInsight["direction"],
+  locale: Locale = getLocale(),
+): string {
+  if (direction === "LONG") return locale === "zh" ? "偏多观察" : "Bullish watch";
+  if (direction === "SHORT") return locale === "zh" ? "偏空观察" : "Bearish watch";
+  return locale === "zh" ? "中性观察" : "Neutral watch";
 }
 
 export function evidenceLabel(ref: EvidenceRef): string {
@@ -80,8 +124,20 @@ const KIND_LABELS: Record<string, string> = {
   HUMAN_DRAWING: "人工画线",
 };
 
+const KIND_LABELS_EN: Record<string, string> = {
+  SNAPSHOT: "Snapshot",
+  CHART_VIEW: "Chart view",
+  KEY_LEVEL: "Key level",
+  INDICATOR: "Indicator",
+  OPERATOR: "Operator",
+  HUMAN_DRAWING: "Manual drawing",
+};
+
 /** 证据按来源折叠；同一 evidence_id 只保留一条，避免模型重复引用。 */
-export function groupEvidence(refs: readonly EvidenceRef[]): EvidenceGroup[] {
+export function groupEvidence(
+  refs: readonly EvidenceRef[],
+  locale: Locale = getLocale(),
+): EvidenceGroup[] {
   const seen = new Set<string>();
   const groups = new Map<string, EvidenceGroup>();
   for (const ref of refs) {
@@ -89,7 +145,7 @@ export function groupEvidence(refs: readonly EvidenceRef[]): EvidenceGroup[] {
     seen.add(ref.evidence_id);
     const group = groups.get(ref.kind) ?? {
       kind: ref.kind,
-      label: KIND_LABELS[ref.kind] ?? ref.kind,
+      label: (locale === "zh" ? KIND_LABELS : KIND_LABELS_EN)[ref.kind] ?? ref.kind,
       items: [],
     };
     group.items.push(ref);
@@ -102,15 +158,25 @@ export function evidenceCount(refs: readonly EvidenceRef[] | undefined): number 
   return new Set((refs ?? []).map((ref) => ref.evidence_id)).size;
 }
 
-export function usageLine(summary: UsageSummary | null): string {
-  if (summary === null) return "Token 用量暂不可用";
-  const input = (summary.input_tokens ?? 0).toLocaleString("zh-CN");
-  const cached = (summary.cached_input_tokens ?? 0).toLocaleString("zh-CN");
-  const output = (summary.output_tokens ?? 0).toLocaleString("zh-CN");
+export function usageLine(
+  summary: UsageSummary | null,
+  locale: Locale = getLocale(),
+): string {
+  if (summary === null) {
+    return locale === "zh" ? "Token 用量暂不可用" : "Token usage unavailable";
+  }
+  const tag = locale === "zh" ? "zh-CN" : "en-US";
+  const input = (summary.input_tokens ?? 0).toLocaleString(tag);
+  const cached = (summary.cached_input_tokens ?? 0).toLocaleString(tag);
+  const output = (summary.output_tokens ?? 0).toLocaleString(tag);
   const turns = summary.turns ?? 0;
   const missing = summary.missing_reports ?? 0;
-  const suffix = missing > 0 ? ` · 未报 ${missing} 轮` : "";
-  return `输入 ${input} · 缓存命中 ${cached} · 输出 ${output} · ${turns} 轮${suffix}`;
+  if (locale === "zh") {
+    const suffix = missing > 0 ? ` · 未报 ${missing} 轮` : "";
+    return `输入 ${input} · 缓存命中 ${cached} · 输出 ${output} · ${turns} 轮${suffix}`;
+  }
+  const suffix = missing > 0 ? ` · ${missing} unreported` : "";
+  return `Input ${input} · Cache hit ${cached} · Output ${output} · ${turns} turns${suffix}`;
 }
 
 export function isPending(record: ConsultationRecord): boolean {

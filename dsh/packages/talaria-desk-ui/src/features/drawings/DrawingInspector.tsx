@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import type { DrawingRecord } from "@talaria/contracts";
 
 import { api } from "../../lib/api";
-import { DRAWING_COLORS, KIND_LABELS } from "./tools";
+import { getLocale, t, useLocale } from "../../lib/i18n";
+import { DRAWING_COLORS, drawingKindLabel } from "./tools";
 import type { DrawingsController } from "./useDrawings";
 
 export interface DrawingInspectorProps {
@@ -24,6 +25,7 @@ export function DrawingInspector({
   const [showVersions, setShowVersions] = useState(false);
   const [versions, setVersions] = useState<DrawingRecord[] | null>(null);
   const [versionsError, setVersionsError] = useState<string | null>(null);
+  const locale = useLocale();
 
   useEffect(() => {
     setText(selected?.text ?? "");
@@ -40,7 +42,7 @@ export function DrawingInspector({
   const commitText = () => {
     const trimmed = text.trim();
     const next =
-      trimmed.length > 0 ? trimmed : selected.kind === "TEXT_LABEL" ? "标注" : "";
+      trimmed.length > 0 ? trimmed : selected.kind === "TEXT_LABEL" ? t("标注", "Annotation") : "";
     if (next !== selected.text) {
       updateSelected({ text: next });
     }
@@ -56,21 +58,21 @@ export function DrawingInspector({
       .drawingVersions(selected.drawing_id)
       .then((response) => setVersions(response.versions))
       .catch((caught: unknown) => {
-        setVersionsError(caught instanceof Error ? caught.message : "版本读取失败");
+        setVersionsError(caught instanceof Error ? caught.message : t("版本读取失败", "Failed to load versions"));
       });
   };
 
   return (
     <aside className="drawing-inspector" data-testid="drawing-inspector">
       <header className="drawing-inspector-header">
-        <strong>{KIND_LABELS[selected.kind]}</strong>
+        <strong>{drawingKindLabel(selected.kind, locale)}</strong>
         <span className="drawing-version" data-testid="drawing-version">
           v{selected.version}
         </span>
         <button
           type="button"
           className="drawing-inspector-close"
-          aria-label="关闭属性面板"
+          aria-label={t("关闭属性面板", "Close properties panel")}
           onClick={() => controller.select(null)}
         >
           ×
@@ -78,12 +80,12 @@ export function DrawingInspector({
       </header>
 
       <label className="drawing-field">
-        <span>文本</span>
+        <span>{t("文本", "Text")}</span>
         <input
           data-testid="drawing-text-input"
           value={text}
           maxLength={500}
-          placeholder={selected.kind === "TEXT_LABEL" ? "标注文本" : "备注（可选）"}
+          placeholder={selected.kind === "TEXT_LABEL" ? t("标注文本", "Annotation text") : t("备注（可选）", "Note (optional)")}
           onChange={(event) => setText(event.target.value)}
           onBlur={commitText}
           onKeyDown={(event) => {
@@ -99,7 +101,7 @@ export function DrawingInspector({
       </label>
 
       <div className="drawing-field">
-        <span>颜色</span>
+        <span>{t("颜色", "Color")}</span>
         <div className="drawing-swatches">
           {DRAWING_COLORS.map((color) => (
             <button
@@ -108,7 +110,7 @@ export function DrawingInspector({
               className={`drawing-swatch${selected.style.color === color ? " is-active" : ""}`}
               data-testid={`drawing-color-${color.replace("#", "")}`}
               style={{ backgroundColor: color }}
-              aria-label={`颜色 ${color}`}
+              aria-label={t(`颜色 ${color}`, `Color ${color}`)}
               onClick={() =>
                 updateSelected({ style: { ...selected.style, color } })
               }
@@ -118,7 +120,7 @@ export function DrawingInspector({
       </div>
 
       <div className="drawing-field">
-        <span>线宽</span>
+        <span>{t("线宽", "Line width")}</span>
         <div className="drawing-swatches">
           {WIDTHS.map((width) => (
             <button
@@ -137,7 +139,7 @@ export function DrawingInspector({
       </div>
 
       <label className="drawing-field">
-        <span>可见范围</span>
+        <span>{t("可见范围", "Visible on")}</span>
         <select
           data-testid="drawing-visibility"
           value={allTimeframes ? "all" : onlyCurrent ? "current" : "custom"}
@@ -149,10 +151,10 @@ export function DrawingInspector({
             });
           }}
         >
-          <option value="current">仅当前周期（{timeframe}）</option>
-          <option value="all">所有周期</option>
+          <option value="current">{t(`仅当前周期（${timeframe}）`, `Current timeframe only (${timeframe})`)}</option>
+          <option value="all">{t("所有周期", "All timeframes")}</option>
           {!allTimeframes && !onlyCurrent && (
-            <option value="custom">自定义（{currentTimeframes.join(" / ")}）</option>
+            <option value="custom">{t(`自定义（${currentTimeframes.join(" / ")}）`, `Custom (${currentTimeframes.join(" / ")})`)}</option>
           )}
         </select>
       </label>
@@ -165,7 +167,7 @@ export function DrawingInspector({
             data-testid="drawing-attach-alert"
             onClick={() => onAttachAlert(selected)}
           >
-            挂预警
+            {t("挂预警", "Attach alert")}
           </button>
         )}
         <button
@@ -174,7 +176,7 @@ export function DrawingInspector({
           data-testid="drawing-versions-toggle"
           onClick={toggleVersions}
         >
-          版本历史
+          {t("版本历史", "Version history")}
         </button>
         <button
           type="button"
@@ -182,21 +184,21 @@ export function DrawingInspector({
           data-testid="drawing-delete"
           onClick={() => deleteDrawing(selected.drawing_id)}
         >
-          删除
+          {t("删除", "Delete")}
         </button>
       </div>
 
       {showVersions && (
         <div className="drawing-versions" data-testid="drawing-versions">
           {versionsError != null && <p className="drawing-versions-error">{versionsError}</p>}
-          {versions == null && versionsError == null && <p>版本读取中…</p>}
+          {versions == null && versionsError == null && <p>{t("版本读取中…", "Loading versions…")}</p>}
           {versions != null && (
             <ul>
               {versions.map((version) => (
                 <li key={version.version} className={version.version === selected.version ? "is-current" : ""}>
                   <span>v{version.version}</span>
-                  <time>{new Date(version.updated_ts).toLocaleString("zh-CN")}</time>
-                  {version.deleted_at != null && <em>已删除</em>}
+                  <time>{new Date(version.updated_ts).toLocaleString(getLocale() === "zh" ? "zh-CN" : "en-US")}</time>
+                  {version.deleted_at != null && <em>{t("已删除", "Deleted")}</em>}
                 </li>
               ))}
             </ul>

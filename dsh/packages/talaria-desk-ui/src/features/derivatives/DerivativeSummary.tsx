@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { formatPrice } from "../feed/format";
+import { getLocale, t, useLocale } from "../../lib/i18n";
 
 interface DerivativeSummaryProps {
   markPrice: string | null;
@@ -39,13 +40,13 @@ function countdownText(nextFundingTs: number | null, now: number): string {
 
 function oiText(value: string | null, hasOiHistory: boolean): string {
   if (value === null) {
-    return hasOiHistory ? "—" : "暂无 OI 历史";
+    return hasOiHistory ? "—" : t("暂无 OI 历史", "No OI history");
   }
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     return "—";
   }
-  return parsed.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+  return parsed.toLocaleString(getLocale() === "zh" ? "zh-CN" : "en-US", { maximumFractionDigits: 2 });
 }
 
 /** 顶栏衍生品状态：只渲染后端读数与本地倒计时，不做任何指标数学。 */
@@ -58,6 +59,7 @@ export function DerivativeSummary({
   hasOiHistory,
 }: DerivativeSummaryProps) {
   const [now, setNow] = useState(() => Date.now());
+  useLocale();
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -69,16 +71,16 @@ export function DerivativeSummary({
     <div
       className={`derivative-summary${emptyOi ? " is-empty-oi" : ""}`}
       data-testid="derivative-summary"
-      aria-label="衍生品实时状态"
+      aria-label={t("衍生品实时状态", "Live derivatives")}
     >
       <span className="derivative-item">
-        <span className="derivative-label">标记价</span>
+        <span className="derivative-label">{t("标记价", "Mark price")}</span>
         <strong className="derivative-value" data-testid="derivative-mark-price">
           {markPrice === null ? "—" : formatPrice(markPrice, pricePrecision)}
         </strong>
       </span>
       <span className="derivative-item">
-        <span className="derivative-label">资金费率</span>
+        <span className="derivative-label">{t("资金费率", "Funding rate")}</span>
         <strong
           className={`derivative-value${
             fundingRate !== null && Number(fundingRate) < 0 ? " is-negative" : ""
@@ -89,13 +91,13 @@ export function DerivativeSummary({
         </strong>
       </span>
       <span className="derivative-item derivative-item--optional">
-        <span className="derivative-label">下次结算</span>
+        <span className="derivative-label">{t("下次结算", "Next settlement")}</span>
         <strong className="derivative-value" data-testid="derivative-countdown">
           {countdownText(nextFundingTs, now)}
         </strong>
       </span>
       <span className="derivative-item derivative-item--optional">
-        <span className="derivative-label">持仓量</span>
+        <span className="derivative-label">{t("持仓量", "Open interest")}</span>
         <strong
           className={`derivative-value${emptyOi ? " is-muted" : ""}`}
           data-testid="derivative-open-interest"

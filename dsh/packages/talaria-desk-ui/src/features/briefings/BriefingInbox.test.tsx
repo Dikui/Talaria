@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ScannerBriefing } from "@talaria/contracts";
 
+import { setLocale } from "../../lib/i18n";
 import { BriefingInbox } from "./BriefingInbox";
 import type { BriefingsController } from "./useBriefings";
 
@@ -138,5 +140,22 @@ describe("briefing inbox", () => {
       />,
     );
     expect(html).toBe("");
+  });
+});
+
+describe("briefing inbox (English)", () => {
+  afterEach(() => setLocale("zh"));
+
+  it("renders controls and counts in English while keeping user data intact", () => {
+    setLocale("en");
+    const html = render({ briefings: [briefing()], unread: 1 });
+    expect(html).toContain("Bring to consultation");
+    expect(html).toContain("Open in chart");
+    expect(html).toContain("1 unread");
+    expect(html).toContain("Evidence · 1");
+    expect(html).toContain("Key levels");
+    expect(html).toContain("Risks");
+    expect(html).toContain("成交额较近 60 根均值放大");
+    expect(render({ briefings: [] })).toContain("No collaborative briefings yet");
   });
 });

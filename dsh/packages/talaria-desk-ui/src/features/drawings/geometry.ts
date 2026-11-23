@@ -1,5 +1,7 @@
 import type { DrawingKind } from "@talaria/contracts";
 
+import { t } from "../../lib/i18n";
+
 /**
  * 画线几何：只依赖像素坐标，不依赖 KLineChart 实例，便于纯函数测试。
  *
@@ -387,7 +389,7 @@ export function buildDrawingGeometry(
     case "TEXT_LABEL": {
       if (!a0) return geometry;
       geometry.labels.push(
-        labelAt(a0.x, a0.y, size, options.text?.trim() || "文本", "text"),
+        labelAt(a0.x, a0.y, size, options.text?.trim() || t("文本", "Text"), "text"),
       );
       return geometry;
     }

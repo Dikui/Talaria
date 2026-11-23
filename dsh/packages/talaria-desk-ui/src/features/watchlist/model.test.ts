@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { setLocale } from "../../lib/i18n";
 
 import type { WatchlistItem } from "@talaria/contracts";
 
@@ -147,5 +149,36 @@ describe("Watchlist 报价与状态标签", () => {
     expect(stale.staleLabel).toBe("STALE");
     expect(stale.change).toBe("-1.23%");
     expect(stale.changeTone).toBe("down");
+  });
+});
+
+describe("Watchlist quote labels (English)", () => {
+  afterEach(() => setLocale("zh"));
+
+  it("localizes status and source labels", () => {
+    setLocale("en");
+    const live = quoteView(
+      item({ quote_source: "SUPERVISOR", realtime: true }),
+      1,
+    );
+    expect(live.statusLabel).toBe("Live");
+    expect(live.sourceLabel).toBe("Live stream");
+
+    const quota = quoteView(
+      item({
+        realtime: false,
+        degraded: true,
+        degradation_reason: "QUOTA",
+      }),
+      1,
+    );
+    expect(quota.statusLabel).toBe("Quota downgraded");
+
+    const unavailable = quoteView(
+      item({ quote_source: "UNAVAILABLE", degraded: true, degradation_reason: "NO_FEED" }),
+      1,
+    );
+    expect(unavailable.sourceLabel).toBe("No quote");
+    expect(quoteView(item(), 1).statusLabel).toBe("Not live");
   });
 });

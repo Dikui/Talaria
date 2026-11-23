@@ -1,5 +1,6 @@
+import { t, useLocale } from "../../lib/i18n";
 import type { DrawingsController } from "./useDrawings";
-import { DRAWING_TOOLS } from "./tools";
+import { DRAWING_TOOLS, drawingToolHint, drawingToolLabel } from "./tools";
 
 export interface DrawingToolbarProps {
   controller: DrawingsController;
@@ -25,22 +26,23 @@ export function DrawingToolbar({
     toolHint,
     readOnly,
   } = controller;
+  const locale = useLocale();
   if (readOnly) return null;
   const busy = pending > 0;
   return (
     <div className="drawing-toolbar" data-testid="drawing-toolbar">
-      <div className="drawing-tools" role="toolbar" aria-label="画线工具">
+      <div className="drawing-tools" role="toolbar" aria-label={t("画线工具", "Drawing tools")}>
         {DRAWING_TOOLS.map((tool) => (
           <button
             key={tool.id}
             type="button"
             className={`drawing-tool${activeTool === tool.id ? " is-active" : ""}`}
             data-testid={`drawing-tool-${tool.id}`}
-            title={tool.hint}
+            title={drawingToolHint(tool, locale)}
             aria-pressed={activeTool === tool.id}
             onClick={() => setTool(activeTool === tool.id ? "select" : tool.id)}
           >
-            {tool.label}
+            {drawingToolLabel(tool, locale)}
           </button>
         ))}
       </div>
@@ -52,7 +54,7 @@ export function DrawingToolbar({
           disabled={!canUndo}
           onClick={undo}
         >
-          撤销
+          {t("撤销", "Undo")}
         </button>
         <button
           type="button"
@@ -61,7 +63,7 @@ export function DrawingToolbar({
           disabled={!canRedo}
           onClick={redo}
         >
-          重做
+          {t("重做", "Redo")}
         </button>
         <button
           type="button"
@@ -69,7 +71,7 @@ export function DrawingToolbar({
           data-testid="drawing-manager"
           onClick={onToggleManager}
         >
-          管理
+          {t("管理", "Manage")}
         </button>
         <button
           type="button"
@@ -77,11 +79,11 @@ export function DrawingToolbar({
           data-testid="drawing-clear"
           onClick={clearInstrument}
         >
-          清空标的
+          {t("清空标的", "Clear instrument")}
         </button>
       </div>
       <span className="drawing-hint" data-testid="drawing-hint">
-        {loading ? "画线加载中…" : busy ? "同步中…" : toolHint}
+        {loading ? t("画线加载中…", "Loading drawings…") : busy ? t("同步中…", "Syncing…") : toolHint}
       </span>
     </div>
   );
