@@ -1,3 +1,5 @@
+import { getLocale, type Locale } from "../lib/i18n";
+
 export const PANEL_LABELS = {
   chart: "图表",
   alerts: "预警",
@@ -7,6 +9,12 @@ export const PANEL_LABELS = {
 } as const;
 
 export type PanelName = keyof typeof PANEL_LABELS;
+const english: Record<PanelName, string> = {
+  chart: "Chart", alerts: "Alerts", scanner: "Scanner", levels: "Key Levels", accounts: "Accounts",
+};
+export function panelLabel(panel: PanelName, locale: Locale = getLocale()): string {
+  return (locale === "zh" ? PANEL_LABELS : english)[panel];
+}
 export const PANELS = Object.keys(PANEL_LABELS) as PanelName[];
 export const DESK_PATH = "/desk";
 export const LINK_PATH = "/desk/link";
