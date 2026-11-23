@@ -19,7 +19,7 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 - [ADR-0011：冷库发布由快照冻结触发](./adr/0011-cold-store-publish-on-snapshot-freeze.md)（已被 ADR-0018 取代）
 - [ADR-0012：状态库写入走专用写线程，读取用只读连接](./adr/0012-state-store-dedicated-writer-thread-and-read-only-connections.md)
 - [ADR-0013：L0 底座只放纯契约与纯计算](./adr/0013-foundation-holds-only-pure-contracts-and-computation.md)
-- [ADR-0014：一个 launchd 常驻服务 + 浏览器多页面](./adr/0014-resident-service-and-browser-multi-page.md)（前端一条已由 ADR-0020 取代）
+- [ADR-0014：一个 launchd 常驻服务 + 浏览器多页面](./adr/0014-resident-service-and-browser-multi-page.md)（前端由 ADR-0020 取代，后台 launchd 部分由 ADR-0022 取代）
 - [ADR-0015：交易流水线运行在独立的账户进程，账户进程是插件宿主](./adr/0015-account-process-as-plugin-host.md)
 - [ADR-0016：取数 SDK 按清单直读 Parquet，最新部分向常驻服务补齐](./adr/0016-sdk-reads-parquet-directly-with-service-tail.md)
 - [ADR-0017：冷库按标的、按列精度存 decimal128(18, s)](./adr/0017-cold-store-per-instrument-decimal128.md)
@@ -27,6 +27,7 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 - [ADR-0019：指标、信号、策略使用统一组件模型](./adr/0019-unified-component-model-with-runtime-context.md)
 - [ADR-0020：整个工作台放进 DSH，浏览器多页面只作离线兜底](./adr/0020-dsh-hosts-the-whole-workbench.md)
 - [ADR-0021：DSH 桌面应用作为工作台宿主](./adr/0021-dsh-desktop-app-as-host.md)
+- [ADR-0022：常驻服务由 DSH 桌面应用启停](./adr/0022-dsh-desktop-app-owns-service-lifecycle.md)
 
 调研证据存档于 [`docs/research/`](./research/)。
 
@@ -51,7 +52,7 @@ flowchart TB
 
   Front["兜底页面（服务托管 /desk 等路由，DSH 离线时用）"]
 
-  subgraph Svc["常驻服务 talaria service（launchd 用户级 Agent）"]
+  subgraph Svc["常驻服务 talaria up --solo（DSH 桌面插件托管）"]
     direction TB
     Feed["行情接入：packs + feed supervisor"]
     Cold["冷库写入：收盘后写尾部文件 → 合并 → 清单原子切换"]
@@ -91,7 +92,7 @@ flowchart TB
 
 | 进程 | 职责 | 写哪些存储 | 状态 |
 |---|---|---|---|
-| 常驻服务 | 行情接入、冷库写入、快照、指标与关键位、预警、扫描、HTTP/WS，启动后发布 DSH 桥接凭据 | 冷库、快照库、协同状态库、运行时凭据 | launchd 常驻及 `talaria up` 前台模式已实现 |
+| 常驻服务 | 行情接入、冷库写入、快照、指标与关键位、预警、扫描、HTTP/WS，启动后发布 DSH 桥接凭据 | 冷库、快照库、协同状态库、运行时凭据 | DSH 桌面插件托管及 `talaria up` 前台模式 |
 | DSH 桌面应用 | 日常入口（ADR-0020、ADR-0021）。`desktop` profile 的插件注册图表、预警、扫描、关键位四个侧栏入口，面板直连快通道。面板通过 `BroadcastChannel` 联动标的、周期与十字光标。桌面宿主处理会诊、简报和分析工具 | DSH 会话和运行时宿主地址。工作台数据经服务接口写入 | 全局和会话面板已实现 |
 | 兜底页面 | 服务托管的 `/desk` 与各功能路由，复用 DSH 面板的组件 | 经服务接口写入 | 多页面路由已实现 |
 | 账户进程 | 按交易方案装配插件，跑回测或模拟盘 | 模拟盘：持锁子账户的账本；回放：`runs/<run_id>/` | 规划中 |
@@ -130,7 +131,7 @@ M1（数据接入、冷库、指标、关键位、看盘页、价位预警）与
 | 阶段 | 内容 |
 |---|---|
 | P1 数据底座 | 冷库数值格式迁移（ADR-0017）、持续写入与历史回填（ADR-0018）、HTTP 范围取数与补尾、取数 SDK（ADR-0016）、策略订阅语义、衍生品冷库、逐笔与买一卖一落盘 |
-| P2 常驻与多页面 | launchd 常驻与单实例锁、功能开关、关键位注册表、前端多页面路由 |
+| P2 常驻与多页面 | 常驻服务与单实例锁、功能开关、关键位注册表、前端多页面路由 |
 | P3 组件模型 | 组件接口与 `ctx`、Python 写法、JSON 规则（收盘求值与事件驱动）、预警升级与图表规则编辑器 |
 | P4 账户进程 | 插件宿主与底线、默认定仓 / 风控 / 成交插件、账本、已确认草案提交、agent 代码批准与隔离、回放编排（确定性策略） |
 | 以后 | `ControllerPatch`、agent 工具插槽、认知成本入账与六维归因、评估证据等级与 `Co-Pilot Lift`、美股市场包、快讯、`study_optimizer`、Tauri 薄壳、实盘成交插件 |
@@ -519,8 +520,7 @@ class ExecutionEngine(Protocol):
 
 ```mermaid
 flowchart LR
-  Launchd["launchd 用户级 Agent"]
-  Svc["常驻服务 talaria service :8765"]
+  Svc["常驻服务 talaria up --solo :8765"]
   Panels["DSH 桌面面板及会话"]
   Fallback["兜底页面 /desk"]
   Desktop["DSH 桌面宿主（应用管理）"]
@@ -528,7 +528,7 @@ flowchart LR
   NB["Notebook / 脚本"]
   DSHAuto["DSH 自治 / 评估子进程（以后，stdio SDK）"]
 
-  Launchd -->|"登录启动、崩溃重启"| Svc
+  Desktop -->|"插件启动、停止及退避重启"| Svc
   Panels <-->|"HTTP / WS 快通道"| Svc
   Fallback <-->|"HTTP / WS 快通道"| Svc
   Panels <-->|"DSH typert（会诊、轨迹、审批）"| Desktop
@@ -538,7 +538,7 @@ flowchart LR
   Acct -. "deepseek-harness-sdk" .-> DSHAuto
 ```
 
-- **日常运行**。运行 `talaria dsh-install` 将插件装进 `desktop` profile，再以 `talaria service install` 注册登录自启的常驻服务。launchd 管理常驻服务，桌面应用管理自己的宿主。`talaria open` 先检查服务，再打开桌面应用。应用不可用时打开 `/desk`。`talaria service status` 显示服务日志和桌面应用及插件的状态，`talaria service uninstall` 停止并卸载作业。
+- **日常运行**。运行 `talaria dsh-install` 将插件和服务启动参数装进 `desktop` profile，再用 `talaria open` 打开应用。插件启动并监管常驻服务，子进程在标准输入关闭时优雅退出。应用关闭期间停止行情采集、冷库写入、预警和扫描。应用不可用时可用 `talaria up --solo` 启动服务，再打开 `/desk`。`talaria service status` 显示桌面应用与插件状态、数据目录锁和服务写入接口。`talaria service uninstall` 用于迁移时停止并移除旧的 launchd 作业。
 - **本机桥接**。常驻服务就绪时在 `<data-dir>/runtime/dsh-bridge.json`（0600）发布回环地址和 Bearer token，退出时清理。插件按安装时写入的绝对路径读取凭据，因此服务重启后可自动恢复。桌面插件在同一运行目录发布自己的回环地址，供服务派发会诊与简报。
 - **开发与自动化测试**。运行 `talaria dsh-install --dsh-profile talaria-desk`，再运行 `talaria up --pack crypto_perp` 启动服务和独立 DSH Web 宿主（默认端口 8766）。终端打印开发宿主地址。用 `talaria up --solo` 可单独运行服务。
 - **其他进程**。`talaria account run <scheme.yaml> [--mode backtest|paper]`（规划中）启动账户进程。`paper` 模式必须取得对应子账户排他锁。`talaria replay` 和 `talaria optimize --workers N`（规划中）批量启动账户进程。

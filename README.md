@@ -18,19 +18,18 @@ pnpm -C dsh install
 pnpm -C dsh build
 ```
 
-在 macOS 安装 DeepSeek Harness 桌面应用（基线 0.2.2-rc.5）。首次打开应用，让它初始化 `desktop` profile，然后完全退出应用，再安装工作台插件和登录自启的常驻服务。
+在 macOS 安装 DeepSeek Harness 桌面应用（基线 0.2.2-rc.5）。首次打开应用，让它初始化 `desktop` profile，然后完全退出应用，再安装工作台插件。从旧的 launchd 作业迁移时，先运行 `uv run talaria service uninstall`。如果旧作业使用自定义数据目录，记下路径并在安装插件时传入 `--data-dir`。
 
 ```bash
 uv run talaria dsh-install
-uv run talaria service install
 uv run talaria open
 ```
 
-`talaria dsh-install` 构建插件并更新 `~/.dsh/profiles/desktop/cordis.patch.yml` 中带标记的 Talaria 段。每次改写前，原文件会备份到 `~/.dsh/profiles-backup/desktop-<时间戳>/`。升级插件后重新运行安装命令即可。需要移除桌面插件时，退出桌面应用并运行 `uv run talaria dsh-uninstall`。
+`talaria dsh-install` 构建插件，并将服务启动参数写入 `~/.dsh/profiles/desktop/cordis.patch.yml` 中带标记的 Talaria 段。每次改写前，原文件会备份到 `~/.dsh/profiles-backup/desktop-<时间戳>/`。升级插件后重新运行安装命令即可。需要移除桌面插件时，退出桌面应用并运行 `uv run talaria dsh-uninstall`。
 
-日常用 `talaria open` 打开桌面应用，从侧边栏进入图表、预警、扫描和关键位。未安装桌面应用时会打开常驻服务托管的 `/desk`。用 `talaria service status` 查看常驻服务、桌面应用与 Talaria 插件状态。升级已安装的常驻服务时，再运行一次 `talaria service install` 更新 launchd 作业。
+日常用 `talaria open` 打开桌面应用，从侧边栏进入图表、预警、扫描和关键位。插件随应用启动服务，退出应用时停止服务。应用关闭期间，行情采集、冷库写入、预警和扫描随之停止。用 `talaria service status` 查看应用、插件、数据目录锁和服务写入接口。服务日志位于数据目录下的 `logs/service.out.log` 和 `logs/service.err.log`。
 
-如果常驻服务使用自定义数据目录，给 `dsh-install`、`service install` 和 `open` 传入同一个 `--data-dir`。省略时，`dsh-install` 和 `open` 依次读取 `TALARIA_DATA_DIR`、默认 launchd 作业及 `./.talaria`。
+未安装桌面应用时，先运行 `talaria up --solo`，再用 `talaria open` 打开服务托管的 `/desk`。使用自定义数据目录时，可给相关命令传入同一个 `--data-dir`。省略 `--data-dir` 时，`dsh-install` 与 `open` 的浏览器兜底依次查看 `TALARIA_DATA_DIR`、桌面插件配置、旧作业配置与 `./.talaria`。`service status` 优先查看托管配置所指向的目录。
 
 ### 离线确定性样本
 

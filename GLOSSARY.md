@@ -5,7 +5,7 @@
 ## 产品形态与交易方案
 
 **Resident Service（常驻服务）**:
-由 launchd 守护、独立于任何窗口运行的本机后台进程，是行情、冷库、快照与协同状态的唯一写者，其余页面、Notebook 和账户进程都是它的使用方。
+由 DSH 桌面插件启停的本机后台进程，也可用 `talaria up --solo` 手动运行。它是行情、冷库、快照与协同状态的唯一写者，页面、Notebook 和账户进程都是它的使用方。
 _Avoid_: Daemon, backend, server
 
 **Account Process（账户进程）**:

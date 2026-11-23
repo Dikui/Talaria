@@ -20,6 +20,8 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 
+from talaria.cli import dsh_host
+from talaria.cli import service as service_cli
 from talaria.cli.dsh_host import DshHost, bridge_descriptor_path, dsh_entry_path
 from talaria.cli.main import main, validate_loopback_host
 from talaria.workbench_api.service_config import FeatureToggles
@@ -30,6 +32,16 @@ from talaria.workbench_api.service_descriptor import (
 )
 
 pytestmark = pytest.mark.small
+
+
+@pytest.fixture(autouse=True)
+def isolate_service_profiles(tmp_path, monkeypatch):
+    # 回放测试检查旧作业和桌面 profile，替代真实 launchctl 与用户配置目录。
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
+    monkeypatch.setattr(
+        service_cli, "_run_launchctl", lambda args: subprocess.CompletedProcess(args, 113)
+    )
 
 
 def test_up_dual_rejects_same_port(capsys) -> None:
@@ -192,13 +204,36 @@ def test_replay_protects_data_dir_of_loaded_launchd_job(tmp_path, monkeypatch, c
         "arguments = {\n\t/bin/talaria\n\tup\n\t--data-dir\n\tservice-root\n}\n"
     )
     monkeypatch.setattr(
-        "talaria.cli.main._run_launchctl",
+        "talaria.cli.service._run_launchctl",
         lambda args: subprocess.CompletedProcess(args, 0, launchctl, ""),
     )
     monkeypatch.setattr("talaria.cli.main._run_up", lambda *args, **kwargs: 99)
 
     assert main([
         "up", "--solo", "--replay-events", str(replay), "--data-dir", str(daily),
+    ]) == 2
+    assert "日常数据目录" in capsys.readouterr().err
+    assert not daily.exists()
+
+
+# platform/05: 即使桌面应用未启动，回放也不得使用桌面插件的日常数据目录。
+@pytest.mark.spec
+def test_replay_protects_data_dir_configured_in_desktop_plugin(
+    tmp_path, repo_root, monkeypatch, capsys
+):
+    daily = tmp_path / "desktop-data"
+    profile = dsh_host.dsh_profile_dir(dsh_host.DESKTOP_PROFILE)
+    profile.mkdir(parents=True)
+    dsh_host.install_talaria_patch(
+        profile, repo_root / "dsh/packages/talaria-dsh-plugin", daily,
+        service={"cwd": str(daily)},
+    )
+    replay = tmp_path / "replay.jsonl"
+    replay.write_text('{"offset_ms": 0, "type": "heartbeat"}\n', encoding="utf-8")
+    monkeypatch.setattr("talaria.cli.main._run_up", lambda *args, **kwargs: 99)
+
+    assert main([
+        "up", "--solo", "--replay-events", str(replay), "--data-dir", str(daily / "nested"),
     ]) == 2
     assert "日常数据目录" in capsys.readouterr().err
     assert not daily.exists()

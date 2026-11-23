@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import plistlib
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,12 +31,15 @@ def service(tmp_path, monkeypatch):
     monkeypatch.setattr("webbrowser.open", unexpected_open)
     monkeypatch.setattr("subprocess.run", unexpected_open)
     monkeypatch.setattr(dsh_host, "DESKTOP_APP", tmp_path / "DeepSeek Harness.app", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
     write_service_descriptor(
         service_descriptor_path(tmp_path), base_url=BASE_URL, token="bridge",
         pid=os.getpid(), features=FeatureToggles(),
     )
 
 
+# platform/05: 桌面应用可以在服务未运行时直接打开。
 @pytest.mark.parametrize("scenario", ["installed", "missing", "stopped"])
 def test_open_prints_action_for_service_and_desktop_state(tmp_path, service, capsys, scenario):
     args = ["open", "--data-dir", str(tmp_path), "--print"]
@@ -44,13 +47,12 @@ def test_open_prints_action_for_service_and_desktop_state(tmp_path, service, cap
         assert cli.main(args) == 2
         output = capsys.readouterr()
         assert not output.out
-        assert "talaria service install" in output.err
-        assert "talaria up" in output.err
+        assert "talaria up --solo" in output.err
         return
 
     if scenario == "installed":
         dsh_host.DESKTOP_APP.mkdir()
-    with ServiceLock(tmp_path):
+    with ServiceLock(tmp_path) if scenario == "missing" else nullcontext():
         assert cli.main(args) == 0
     output = capsys.readouterr()
     if scenario == "installed":
@@ -72,7 +74,7 @@ def test_open_dispatches_desktop_action_or_fallback(tmp_path, service, monkeypat
     else:
         monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
     monkeypatch.setenv("TALARIA_DATA_DIR", str(tmp_path))
-    with ServiceLock(tmp_path):
+    with nullcontext() if installed else ServiceLock(tmp_path):
         assert cli.main(["open"]) == 0
     assert opened == ([["open", "-a", "DeepSeek Harness"]] if installed else [f"{BASE_URL}/desk"])
 
@@ -83,7 +85,6 @@ def test_open_waits_up_to_ten_seconds_for_starting_service(
     tmp_path, service, monkeypatch, capsys, publish_after
 ):
     # platform/03: keep the actual service lock and simulate the passage of time.
-    dsh_host.DESKTOP_APP.mkdir()
     path = service_descriptor_path(tmp_path)
     contents = path.read_bytes()
     path.unlink()
@@ -108,22 +109,20 @@ def test_open_waits_up_to_ten_seconds_for_starting_service(
     else:
         assert publish_after <= elapsed < 10
         assert result == 0
-        assert output == (f"{DESKTOP_ACTION}\n", "")
+        assert output.out == f"open {BASE_URL}/desk\n"
 
 
-def test_open_uses_installed_data_dir_from_another_working_directory(
+def test_open_fallback_uses_configured_data_dir_from_another_working_directory(
     tmp_path, service, monkeypatch, capsys
 ):
-    dsh_host.DESKTOP_APP.mkdir()
-    home = tmp_path / "home"
-    launch_agents = home / "Library/LaunchAgents"
-    launch_agents.mkdir(parents=True)
-    (launch_agents / "com.talaria.workbench.plist").write_bytes(plistlib.dumps({
-        "ProgramArguments": ["/usr/local/bin/talaria", "up", "--data-dir", str(tmp_path)],
-    }))
-    monkeypatch.setattr(Path, "home", lambda: home)
+    profile = dsh_host.dsh_profile_dir(dsh_host.DESKTOP_PROFILE)
+    profile.mkdir(parents=True)
+    dsh_host.install_talaria_patch(
+        profile, Path(__file__).resolve().parents[2] / "dsh/packages/talaria-dsh-plugin", tmp_path,
+        service={"cwd": str(tmp_path)},
+    )
     monkeypatch.delenv("TALARIA_DATA_DIR", raising=False)
-    monkeypatch.chdir(home)
+    monkeypatch.chdir(profile)
     with ServiceLock(tmp_path):
         assert cli.main(["open", "--print"]) == 0
-    assert capsys.readouterr().out.strip() == DESKTOP_ACTION
+    assert capsys.readouterr().out.strip() == f"open {BASE_URL}/desk"

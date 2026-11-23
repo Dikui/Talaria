@@ -10,6 +10,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 from talaria.cli import dsh_host
 from talaria.cli import main as cli
@@ -27,7 +28,10 @@ def plugin_repo(tmp_path, monkeypatch):
     plugin.mkdir(parents=True)
     actual_repo = Path(__file__).resolve().parents[2]
     source = actual_repo / "dsh/packages/talaria-dsh-plugin"
-    for filename in ("package.json", "index.js", "bridge.js", "guard.js", "cordis.patch.yml"):
+    for filename in (
+        "package.json", "index.js", "bridge.js", "guard.js", "service-supervisor.js",
+        "cordis.patch.yml",
+    ):
         shutil.copyfile(source / filename, plugin / filename)
     # The injected build runner stands in for pnpm. Supply a built client artifact.
     (plugin / "client").mkdir()
@@ -40,11 +44,15 @@ def plugin_repo(tmp_path, monkeypatch):
 
 @pytest.fixture
 def patch_install_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     dsh_home = tmp_path / "dsh-home"
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
     pnpm = tmp_path / "pnpm"
     pnpm.touch(mode=0o755)
     monkeypatch.setenv("PATH", str(tmp_path))
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
     return dsh_home, pnpm
 
 
@@ -98,17 +106,18 @@ def test_installs_profile_scoped_config_with_resolved_dsh(
                 patch = manifest["dsh"]["bundle"]["patch"]
                 config = archive.extractfile(f"package/{Path(patch)}").read().decode()
                 tools = {name for name in archive.getnames() if name.endswith(".tool.json")}
+                assert "package/service-supervisor.js" in archive.getnames()
             for row in ("sandbox-policy", "approval", "permission", "agent-preset-registry"):
                 assert (f"- id: {row}\n" in config) is (profile == "talaria-desk")
             credential = json.dumps(str(data_dir / "runtime/dsh-bridge.json"), ensure_ascii=False)
             assert f"credentialFile: {credential}" in config
             assert "desktop: true" not in config
+            assert "service:" not in config
             assert config.count("name: Talaria 分析副驾驶") == 1
             assert len(tools) == 7
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(subprocess, "run", run)
-
     args = ["dsh-install", "--dsh-profile", profile]
     if source == "explicit":
         args += ["--dsh-bin", str(commands["explicit"])]
@@ -154,6 +163,7 @@ def test_desktop_installs_updates_and_removes_only_its_patch(
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(cli, "_default_service_program", lambda: "/test/bin/talaria")
     data_dir = tmp_path / 'service "data"'
     args = ["dsh-install", "--dsh-bin", str(tmp_path / "missing-dsh"), "--data-dir", str(data_dir)]
     assert cli.main(args) == 0
@@ -173,6 +183,10 @@ def test_desktop_installs_updates_and_removes_only_its_patch(
         f"        credentialFile: {credential}\n"
         "        desktop: true\n"
     ).encode() in first.replace(b"\r\n", b"\n")
+    config = yaml.safe_load(first)[-1]["insert"][-1]["config"]["service"]
+    assert config["command"][0] == "/test/bin/talaria"
+    assert config["command"][config["command"].index("--port") + 1] == "8765"
+    assert config["command"][config["command"].index("--pack") + 1] == "crypto_perp"
     backups = dsh_home / "profiles-backup"
     backup_files = sorted(backups.glob("desktop-*/cordis.patch.yml"))
     assert [backup.read_bytes() for backup in backup_files] == [original]
@@ -200,6 +214,54 @@ def test_desktop_installs_updates_and_removes_only_its_patch(
         original, previous, latest,
     ]
     assert len(builds) == 3
+
+
+# platform/05: 含空格和引号的启动参数及代理环境按原值写入 YAML。
+def test_desktop_install_writes_service_config_and_migration_hint(
+    tmp_path, monkeypatch, capsys, plugin_repo, patch_install_env,
+):
+    dsh_home, pnpm = patch_install_env
+    profile = dsh_home / "profiles/desktop"
+    profile.mkdir(parents=True)
+    patch = profile / "cordis.patch.yml"
+    patch.write_text("[]\n")
+    patch.chmod(0o644)
+    old_job = tmp_path / "Library/LaunchAgents/com.talaria.workbench.plist"
+    old_job.parent.mkdir(parents=True)
+    old_job.write_bytes(plistlib.dumps({"Label": "com.talaria.workbench"}))
+    env = {}
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        env[name] = 'http://127.0.0.1:1234/# "proxy"'
+        env[name.lower()] = "localhost,127.0.0.1"
+    for name, value in {**env, "TALARIA_DSH_BIN": "/unused/dsh"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.chdir(tmp_path)
+
+    def run(command, **kwargs):
+        assert command[0] == str(pnpm)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    data_dir = (tmp_path / 'service "data"').resolve()
+    program = "/test/virtual env/bin/talaria"
+    assert cli.main([
+        "dsh-install", "--data-dir", data_dir.name, "--program", program,
+        "--port", "9753", "--pack", "crypto_perp",
+    ]) == 0
+
+    config = yaml.safe_load(patch.read_text())[-1]["insert"][-1]["config"]
+    assert config["service"] == {
+        "command": [
+            program, "up", "--solo", "--host", "127.0.0.1", "--port", "9753",
+            "--data-dir", str(data_dir), "--pack", "crypto_perp", "--exit-with-parent",
+        ],
+        "cwd": str(data_dir),
+        "env": env,
+        "logDir": str(data_dir / "logs"),
+    }
+    assert stat.S_IMODE(patch.stat().st_mode) == 0o600
+    assert "talaria service uninstall" in capsys.readouterr().err
+    assert old_job.is_file()
 
 
 @pytest.mark.regression
@@ -231,6 +293,7 @@ def test_electron_managed_profile_reuses_patch_after_cli_refusal(
     assert cli.main([*args, "--dsh-bin", str(dsh)]) == 0
     content = path.read_bytes()
     assert content.count(START) == content.count(END) == 1
+    assert b"service:" not in content
     assert f"name: {json.dumps(str(plugin_repo / 'index.js'))}".encode() in content
     assert cli.main([*args, "--dsh-bin", str(tmp_path / "unavailable")]) == 0
     assert path.read_bytes() == content
