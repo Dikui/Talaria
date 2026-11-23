@@ -50,6 +50,7 @@ import type {
 } from "@talaria/contracts";
 
 import { t } from "./i18n";
+import { serviceErrorMessage } from "./serviceErrorMessage";
 
 export interface HealthStatus {
   ok: boolean;
@@ -129,11 +130,8 @@ async function parseError(response: Response): Promise<ApiError> {
   } catch {
     body = null;
   }
-  return new ApiError(
-    response.status,
-    body?.code ?? "HTTP_ERROR",
-    body?.message ?? t(`请求失败（HTTP ${response.status}）`, `Request failed (HTTP ${response.status})`),
-  );
+  const code = body?.code ?? "HTTP_ERROR";
+  return new ApiError(response.status, code, serviceErrorMessage(response.status, code, body?.message));
 }
 
 async function getJson<T>(path: string): Promise<T> {
