@@ -6,7 +6,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { probeExternalService, superviseService } from '../service-supervisor.js'
+import { probeExternalService, serviceEnv, superviseService } from '../service-supervisor.js'
+
+test('drops inherited proxy variables in any case and keeps install-time ones', () => {
+  const env = serviceEnv(
+    { PATH: '/bin', no_proxy: 'localhost,[::1]', NO_PROXY: '::1', Https_Proxy: 'http://x', ALL_PROXY: 'socks5://y' },
+    { HTTP_PROXY: 'http://127.0.0.1:7897', NO_PROXY: 'localhost,127.0.0.1' },
+  )
+  assert.deepEqual(env, {
+    PATH: '/bin', HTTP_PROXY: 'http://127.0.0.1:7897', NO_PROXY: 'localhost,127.0.0.1',
+  })
+})
 
 function tempDirectory(t) {
   const directory = mkdtempSync(join(tmpdir(), 'talaria-supervisor-'))
@@ -82,7 +92,7 @@ test('checks every five seconds and starts only after the external service exits
   await advance(1)
   assert.deepEqual(children[0].invocation, {
     program: '/fake/bin/talaria', args: ['up', '--solo'], cwd, stdin: 'pipe',
-    env: { ...process.env, TALARIA_TEST_PROXY: 'local-proxy' },
+    env: serviceEnv(process.env, { TALARIA_TEST_PROXY: 'local-proxy' }),
   })
   const stopped = dispose()
   children[0].emit('close', 0)

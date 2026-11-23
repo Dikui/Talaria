@@ -12,6 +12,17 @@ const STOP_TIMEOUT_MS = 10_000
 const INITIAL_RESTART_MS = 1_000
 const MAX_RESTART_MS = 60_000
 const STABLE_RUN_MS = 60_000
+const PROXY_NAMES = new Set(['http_proxy', 'https_proxy', 'all_proxy', 'no_proxy'])
+
+// DSH 会把系统代理解析结果（含 httpx 无法解析的 `[::1]`）写进自身环境；
+// 服务只认安装时记录的代理配置，丢弃继承来的任意大小写代理变量。
+export function serviceEnv(inherited, configured = {}) {
+  const env = {}
+  for (const [name, value] of Object.entries(inherited)) {
+    if (!PROXY_NAMES.has(name.toLowerCase())) env[name] = value
+  }
+  return { ...env, ...configured }
+}
 
 function checkHealth(url, dataDirId, request) {
   return new Promise((resolve, reject) => {
@@ -75,7 +86,7 @@ export function superviseService({ command, cwd, env, logDir }, {
         descriptors.push(openSync(join(logDir, name), 'a', 0o600))
       }
       return spawnChild(command[0], command.slice(1), {
-        cwd, env: { ...process.env, ...env }, stdio: ['pipe', ...descriptors],
+        cwd, env: serviceEnv(process.env, env), stdio: ['pipe', ...descriptors],
       })
     } finally {
       for (const fd of descriptors) closeSync(fd)
