@@ -130,7 +130,7 @@ def test_desk_sets_readable_strict_cookie(client) -> None:
 
 
 # 平台 02 / ADR-0020：兜底页可独立建立写操作会话，联动 iframe 只加载前端。
-@pytest.mark.parametrize("panel", ["chart", "alerts", "scanner", "levels"])
+@pytest.mark.parametrize("panel", ["chart", "alerts", "scanner", "levels", "accounts"])
 def test_desk_panel_deep_link_serves_app_and_sets_session(client, panel) -> None:
     response = client.get(f"/desk/{panel}")
     assert response.status_code == 200
@@ -151,13 +151,14 @@ def test_desk_spa_fallback_only_covers_desk_paths(client) -> None:
     assert client.get("/").status_code == 404
 
 
-def test_missing_dist_returns_chinese_instructions(tmp_path, fixture_dir) -> None:
+def test_missing_dist_explains_recovery_in_both_languages(tmp_path, fixture_dir) -> None:
     missing = tmp_path / "missing-dist"
     app = create_app(_app_settings(tmp_path, fixture_dir, dist=missing))
     with TestClient(app) as client:
         response = client.get("/desk")
     assert response.status_code == 200
     assert "前端构建产物缺失" in response.text
+    assert "Workbench not built" in response.text
     assert "pnpm -C dsh" in response.text
 
 

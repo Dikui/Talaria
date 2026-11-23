@@ -14,12 +14,15 @@ router = APIRouter()
 
 
 _MISSING_DIST_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>Talaria 前端尚未构建</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Talaria</title>
 <style>body{font-family:system-ui,sans-serif;max-width:44rem;margin:4rem auto;padding:0 1rem;line-height:1.7;color:#1f2328}code{background:#f3f4f6;padding:.15rem .35rem;border-radius:.25rem}</style>
 </head><body>
 <h1>前端构建产物缺失</h1>
 <p>请先在仓库根目录执行 <code>pnpm -C dsh install &amp;&amp; pnpm -C dsh build</code>，然后刷新本页。</p>
 <p>后端 API 仍可通过 <code>/api/health</code> 检查。</p>
+<section lang="en"><h2>Workbench not built</h2>
+<p>Run the command above from the repository root, then refresh this page.
+You can still check the backend at <code>/api/health</code>.</p></section>
 </body></html>"""
 
 
