@@ -1,18 +1,29 @@
-import { panelId } from './registerPanels.mjs'
+import { MAIN_PANEL_ID, panelId } from './registerPanels.mjs'
+import { migrateLegacyCurrentTab } from './workspaceTabs.mjs'
 
-const ACTIVE_PANEL_KEY = 'talaria-dsh-main-panel'
+export const ACTIVE_PANEL_KEY = 'talaria-dsh-main-panel'
 
+function normalizeActivePanelId(id, panels) {
+  if (id === MAIN_PANEL_ID) return MAIN_PANEL_ID
+  return panels.some(panel => panelId(panel) === id) ? MAIN_PANEL_ID : null
+}
+
+/**
+ * Restores the workspace after a refresh. Every legacy per-panel main choice
+ * (`talaria-chart`, `talaria-alerts`, …) now opens the single workspace panel.
+ * Leaving to the consultation clears the preference so a refresh stays there.
+ */
 export function restoreActivePanel(layout, panels, storage = kind => window[kind]) {
   const active = layout.panelInfo
-  const isTalaria = id => panels.some(panel => panelId(panel) === id)
   const remember = () => {
-    const id = active.getSnapshot().activePanelId
+    const raw = active.getSnapshot().activePanelId
+    const id = normalizeActivePanelId(raw, panels)
     for (const kind of ['sessionStorage', 'localStorage']) {
       try {
         // Keep the consultation choice for this tab even if another tab saves a panel later.
-        if (id === null && kind === 'sessionStorage') storage(kind).setItem(ACTIVE_PANEL_KEY, '')
-        else if (id === null) storage(kind).removeItem(ACTIVE_PANEL_KEY)
-        else if (isTalaria(id)) storage(kind).setItem(ACTIVE_PANEL_KEY, id)
+        if (raw === null && kind === 'sessionStorage') storage(kind).setItem(ACTIVE_PANEL_KEY, '')
+        else if (raw === null) storage(kind).removeItem(ACTIVE_PANEL_KEY)
+        else if (id) storage(kind).setItem(ACTIVE_PANEL_KEY, id)
       } catch {
         // A restricted storage context can still use each panel.
       }
@@ -24,7 +35,16 @@ export function restoreActivePanel(layout, panels, storage = kind => window[kind
   } catch {
     // No saved panel can be restored.
   }
-  if (active.getSnapshot().activePanelId === null && isTalaria(saved)) layout.selectPanel(saved)
+  const restore = normalizeActivePanelId(saved, panels)
+  const current = active.getSnapshot().activePanelId
+  if (current === null && restore) layout.selectPanel(restore)
+  // A live plugin reload can keep an old per-panel id as the host's active
+  // panel; move it to the single workspace instead of rendering a blank main.
+  else if (current !== null && current !== MAIN_PANEL_ID && normalizeActivePanelId(current, panels)) {
+    // Keep the tab the user was actually looking at when upgrading in place.
+    migrateLegacyCurrentTab(current, panels, storage)
+    layout.selectPanel(MAIN_PANEL_ID)
+  }
   return active.subscribe(remember)
 }
 

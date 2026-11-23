@@ -1,12 +1,12 @@
 import { LINK_CONNECT, LINK_PATH, LINK_READY, selectionPrecedes, type LinkMessage, type LinkTransport } from "@talaria/desk-ui";
 
-export function createLinkRelay(baseUrl: string) {
+export function createLinkRelay(baseUrl: string, title = "Talaria panel link") {
   const listeners = new Set<(message: LinkMessage) => void>();
   const readyListeners = new Set<() => void>();
   const url = new URL(LINK_PATH, baseUrl);
   const frame = document.createElement("iframe");
   frame.hidden = true;
-  frame.title = "Talaria 面板联动";
+  frame.title = title;
   frame.referrerPolicy = "origin";
   frame.sandbox.add("allow-scripts", "allow-same-origin");
   const pendingSelections = new Map<string, Extract<LinkMessage, { type: "locate" | "symbol" }>>();
@@ -57,11 +57,14 @@ export function createLinkRelay(baseUrl: string) {
       readyListeners.add(listener);
       return () => { readyListeners.delete(listener); };
     },
+    setTitle(next: string) {
+      frame.title = next;
+    },
     close() {
       port?.close();
       frame.remove();
       listeners.clear();
       readyListeners.clear();
     },
-  } satisfies LinkTransport & { close: () => void };
+  } satisfies LinkTransport & { close: () => void; setTitle: (title: string) => void };
 }
