@@ -1,5 +1,5 @@
 ---
-status: accepted（前端一条已被 ADR-0020 取代）
+status: accepted（前端一条已被 ADR-0020 取代，后台 launchd 部分已被 ADR-0022 取代）
 ---
 
 # 产品按功能组织：一个 launchd 常驻服务 + 浏览器多页面

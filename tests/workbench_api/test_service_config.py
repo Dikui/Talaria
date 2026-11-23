@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import stat
 
 import pytest
 
@@ -13,7 +12,6 @@ from talaria.workbench_api.service_config import (
     describe_features,
     load_service_config,
     service_config_path,
-    write_default_service_config,
 )
 
 pytestmark = [pytest.mark.small, pytest.mark.spec]
@@ -140,21 +138,6 @@ def test_unknown_top_level_key_reports_expected_keys(tmp_path, key):
     assert key in message
     assert "features" in message
     assert str(service_config_path(tmp_path)) in message
-
-
-def test_write_default_config_is_readable_and_does_not_overwrite(tmp_path):
-    path = write_default_service_config(tmp_path)
-
-    assert path == service_config_path(tmp_path)
-    assert path.is_file()
-    assert stat.S_IMODE(path.stat().st_mode) == 0o644
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["version"] == 1
-    assert payload["features"] == {name: True for name in FEATURE_NAMES}
-
-    path.write_text(json.dumps({"features": {"scanner": False}}), encoding="utf-8")
-    assert write_default_service_config(tmp_path) == path
-    assert load_service_config(tmp_path).features.scanner is False
 
 
 def test_describe_features_lists_every_switch_in_order():

@@ -34,6 +34,8 @@ from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import urlsplit
 
+import yaml
+
 from talaria.workbench_api.service_descriptor import validate_loopback_host
 
 DEFAULT_DSH_PORT = 8766
@@ -188,7 +190,37 @@ def desktop_plugin_installed() -> bool:
         return False
 
 
-def _plugin_patch(source: Path, data_dir: Path, *, entry: Path | None = None) -> str:
+def read_desktop_service_config() -> dict[str, object] | None:
+    path = dsh_profile_dir(DESKTOP_PROFILE) / _PROFILE_PATCH
+    try:
+        original = path.read_text(encoding="utf-8")
+        span = _talaria_patch_span(original)
+        if span is None:
+            return None
+        # 只解析 Talaria 管理的段，用户的其他补丁可使用 DSH 专有语法。
+        start, end = span
+        operations = yaml.safe_load(original[start:end])
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+    if not isinstance(operations, list):
+        return None
+    for operation in operations:
+        plugins = operation.get("insert") if isinstance(operation, dict) else None
+        if not isinstance(plugins, list):
+            continue
+        for plugin in plugins:
+            if isinstance(plugin, dict) and plugin.get("id") == "talaria-desk-plugin":
+                config = plugin.get("config")
+                service = config.get("service") if isinstance(config, dict) else None
+                return service if isinstance(service, dict) else None
+    return None
+
+
+def _plugin_patch(
+    source: Path, data_dir: Path, *,
+    entry: Path | None = None,
+    service: dict[str, object] | None = None,
+) -> str:
     patch = (source / _PROFILE_PATCH).read_text(encoding="utf-8").rstrip()
     if entry is not None:
         package_line = f"      name: '{PLUGIN_NAME}'"
@@ -200,6 +232,10 @@ def _plugin_patch(source: Path, data_dir: Path, *, entry: Path | None = None) ->
     patch += f"\n      config:\n        credentialFile: {credential}\n"
     if entry is not None:
         patch += "        desktop: true\n"
+    if service is not None:
+        patch += "        service:\n"
+        for name, value in service.items():
+            patch += f"          {name}: {json.dumps(value, ensure_ascii=False)}\n"
     return patch
 
 
@@ -284,7 +320,7 @@ def _edit_talaria_patch(original: str, patch: str | None) -> str:
     return original[:start] + block + original[end:]
 
 
-def _update_talaria_patch(profile_dir: Path, patch: str | None) -> bool:
+def _update_talaria_patch(profile_dir: Path, patch: str | None, *, private: bool = False) -> bool:
     path = profile_dir / _PROFILE_PATCH
     try:
         directory_fd = os.open(profile_dir, os.O_RDONLY)
@@ -304,22 +340,29 @@ def _update_talaria_patch(profile_dir: Path, patch: str | None) -> bool:
                 return False
             original, mode = b"[]\n", None
         updated = _edit_talaria_patch(original.decode("utf-8"), patch).encode("utf-8")
-        if updated == original:
+        write_mode = 0o600 if private or mode is None else mode
+        if updated == original and write_mode == mode:
             return False
-        if mode is not None:
+        if mode is not None and updated != original:
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
             backup_dir = profile_dir.parent.parent / "profiles-backup" / f"{profile_dir.name}-{stamp}"
             backup_dir.mkdir(mode=0o700, parents=True)
             _write_atomic_file(backup_dir / path.name, original, mode=mode)
-        _write_atomic_file(path, updated, mode=mode if mode is not None else 0o600)
+        _write_atomic_file(path, updated, mode=write_mode)
         return True
     finally:
         os.close(directory_fd)
 
 
-def install_talaria_patch(profile_dir: Path, plugin_dir: Path, data_dir: Path) -> None:
-    patch = _plugin_patch(plugin_dir, data_dir, entry=(plugin_dir / "index.js").absolute())
-    _update_talaria_patch(profile_dir, patch)
+def install_talaria_patch(
+    profile_dir: Path, plugin_dir: Path, data_dir: Path, *,
+    service: dict[str, object] | None = None,
+) -> None:
+    patch = _plugin_patch(
+        plugin_dir, data_dir, entry=(plugin_dir / "index.js").absolute(), service=service
+    )
+    # 代理 URL 可能携带凭据，与旧作业的代理配置使用相同的权限。
+    _update_talaria_patch(profile_dir, patch, private=bool(service and service.get("env")))
 
 
 def remove_talaria_patch(profile_dir: Path) -> bool:
@@ -341,7 +384,7 @@ def build_install_bundle(
     # pick up updates to code or config even when the package version is the same.
     manifest.pop("devDependencies", None)
     manifest.pop("scripts", None)
-    runtime_files = ("index.js", "bridge.js", "guard.js", "client/index.js")
+    runtime_files = ("index.js", "bridge.js", "guard.js", "service-supervisor.js", "client/index.js")
     tool_schema_dir = repo / "contracts/schemas/dsh-tools"
     entries = {
         "package.json": json.dumps(manifest).encode(),

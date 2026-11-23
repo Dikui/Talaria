@@ -4,6 +4,8 @@ status: accepted
 
 # DSH 桌面应用作为工作台宿主，常驻服务不再托管 DSH
 
+启停分工已由 [ADR-0022](./0022-dsh-desktop-app-owns-service-lifecycle.md) 修订。
+
 2026-11-22 决定：交易员日常用 DSH 桌面应用（`/Applications/DeepSeek Harness.app`，`desktop` profile），Talaria 插件装进这个 profile，图表、预警、扫描、关键位入口出现在桌面应用的侧边栏。常驻服务只负责数据，不再以子进程启动网页版 DSH；它照常写出桥接凭据，插件按安装时记下的路径读取。
 
 本 ADR 修订 ADR-0020 后果第一条（“服务以子进程方式启停 DSH 宿主”）与 platform/03 的做法；ADR-0020 的其余部分不变：DSH 是日常入口，功能面板的数据仍直连服务快通道，服务托管的 `/desk` 页面仍是兜底。

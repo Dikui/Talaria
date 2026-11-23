@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import socket
 import subprocess
@@ -15,6 +16,8 @@ import httpx
 import pytest
 
 from talaria.cli import main as cli
+from talaria.cli.dsh_host import bridge_descriptor_path
+from talaria.workbench_api.service_descriptor import service_descriptor_path
 from talaria.workbench_api.service_lock import probe_lock
 
 pytestmark = pytest.mark.medium
@@ -91,6 +94,56 @@ def test_sigterm_shuts_down_gracefully(tmp_path, fixture_dir, repo_root: Path) -
             process.wait(timeout=5)
 
 
+
+@pytest.mark.spec
+def test_up_exits_and_cleans_runtime_files_when_stdin_reaches_eof(tmp_path, monkeypatch):
+    # platform/05: 使用真实管道，替代需要监听 TCP 的 Uvicorn 线程。
+    class Server:
+        started = False
+        should_exit = False
+
+        def __init__(self, config):
+            pass
+
+        def run(self):
+            self.started = True
+            deadline = time.monotonic() + 5
+            while not self.should_exit and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if not self.should_exit:
+                raise TimeoutError("服务线程未收到优雅退出请求")
+
+    read_fd, write_fd = os.pipe()
+    paths = (bridge_descriptor_path(tmp_path), service_descriptor_path(tmp_path))
+    observed_holders = []
+    with os.fdopen(read_fd, "rb") as stdin, os.fdopen(write_fd, "wb") as parent:
+        monkeypatch.setattr(cli.sys, "stdin", stdin)
+        monkeypatch.setattr(cli.uvicorn, "Server", Server)
+
+        def close_parent_pipe():
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if all(path.is_file() for path in paths):
+                    observed_holders.append(probe_lock(tmp_path))
+                    break
+                time.sleep(0.01)
+            parent.close()
+
+        closer = threading.Thread(target=close_parent_pipe)
+        closer.start()
+        try:
+            assert cli.main([
+                "up", "--solo", "--exit-with-parent", "--data-dir", str(tmp_path),
+            ]) == 0
+        finally:
+            closer.join(timeout=4)
+
+    assert len(observed_holders) == 1
+    assert observed_holders[0] is not None
+    assert probe_lock(tmp_path) is None
+    assert all(not path.exists() for path in paths)
+
+
 @pytest.mark.regression
 def test_up_keeps_lock_until_timed_out_worker_finishes(tmp_path, monkeypatch) -> None:
     # platform/01: 模拟启动超时后仍需等待的存储关闭，缩短 CLI 的等待时钟。
@@ -142,7 +195,7 @@ def test_up_keeps_lock_until_timed_out_worker_finishes(tmp_path, monkeypatch) ->
 
 @pytest.mark.regression
 def test_up_returns_nonzero_when_a_started_worker_crashes(tmp_path, monkeypatch, capsys):
-    # platform/01: 模拟 Uvicorn 启动后抛出异常，使 launchd 看见失败退出。
+    # platform/01: 模拟 Uvicorn 启动后抛出异常，CLI 必须返回非零退出码。
     class CrashingServer:
         started = False
 

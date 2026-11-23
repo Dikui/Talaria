@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import plistlib
 import secrets
 import shutil
 import signal
@@ -18,7 +17,6 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
-from xml.parsers.expat import ExpatError
 
 import uvicorn
 
@@ -56,17 +54,13 @@ from talaria.cli.dsh_host import (
 from talaria.cli.service import (
     DEFAULT_DATA_DIR,
     DEFAULT_SERVICE_LABEL,
-    ServiceInstallError,
     ServiceStatus,
     ServiceUninstallError,
-    _domain,
-    _job_data_dir,
-    _launchctl_arguments,
-    _launchctl_value,
-    _run_launchctl,
-    install_service,
+    legacy_service_warning,
     open_data_dir,
     plist_path,
+    protected_service_data_dirs,
+    service_launch_config,
     service_status,
     uninstall_service,
 )
@@ -304,7 +298,9 @@ def _cmd_up(args: argparse.Namespace) -> int:
         if args.data_dir is None:
             print("回放模式必须显式指定 --data-dir", file=sys.stderr)
             return 2
-        protected_dirs = [Path(default_data_dir).expanduser().resolve(), *_launchd_data_dirs()]
+        protected_dirs = [
+            Path(default_data_dir).expanduser().resolve(), *protected_service_data_dirs(),
+        ]
         if any(_data_dirs_overlap(data_dir, protected) for protected in protected_dirs):
             print(f"回放数据目录不能与日常数据目录重叠：{data_dir}", file=sys.stderr)
             return 2
@@ -363,41 +359,6 @@ def _data_dirs_overlap(left: Path, right: Path) -> bool:
     return (
         same_directory or folded_left in folded_right.parents or folded_right in folded_left.parents
     )
-
-
-def _launchd_data_dirs() -> list[Path]:
-    """尽力读取当前作业和磁盘 plist，各自解析相对路径。"""
-    directories = []
-    try:
-        result = _run_launchctl(["print", f"{_domain(None)}/{DEFAULT_SERVICE_LABEL}"])
-        if result.returncode == 0:
-            active = _job_data_dir(
-                _launchctl_arguments(result.stdout),
-                _launchctl_value(result.stdout, "working directory"),
-            )
-            if active is not None:
-                directories.append(active.resolve())
-    except (OSError, RuntimeError):
-        pass
-    try:
-        path = plist_path(Path.home() / "Library" / "LaunchAgents")
-        with path.open("rb") as handle:
-            config = plistlib.load(handle)
-        if isinstance(config, dict):
-            arguments = config.get("ProgramArguments", [])
-            working_dir = config.get("WorkingDirectory")
-            working_dir = working_dir if isinstance(working_dir, str) else None
-            if isinstance(arguments, list) and all(isinstance(arg, str) for arg in arguments):
-                installed = _job_data_dir(arguments, working_dir)
-                if installed is None:
-                    env = config.get("EnvironmentVariables")
-                    configured = env.get("TALARIA_DATA_DIR") if isinstance(env, dict) else None
-                    value = configured if isinstance(configured, str) else str(DEFAULT_DATA_DIR)
-                    installed = Path(working_dir or "/") / Path(value).expanduser()
-                directories.append(installed.resolve())
-    except (OSError, RuntimeError, ValueError, plistlib.InvalidFileException, ExpatError):
-        pass
-    return directories
 
 
 def _run_up(
@@ -486,9 +447,18 @@ def _run_up(
         except BaseException as exc:
             worker_error = exc
 
-    def stop_server(signum: int, frame: object) -> None:
+    def stop_server(_signum: int | None = None, _frame: object = None) -> None:
         nonlocal shutdown_requested
         shutdown_requested = True
+
+    def watch_parent() -> None:
+        try:
+            stdin_fd = sys.stdin.fileno()
+            while os.read(stdin_fd, 65536):
+                pass
+        except (OSError, ValueError):
+            return
+        stop_server()
 
     previous_handlers = {
         sig: signal.signal(sig, stop_server)
@@ -498,6 +468,8 @@ def _run_up(
     worker.start()
     startup_failed = False
     try:
+        if args.exit_with_parent:
+            threading.Thread(target=watch_parent, name="talaria-parent-stdin", daemon=True).start()
         deadline = time.monotonic() + 20
         while (
             not server.started
@@ -512,7 +484,7 @@ def _run_up(
                 "Talaria 守护进程启动失败；请检查端口占用与日志。",
                 file=sys.stderr,
             )
-        elif server.started:
+        elif server.started and not shutdown_requested:
             try:
                 write_service_descriptor(
                     descriptor_path,
@@ -625,6 +597,12 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
             )
             return 2
         data_dir = open_data_dir(args.data_dir)
+        service = None
+        if desktop:
+            program = args.program or _default_service_program()
+            if program is None:
+                raise ValueError("未找到 talaria 可执行文件；请用 --program 指定绝对路径。")
+            service = service_launch_config(data_dir, args.port, args.pack, program)
         dsh = None
         if not desktop and not profile_has_talaria_patch(profile_dir):
             dsh = resolve_dsh_bin(args.dsh_bin)
@@ -683,11 +661,14 @@ def _cmd_dsh_install(args: argparse.Namespace) -> int:
                     print("安装 @talaria/dsh-plugin 失败，请检查 DSH 的安装诊断。", file=sys.stderr)
                     return add.returncode
         if dsh is None:
-            install_talaria_patch(profile_dir, plugin_dir, data_dir)
+            install_talaria_patch(profile_dir, plugin_dir, data_dir, service=service)
     except (OSError, ValueError) as exc:
         print(f"无法安装 @talaria/dsh-plugin：{exc}", file=sys.stderr)
         return 2
     print(f"已安装 Profile：{profile_dir}", file=sys.stderr)
+    legacy_plist = plist_path(Path.home() / "Library" / "LaunchAgents")
+    if legacy_plist.is_file():
+        print(legacy_service_warning(legacy_plist), file=sys.stderr)
     return 0
 
 
@@ -820,43 +801,9 @@ def _default_service_program() -> str | None:
 
 
 def _cmd_service(args: argparse.Namespace) -> int:
-    """install/uninstall/status 三个动作；launchctl 只在本机真实执行。"""
-
     launch_agents_dir = Path(args.launch_agents_dir).expanduser()
     label = args.label
     command = args.service_command
-
-    if command == "install":
-        data_dir = Path(args.data_dir).expanduser().resolve()
-        program = args.program or _default_service_program()
-        if program is None:
-            print(
-                "未找到 talaria 可执行文件；请用 --program 指定绝对路径。",
-                file=sys.stderr,
-            )
-            return 2
-        try:
-            result = install_service(
-                data_dir=data_dir,
-                port=args.port,
-                pack=args.pack,
-                program=program,
-                launch_agents_dir=launch_agents_dir,
-                log_dir=args.log_dir,
-                label=label,
-            )
-        except (ServiceConfigError, ServiceInstallError, ValueError, OSError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        print(f"已安装 launchd Agent：{result.plist_path}")
-        print(f"数据目录：{data_dir}")
-        print(
-            f"功能开关：{describe_features(result.features)}"
-            f"（{result.config_path}）"
-        )
-        print(f"日志：{result.stdout_path} / {result.stderr_path}")
-        print("查看状态：talaria service status")
-        return 0
 
     if command == "uninstall":
         try:
@@ -874,6 +821,9 @@ def _cmd_service(args: argparse.Namespace) -> int:
             print(f"未安装：{result.plist_path}")
         return 0
 
+    legacy_plist = plist_path(launch_agents_dir, label)
+    if legacy_plist.is_file():
+        print(legacy_service_warning(legacy_plist))
     try:
         status = service_status(
             data_dir=args.data_dir,
@@ -888,7 +838,6 @@ def _cmd_service(args: argparse.Namespace) -> int:
 
 
 def _print_service_status(status: ServiceStatus) -> None:
-    print(f"plist：{status.plist_path}")
     print(f"配置文件：{status.config_path}")
     if status.features is None:
         print("运行态功能开关：不可用")
@@ -902,13 +851,6 @@ def _print_service_status(status: ServiceStatus) -> None:
             changes = describe_features(status.disk_features, changed_from=status.features)
             if changes:
                 print(f"待重启生效：{changes}{hint}")
-    if not status.installed:
-        print("状态：未安装（执行 talaria service install 后随登录启动）")
-    else:
-        state = status.state or ("已加载" if status.loaded else "未知")
-        pid_hint = f"，pid={status.pid}" if status.pid is not None else ""
-        print(f"状态：已安装，launchd={state}{pid_hint}")
-    print(f"代理（plist）：{'，'.join(status.proxy_endpoints) or '未配置'}")
     if status.detail:
         print(f"详情：{status.detail}")
     holder = status.lock_holder
@@ -922,6 +864,17 @@ def _print_service_status(status: ServiceStatus) -> None:
 
 
 def _cmd_open(args: argparse.Namespace) -> int:
+    installed = desktop_installed()
+    if installed:
+        if args.print_action:
+            print(f'open -a "{DESKTOP_APP_NAME}"')
+            return 0
+        try:
+            if subprocess.run(["open", "-a", DESKTOP_APP_NAME], check=False).returncode == 0:
+                return 0
+        except OSError:
+            pass
+        print("无法打开 DeepSeek Harness 桌面应用，尝试打开兜底页面。", file=sys.stderr)
     try:
         data_dir = open_data_dir(args.data_dir)
         descriptor = None
@@ -941,23 +894,13 @@ def _cmd_open(args: argparse.Namespace) -> int:
 
     if descriptor is None:
         print(
-            "常驻服务未就绪。请运行 talaria service install 或 talaria up，"
+            "常驻服务未就绪。请运行 talaria up --solo，"
             "并确认 --data-dir 指向同一数据目录。",
             file=sys.stderr,
         )
         return 2
 
-    if desktop_installed():
-        if args.print_action:
-            print(f'open -a "{DESKTOP_APP_NAME}"')
-            return 0
-        try:
-            if subprocess.run(["open", "-a", DESKTOP_APP_NAME], check=False).returncode == 0:
-                return 0
-        except OSError:
-            pass
-        print("无法打开 DeepSeek Harness 桌面应用，打开兜底页面。", file=sys.stderr)
-    else:
+    if not installed:
         print("未安装 DeepSeek Harness 桌面应用，打开兜底页面。", file=sys.stderr)
     url = f"{descriptor.base_url}/desk"
     if args.print_action:
@@ -982,6 +925,9 @@ def build_parser() -> argparse.ArgumentParser:
     up = subparsers.add_parser("up", help="启动本地看盘守护进程")
     up.add_argument(
         "--solo", action="store_true", help="只启动 Python 守护进程，不启动 DSH 宿主"
+    )
+    up.add_argument(
+        "--exit-with-parent", action="store_true", help="标准输入关闭时优雅退出"
     )
     up.add_argument("--host", default="127.0.0.1", help="绑定地址，只允许回环 IP")
     up.add_argument("--port", type=int, default=DEFAULT_PORT, help="监听端口")
@@ -1047,7 +993,7 @@ def build_parser() -> argparse.ArgumentParser:
     open_cmd = subparsers.add_parser("open", help="打开 DSH 工作台或看盘兜底页面")
     open_cmd.add_argument(
         "--data-dir",
-        help="数据目录（默认取 $TALARIA_DATA_DIR、已安装作业或 ./.talaria）",
+        help="兜底页面的数据目录（默认取 $TALARIA_DATA_DIR、桌面插件、旧作业或 ./.talaria）",
     )
     open_cmd.add_argument(
         "--print", dest="print_action", action="store_true", help="只打印将执行的打开操作"
@@ -1065,6 +1011,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install.add_argument(
         "--data-dir", help="数据目录（与 talaria open 的解析顺序相同）"
+    )
+    install.add_argument("--port", type=int, default=DEFAULT_PORT, help="桌面托管服务监听端口")
+    install.add_argument(
+        "--program",
+        help="talaria 可执行文件绝对路径（默认取当前 Python 同目录的 talaria 或从 PATH 查找）",
     )
     install.set_defaults(func=_cmd_dsh_install)
 
@@ -1185,48 +1136,10 @@ def build_parser() -> argparse.ArgumentParser:
     migrate.set_defaults(func=_cmd_cold_migrate)
 
     service = subparsers.add_parser(
-        "service", help="安装、卸载或查看 launchd 常驻服务"
+        "service", help="查看常驻服务状态或卸载旧的 launchd 作业"
     )
     service_commands = service.add_subparsers(dest="service_command", required=True)
     launch_agents_default = str(Path.home() / "Library" / "LaunchAgents")
-
-    service_install = service_commands.add_parser(
-        "install", help="写入 plist 并注册为登录自启的 launchd Agent"
-    )
-    service_install.add_argument(
-        "--data-dir",
-        default=os.environ.get("TALARIA_DATA_DIR", str(DEFAULT_DATA_DIR)),
-        help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）",
-    )
-    service_install.add_argument(
-        "--port", type=int, default=DEFAULT_PORT, help="服务监听端口"
-    )
-    service_install.add_argument(
-        "--pack",
-        choices=sorted(MARKET_PACKS),
-        default=DEFAULT_PACK,
-        help=f"市场包（默认 {DEFAULT_PACK}）",
-    )
-    service_install.add_argument(
-        "--program",
-        default=None,
-        help="talaria 可执行文件绝对路径（默认取当前 Python 同目录的 talaria）",
-    )
-    service_install.add_argument(
-        "--solo", action="store_true", help=argparse.SUPPRESS
-    )
-    service_install.add_argument(
-        "--launch-agents-dir",
-        default=launch_agents_default,
-        help="LaunchAgents 目录（测试可指向临时目录）",
-    )
-    service_install.add_argument(
-        "--log-dir", default=None, help="日志目录（默认 <data-dir>/logs）"
-    )
-    service_install.add_argument(
-        "--label", default=DEFAULT_SERVICE_LABEL, help="launchd Label"
-    )
-    service_install.set_defaults(func=_cmd_service)
 
     service_uninstall = service_commands.add_parser(
         "uninstall", help="停止并移除 launchd Agent（保留数据与配置）"
@@ -1247,12 +1160,12 @@ def build_parser() -> argparse.ArgumentParser:
     service_uninstall.set_defaults(func=_cmd_service)
 
     service_status_parser = service_commands.add_parser(
-        "status", help="查看 launchd 运行状态与已开启功能（不会启动服务）"
+        "status", help="查看 DSH 桌面应用、数据目录锁与常驻服务状态"
     )
     service_status_parser.add_argument(
         "--data-dir",
         default=None,
-        help="数据目录（省略时读取作业配置，其次 $TALARIA_DATA_DIR 或 ./.talaria）",
+        help="数据目录（默认取桌面插件、旧作业、$TALARIA_DATA_DIR 或 ./.talaria）",
     )
     service_status_parser.add_argument(
         "--launch-agents-dir",
@@ -1264,7 +1177,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     service_status_parser.set_defaults(func=_cmd_service)
 
-    for command in (up, evaluate, migrate):
+    for command in (up, evaluate, migrate, install):
         command.add_argument(
             "--pack",
             choices=sorted(MARKET_PACKS),

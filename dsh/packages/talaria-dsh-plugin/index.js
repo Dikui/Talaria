@@ -20,6 +20,7 @@ import {
   SNAPSHOT_OUTPUT_SCHEMA,
 } from './bridge.js'
 import { createDeskGuard } from './guard.js'
+import { superviseService } from './service-supervisor.js'
 
 const TOOL_NAMES = [
   'get_snapshot',
@@ -625,5 +626,8 @@ export function apply(ctx, config = {}) {
         console.warn(`[talaria] 无法发布桌面协同宿主地址：${error.message}`)
       }
     })
+  }
+  if (config.service) {
+    ctx.effect(() => superviseService(config.service))
   }
 }

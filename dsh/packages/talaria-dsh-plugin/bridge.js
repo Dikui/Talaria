@@ -21,7 +21,7 @@ function credentialCandidates(config) {
   ])]
 }
 
-function assertLoopback(baseUrl) {
+export function assertLoopback(baseUrl) {
   let url
   try {
     url = new URL(baseUrl)
@@ -68,7 +68,7 @@ function readCredential(config) {
     return parsed
   }
   throw new BridgeError(
-    'Talaria 常驻服务离线：未找到桥接凭据。请运行 talaria service install 或 talaria up。',
+    'Talaria 常驻服务离线：未找到桥接凭据。请打开 DeepSeek Harness 桌面应用或运行 talaria up --solo。',
     { code: 'TALARIA_BRIDGE_UNAVAILABLE' },
   )
 }
@@ -102,7 +102,7 @@ export function createBridge(config = {}) {
     } catch (error) {
       if (error?.name === 'AbortError') throw error
       throw new BridgeError(
-        `无法连接 Talaria 常驻服务 ${baseUrl}：请运行 talaria service install 或 talaria up。`,
+        `无法连接 Talaria 常驻服务 ${baseUrl}：请打开 DeepSeek Harness 桌面应用或运行 talaria up --solo。`,
         { code: 'TALARIA_BRIDGE_UNAVAILABLE', cause: error },
       )
     }

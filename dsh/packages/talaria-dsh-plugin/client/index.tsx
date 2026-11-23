@@ -14,7 +14,7 @@ import { panelId, registerPanels } from "./registerPanels.mjs";
 const STYLE_ID = "talaria-desk-plugin-styles";
 const DOCK_KEY = "talaria-dsh-docked-panel";
 const DOCK_PANELS = dockPanels(PANELS) as Exclude<PanelName, "chart">[];
-const SERVICE_OFFLINE = "Talaria 常驻服务离线。请运行 talaria service install 或 talaria up。";
+const SERVICE_OFFLINE = "Talaria 常驻服务离线。请打开 DeepSeek Harness 桌面应用或运行 talaria up --solo。";
 const CONNECTION_REFRESH_MS = 3_000;
 type DockPanel = (typeof DOCK_PANELS)[number];
 type Connection = { baseUrl: string; relay: ReturnType<typeof createLinkRelay> };

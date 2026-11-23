@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -111,21 +109,6 @@ def load_service_config(data_dir: str | Path) -> ServiceConfig:
     return ServiceConfig(FeatureToggles(**values), path, True)
 
 
-def write_default_service_config(data_dir: str | Path) -> Path:
-    """首次安装时落一份全开配置；已存在的文件绝不覆盖。"""
-
-    path = service_config_path(data_dir)
-    if path.exists():
-        return path
-
-    payload = {
-        "version": CONFIG_VERSION,
-        "features": {name: True for name in FEATURE_NAMES},
-    }
-    _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    return path
-
-
 def describe_features(
     features: FeatureToggles, *, changed_from: FeatureToggles | None = None
 ) -> str:
@@ -136,18 +119,3 @@ def describe_features(
         for name in FEATURE_NAMES
         if changed_from is None or getattr(features, name) != getattr(changed_from, name)
     )
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
