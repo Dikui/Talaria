@@ -6,11 +6,13 @@
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
+    "./tools": "./tools.js",
     "./client": "./client/index.js",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
+    "tools.js",
     "bridge.js",
     "guard.js",
     "service-supervisor.js",

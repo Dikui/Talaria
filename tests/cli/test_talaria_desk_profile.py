@@ -53,11 +53,19 @@ def test_default_bundle_adds_only_an_optional_read_only_preset_and_plugin() -> N
     bundle = (PLUGIN / manifest["dsh"]["bundle"]["patch"]).read_text(encoding="utf-8")
     assert bundle.startswith("- insert:")
     assert bundle.count("- id: preset-talaria-desk") == 1
+    assert bundle.count("- id: talaria-desk-tools") == 1
     assert bundle.count("- id: talaria-desk-plugin") == 1
     assert "default: talaria-desk" not in bundle
     assert "write: false" in bundle
     assert "edit: false" in bundle
     assert "applyPatch: false" in bundle
+
+    import yaml
+    parsed = yaml.safe_load(bundle)
+    insert = parsed[0]["insert"]
+    assert [row["id"] for row in insert] == ["preset-talaria-desk", "talaria-desk-plugin"]
+    plugins = insert[0]["config"]["plugins"]
+    assert any(p["id"] == "talaria-desk-tools" and p["name"] == "@talaria/dsh-plugin/tools" for p in plugins)
 
 
 def _blocks(text: str) -> dict[str, str]:
@@ -128,6 +136,14 @@ def test_real_dump_config_matches_permission_snapshot() -> None:
     for ident in BLOCK_IDS:
         if ident == "talaria-desk-plugin":
             assert actual[ident].split("\n  config:", 1)[0].strip() == expected[ident].strip()
+        elif ident == "preset-talaria-desk":
+            import re
+            normalized = re.sub(
+                r"(\n      - id: talaria-desk-tools\n        name: [^\n]+)\n        config:(?:\n          [^\n]+)+",
+                r"\1",
+                actual[ident],
+            )
+            assert normalized == expected[ident], ident
         else:
             assert actual[ident] == expected[ident], ident
 

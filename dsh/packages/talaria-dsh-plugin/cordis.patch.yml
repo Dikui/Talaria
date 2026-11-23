@@ -41,6 +41,8 @@
             name: '@deepseek-ai/dsh-tool-web'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: talaria-desk-tools
+            name: '@talaria/dsh-plugin/tools'
           - id: compaction
             name: cordis:group
             group: true

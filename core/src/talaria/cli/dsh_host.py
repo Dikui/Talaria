@@ -222,13 +222,29 @@ def _plugin_patch(
     service: dict[str, object] | None = None,
 ) -> str:
     patch = (source / _PROFILE_PATCH).read_text(encoding="utf-8").rstrip()
+    credential = json.dumps(str(bridge_descriptor_path(data_dir)), ensure_ascii=False)
+    tools_block = f"          - id: talaria-desk-tools\n            name: '{PLUGIN_NAME}/tools'"
+    if patch.count(tools_block) != 1:
+        raise ValueError(f"无法在 {source / _PROFILE_PATCH} 中定位 Talaria 工具插件项")
+    tools_specifier = (
+        json.dumps(str(entry.with_name("tools.js")), ensure_ascii=False)
+        if entry is not None
+        else f"'{PLUGIN_NAME}/tools'"
+    )
+    patch = patch.replace(
+        tools_block,
+        "          - id: talaria-desk-tools\n"
+        f"            name: {tools_specifier}\n"
+        "            config:\n"
+        f"              credentialFile: {credential}",
+        1,
+    )
     if entry is not None:
         package_line = f"      name: '{PLUGIN_NAME}'"
         if not patch.endswith(f"    - id: talaria-desk-plugin\n{package_line}"):
             raise ValueError(f"无法在 {source / _PROFILE_PATCH} 中定位 Talaria 插件项")
         specifier = json.dumps(str(entry), ensure_ascii=False)
         patch = patch.removesuffix(package_line) + f"      name: {specifier}"
-    credential = json.dumps(str(bridge_descriptor_path(data_dir)), ensure_ascii=False)
     patch += f"\n      config:\n        credentialFile: {credential}\n"
     if entry is not None:
         patch += "        desktop: true\n"
@@ -384,7 +400,7 @@ def build_install_bundle(
     # pick up updates to code or config even when the package version is the same.
     manifest.pop("devDependencies", None)
     manifest.pop("scripts", None)
-    runtime_files = ("index.js", "bridge.js", "guard.js", "service-supervisor.js", "client/index.js")
+    runtime_files = ("index.js", "tools.js", "bridge.js", "guard.js", "service-supervisor.js", "client/index.js")
     tool_schema_dir = repo / "contracts/schemas/dsh-tools"
     entries = {
         "package.json": json.dumps(manifest).encode(),

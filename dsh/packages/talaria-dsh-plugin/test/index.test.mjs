@@ -87,7 +87,7 @@ async function waitFor(check, timeoutMs = 2000) {
   throw new Error('等待超时')
 }
 
-test('registers five read-only tools plus the two controlled writes and the desk guard', () => {
+test('does not register tools on root ctx and registers only the desk guard', () => {
   const registered = []
   let guarded = 0
   const ctx = {
@@ -109,29 +109,7 @@ test('registers five read-only tools plus the two controlled writes and the desk
     },
   }
   apply(ctx, {})
-  assert.deepEqual(
-    registered.map((tool) => tool.name).sort(),
-    [
-      'compute_operator',
-      'create_alert',
-      'get_chart_view',
-      'get_indicators',
-      'get_key_levels',
-      'get_snapshot',
-      'write_agent_overlay',
-    ],
-  )
-  for (const tool of registered) {
-    assert.equal(tool.parameters.type, 'object')
-    assert.equal(tool.parameters.additionalProperties, false)
-    if (tool.name !== 'get_snapshot') {
-      assert.equal(tool.parameters.required[0], 'snapshot_id')
-    }
-  }
-  const byName = Object.fromEntries(registered.map((tool) => [tool.name, tool]))
-  assert.equal('draft' in byName.create_alert.parameters.properties, false)
-  assert.equal('status' in byName.write_agent_overlay.parameters.properties, false)
-  assert.equal('status' in byName.create_alert.parameters.properties, false)
+  assert.equal(registered.length, 0)
   assert.equal(guarded, 1)
 })
 
@@ -167,6 +145,8 @@ test('consult endpoint runs one agent turn and reports text plus turn tokens', a
 
   const endpoints = new Map()
   const registered = []
+  const createCalls = []
+  const mountedPresets = []
   const ctx = {
     tools: {
       register(tool) {
@@ -175,6 +155,11 @@ test('consult endpoint runs one agent turn and reports text plus turn tokens', a
       guard() {},
     },
     sessions: { get: () => undefined },
+    agentPresets: {
+      async mount(agentCtx, preset) {
+        mountedPresets.push({ agentCtx, preset })
+      },
+    },
     webServer: {
       register({ path, handler }) {
         endpoints.set(path, handler)
@@ -187,7 +172,11 @@ test('consult endpoint runs one agent turn and reports text plus turn tokens', a
     get(name) {
       if (name === 'agents') {
         return {
-          create: async () => ({ agent: fakeAgent(), dispose: async () => {} }),
+          create: async (options) => {
+            createCalls.push(options)
+            await options.setup?.({ id: 'mock-consult-ctx' })
+            return { agent: fakeAgent(), dispose: async () => {} }
+          },
         }
       }
       if (name === 'agentDefaultModel') {
@@ -201,6 +190,7 @@ test('consult endpoint runs one agent turn and reports text plus turn tokens', a
 
   try {
     apply(ctx, {})
+    assert.equal(registered.length, 0)
     const consult = endpoints.get('/talaria/consult')
     assert.equal(typeof consult, 'function')
     const response = fakeResponse()
@@ -213,6 +203,9 @@ test('consult endpoint runs one agent turn and reports text plus turn tokens', a
     assert.deepEqual(response.json(), { accepted: true, consultation_id: 'cons_1' })
 
     await waitFor(() => results.length === 1 && usages.length === 1)
+    assert.equal(createCalls.length, 1)
+    assert.deepEqual(createCalls[0].meta, { agentPreset: 'talaria-desk' })
+    assert.deepEqual(mountedPresets, [{ agentCtx: { id: 'mock-consult-ctx' }, preset: 'talaria-desk' }])
     assert.equal(results[0].text, '观察建议：等待回踩承接。')
     assert.equal(results[0].dsh_session_id, 'dsh-session-consult')
     assert.equal(results[0].dsh_turn_id, '1')
@@ -286,9 +279,16 @@ test('briefing endpoint runs one agent turn and submits text with turn usage', a
   process.env.TALARIA_DSH_BRIDGE = descriptor
 
   const endpoints = new Map()
+  const createCalls = []
+  const mountedPresets = []
   const ctx = {
     tools: { register() {}, guard() {} },
     sessions: { get: () => undefined },
+    agentPresets: {
+      async mount(agentCtx, preset) {
+        mountedPresets.push({ agentCtx, preset })
+      },
+    },
     webServer: {
       register({ path, handler }) {
         endpoints.set(path, handler)
@@ -301,7 +301,11 @@ test('briefing endpoint runs one agent turn and submits text with turn usage', a
     get(name) {
       if (name === 'agents') {
         return {
-          create: async () => ({ agent: fakeAgent(), dispose: async () => {} }),
+          create: async (options) => {
+            createCalls.push(options)
+            await options.setup?.({ id: 'mock-briefing-ctx' })
+            return { agent: fakeAgent(), dispose: async () => {} }
+          },
         }
       }
       if (name === 'agentDefaultModel') {
@@ -327,6 +331,9 @@ test('briefing endpoint runs one agent turn and submits text with turn usage', a
     assert.deepEqual(response.json(), { accepted: true, briefing_id: 'brf_1' })
 
     await waitFor(() => results.length === 1)
+    assert.equal(createCalls.length, 1)
+    assert.deepEqual(createCalls[0].meta, { agentPreset: 'talaria-desk' })
+    assert.deepEqual(mountedPresets, [{ agentCtx: { id: 'mock-briefing-ctx' }, preset: 'talaria-desk' }])
     assert.equal(results[0].text, '观察建议：等待回踩承接。')
     assert.equal(results[0].dsh_session_id, 'dsh-session-consult')
     assert.equal(results[0].dsh_turn_id, '1')

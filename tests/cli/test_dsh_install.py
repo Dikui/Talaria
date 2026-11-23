@@ -29,7 +29,7 @@ def plugin_repo(tmp_path, monkeypatch):
     actual_repo = Path(__file__).resolve().parents[2]
     source = actual_repo / "dsh/packages/talaria-dsh-plugin"
     for filename in (
-        "package.json", "index.js", "bridge.js", "guard.js", "service-supervisor.js",
+        "package.json", "index.js", "tools.js", "bridge.js", "guard.js", "service-supervisor.js",
         "cordis.patch.yml",
     ):
         shutil.copyfile(source / filename, plugin / filename)
@@ -106,14 +106,22 @@ def test_installs_profile_scoped_config_with_resolved_dsh(
                 patch = manifest["dsh"]["bundle"]["patch"]
                 config = archive.extractfile(f"package/{Path(patch)}").read().decode()
                 tools = {name for name in archive.getnames() if name.endswith(".tool.json")}
+                assert "package/tools.js" in archive.getnames()
                 assert "package/service-supervisor.js" in archive.getnames()
             for row in ("sandbox-policy", "approval", "permission", "agent-preset-registry"):
                 assert (f"- id: {row}\n" in config) is (profile == "talaria-desk")
             credential = json.dumps(str(data_dir / "runtime/dsh-bridge.json"), ensure_ascii=False)
-            assert f"credentialFile: {credential}" in config
+            assert config.count(f"credentialFile: {credential}") == 2
             assert "desktop: true" not in config
             assert "service:" not in config
             assert config.count("name: Talaria 分析副驾驶") == 1
+            insert_yaml = "- insert:" + config.split("- insert:", 1)[1]
+            parsed = yaml.safe_load(insert_yaml)
+            insert_rows = [row for item in parsed if isinstance(item, dict) for row in item.get("insert", [])]
+            preset_row = next(row for row in insert_rows if row["id"] == "preset-talaria-desk")
+            tools_row = next(p for p in preset_row["config"]["plugins"] if p["id"] == "talaria-desk-tools")
+            assert tools_row["name"] == "@talaria/dsh-plugin/tools"
+            assert tools_row["config"] == {"credentialFile": str(data_dir / "runtime/dsh-bridge.json")}
             assert len(tools) == 7
         return subprocess.CompletedProcess(command, 0)
 
@@ -172,10 +180,20 @@ def test_desktop_installs_updates_and_removes_only_its_patch(
     assert first.startswith(original.split(b"[]", 1)[0])
     if b"[]" in original:
         assert b"\n[]\n" not in first
-    preset = (plugin_repo / "cordis.patch.yml").read_bytes().split(b"    - id: talaria-desk-plugin")[0]
-    assert preset in first.replace(b"\r\n", b"\n")
     entry = json.dumps(str(plugin_repo / "index.js"))
+    tools_entry = json.dumps(str(plugin_repo / "tools.js"))
     credential = json.dumps(str(data_dir / "runtime/dsh-bridge.json"))
+    parsed_insert = yaml.safe_load(first)[-1]["insert"]
+    preset_row = next(row for row in parsed_insert if row["id"] == "preset-talaria-desk")
+    tools_row = next(p for p in preset_row["config"]["plugins"] if p["id"] == "talaria-desk-tools")
+    assert tools_row["name"] == str(plugin_repo / "tools.js")
+    assert tools_row["config"] == {"credentialFile": str(data_dir / "runtime/dsh-bridge.json")}
+    assert (
+        "          - id: talaria-desk-tools\n"
+        f"            name: {tools_entry}\n"
+        "            config:\n"
+        f"              credentialFile: {credential}\n"
+    ).encode() in first.replace(b"\r\n", b"\n")
     assert (
         "    - id: talaria-desk-plugin\n"
         f"      name: {entry}\n"
@@ -183,7 +201,7 @@ def test_desktop_installs_updates_and_removes_only_its_patch(
         f"        credentialFile: {credential}\n"
         "        desktop: true\n"
     ).encode() in first.replace(b"\r\n", b"\n")
-    config = yaml.safe_load(first)[-1]["insert"][-1]["config"]["service"]
+    config = parsed_insert[-1]["config"]["service"]
     assert config["command"][0] == "/test/bin/talaria"
     assert config["command"][config["command"].index("--port") + 1] == "8765"
     assert config["command"][config["command"].index("--pack") + 1] == "crypto_perp"
@@ -201,7 +219,13 @@ def test_desktop_installs_updates_and_removes_only_its_patch(
     assert cli.main([*args, "--data-dir", str(tmp_path / "new service")]) == 0
     latest = path.read_bytes()
     assert latest.count(START) == latest.count(END) == 1
-    assert b"new service/runtime/dsh-bridge.json" in latest
+    new_cred = str(tmp_path / "new service/runtime/dsh-bridge.json")
+    latest_insert = yaml.safe_load(latest.split(START, 1)[1].split(END, 1)[0])[0]["insert"]
+    latest_preset = next(row for row in latest_insert if row["id"] == "preset-talaria-desk")
+    latest_tools = next(p for p in latest_preset["config"]["plugins"] if p["id"] == "talaria-desk-tools")
+    latest_plugin = next(row for row in latest_insert if row["id"] == "talaria-desk-plugin")
+    assert latest_tools["config"]["credentialFile"] == new_cred
+    assert latest_plugin["config"]["credentialFile"] == new_cred
     assert b"        desktop: true" in latest
     assert latest.endswith(suffix)
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
@@ -295,6 +319,7 @@ def test_electron_managed_profile_reuses_patch_after_cli_refusal(
     assert content.count(START) == content.count(END) == 1
     assert b"service:" not in content
     assert f"name: {json.dumps(str(plugin_repo / 'index.js'))}".encode() in content
+    assert f"name: {json.dumps(str(plugin_repo / 'tools.js'))}".encode() in content
     assert cli.main([*args, "--dsh-bin", str(tmp_path / "unavailable")]) == 0
     assert path.read_bytes() == content
     assert len(refusals) == 1
