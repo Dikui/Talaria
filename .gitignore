@@ -24,3 +24,10 @@ dist/
 # DSH 客户端插件构建产物（talaria dsh-install 会先构建）
 dsh/packages/talaria-dsh-plugin/client/index.js
 dsh/packages/talaria-dsh-plugin/.client-build/
+
+# Rust 引擎与独立工作台构建产物
+engine/target/
+workbench/node_modules/
+workbench/**/dist/
+workbench/src-tauri/target/
+workbench/src-tauri/gen/

@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@luxalgo/vela-ui@0.4.4'
+  - '@luxalgo/vela@0.10.17'

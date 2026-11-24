@@ -1,6 +1,8 @@
 ---
-status: accepted
+status: superseded by ADR-0023
 ---
+
+> **已被取代（2026-11）：** 请参阅 [ADR-0023](./0023-standalone-workbench-and-rust-data-engine.md)。看盘工作台已迁出 `dsh/` 成为独立一等产品（`workbench/`，`Tauri v2` + `@luxalgo/vela` + `/desk` 同构路由），不再以 DSH 作为工作台主宿主；DSH 插件仅作为可选 `Co-Pilot Analysis` 消费方。
 
 # 整个工作台放进 DSH，浏览器多页面只作离线兜底
 

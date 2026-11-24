@@ -1,6 +1,8 @@
 ---
-status: accepted
+status: superseded by ADR-0023
 ---
+
+> **已被取代（2026-11）：** 请参阅 [ADR-0023](./0023-standalone-workbench-and-rust-data-engine.md)。`Resident Service`（Rust `talaria-data`）不再由 DSH 桌面应用独占启停，改为由独立 `Tauri v2` 桌面应用通过 sidecar（`--exit-with-parent`）启动监管，或通过 `talaria-data up` 独立运行；DSH 插件仅按 `service-descriptor.json` 连接已就绪的服务实例。
 
 # 常驻服务改由 DSH 桌面应用启停，不再用 launchd
 

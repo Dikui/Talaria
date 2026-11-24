@@ -1,8 +1,15 @@
 ---
-status: accepted
+status: accepted（已由 ADR-0023 修订：独立工作台迁出 dsh/ 并升级渲染核至 @luxalgo/vela）
 ---
 
-# 看盘工作台采用本地快通道直连 Python 底座并与 DSH 插槽解耦
+# 看盘工作台采用本地快通道直连底座并与 DSH 插槽解耦
+
+> **2026-11 演进修订（见 [ADR-0023](./0023-standalone-workbench-and-rust-data-engine.md) 与 `docs/experiments/chain1-phase0-poc.md`）：**
+> - **工作台独立化**：看盘工作台已从 `dsh/packages/` 迁出为仓库一等包 `workbench/`（`Tauri v2` + React 19 + `dockview-react` + `/desk` 同构浏览器入口），不再依赖 DSH 作为主宿主。
+> - **快通道直连 Rust `Resident Service`**：图表数据、实时流与画线/预警状态持久化经本地回环（`127.0.0.1`）Arrow IPC / HTTP / 双语义 WebSocket 直连 Rust `talaria-data`。
+> - **渲染核升级**：通过窄接口 `ChartSurfaceAdapter` 隔离底层图表库，主选实现升级为 `@luxalgo/vela@0.10.17`（仅核心与 `plugin` SDK，Apache-2.0；严禁引入 AGPL-3.0 的 `@luxalgo/vela-pinets` 与非 React 的 `@luxalgo/vela/workspace`），按 `NOTICE` 在可见状态栏/关于面板保留 `"Vela"` 及 `https://velacharts.dev` 归属标注；通过 `chart.drawings` 承担 `HUMAN_DRAWING`，通过 `registerRendererLayer` 原生渲染 `SYSTEM_LEVEL` / `AGENT_ANNOTATION` / `EXECUTION_BARRIER` 并消除原 `requestAnimationFrame` SVG 轮询，按 `registerNativeIndicator` 直接消费外部计算序列并遵守单页 WebGL2 预算（`maxWebglCells = 8`）。原 `klinecharts 10.1.1` 仅作为 `ChartSurfaceAdapter` 的参考/可选回退边界保留。
+
+（以下保留原 2026-11 初版决定与基线记录供溯源）
 
 人机协同看盘前端以 `KLineChart v10`（Apache-2.0）核心库为基础，封装为零 DeepSeek Harness 内部依赖的纯 React 组件包 `talaria-desk-ui`，外覆一层极薄的 DSH 插槽适配包 `dsh-workbench`。实时行情与盘面预警推送、图表历史分页、人机画线持久化、草案定仓预试算、手动开仓提交及紧急减平仓一律经本地回环（`127.0.0.1`）HTTP/WebSocket 快通道直连 Python `talaria-daemon`，仅智能体会诊对话、`Trajectory` 思考链审阅与单次审批走 DSH 原生 `typert` 通道；同时支持在不启动 DSH 的情况下由 Python 守护进程直接托管打开看盘页面。
 

@@ -1,8 +1,14 @@
 ---
-status: accepted
+status: accepted（已由 ADR-0023 修订：Python 为黄金向量唯一数学权威，Rust talaria-operators 须 100% 逐字节对齐）
 ---
 
-# v1 指标核以纯 Python Decimal 为唯一权威，第三方指标库只作锁定依赖
+# 指标核以 Python 黄金向量为唯一数学权威，Rust 与 Python 定点实现严格对齐
+
+> **2026-11 演进修订（见 [ADR-0023](./0023-standalone-workbench-and-rust-data-engine.md)）：** 为支撑链路 1 独立看盘与单个 Rust `Resident Service`（`talaria-data`）零 Python 运行，系统由“只在 Python 实现一份”升级为**以 Python `core/src/talaria/foundation/operators/` 与 `contracts/operator_vectors/` 全部黄金向量（含技术指标、衍生品算子与 `Key Level` 纯函数）作为跨语言唯一数学权威**：
+> - Rust `talaria-operators`（`engine/crates/talaria-operators/`）必须基于 `rust_decimal::Decimal` 实现全部算子与 `Key Level` 引擎，在 `NO_TRADES` 平盘递推、`FEED_GAP` 输出 `null` 并重置预热以及摆动点 `confirm_bars` 延迟规则上保持逐字符一致，并通过 `contracts/operator_vectors/` 全部 11 份黄金向量的自动化回归门禁。
+> - 前端浏览器及 TypeScript 运行时仍严禁自行计算任何技术指标或衍生品算子，统一消费服务返回的权威结果。
+
+（以下保留原 2026-11 初版决定供历史溯源）
 
 架构规范原先写“底层复用 `TA-Lib` / `talipp`”。04 实现时实测：两个库在 Python 3.14 / macOS arm64 上可安装，但批量库与增量库对预热、空柱和断流的语义并不一致；若同时接入两套引擎，反而要维护一份“哪套是权威”的映射。v1 的硬约束是“指标只在 Python 实现一份，图表、预警与智能体消费同一结果”，因此选择纯 Python `Decimal` 算子核作为唯一权威。
 

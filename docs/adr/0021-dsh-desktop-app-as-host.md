@@ -1,6 +1,8 @@
 ---
-status: accepted
+status: superseded by ADR-0023
 ---
+
+> **已被取代（2026-11）：** 请参阅 [ADR-0023](./0023-standalone-workbench-and-rust-data-engine.md)。日常看盘工作台的桌面宿主已切换为独立 `Tauri v2` 应用（`workbench/src-tauri`），DSH 桌面应用仅作为可选外部协同会诊客户端。
 
 # DSH 桌面应用作为工作台宿主，常驻服务不再托管 DSH
 

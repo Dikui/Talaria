@@ -1,8 +1,15 @@
 ---
-status: accepted
+status: accepted（已由 ADR-0023 修订：链路 1 纯数据常驻服务迁入 Rust，DSH 降级为可选协同消费方）
 ---
 
 # 采用 DeepSeek Harness 与 Python 确定性底座分离的双平面架构
+
+> **2026-11 演进修订（见 [ADR-0023](./0023-standalone-workbench-and-rust-data-engine.md)）：** 在保留“认知推理与确定性底座分离、智能体绝不绕过硬风控与权威账本”这一根本原则的基础上，系统边界演进为三层清晰职责：
+> 1. **一等独立核心（链路 1）**：单个 Rust `Resident Service`（`talaria-data`）承担行情接入、`decimal128(18, s)` 冷库写入、算子与 `Key Level` 计算、Arrow IPC/HTTP/WS 数据服务、`Alert` 与扫描引擎，并直接服务独立看盘工作台（`Tauri v2` + `@luxalgo/vela` + `/desk` 同构路由），实现零 Python、零 DSH 运行时依赖。
+> 2. **Python 确定性研究与策略核（`core/src/talaria/`）**：保留 `foundation/`（跨语言契约与黄金向量唯一定义源）、`sdk/`（直读冷库 Parquet + Arrow IPC 补尾 + 内嵌 DuckDB）、`components/`、`account/`（`Account Process`）与 `orchestration/`。
+> 3. **外围可选协同消费方（DSH）**：`dsh/packages/talaria-dsh-plugin/` 降级为可选 `Co-Pilot Analysis` 插件，按 `service-descriptor.json` 连接 `talaria-data` 读取冻结 `Evidence Snapshot`、生成 `Briefing` 并执行受控标注回写，不再拥有看盘主入口或服务启停控制权。
+
+（以下保留原 2026-11 初版决定供历史溯源）
 
 将系统拆分为两个跨进程协作的运行平面：**Plane A（认知与协同工作台平面）** 基于 DeepSeek Harness (`dsh` / Cordis 微内核，TypeScript) 插件与零宿主耦合的看盘前端组件构建，负责智能体推理编排、领域技能挂载、编程式工具调用（PTC）、前置执行守卫与人机协同界面；**Plane B（确定性数据与交易底座）** 基于 Python 模块化单体构建，独占管理时点数据快照、盘面预警与异动扫描、风险定仓、硬风控、执行状态机、多子账户权威资金账本与评测归因引擎。浏览器看盘与人工低延迟操作通过本地回环 HTTP/WebSocket 快通道直连 Plane B；人机协同会话（`talaria-desk` Web Profile）通过受控桥接工具向 Plane B 读取快照与提交暂存交易草案，智能体自治子账户（`talaria-auto`）与历史回测（`talaria-eval`）则统一由 Plane B 经官方 `deepseek-harness-sdk`（`stdio` JSON-RPC 2.0）驱动。
 

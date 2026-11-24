@@ -6,83 +6,83 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 
 架构决策：
 
-- [ADR-0001：DeepSeek Harness 与 Python 确定性底座分离的双平面架构](./adr/0001-dual-plane-dsh-and-python-core.md)
+- [ADR-0001：DeepSeek Harness 与底座分离的双平面架构](./adr/0001-dual-plane-dsh-and-python-core.md)（已由 ADR-0023 演进：链路 1 纯数据常驻服务迁入 Rust，DSH 降级为可选协同消费方）
 - [ADR-0002：通用标的内核与 Capability Traits 市场包](./adr/0002-capability-traits-and-market-packs.md)（按 `R` 定仓已由 ADR-0015 降为默认插件规则）
 - [ADR-0003：在完整执行计划层设置 Execution Seam，模拟优先](./adr/0003-plan-level-execution-seam-simulation-first.md)
 - [ADR-0004：确定性异动扫描前置门禁与日内快慢双模认知](./adr/0004-dual-mode-intraday-cognition-and-scanner-gate.md)
-- [ADR-0005：看盘工作台走本地快通道并与 DSH 插槽解耦](./adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)
+- [ADR-0005：看盘工作台走本地快通道并与 DSH 插槽解耦](./adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)（已由 ADR-0023 修订：独立工作台迁出 `dsh/` 并升级渲染核至 `@luxalgo/vela`）
 - [ADR-0006：子账户单标的单一仓位回合与按写者分库](./adr/0006-single-position-round-per-subaccount-and-isolated-ledgers.md)（单一仓位回合已由 ADR-0015 降为默认插件规则）
 - [ADR-0007：Optuna 防过拟合寻优置于外圈编排](./adr/0007-guarded-optuna-optimization-in-outer-orchestration.md)
 - [ADR-0008：初版以分析工作台为先，确定性关键位引擎](./adr/0008-analysis-first-v1-and-deterministic-key-level-engine.md)
 - [ADR-0009：按模型知识截止日划分智能体评估证据等级](./adr/0009-agent-evaluation-evidence-tiers-by-model-knowledge-cutoff.md)
-- [ADR-0010：指标核以纯 Python Decimal 为唯一权威](./adr/0010-pure-python-indicator-core.md)
+- [ADR-0010：指标核以 Python 黄金向量为唯一数学权威](./adr/0010-pure-python-indicator-core.md)（已由 ADR-0023 修订：Rust `talaria-operators` 须逐字节对齐全部黄金向量）
 - [ADR-0011：冷库发布由快照冻结触发](./adr/0011-cold-store-publish-on-snapshot-freeze.md)（已被 ADR-0018 取代）
 - [ADR-0012：状态库写入走专用写线程，读取用只读连接](./adr/0012-state-store-dedicated-writer-thread-and-read-only-connections.md)
 - [ADR-0013：L0 底座只放纯契约与纯计算](./adr/0013-foundation-holds-only-pure-contracts-and-computation.md)
-- [ADR-0014：一个 launchd 常驻服务 + 浏览器多页面](./adr/0014-resident-service-and-browser-multi-page.md)（前端由 ADR-0020 取代，后台 launchd 部分由 ADR-0022 取代）
+- [ADR-0014：一个 launchd 常驻服务 + 浏览器多页面](./adr/0014-resident-service-and-browser-multi-page.md)（前端由 ADR-0020 / ADR-0023 取代，后台 launchd 部分由 ADR-0022 / ADR-0023 取代）
 - [ADR-0015：交易流水线运行在独立的账户进程，账户进程是插件宿主](./adr/0015-account-process-as-plugin-host.md)
 - [ADR-0016：取数 SDK 按清单直读 Parquet，最新部分向常驻服务补齐](./adr/0016-sdk-reads-parquet-directly-with-service-tail.md)
 - [ADR-0017：冷库按标的、按列精度存 decimal128(18, s)](./adr/0017-cold-store-per-instrument-decimal128.md)
 - [ADR-0018：冷库在每根 K 线收盘后持续写入](./adr/0018-cold-store-continuous-publish-on-bar-close.md)
 - [ADR-0019：指标、信号、策略使用统一组件模型](./adr/0019-unified-component-model-with-runtime-context.md)
-- [ADR-0020：整个工作台放进 DSH，浏览器多页面只作离线兜底](./adr/0020-dsh-hosts-the-whole-workbench.md)
-- [ADR-0021：DSH 桌面应用作为工作台宿主](./adr/0021-dsh-desktop-app-as-host.md)
-- [ADR-0022：常驻服务由 DSH 桌面应用启停](./adr/0022-dsh-desktop-app-owns-service-lifecycle.md)
+- [ADR-0020：整个工作台放进 DSH，浏览器多页面只作离线兜底](./adr/0020-dsh-hosts-the-whole-workbench.md)（已被 ADR-0023 取代）
+- [ADR-0021：DSH 桌面应用作为工作台宿主](./adr/0021-dsh-desktop-app-as-host.md)（已被 ADR-0023 取代）
+- [ADR-0022：常驻服务由 DSH 桌面应用启停](./adr/0022-dsh-desktop-app-owns-service-lifecycle.md)（已被 ADR-0023 取代）
+- [ADR-0023：链路 1 作为一等核心：Rust 纯数据引擎 `talaria-data` 与独立看盘工作台](./adr/0023-standalone-workbench-and-rust-data-engine.md)
 
-调研证据存档于 `docs/research/`（仅本地）。
+调研证据存档于 `docs/research/`（仅本地）；Phase 0 实证实验存档于 `docs/experiments/chain1-phase0-poc.md`（仅本地）。
 
 ---
 
 ## 1. 产品形态与进程拓扑
 
-系统由四类进程组成。常驻服务是数据的唯一写者，其他进程都是它的使用方。
+**改造中（链路 1 重构进行中，见 [ADR-0023](./adr/0023-standalone-workbench-and-rust-data-engine.md)）。** 系统以**独立看盘工作台 + 单个 Rust `Resident Service`（常驻服务，`talaria-data`）**作为一等日常核心（零 Python、零 DSH 运行时依赖）；Python 确定性核承载 `Account Process`（账户进程）与取数 SDK，DSH 插件降级为可选 `Co-Pilot Analysis`（人机协同分析）消费方。常驻服务仍是行情、冷库、快照与工作台状态的唯一写者，其他进程都是它的使用方。
 
 ```mermaid
 flowchart TB
-  subgraph DSH["DSH 桌面应用（desktop profile，日常入口）"]
+  subgraph WB["独立看盘工作台 workbench/（Tauri v2 原生多窗 + 浏览器 /desk 同构入口）"]
     direction LR
-    PChart["图表面板"]
-    PAlert["预警面板"]
-    PScan["扫描面板"]
-    PLevels["关键位面板"]
-    PAcct["账户与复盘面板（规划中）"]
-    Consult["会诊会话 + 右栏图表"]
-    PChart <-. "BroadcastChannel 联动" .-> PAlert
+    PChart["dockview 多图网格（@luxalgo/vela）"]
+    PAlert["Alert 预警面板"]
+    PScan["Scanner 扫描面板"]
+    PLevels["Key Level 关键位面板"]
+    PWatch["Watchlist 自选观察池"]
+    PChart <-. "BroadcastChannel 跨窗联动" .-> PAlert
   end
 
-  Front["兜底页面（服务托管 /desk 等路由，DSH 离线时用）"]
-
-  subgraph Svc["常驻服务 talaria up --solo（DSH 桌面插件托管）"]
+  subgraph Svc["Resident Service 常驻服务（Rust talaria-data）"]
     direction TB
-    Feed["行情接入：packs + feed supervisor"]
-    Cold["冷库写入：收盘后写尾部文件 → 合并 → 清单原子切换"]
-    Ana["分析：指标、关键位、JSON 规则"]
-    AlertScan["预警与扫描引擎"]
-    Snap["证据快照"]
-    Api["HTTP / WS：范围取数、实时订阅、草案提交、账本只读展示"]
+    Feed["行情接入：talaria-packs + FeedSupervisor"]
+    Cold["冷库写入：decimal128(18, s) Parquet + data_manifest.sqlite"]
+    Ana["算子与关键位：talaria-operators（过 11 份黄金向量）"]
+    AlertScan["Alert 预警与数值扫描引擎"]
+    Snap["Evidence Snapshot 证据快照"]
+    Api["127.0.0.1 HTTP / Arrow IPC / 双语义 WS + workbench_state.sqlite"]
     Feed --> Cold
     Feed --> AlertScan
     Ana --> AlertScan
     Feed --> Api
   end
 
-  subgraph Acct["账户进程（插件宿主，每个交易方案一个或一组）"]
+  DSH["DSH 插件（可选 Co-Pilot Analysis 消费方，按 service-descriptor.json 连接）"]
+
+  subgraph Acct["Account Process 账户进程（Python 插件宿主）"]
     direction LR
-    Data["数据入口"] --> Strat["策略"] --> Size["定仓"] --> Risk["风控"] --> Fill["成交"] --> Ledger["账本"]
+    Data["数据入口"] --> Strat["策略"] --> Size["定仓"] --> Risk["风控"] --> Fill["成交"] --> Ledger["Ledger 账本"]
   end
 
-  NB["Notebook / 脚本（取数 SDK）"]
+  NB["Notebook / 脚本（Python sdk/ + DuckDB）"]
   Orch["编排：replay_runner、study_optimizer（批量启动账户进程）"]
   Store[("Parquet 冷库 + data_manifest.sqlite")]
 
-  DSH <-->|"面板直连 HTTP / WS 快通道"| Api
-  Consult <-->|"受控桥接工具"| Api
-  Front <-->|"HTTP / WS"| Api
+  WB -->|"sidecar 监管 --exit-with-parent（或独立 talaria-data up）"| Svc
+  WB <-->|"Arrow IPC / HTTP / WS /ws/desk"| Api
+  DSH <-. "只读快照 / 简报 / 受控标注" .-> Api
   Cold --> Store
   NB -->|"按清单直读"| Store
-  NB -. "补最新几根" .-> Api
+  NB -. "Arrow IPC /api/bars.arrow 补尾" .-> Api
   Data -->|"回测：直读 + 虚拟时钟"| Store
-  Data -. "实时：本机 WS 订阅" .-> Api
+  Data -. "实时：WS /ws/strategy" .-> Api
   Api -. "已确认草案提交" .-> Size
   Api -. "只读" .-> Ledger
   Orch --> Acct
@@ -92,13 +92,13 @@ flowchart TB
 
 | 进程 | 职责 | 写哪些存储 | 状态 |
 |---|---|---|---|
-| 常驻服务 | 行情接入、冷库写入、快照、指标与关键位、预警、扫描、HTTP/WS，启动后发布 DSH 桥接凭据 | 冷库、快照库、协同状态库、运行时凭据 | DSH 桌面插件托管及 `talaria up` 前台模式 |
-| DSH 桌面应用 | 日常入口（ADR-0020、ADR-0021）。`desktop` profile 的插件注册一个 Talaria 工作台侧栏入口，内含图表、预警、扫描、关键位和账户五个标签，工作台跟随宿主显示中文或英文。右栏面板仍可独立停靠；各面板直连快通道。面板通过 `BroadcastChannel` 联动标的、周期与十字光标。桌面宿主处理会诊、简报和分析工具 | DSH 会话和运行时宿主地址。工作台数据经服务接口写入 | 全局和会话面板已实现 |
-| 兜底页面 | 服务托管的 `/desk` 与各功能路由，复用 DSH 面板的组件 | 经服务接口写入 | 多页面路由已实现 |
-| 账户进程 | 按交易方案装配插件，跑回测或模拟盘 | 模拟盘：持锁子账户的账本；回放：`runs/<run_id>/` | 规划中 |
-| Notebook / 脚本 | 用取数 SDK 研究；可以直接运行自己写的组件（研究模式，不隔离） | 不写 | 规划中 |
+| `Resident Service`（常驻服务，`talaria-data`） | 行情接入、`decimal128(18, s)` 冷库持续写入、`Evidence Snapshot`、指标与 `Key Level` 计算、`Alert` 与扫描、Arrow IPC / HTTP / 双语义 WS，发布 `runtime/service-descriptor.json` | 冷库、快照库、工作台状态库（`workbench_state.sqlite`）、运行时凭据 | **改造中**（从 Python `workbench_api` 迁入 Rust `engine/`） |
+| 独立看盘工作台（`Tauri v2` + `/desk`） | 一等日常入口（ADR-0023）。`Tauri v2` 管理原生多窗与 `talaria-data` sidecar 启停；`dockview-react` + `@luxalgo/vela` 承载多图联动、画线、`Alert`、扫描与 `Watchlist`；`BroadcastChannel` 跨窗同步标的、周期与十字光标 | 经 `Resident Service` 接口写入 | **改造中**（从 `dsh/packages/` 迁出至 `workbench/`） |
+| DSH 插件（`talaria-dsh-plugin`） | 可选外部 `Co-Pilot Analysis`（人机协同分析）客户端，按 `service-descriptor.json` 连接 `Resident Service` 处理会诊、扫描 `Briefing` 与受控 `AGENT_ANNOTATION` 写入；不再托管工作台主入口与常驻服务启停 | DSH 会话轨迹；标注与草案经服务接口写入 | **改造中**（降级为可选消费方；过渡期保留兼容测试） |
+| `Account Process`（账户进程） | 按 `Trading Scheme`（交易方案）装配 `Plugin Slot`（插槽），运行回测或模拟盘（`Shadow Run`） | 模拟盘：持锁 `Sub-Account` 的 `Ledger`；回放：`runs/<run_id>/` | 规划中 / 适配切流 |
+| Notebook / 脚本 | 用 Python `sdk/` 直读冷库 + Arrow IPC 补尾 + 内嵌 DuckDB 做研究；直接运行自定义 `Component` | 不写 | 改造中（接入 Arrow IPC 补尾） |
 
-服务的生命周期独立于任何窗口：关掉所有页面后，Notebook 和账户进程仍能取到数据。服务未运行时，SDK 只读本地已有数据，回测不受影响。
+服务的生命周期在独立运行（`talaria-data up`）或开启“关闭窗口保留后台采集”配置时独立于工作台窗口；桌面日常默认随 `Tauri v2` 主窗 via `--exit-with-parent` 启停。服务未运行时，Python `sdk/` 只读本地已有冷库数据，回测不受影响。
 
 ### 1.2 依赖与权限铁律
 
@@ -142,49 +142,69 @@ M1（数据接入、冷库、指标、关键位、看盘页、价位预警）与
 
 ## 2. 目录结构
 
+**改造中（并行过渡，见 [ADR-0023](./adr/0023-standalone-workbench-and-rust-data-engine.md)）：** 在 `engine/`（Rust `Resident Service`）与 `workbench/`（独立看盘工作台）完成链路 1 全量验收及切换前，现有 `core/` 与 `dsh/` 保持并行运行与全部测试绿灯。
+
 ```text
 Talaria/
 ├── GLOSSARY.md                         # 领域统一词汇表
-├── contracts/                          # 从 Python 导出的 JSON Schema 与算子黄金测试向量
+├── contracts/                          # 跨语言唯一真相源：JSON Schema 与 11 份算子黄金测试向量
 │   ├── schemas/
 │   └── operator_vectors/
-├── core/src/talaria/                   # Python 确定性底座（uv 管理）
-│   ├── foundation/                     # L0：Decimal、时点、能力特征、契约、算子、关键位纯函数
+├── engine/                             # 新增（链路 1 一等数据核心）：Rust Cargo Workspace（talaria-data）
+│   ├── Cargo.toml
+│   ├── Cargo.lock
+│   └── crates/
+│       ├── talaria-contracts/          # L0 零 I/O：DecimalStr、五重时点、InstrumentSpec、Capability Traits、CompactBar/RawBar
+│       ├── talaria-operators/          # rust_decimal 算子与 Key Level 引擎（100% 对齐 11 份黄金向量）
+│       ├── talaria-store/              # decimal128(18, s) Parquet 读写/合并 + data_manifest.sqlite + 热缓冲
+│       ├── talaria-feed/               # FeedSupervisor（LIVE/STALE/RECOVERING、NO_TRADES/FEED_GAP、JSONL 回放时钟）
+│       ├── talaria-packs/              # Market Pack trait：crypto_perp（Bybit 首版、Binance/HL 扩展）与 us_equity
+│       ├── talaria-server/             # 127.0.0.1 Axum HTTP（Arrow IPC + JSON）+ 双语义 WS + workbench_state.sqlite
+│       └── talaria-cli/                # 二进制入口 `talaria-data`（up / replay / backfill / contract-check）
+├── workbench/                          # 新增（链路 1 一等工作台）：独立看盘工作台（脱离 dsh/ 构建）
+│   ├── package.json
+│   ├── pnpm-workspace.yaml
+│   ├── packages/
+│   │   ├── talaria-contracts/          # 独立工作台共享 TS 契约（对齐 contracts/schemas/）
+│   │   └── talaria-desk-ui/            # React 19 + dockview-react + ChartSurfaceAdapter（@luxalgo/vela 核心，不含 pinets）
+│   └── src-tauri/                      # Tauri v2 原生多窗桌面薄壳 + talaria-data sidecar 启停监管
+├── core/src/talaria/                   # Python 确定性底座（改造中：收敛为研究与策略核，热链路逐步切向 Rust）
+│   ├── foundation/                     # L0：Decimal、时点、能力特征、契约、算子与关键位黄金向量唯一导出源
 │   │   ├── operators/
 │   │   └── key_levels/
 │   ├── packs/                          # 市场包：crypto_perp（Bybit V5 Linear）；us_equity 规划中
-│   ├── feed/                           # 实时状态机、缺口合成、重连回填
-│   ├── replay/                         # JSONL 行情回放与可注入时钟
-│   ├── perception/                     # 冷库、热流缓冲、快照、预警引擎、扫描引擎、SQLite 守卫
+│   ├── feed/                           # 过渡期保留；目标由 Rust talaria-feed 接管
+│   ├── replay/                         # 过渡期保留；目标由 Rust talaria-feed 接管
+│   ├── perception/                     # 过渡期保留；冷库读写互操作兼容，写入由 Rust talaria-store 接管
 │   ├── evaluation/                     # 关键位质量离线评估
-│   ├── workbench_api/                  # 常驻服务的 HTTP/WS 层、组合根、协同状态库
-│   ├── sdk/                            # 规划中：取数 SDK（清单直读、补尾、as_of、to_frame）
-│   ├── components/                     # 规划中：组件接口、ctx、JSON 规则编译与求值
-│   ├── account/                        # 规划中：账户进程宿主、插槽注册、事件循环、账本
-│   ├── plugins/                        # 规划中：默认插件（定仓、风控、成交、数据入口、工具）
-│   ├── orchestration/                  # 规划中：replay_runner、study_optimizer
-│   └── cli/                            # up / service / dsh-install / contract-check / usage-scan / evaluate-levels
-├── dsh/packages/
+│   ├── workbench_api/                  # 过渡期保留；热路经路由逐步切由 Rust talaria-server 接管
+│   ├── sdk/                            # 改造中：直读 Parquet + Arrow IPC（/api/bars.arrow）补尾 + 内嵌 DuckDB
+│   ├── components/                     # 组件接口、ctx、JSON 规则编译与求值
+│   ├── account/                        # 独立账户进程宿主（回测 / 模拟盘）
+│   ├── plugins/                        # 默认插件（定仓、风控、成交、数据入口、工具）
+│   ├── orchestration/                  # replay_runner、study_optimizer
+│   └── cli/                            # Python CLI 与契约导出校验工具
+├── dsh/packages/                       # 改造中：DSH 降级为可选外部协同消费方
 │   ├── talaria-contracts/              # 由 Python 生成的 TypeScript 契约
-│   ├── talaria-desk-ui/                # React + KLineChart v10 功能组件；同时挂 DSH 面板与兜底路由，不依赖 DSH API
-│   └── talaria-dsh-plugin/             # DSH 功能面板与右栏插槽、bridge.js、守卫与工具 Schema
-├── tests/
+│   ├── talaria-desk-ui/                # 过渡期保留的既有 DSH 侧看盘组件（KLineChart v10 参考基线）
+│   └── talaria-dsh-plugin/             # 可选 Co-Pilot Analysis 插件：按 service-descriptor.json 连接 talaria-data
+├── tests/                              # 跨语言契约、黄金向量、Python SDK 与端到端验收
 └── docs/
     ├── architecture.md                 # 本文档
     ├── adr/
     └── research/
 ```
 
-`workbench_api/runtime.py` 是常驻服务的组合根；`workbench_api/app.py` 负责 ASGI 配置与挂载，`routes/` 按领域存放路由，`desk_broadcast.py` 负责 WS 广播。`sdk/`、`components/` 只依赖 `foundation` 与 `perception` 的只读部分，不依赖 `workbench_api`，因此 Notebook 和账户进程不需要启动 Web 层。
+过渡期内 `core/src/talaria/workbench_api/` 仍作为 Python 参考组合根保留；链路 1 切流后，日常看盘热路径由 `engine/crates/talaria-server` 承担，`sdk/` 与 `components/` 只依赖 `foundation/` 与冷库只读清单，不依赖 Web 服务内部实现。
 
 ---
 
-## 3. 公共底座契约层（L0 `foundation`）
+## 3. 公共底座契约层（L0 `foundation` 与 Rust `talaria-contracts`）
 
-**已实现**（Parquet 数值格式改造中）。封装全系统通用的数值精度、时间因果模型、跨资产特征协议与纯数学算子，不包含网络或磁盘 I/O。
+**已实现（Python L0 已完成、Rust `talaria-contracts` 落地中）。** 封装全系统通用的数值精度、时间因果模型、跨资产特征协议与纯数学算子，严禁包含任何网络或磁盘 I/O（`tokio`、`reqwest`、`rusqlite`、`std::fs`、`std::net` 等）。
 
 1. **定点十进制与五重时点纪律**：
-   - 所有价格、数量、名义本金、手续费、资金费率与账户余额在 Python 内使用 `Decimal`；跨 JSON 边界序列化为十进制字符串（`DecimalStr`）；Parquet 存储层按列用 `decimal128(18, s)`，scale 由标的精度和列类别决定（ADR-0017，改造中；当前仍存字符串）；只有前端绘制和 `.to_frame()` 研究视图转为浮点数。
+   - 所有价格、数量、名义本金、手续费、资金费率与账户余额在 Python 内使用 `Decimal`、在 Rust 内使用 `rust_decimal::Decimal`；跨 JSON 边界序列化为十进制字符串（`DecimalStr`）；Parquet 存储层按列用 `decimal128(18, s)`（物理 `INT64`），scale 由 `InstrumentSpec` 精度和列类别决定（ADR-0017）；只有前端绘制和 `.to_frame()` 研究视图转为浮点数。
    - 所有市场与事件事实区分五重时间戳：`ts_event`（`Event Time`）、`ts_published`（来源声称的发布时刻）、`ts_available`（`Available Time`）+ 精度等级 `PrecisionTier`（`SECOND_VERIFIED | SESSION_BOUND | DATE_CONSERVATIVE`）、`ts_ingested`（系统接收时刻）与 `ts_committed`（`Committed Time`）。
 2. **`InstrumentSpec` 与五大可组合能力特征（`Capability Traits`）**：
 
@@ -198,29 +218,29 @@ Talaria/
 
 上述五项为所有标的的必需能力。衍生品数据是可选扩展：支持标记价、资金费率结算或持仓量的市场包额外声明 `DerivativeCapabilityTrait(kinds, history, realtime)`；不支持的市场包不声明，核心代码只处理 `DerivativePoint`，不出现交易所或资产类别分支。
 
-3. **双层时间序列与单一实现的确定性算子（`foundation/operators`）**：
+3. **双层时间序列与单一实现的确定性算子（`foundation/operators` 与 `talaria-operators`）**：
    - **横截面网格表（`GridAlignedTable`，规划中）**：保留正常休市（`SESSION_CLOSED`）、停牌（`HALTED`）、时段内无成交（`NO_TRADES`）与异常断流（`FEED_GAP`）显式状态，服务多品种横截面对齐。
-   - **单标的紧凑交易序列（`SessionCompactBars`）**：剔除正常休市空槽，保留 `FEED_GAP` 供算子重置状态。技术与衍生品算子（EMA、SMA、RSI、ATR、BOLL、VWAP、资金费率分位数、OI 背离度、净赔率几何验算）的批量输出与输入等长同序，预热期输出前导 `null`。遇到 `NO_TRADES` 时技术指标按平盘零量柱递推，衍生品算子沿用上一结果；遇到 `FEED_GAP` 时输出 `null` 并重新预热。前端跳过 `FEED_GAP` 柱，按时间戳对齐到 `KLineChart` 的 `dataList`。
-   - **算子只在 Python 中实现一份**（ADR-0010）：`foundation/operators` 的 `Decimal` 实现是批量计算与增量更新的唯一权威，以 `contracts/operator_vectors/` 黄金向量回归。`TA-Lib==0.8.3` 与 `talipp==2.7.0` 保留为固定版本候选依赖，运行时不使用。组件模型的算子注册表（§5.1）以此为准。
-4. **关键位纯函数算法（`foundation/key_levels`）**：摆动高低点（按 ATR 阈值的分形 / ZigZag，多周期）、触及价位聚类、成交量分布（`POC / VAH / VAL`）、锚定 VWAP 与 `±σ` 带、时段参考位、跳空缺口与整数关口均为无 I/O 纯函数。**摆动类算法不得使用确认点之后的数据**：枢轴须经 `confirm_bars` 根后续 K 线确认后才产出，可见时刻记为确认 K 线收盘时刻。
+   - **单标的紧凑交易序列（`SessionCompactBars`）**：剔除正常休市空槽，保留 `FEED_GAP` 供算子重置状态。技术与衍生品算子（EMA、SMA、RSI、ATR、BOLL、VWAP、资金费率分位数、OI 背离度、净赔率几何验算）的批量输出与输入等长同序，预热期输出前导 `null`。遇到 `NO_TRADES` 时技术指标按平盘零量柱递推，衍生品算子沿用上一结果；遇到 `FEED_GAP` 时输出 `null` 并重新预热。前端跳过 `FEED_GAP` 柱，按时间戳对齐渲染（`@luxalgo/vela` 原生支持 `FEED_GAP` 跳过与 `null` 间隙断开）。
+   - **Python 黄金向量为唯一数学权威，Rust 与 Python 定点实现对齐**（ADR-0010、ADR-0023）：`foundation/operators` 与 `contracts/operator_vectors/` 的 11 份黄金向量是唯一权威；Rust `talaria-operators` 基于 `rust_decimal` 实现全部算子，必须逐字符通过全部黄金向量回归。`TA-Lib==0.8.3` 与 `talipp==2.7.0` 保留为固定版本候选依赖，运行时不使用。组件模型的算子注册表（§5.1）以此为准。
+4. **关键位纯函数算法（`foundation/key_levels` 与 `talaria-operators`）**：摆动高低点（按 ATR 阈值的分形 / ZigZag，多周期）、触及价位聚类、成交量分布（`POC / VAH / VAL`）、锚定 VWAP 与 `±σ` 带、时段参考位、跳空缺口与整数关口均为无 I/O 纯函数。**摆动类算法不得使用确认点之后的数据**：枢轴须经 `confirm_bars` 根后续 K 线确认后才产出，可见时刻记为确认 K 线收盘时刻。
 
 ---
 
-## 4. 数据平面（常驻服务）
+## 4. 数据平面（`Resident Service` 常驻服务）
 
 ### 4.1 行情接入与实时传输
 
-**已实现**（逐笔与买一卖一落盘、策略订阅语义为规划中）。
+**改造中（由 Python `feed/`、`packs/` 迁入 Rust `talaria-feed` 与 `talaria-packs`）。**
 
-- `foundation/feed.py` 定义跨数据源统一的 `KlineEvent`（含 `confirmed` 与单调递增 `revision`）、`OrderBookEvent`、`FeedHealthEvent` 与 `MarketEventFeed` 协议；这些契约同时导出 JSON Schema 与 TypeScript 类型。
-- `feed/supervisor.py` 持有唯一状态机：12s（`stale_after_ms=12000`）无事件即 `LIVE → STALE`；传输层报错立即 `STALE`；重连成功后先 `RECOVERING` 并应用 REST 回填，再回 `LIVE`。断流窗口以“最后一根已知柱的事件时间 + 断流墙钟时长”记录，历史回放不会伪造未来时间戳的缺口。
-- 缺口合成与 `perception/compaction.py` 共用 `classify_flat_bar`：正常稀疏分钟补前收平盘零量的 `NO_TRADES`；断流窗口内补 OHLCV 全空的 `FEED_GAP`。同一 `timestamp` 的多次发布按 `revision` 追加保留、后到者胜，REST 回填与实时推送可安全重放。
-- `packs/crypto_perp/stream.py` 是 Bybit V5 Linear 公共 WS 传输层：topic 为 `kline.{interval}.{symbol}`、`orderbook.1.{symbol}` 与 `tickers.{symbol}`（标记价、资金费率、持仓量的实时读数来源），等待订阅 ack、应用层 ping/pong、断线由 supervisor 指数退避重连。**规划中**：对实时订阅的标的增加 `publicTrade.{symbol}`，把买一卖一与逐笔成交落盘（§4.2）。
-- `workbench_api/subscriptions.py` 按“当前图表 > 活跃预警 > 自选顺序”分配实时订阅配额（已实现；预警固定按 `1m` 订阅）。**改造中**：配额按 `(标的, 周期)` 记在各使用方名下，使用方包括图表页、预警（按自己的周期）、账户进程和自选；账户进程的订阅优先保留，配额不足时明确拒绝；被挤掉的使用方收到通知。
+- `foundation/feed.py` 与 Rust `talaria-contracts` 定义跨数据源统一的 `KlineEvent`（含 `confirmed` 与单调递增 `revision`）、`OrderBookEvent`、`FeedHealthEvent` 与传输/事件流协议；契约与 `contracts/schemas/` 保持零漂移对齐。
+- `FeedSupervisor` 持有唯一状态机：12s（`stale_after_ms=12000`）无事件即 `LIVE → STALE`；传输层报错立即 `STALE`；重连成功后先 `RECOVERING` 并应用 REST 回填，再回 `LIVE`。断流窗口以“最后一根已知柱的事件时间 + 断流墙钟时长”记录，历史回放不会伪造未来时间戳的缺口。
+- 缺口合成与冷库压缩共用 `classify_flat_bar`：正常稀疏分钟补前收平盘零量的 `NO_TRADES`；断流窗口内补 OHLCV 全空的 `FEED_GAP`。同一 `timestamp` 的多次发布按 `revision` 追加保留、后到者胜，REST 回填与实时推送可安全重放。
+- `crypto_perp`（Bybit V5 Linear 公共 WS）topic 为 `kline.{interval}.{symbol}`、`orderbook.1.{symbol}`、`tickers.{symbol}` 与可选 `publicTrade.{symbol}`，等待订阅 ack、应用层 ping/pong、断线由 `FeedSupervisor` 指数退避重连；后续基于 `Market Pack` 扩展 Binance Futures / Hyperliquid 与美股 `us_equity`（Alpaca `IEX`/`SIP`）。
+- 配额按 `(标的, 周期)` 记在各使用方（`Account Process`、当前图表、`Alert` 按自身周期、`Watchlist`）名下，`Account Process` 优先保留，配额不足明确拒绝并通知被挤掉的使用方。
 - **实时订阅的两种语义**：
-  - 图表页面（`WS /ws/desk`，已实现）：每客户端一条有界队列（256），满则丢最旧，慢客户端不阻塞广播；前端 `useMarketStream` 指数退避重连，切换标的或周期时先退订再订阅；图表增量走 KLineChart v10 的 `DataLoader.subscribeBar`，`FEED_GAP` 不进入 `dataList`。
-  - 策略订阅（规划中，ADR-0016）：不静默丢弃，队列满则断开。交付单位是一个已收盘柱的修订，带变更序号 `(epoch, seq)`。重连时客户端带上最后序号，服务先挂实时订阅并缓冲，再从变更日志补发、按序号去重；序号超出保留范围或 `epoch` 变化时要求客户端经范围接口重新同步。实测本机 WS 从事件到策略回调 p99 约 1–2 ms。
-- `talaria up --solo --pack crypto_perp --data-dir <临时目录> --fixture-dir <fixture> --replay-events <path> [--replay-speed F]` 用 JSONL 回放驱动实时链路，用于离线确定性与浏览器验收；`/api/health.feed_mode` 区分 `fixture` / `replay` / `bybit`。回放会写冷库、快照和协同状态，必须指定独立的数据目录；不给 `--fixture-dir` 时历史快照会走真实历史连接器。**改造中**：回放模式拒绝使用日常数据目录。
+  - 图表页面（`WS /ws/desk`）：每客户端一条有界队列（256），满则丢最旧，慢客户端不阻塞广播；前端指数退避重连，切换标的或周期时先退订再订阅；`FEED_GAP` 不进入图表 `OHLCV[]`。
+  - 策略订阅（`WS /ws/strategy`，ADR-0016）：不静默丢弃，队列满则断开（close `1013`）。交付单位是一个已收盘柱的修订，带变更序号 `(epoch, seq)`。重连时客户端带上最后序号，服务先挂实时订阅并缓冲，再从变更日志补发、按序号去重；序号超出保留范围或 `epoch` 变化时要求客户端经范围接口重新同步。
+- `talaria-data replay`（过渡期保留 `talaria up --solo --replay-events`）用 JSONL 回放驱动实时链路，用于离线确定性与浏览器验收；回放模式拒绝使用日常数据目录。
 
 ### 4.2 冷库
 
@@ -249,7 +269,7 @@ Talaria/
 
 ### 4.3 取数 SDK 与范围查询
 
-**规划中**（ADR-0016）。
+**改造中**（[ADR-0016](./adr/0016-sdk-reads-parquet-directly-with-service-tail.md)、[ADR-0023](./adr/0023-standalone-workbench-and-rust-data-engine.md)）。
 
 ```python
 from talaria import sdk
@@ -264,12 +284,12 @@ async for ev in sdk.subscribe("BTC-USDT-PERP", "1m"):   # 策略订阅语义，�
     ...
 ```
 
-- 历史部分按清单直读 Parquet；冷库尚未写入的最新几根向服务的 `GET /api/bars?instrument=&timeframe=&start=&end=&as_of=` 取，按 `(ts_event, revision)` 拼接去重；服务未运行时只用本地数据，并在结果上标记未补尾。
+- 历史部分按清单直读 Parquet；冷库尚未写入的最新几根及大区间高速传输经 Rust `Resident Service` 的 Arrow IPC 端点（`GET /api/bars.arrow`、`GET /api/ticks.arrow`、`GET /api/derivatives.arrow`，`Content-Type: application/vnd.apache.arrow.stream`）或兼容 JSON 接口 `GET /api/bars` 取数，按 `(ts_event, revision)` 拼接去重；服务未运行时只用本地数据，并在结果上标记未补尾。
 - 补尾部分带 `confirmed` 与 `revision`（热缓冲需保留这两个字段）。默认只返回已收盘的柱；收盘时刻已过但确认未到的柱不算收盘。图表可以显式请求进行中的柱。
 - 所有查询（K 线、逐笔、买一卖一、衍生品）都支持 `as_of`：先按 `ts_available <= as_of` 截断，再取最大 `revision`；回测数据入口与组件 `ctx` 用同一实现。
-- 返回 `Decimal` 契约对象；`.to_frame()` 只在研究视图里转 float。
+- 返回 `Decimal` 契约对象；`.to_frame()` 只在研究视图里转 float（内嵌 DuckDB 支撑跨标的只读查询）。
 - DSH 工具与 SDK 共用同一套 HTTP 契约。
-- 待实测：服务补尾与直读在并发读写下的一致性；Arrow IPC 经本机 HTTP 传输千万行的耗时。
+- Phase 0 POC 2 已实测验证 Rust `arrow`/`parquet` 写出的 `decimal128(18, s)` Parquet 与 Python `ColdReader` 零误差互操作，100 万行 Arrow IPC 传输读回比 JSON 快 27.5×（见 `docs/experiments/chain1-phase0-poc.md`）。
 
 ### 4.4 证据快照
 
@@ -355,16 +375,16 @@ class Strategy(Component, Protocol):
 
 ### 5.5 图表图层与人机共用接口
 
-**已实现**（`EXECUTION_BARRIER` 规划中）。前端基于 `KLineChart v10`（Apache-2.0），已锁定 `klinecharts 10.1.1`：外部指标结果通过注册指标模板并以 `createIndicator({ name, calc })` 返回与 `dataList` 等长同序的数组，更新时换新闭包并调用 `overrideIndicator`；历史分页使用 `setDataLoader`。组件输出（§5.1）以同样方式显示。
+**改造中（见 [ADR-0005](./adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)、[ADR-0023](./adr/0023-standalone-workbench-and-rust-data-engine.md)）。** 独立看盘工作台（`workbench/`）通过窄接口 `ChartSurfaceAdapter` 隔离底层图表核，主选实现为 `@luxalgo/vela@0.10.17`（仅核心与 `plugin` SDK，Apache-2.0；严禁引入 AGPL-3.0 的 `@luxalgo/vela-pinets`）：外部计算指标通过 `registerNativeIndicator` 直接发射渲染；`HUMAN_DRAWING` 接入 `chart.drawings`；`SYSTEM_LEVEL` / `AGENT_ANNOTATION` / `EXECUTION_BARRIER` 通过 `registerRendererLayer` 在原生渲染周期绘制并消除原 `requestAnimationFrame` SVG 轮询。过渡期内 `dsh/packages/talaria-desk-ui` 保留 `klinecharts 10.1.1` 作为参考与回退边界。
 
 | 图层（`groupId`） | 写入主体与存储 | 交互与校验 |
 |---|---|---|
-| `HUMAN_DRAWING` | 交易员绘制；持久化于 `collaboration_state.sqlite` | 自由拖拽（前端乐观重绘、松手落库）、撤销重做、一键挂载 `OVERLAY_CROSS` 预警 |
-| `SYSTEM_LEVEL` | 经 WS 单向投影，不入画线表；当前来源是快照路由写入的广播器缓存，改为关键位注册表（§5.4）后来源随之切换 | 只读；按 `kind` / 强度过滤；一键采纳为 `HUMAN_DRAWING` 或挂载 `LEVEL_EVENT` 预警；采纳 / 忽略记为质量反馈 |
-| `AGENT_ANNOTATION` | agent 调用 `write_agent_overlay`，经硬门控后存入 `collaboration_state.sqlite` | ① 校验 `snapshot_id` 与非空 `evidence_refs`（须引用 `level_id` 或具体 K 线时间戳）；② 价格锚点为正、合乎 `tick_size`，且落在 `[min_low - 3*ATR_14, max_high + 3*ATR_14]` 内；③ 单标的未采纳活跃条数 ≤12 |
+| `HUMAN_DRAWING` | 交易员绘制；持久化于 `state/workbench_state.sqlite`（过渡期兼容 `collaboration_state.sqlite`） | 自由拖拽（前端乐观重绘、松手落库）、撤销重做、一键挂载 `OVERLAY_CROSS` 预警 |
+| `SYSTEM_LEVEL` | 经 WS 单向投影，不入画线表；来源为 `KeyLevelRegistry` 关键位注册表（§5.4） | 只读不可拖拽；按 `kind` / 强度过滤；一键采纳为 `HUMAN_DRAWING` 或挂载 `LEVEL_EVENT` 预警；采纳 / 忽略记为质量反馈 |
+| `AGENT_ANNOTATION` | agent 调用 `write_agent_overlay`，经硬门控后写入服务端状态库 | ① 校验 `snapshot_id` 与非空 `evidence_refs`（须引用 `level_id` 或具体 K 线时间戳）；② 价格锚点为正、合乎 `tick_size`，且落在 `[min_low - 3*ATR_14, max_high + 3*ATR_14]` 内；③ 单标的未采纳活跃条数 ≤12 |
 | `EXECUTION_BARRIER`（规划中） | 账户进程的草案与活跃回合经服务单向投影 | 拖动草案线触发定仓插件预试算；拖动活跃止损线按收紧/放宽方向路由到成交插槽或风控插槽 |
 
-**人机共用分析接口**：浏览器与 agent 是同一套接口的两个调用方，读到的数据、算法与 `cutoff_ts` 一致，`level_id` 共享。接口由服务提供，经 `talaria-dsh-plugin/bridge.js` 包装为 agent 工具；签名以 `bridge.js` 与导出的工具 Schema 为准。
+**人机共用分析接口**：浏览器、桌面工作台与可选 DSH 插件共用同一套 `Resident Service` 接口，读到的数据、算法与 `cutoff_ts` 一致，`level_id` 共享。DSH 会诊侧仍可经 `talaria-dsh-plugin/bridge.js` 包装为只读/受控 agent 工具。
 
 | 接口 / 工具 | 作用 | 权限 |
 |---|---|---|
@@ -518,50 +538,46 @@ class ExecutionEngine(Protocol):
 
 ### 8.1 进程与通信
 
+**改造中（见 [ADR-0023](./adr/0023-standalone-workbench-and-rust-data-engine.md)）。**
+
 ```mermaid
 flowchart LR
-  Svc["常驻服务 talaria up --solo :8765"]
-  Panels["DSH 桌面面板及会话"]
-  Fallback["兜底页面 /desk"]
-  Desktop["DSH 桌面宿主（应用管理）"]
-  Acct["账户进程（每个交易方案）"]
-  NB["Notebook / 脚本"]
+  Svc["Resident Service（talaria-data :8765）"]
+  WB["独立看盘工作台（Tauri v2 + /desk 同构路由）"]
+  DSH["DSH 插件（可选 Co-Pilot Analysis 消费方）"]
+  Acct["Account Process 账户进程（每个交易方案）"]
+  NB["Notebook / 脚本（sdk/ + DuckDB）"]
   DSHAuto["DSH 自治 / 评估子进程（以后，stdio SDK）"]
 
-  Desktop -->|"插件启动、停止及退避重启"| Svc
-  Panels <-->|"HTTP / WS 快通道"| Svc
-  Fallback <-->|"HTTP / WS 快通道"| Svc
-  Panels <-->|"DSH typert（会诊、轨迹、审批）"| Desktop
-  Desktop <-->|"会诊与简报派发、受控桥接工具"| Svc
-  Acct <-->|"实时订阅、草案、账本只读"| Svc
-  NB -. "补尾" .-> Svc
+  WB -->|"sidecar 启停与 --exit-with-parent 监管"| Svc
+  WB <-->|"127.0.0.1 Arrow IPC / HTTP / WS /ws/desk"| Svc
+  DSH <-. "service-descriptor.json：只读快照 / 简报 / 受控标注" .-> Svc
+  Acct <-->|"WS /ws/strategy、草案、账本只读"| Svc
+  NB -. "Arrow IPC /api/bars.arrow 补尾" .-> Svc
   Acct -. "deepseek-harness-sdk" .-> DSHAuto
 ```
 
-- **日常运行**。运行 `talaria dsh-install` 将插件和服务启动参数装进 `desktop` profile，再用 `talaria open` 打开应用。插件启动并监管常驻服务，子进程在标准输入关闭时优雅退出。应用关闭期间停止行情采集、冷库写入、预警和扫描。应用不可用时可用 `talaria up --solo` 启动服务，再打开 `/desk`。`talaria service status` 显示桌面应用与插件状态、数据目录锁和服务写入接口。`talaria service uninstall` 用于迁移时停止并移除旧的 launchd 作业。
-- **本机桥接**。常驻服务就绪时在 `<data-dir>/runtime/dsh-bridge.json`（0600）发布回环地址和 Bearer token，退出时清理。插件按安装时写入的绝对路径读取凭据，因此服务重启后可自动恢复。桌面插件在同一运行目录发布自己的回环地址，供服务派发会诊与简报。
-- **开发与自动化测试**。运行 `talaria dsh-install --dsh-profile talaria-desk`，再运行 `talaria up --pack crypto_perp` 启动服务和独立 DSH Web 宿主（默认端口 8766）。终端打印开发宿主地址。用 `talaria up --solo` 可单独运行服务。
-- **其他进程**。`talaria account run <scheme.yaml> [--mode backtest|paper]`（规划中）启动账户进程。`paper` 模式必须取得对应子账户排他锁。`talaria replay` 和 `talaria optimize --workers N`（规划中）批量启动账户进程。
-- **DSH 权限与版本**。桌面 profile 提供可选的「Talaria 分析副驾驶」预设。只读守卫作用于会诊、简报和选用该预设的会话。全局沙箱及审批限制仅用于开发 profile `talaria-desk`。DSH 桌面基线为 `0.2.2-rc.5`，Python SDK 基线为 `deepseek-harness-sdk 0.2.2rc2`。升级前重跑插件测试、`--dump-config`、确定性探针和侧边栏实测。以后的自治子账户（`talaria-auto`）与评估（`talaria-eval`）基于 `sdk-minimal` 剔除 shell、外网与文件写权限，由 Python 经 SDK 的 stdio 调用。
+- **日常运行（链路 1 一等入口）**。打开独立 `Tauri v2` 桌面工作台时，原生薄壳自动检测 `<data-dir>/runtime/service-descriptor.json` 或以 sidecar 拉起并监管单个 Rust `talaria-data --exit-with-parent`（支持设置关闭窗口后停服或后台常驻）；无桌面壳时也可通过 `talaria-data up` 独立运行，并打开服务同源托管的 `/desk` 浏览器路由。**回放与测试**：`talaria-data replay --pack crypto_perp --data-dir <临时目录> --fixture-dir <fixture> --replay-events <path>`（过渡期同时保留 `talaria up --solo`）；回放模式禁止使用日常数据目录。
+- **本机鉴权与服务发现**。`Resident Service` 仅绑定 `127.0.0.1` 回环地址，就绪时以 `0600` 权限发布 `<data-dir>/runtime/service-descriptor.json`（含 `base_url`、`pid` 与随机 Bearer Token，退出时清理）。工作台与可选 DSH 插件均按此文件发现并鉴权连接；过渡期内兼容 `<data-dir>/runtime/dsh-bridge.json`。
+- **可选 DSH 协同（降级消费方）**。`talaria-dsh-plugin` 不再作为看盘工作台主宿主，也不负责启停 `Resident Service`；交易员在需要 `Co-Pilot Analysis`、扫描 `Briefing` 或 `AGENT_ANNOTATION` 时由 DSH 连接已运行的 `talaria-data`。
+- **其他进程**。`talaria account run <scheme.yaml> [--mode backtest|paper]`（规划中）启动 `Account Process`。`paper` 模式必须取得对应 `Sub-Account` 排他锁。`talaria replay` 和 `talaria optimize --workers N`（规划中）批量启动账户进程。
 - 零 Docker / 零 Redis / 零 Kafka。
 
 ### 8.2 按写者拆分的本地存储
 
-数据目录由 `--data-dir` 指定，默认取 `TALARIA_DATA_DIR` 或 `./.talaria`。SQLite 库均使用 `WAL`。`perception/sqlite.py` 现有的单写者守卫只在进程内有效；跨进程由文件锁保证（规划中）：服务持有 `runtime/service.lock`，模拟盘账户进程持有 `accounts/<sub_account_id>/owner.lock`。现有 `talaria usage-scan` 会另开写连接直写协同状态库，改为服务运行时经服务接口提交、服务未运行时先取 `service.lock`。
+数据目录由 `--data-dir` 指定，默认取 `TALARIA_DATA_DIR` 或 `./.talaria`。SQLite 库均使用 `WAL`。跨进程单写锁由文件锁强制：`Resident Service` 持有 `runtime/service.lock`，模拟盘 `Account Process` 持有 `accounts/<sub_account_id>/owner.lock`。
 
 | 存储路径 | 唯一写者 | 内容 | 状态 |
 |---|---|---|---|
-| `data/raw/<archive_id>/`、`data/raw_archive/<sha256>.jsonl` | 常驻服务 | 历史回填原始 K 线与冷库批次原始归档 | 已实现 |
-| `data/cold/<venue>/<symbol>/...`（布局见 §4.2）+ `data/data_manifest.sqlite` | 常驻服务（冷库写入） | K 线、逐笔、买一卖一、衍生品分区文件与尾部文件；清单 | 改造中 |
-| `state/runtime_snapshots.sqlite` + `state/hot_snapshots/*.parquet` | 常驻服务（`SnapshotBuilder`） | 证据快照索引与物化数据 | 已实现 |
-| `state/collaboration_state.sqlite` | 常驻服务的 `StateWriterQueue` 写线程（ADR-0012） | 元数据、自选、画线、关键位反馈、预警、标注、会诊、简报、Token 用量 | 已实现 |
-| `accounts/<sub_account_id>/ledger.sqlite` | 持有该子账户锁的账户进程（模拟盘） | 子账户复式账本、持仓批次、`Trade Journal` | 规划中 |
-| `runs/<run_id>/`（`ledger.sqlite`、`run_state.sqlite`） | 该次回放的账户进程 | 回放的账本、规则状态、草案；回放不写 `state/collaboration_state.sqlite` | 规划中 |
+| `data/raw/<archive_id>/`、`data/raw_archive/<sha256>.jsonl` | `Resident Service`（`talaria-store`） | 历史回填原始 K 线与冷库批次原始归档 | 改造中（Rust 接管写入） |
+| `data/cold/<venue>/<symbol>/...`（布局见 §4.2）+ `data/data_manifest.sqlite` | `Resident Service`（`talaria-store`） | K 线、逐笔、买一卖一、衍生品分区文件与尾部文件；清单（`decimal128(18, s)` 物理 `INT64`） | 改造中（POC 2 已验证零误差互操作） |
+| `state/runtime_snapshots.sqlite` + `state/hot_snapshots/*.parquet` | `Resident Service` | 证据快照索引与物化数据 | 改造中 |
+| `state/workbench_state.sqlite`（兼容迁自 `state/collaboration_state.sqlite`） | `Resident Service`（专用写通道，ADR-0012） | `Watchlist`、`Chart Overlay` 版本链、`Key Level` 反馈、`Alert` 与触发记录、协同标注/会诊/简报（兼容保留） | 改造中 |
+| `accounts/<sub_account_id>/ledger.sqlite` | 持有该子账户锁的 `Account Process`（模拟盘） | 子账户复式账本、持仓批次、`Trade Journal` | 规划中 |
+| `runs/<run_id>/`（`ledger.sqlite`、`run_state.sqlite`） | 该次回放的 `Account Process` | 回放的账本、规则状态、草案；回放不写工作台状态库 | 规划中 |
 | `studies/study_registry.sqlite` + `studies/<id>/journal.log` | `study_optimizer` 主进程；每个试验是一次回放，写自己的 `runs/<run_id>/`，Worker 只追加 `journal.log` | 三段切分封存、`n_trials`、晋升审计 | 以后 |
-
-服务内 `StateWriterQueue` 由单协程按提交顺序把写操作派发到专用写线程，线程持有唯一写连接（`synchronous=FULL`）；读取走线程池，每次打开 `mode=ro` 连接并启用 `query_only`。协同状态按九个领域拆在 `workbench_api/state_repositories/`。
 
 ### 8.3 降级与契约门禁
 
-1. **优雅降级**：行情失联时标记 `STALE`，预警与扫描暂停行情触发；冷库写入失败只记 warning；DSH 离线只影响会诊；服务未运行时 SDK 只读本地数据；账户进程失去实时订阅时由风控插件按配置切 `REDUCING`（规划中）。
-2. **契约回归检查**：① `cli/contracts_io.py` 从 `foundation` 导出 JSON Schema 与 `@talaria/contracts`，检查零漂移与十进制字符串类型；② DSH 工具 Schema 经 `assertSupportedJsonSchema` 子集规则静态门禁；③ `talaria-desk` Profile 权限快照断言与 `ctx.tools.guard` 拦截轨迹 `fork` 重放的行为测试；④ `contracts/operator_vectors/` 算子与关键位黄金回归（含 `NO_TRADES`、`FEED_GAP` 重预热与摆动点确认延迟）；⑤ 服务只接受回环绑定，默认 `127.0.0.1`，并检查会话随机 Bearer Token；⑥ 规划中：插件接口版本兼容检查、JSON 规则 Schema 版本检查、截断前视审计（§7）。
+1. **优雅降级**：行情失联时标记 `STALE`，预警与扫描暂停行情触发；冷库写入失败只记 warning；DSH 离线不影响独立看盘与任何本地数据流程；服务未运行时 SDK 只读本地冷库数据；`Account Process` 失去实时订阅时由风控插件按配置切 `REDUCING`（规划中）。
+2. **契约回归检查**：① `cli/contracts_io.py` 从 `foundation` 导出 JSON Schema 与 `@talaria/contracts`，Rust `cargo test -p talaria-contracts` 校验与 `contracts/schemas/*.schema.json` 及 `DecimalStr` 规则零漂移、`InstrumentSpec` 哈希与 Python 逐字节一致；② Rust `cargo test -p talaria-operators` 逐字符通过 `contracts/operator_vectors/` 全部 11 份黄金向量（含 `NO_TRADES`、`FEED_GAP` 重预热与摆动点确认延迟）；③ `talaria-contracts`（Rust 与 Python `foundation`）严禁网络与文件系统 I/O 依赖；④ DSH 工具 Schema 经 `assertSupportedJsonSchema` 子集规则静态门禁（过渡/可选协同）；⑤ 服务只接受回环绑定，默认 `127.0.0.1`，并检查 `0600` `service-descriptor.json` 随机 Bearer Token；⑥ 规划中：插件接口版本兼容检查、JSON 规则 Schema 版本检查、截断前视审计（§7）。
