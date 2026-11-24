@@ -25,28 +25,16 @@ function registerWithRollback(registrations) {
 }
 
 /**
- * Registers the single workspace main panel, its one sidebar row, and the five
- * rightbar tabs/session panes that already existed before tabs moved into the
- * main panel.
+ * Registers only the consultation rightbar session tabs (`talaria-desk`, etc.)
+ * as an external Co-Pilot Analysis surface. Primary workbench hosting (`main`
+ * and `sidebar.panellist`) is retired per ADR-0023 in favor of the standalone
+ * Talaria Desk workbench.
  */
 export function registerPanels(ctx, config, views) {
-  const { mainId, sidebarLabel, tabs } = config
+  const { tabs } = config
   const inject = (name, registrations) => ctx.slots.inject(name, () => registerWithRollback(registrations))
 
   ctx.effect(() => registerWithRollback(function* () {
-    yield inject('main', function* () {
-      yield ctx.slots.register({ name: 'main', key: mainId }, views.main())
-    })
-
-    yield inject('sidebar.panellist', function* () {
-      yield ctx.slots.register({
-        name: 'sidebar.panellist',
-        id: mainId,
-        order: 10,
-        label: sidebarLabel,
-      }, views.sidebarIcon())
-    })
-
     for (const [order, tab] of tabs.entries()) {
       yield ctx.sidebarRightTabs.register({
         id: `${tab.kind}-tab`,
@@ -58,7 +46,7 @@ export function registerPanels(ctx, config, views) {
           id: tab.kind,
           order: 10 + order,
           title: tab.title,
-          icon: views.guideIcon ? views.guideIcon(tab.panel) : views.sidebarIcon(),
+          icon: views.guideIcon ? views.guideIcon(tab.panel) : views.sidebarIcon?.(),
           ...(tab.description && { description: tab.description }),
         }],
       })
@@ -70,7 +58,7 @@ export function registerPanels(ctx, config, views) {
       }
     })
 
-    const stop = views.onMainRegistered?.()
+    const stop = views.onRegistered?.()
     if (stop) yield stop
   }))
 }

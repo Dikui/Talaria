@@ -76,17 +76,83 @@ test('credential file is the default bridge source', async () => {
   }
 })
 
-test('missing credential explains talaria up', async () => {
+test('missing credential explains talaria-data up in Chinese and English', async () => {
   const bridge = createBridge({ credentialFile: join(tmpdir(), 'does-not-exist.json'), cwd: join(tmpdir(), 'missing-cwd') })
   await assert.rejects(
     () => bridge.createSnapshot({ instrument_id: 'BTC-USDT-PERP', timeframes: ['1m'] }),
     (error) => {
       assert.ok(error instanceof BridgeError)
       assert.equal(error.code, 'TALARIA_BRIDGE_UNAVAILABLE')
-      assert.match(error.message, /talaria up/)
+      assert.match(error.message, /service-descriptor\.json/)
+      assert.match(error.message, /talaria-data up/)
+      assert.match(error.message, /Talaria 数据引擎未运行/)
       return true
     },
   )
+})
+
+test('discovers <data-dir>/runtime/service-descriptor.json and forwards X-Talaria-Data-Dir', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'talaria-descriptor-'))
+  const runtimeDir = join(dataDir, 'runtime')
+  const { mkdirSync } = await import('node:fs')
+  mkdirSync(runtimeDir, { recursive: true })
+  const headersSeen = []
+  const server = createServer((req, res) => {
+    headersSeen.push({
+      auth: req.headers.authorization,
+      dirId: req.headers['x-talaria-data-dir'],
+    })
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify(META))
+  })
+  const port = await listen(server)
+  try {
+    writeFileSync(
+      join(runtimeDir, 'service-descriptor.json'),
+      JSON.stringify({
+        version: 1,
+        base_url: `http://127.0.0.1:${port}`,
+        token: 'rust-token',
+        data_dir_id: 'dir-hash-123',
+      }),
+    )
+    const bridge = createBridge({ dataDir })
+    const snap = await bridge.createSnapshot({ instrument_id: 'BTC-USDT-PERP', timeframes: ['1m'] })
+    assert.equal(snap.snapshot_id, 'snap-abc')
+    assert.deepEqual(headersSeen, [{ auth: 'Bearer rust-token', dirId: 'dir-hash-123' }])
+  } finally {
+    server.close()
+  }
+})
+
+test('TALARIA_SERVICE_URL overrides descriptor base_url when combined with descriptor token', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'talaria-url-override-'))
+  const runtimeDir = join(dataDir, 'runtime')
+  const { mkdirSync } = await import('node:fs')
+  mkdirSync(runtimeDir, { recursive: true })
+  const server = createServer((req, res) => {
+    assert.equal(req.headers.authorization, 'Bearer desc-token')
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify(META))
+  })
+  const port = await listen(server)
+  writeFileSync(
+    join(runtimeDir, 'service-descriptor.json'),
+    JSON.stringify({ version: 1, base_url: 'http://127.0.0.1:9', token: 'desc-token' }),
+  )
+  const prevUrl = process.env.TALARIA_SERVICE_URL
+  process.env.TALARIA_SERVICE_URL = `http://127.0.0.1:${port}`
+  try {
+    const snap = await createBridge({ dataDir }).createSnapshot({
+      instrument_id: 'BTC-USDT-PERP',
+      timeframes: ['1m'],
+    })
+    assert.equal(snap.snapshot_id, 'snap-abc')
+  } finally {
+    if (prevUrl === undefined) delete process.env.TALARIA_SERVICE_URL
+    else process.env.TALARIA_SERVICE_URL = prevUrl
+    server.close()
+  }
 })
 
 test('non-loopback base_url is rejected', async () => {

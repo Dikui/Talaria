@@ -11,7 +11,7 @@ from pathlib import Path
 
 from talaria.foundation.indicators import IndicatorParams
 from talaria.foundation.operators import IndicatorName, IndicatorSpec, spec_from_params
-from talaria.perception.sqlite import COLLABORATION_STATE_DB
+from talaria.perception.sqlite import COLLABORATION_STATE_DB, WORKBENCH_STATE_DB
 
 DEFAULTS_KEY = "indicator_defaults.v1"
 
@@ -50,9 +50,13 @@ def params_from_spec(spec: IndicatorSpec) -> IndicatorParams:
 
 
 def read_indicator_defaults(data_dir: Path) -> dict[IndicatorName, IndicatorParams]:
-    """从协同状态库读出当前生效的参数。尚未初始化时采用工厂默认值。"""
-    path = data_dir / COLLABORATION_STATE_DB
-    if not path.is_file():
+    """从工作台状态库读出当前生效的参数（兼容旧协同库）。尚未初始化时采用工厂默认值。"""
+    path = next(
+        (candidate for candidate in (data_dir / WORKBENCH_STATE_DB, data_dir / COLLABORATION_STATE_DB)
+         if candidate.is_file()),
+        None,
+    )
+    if path is None:
         return effective_defaults({})
     with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as connection:
         exists = connection.execute(

@@ -1,28 +1,21 @@
 import {
-  configureApi, normalizeLocale, PANELS, panelLabel, panelPath, setLocale, useLocale, WorkbenchPanel,
+  configureApi, normalizeLocale, PANELS, panelLabel, setLocale, WorkbenchPanel,
   type PanelName, type Theme,
 } from "@talaria/desk-ui";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ComponentType, KeyboardEvent, ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useState } from "react";
+import type { ComponentType, ReactNode } from "react";
 import styles from "@talaria/desk-ui/styles.css?inline";
 import hostStyles from "./styles.css?inline";
 import { useCopy } from "./copy";
 import { createLinkRelay } from "./linkRelay";
 import { resolveHostText, syncHostLocale } from "./localeSync.mjs";
 import { MESSAGES } from "./messages.mjs";
-import { dockPanels, panelLinkKey, restoreActivePanel } from "./panelPreferences.mjs";
-import { MAIN_PANEL_ID, RIGHTBAR_TABS, registerPanels } from "./registerPanels.mjs";
-import {
-  nextTabIndex, panelDomId, readDockPreference, readWorkspaceTab,
-  saveDockPanel, saveWorkspaceTab, tabDomId,
-} from "./workspaceTabs.mjs";
+import { panelLinkKey } from "./panelPreferences.mjs";
+import { RIGHTBAR_TABS, registerPanels } from "./registerPanels.mjs";
 
 const STYLE_ID = "talaria-desk-plugin-styles";
 const SERVICE_OFFLINE = "talaria-service-offline";
 const CONNECTION_REFRESH_MS = 3_000;
-const DOCK_PANELS = dockPanels(PANELS) as Exclude<PanelName, "chart">[];
-type DockPanel = (typeof DOCK_PANELS)[number];
 type Connection = { baseUrl: string; relay: ReturnType<typeof createLinkRelay> };
 
 interface Observable<Value> {
@@ -36,20 +29,13 @@ interface LocaleHost {
   resolveText?(text: { zh: string; en: string }): string;
 }
 
-// Public client contracts from ui-layout, ui-sidebar, ui-sidebar-right and
-// dsh-client-locale in DSH 0.2.2-rc.5.
+// Public client contracts from ui-sidebar-right and dsh-client-locale in DSH 0.2.2-rc.5.
 interface SlotContext {
   effect(callback: () => () => void): void;
   locale: LocaleHost;
   slots: {
     inject(name: string, register: () => (() => void) | Generator<() => void>): () => void;
     register(options: Record<string, unknown>, component: ComponentType): () => void;
-  };
-  layout: {
-    panelInfo: Observable<{ activePanelId: string | null }>;
-    selectPanel(id: string | null): void;
-    openRightbar(track: boolean, fullscreen: boolean): void;
-    closeRightbar(): void;
   };
   sidebarRightTabs: {
     register(definition: Record<string, unknown>): () => void;
@@ -58,10 +44,6 @@ interface SlotContext {
     mounted: Observable<string | undefined>;
     openTab(kind: string): void;
   };
-}
-
-function browserStorage(kind: "sessionStorage" | "localStorage"): Storage {
-  return window[kind];
 }
 
 function createConnection() {
@@ -218,216 +200,11 @@ function PanelIcon({ panel, size = 16 }: { panel: PanelName; size?: number }) {
   );
 }
 
-function ChartWithDock({
-  connection, ctx, theme, onOpenTab,
-}: {
-  connection: Connection;
-  ctx: SlotContext;
-  theme: Theme;
-  onOpenTab: (panel: PanelName) => void;
-}) {
-  const copy = useCopy();
-  const locale = useLocale();
-  const [panel, setPanel] = useState<DockPanel | null>(() =>
-    readDockPreference(browserStorage, DOCK_PANELS) as DockPanel | null,
-  );
-  const inlineDock = useRef<HTMLDivElement>(null);
-  const [seat] = useState(() => document.createElement("div"));
-  const open = panel !== null;
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    // A global main panel hides the Session rightbar. Reuse AppFrame's
-    // resizable track and keep its Session occupant untouched.
-    const track = document.querySelector<HTMLElement>("[data-rightbar-col]");
-    function place() {
-      const dock = track && track.clientWidth >= 260 ? track : inlineDock.current;
-      seat.className = dock === track ? "talaria-dsh-dock-seat is-in-track" : "talaria-dsh-dock-seat";
-      if (dock && dock !== seat.parentElement) dock.append(seat);
-    }
-    ctx.layout.openRightbar(true, false);
-    place();
-    const observer = new ResizeObserver(place);
-    if (track) observer.observe(track);
-    return () => {
-      observer.disconnect();
-      seat.remove();
-      ctx.layout.closeRightbar();
-    };
-  }, [ctx, open, seat]);
-
-  function select(next: DockPanel | null) {
-    saveDockPanel(next ?? "");
-    setPanel(next);
-  }
-
-  return (
-    <>
-      <div className="talaria-dsh-chart">
-        <WorkbenchPanel
-          panel="chart"
-          persistenceKey={panelLinkKey("chart", "main")}
-          theme={theme}
-          transport={connection.relay}
-          embedded
-          tools={
-            <button type="button" className="ghost-button" aria-expanded={open}
-              onClick={() => select(open ? null : "alerts")}>
-              {copy.utilityDock}
-            </button>
-          }
-        />
-      </div>
-      {open && <div ref={inlineDock} className="talaria-dsh-dock-inline" />}
-      {panel && createPortal(
-        <aside className="talaria-desk talaria-dsh-dock" data-theme={theme} aria-label={copy.dockAria}>
-          <div className="talaria-dsh-dock-bar">
-            {DOCK_PANELS.map((item) => (
-              <button type="button" key={item} className="ghost-button" aria-pressed={panel === item}
-                onClick={() => select(item)}>{panelLabel(item, locale)}</button>
-            ))}
-            <button type="button" className="ghost-button" aria-label={copy.closeDock} onClick={() => select(null)}>×</button>
-          </div>
-          <WorkbenchPanel
-            key={panel}
-            panel={panel}
-            persistenceKey={panelLinkKey(panel, "dock")}
-            theme={theme}
-            transport={connection.relay}
-            tools={
-              <div className="talaria-dsh-dock-actions">
-                <button type="button" className="ghost-button"
-                  onClick={() => onOpenTab(panel)}>{copy.openMain}</button>
-                <button type="button" className="ghost-button"
-                  onClick={() => {
-                    const url = new URL(panelPath(panel), connection.baseUrl);
-                    url.searchParams.set("lang", locale);
-                    window.open(url, "_blank", "popup,noopener,width=560,height=710");
-                  }}>
-                  {copy.openWindow}
-                </button>
-              </div>
-            }
-          />
-        </aside>,
-        seat,
-      )}
-    </>
-  );
-}
-
-function WorkspaceView({
-  connection, ctx, theme,
-}: { connection: ReturnType<typeof createConnection>; ctx: SlotContext; theme: Theme }) {
-  const copy = useCopy();
-  const locale = useLocale();
-  const [tab, setTab] = useState<PanelName>(() => readWorkspaceTab(browserStorage, PANELS));
-  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  // Also writes the migrated legacy choice on first mount.
-  useEffect(() => {
-    saveWorkspaceTab(tab);
-  }, [tab]);
-
-  function selectTab(next: PanelName) {
-    setTab(next);
-    saveWorkspaceTab(next);
-  }
-
-  function focusTab(index: number) {
-    const next = PANELS[index];
-    if (!next) return;
-    selectTab(next);
-    tabRefs.current[index]?.focus();
-  }
-
-  function openTab(panel: PanelName) {
-    focusTab(PANELS.indexOf(panel));
-  }
-
-  function dockToChart(panel: PanelName) {
-    saveDockPanel(panel);
-    focusTab(PANELS.indexOf("chart"));
-  }
-
-  function onTabKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    const next = nextTabIndex(event.key, index, PANELS.length) as number | null;
-    if (next === null) return;
-    event.preventDefault();
-    focusTab(next);
-  }
-
-  return (
-    <div className="talaria-dsh-workspace">
-      <header className="talaria-dsh-workspace-head">
-        <BrandIcon size={22} />
-        <span>{copy.workspace}</span>
-      </header>
-      <div className="talaria-dsh-tabs" role="tablist" aria-label={copy.workspaceTabs}>
-        {PANELS.map((panel, index) => {
-          const selected = panel === tab;
-          return (
-            <button
-              key={panel}
-              ref={(node) => { tabRefs.current[index] = node; }}
-              type="button"
-              role="tab"
-              id={tabDomId(panel)}
-              className="talaria-dsh-tab"
-              aria-selected={selected}
-              aria-controls={panelDomId(panel)}
-              tabIndex={selected ? 0 : -1}
-              onClick={() => selectTab(panel)}
-              onKeyDown={(event) => onTabKeyDown(event, index)}
-            >
-              <PanelIcon panel={panel} />
-              <span>{panelLabel(panel, locale)}</span>
-            </button>
-          );
-        })}
-      </div>
-      <div role="tabpanel" id={panelDomId(tab)} aria-labelledby={tabDomId(tab)}
-        tabIndex={0} className="talaria-dsh-tab-panel">
-        <SurfaceBody connection={connection}>
-          {(value) => tab === "chart" ? (
-            <ChartWithDock connection={value} ctx={ctx} theme={theme} onOpenTab={openTab} />
-          ) : (
-            <WorkbenchPanel key={tab} panel={tab} theme={theme} transport={value.relay}
-              persistenceKey={panelLinkKey(tab, "main")}
-              tools={
-                <button type="button" className="ghost-button" onClick={() => dockToChart(tab)}>
-                  {copy.dockToChart}
-                </button>
-              }
-            />
-          )}
-        </SurfaceBody>
-      </div>
-      {PANELS.filter((panel) => panel !== tab).map((panel) => (
-        <div key={panel} role="tabpanel" id={panelDomId(panel)} aria-labelledby={tabDomId(panel)} hidden />
-      ))}
-    </div>
-  );
-}
-
-function Workspace({
-  connection, ctx,
-}: { connection: ReturnType<typeof createConnection>; ctx: SlotContext }) {
-  // The tab bar and brand header live outside the connection boundary, so an
-  // offline service only replaces the selected tab's content.
-  const theme = useHostTheme();
-  return (
-    <div className="talaria-desk talaria-dsh-surface" data-theme={theme}>
-      <WorkspaceView connection={connection} ctx={ctx} theme={theme} />
-    </div>
-  );
-}
-
 function hostPanelLabel(ctx: SlotContext, panel: PanelName) {
   return panelLabel(panel, normalizeLocale(ctx.locale.getSnapshot().active));
 }
 
-export const inject = ["slots", "layout", "sidebarRight", "sidebarRightTabs", "locale"];
+export const inject = ["slots", "sidebarRight", "sidebarRightTabs", "locale"];
 
 export function apply(ctx: SlotContext): void {
   const connection = createConnection();
@@ -448,8 +225,6 @@ export function apply(ctx: SlotContext): void {
   });
 
   registerPanels(ctx, {
-    mainId: MAIN_PANEL_ID,
-    sidebarLabel: () => resolveHostText(ctx.locale, MESSAGES.workspace),
     tabs: RIGHTBAR_TABS.map((tab) => ({
       panel: tab.panel as PanelName,
       kind: tab.kind,
@@ -461,9 +236,6 @@ export function apply(ctx: SlotContext): void {
       }),
     })),
   }, {
-    main: () => function MainPanel() {
-      return <Workspace connection={connection} ctx={ctx} />;
-    },
     sidebarIcon: () => BrandIcon,
     guideIcon: (panel: PanelName) => function GuideIcon({ size }: { size?: number }) {
       return <PanelIcon panel={panel} size={size} />;
@@ -472,12 +244,9 @@ export function apply(ctx: SlotContext): void {
       return (
         <Surface connection={connection}>
           {(value, theme) => <WorkbenchPanel key={sessionId} panel={panel} persistenceKey={panelLinkKey(panel, "session", sessionId)}
-            theme={theme} transport={value.relay} embedded fullWorkbench={panel === "chart"} />}
+            theme={theme} transport={value.relay} embedded fullWorkbench={false} />}
         </Surface>
       );
-    },
-    onMainRegistered() {
-      return restoreActivePanel(ctx.layout, PANELS);
     },
   });
 

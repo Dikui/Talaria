@@ -16,14 +16,12 @@ const config = {
   })),
 }
 
-// 平台 02：fake 使用已安装 DSH 的 keyed slot、list slot 和右栏 tab 注册契约。
-test('registers one workspace panel, one sidebar row and five session right tabs', () => {
+// ADR-0023: DSH only mounts optional rightbar session tabs (no primary main or sidebar.panellist).
+test('registers only the five consultation rightbar tabs without main or sidebar hosting', () => {
   const slots = new Map()
   const tabs = new Map()
   const cleanup = []
-  const layout = { selectPanel(id) { assert.ok(slots.has(`main:${id}`)); this.selected = id } }
   const ctx = {
-    layout,
     effect(apply) { cleanup.push(apply()) },
     slots: {
       inject(_slot, apply) {
@@ -46,16 +44,13 @@ test('registers one workspace panel, one sidebar row and five session right tabs
   }
 
   registerPanels(ctx, config, {
-    main: () => null,
     sidebarIcon: () => null,
     guideIcon: panel => `guide:${panel}`,
     sessionTab: () => null,
-    onMainRegistered() { layout.selectPanel(MAIN_PANEL_ID) },
   })
 
-  assert.equal(layout.selected, MAIN_PANEL_ID)
-  assert.deepEqual([...slots.keys()].filter(key => key.startsWith('main:')), [`main:${MAIN_PANEL_ID}`])
-  assert.equal(slots.get(`sidebar.panellist:${MAIN_PANEL_ID}`).label(), 'Talaria 工作台')
+  assert.deepEqual([...slots.keys()].filter(key => key.startsWith('main:')), [])
+  assert.deepEqual([...slots.keys()].filter(key => key.startsWith('sidebar.panellist:')), [])
   assert.deepEqual([...tabs.keys()], [
     'talaria-desk', 'talaria-alerts', 'talaria-scanner', 'talaria-levels', 'talaria-accounts',
   ])
@@ -75,8 +70,7 @@ test('registers one workspace panel, one sidebar row and five session right tabs
 })
 
 // 平台 02 审查：宿主拒绝重复注册，失败的插件卸载后可以重新加载。
-for (const failure of [`main:${MAIN_PANEL_ID}`, `sidebar.panellist:${MAIN_PANEL_ID}`,
-  'tab:talaria-alerts', 'sidebar.right.pane.tab:talaria-alerts-tab']) {
+for (const failure of ['tab:talaria-alerts', 'sidebar.right.pane.tab:talaria-alerts-tab']) {
   test(`rolls back partial registrations and can reload after ${failure} fails`, () => {
     const registered = new Set()
     const effects = []
@@ -101,8 +95,8 @@ for (const failure of [`main:${MAIN_PANEL_ID}`, `sidebar.panellist:${MAIN_PANEL_
       sidebarRightTabs: { register: ({ kind }) => register(`tab:${kind}`) },
     }
     const views = {
-      main: () => null, sidebarIcon: () => null, sessionTab: () => null,
-      onMainRegistered: () => register('active-panel-subscription'),
+      sidebarIcon: () => null, sessionTab: () => null,
+      onRegistered: () => register('post-register-hook'),
     }
     const unload = () => effects.splice(0).reverse().forEach(dispose => dispose())
     assert.throws(() => registerPanels(ctx, config, views), error)
@@ -111,7 +105,7 @@ for (const failure of [`main:${MAIN_PANEL_ID}`, `sidebar.panellist:${MAIN_PANEL_
 
     failing = false
     registerPanels(ctx, config, views)
-    assert.equal(registered.size, 13)
+    assert.equal(registered.size, 11)
     unload()
     assert.deepEqual([...registered], [])
   })

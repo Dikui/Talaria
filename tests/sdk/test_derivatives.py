@@ -282,6 +282,8 @@ def test_sdk_default_cutoffs_use_service_clock_or_local_clock(tmp_path, monkeypa
     def get_health(request):
         if request.url.path == "/api/derivatives/backfill":
             return httpx.Response(204, headers={DATA_DIR_HEADER: data_dir_id(tmp_path)})
+        if request.url.path == "/api/derivatives.arrow":
+            return httpx.Response(404)
         assert request.url.path == "/api/health"
         return httpx.Response(200, headers={
             DATA_DIR_HEADER: data_dir_id(tmp_path), NOW_MS_HEADER: str(now),

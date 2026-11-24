@@ -4,7 +4,6 @@ import { dirname, join } from 'node:path'
 
 import { createBridge } from './bridge.js'
 import { createDeskGuard } from './guard.js'
-import { superviseService } from './service-supervisor.js'
 
 export const name = '@talaria/dsh-plugin'
 export const inject = ['tools', 'sessions', 'webServer', 'agentPresets', 'agentDefaultModel', 'agents', 'connection']
@@ -141,16 +140,20 @@ function lastAssistantText(events) {
 }
 
 /**
- * Talaria 的 DSH 宿主插件：
- * - 由子插件 @talaria/dsh-plugin/tools 在 talaria-desk 预设内按会话挂载分析与草案工具；
+ * Talaria 的 DSH 协同插件（ADR-0023）：
+ * - 由子插件 @talaria/dsh-plugin/tools 在 talaria-desk 预设内按会话挂载只读分析与受控标注/预警草案工具；
  * - 挂载单调执行守卫，拦截非白名单工具与 fork 历史写操作重放；
- * - 提供 /talaria/bootstrap、/talaria/consult 与 /talaria/briefing，并托管常驻服务生命周期。
+ * - 仅按 service-descriptor.json 只读连接外部 talaria-data，提供 /talaria/bootstrap、/talaria/consult 与 /talaria/briefing，
+ *   不再托管工作台主界面或 Resident Service 生命周期。
  */
 export function apply(ctx, config = {}) {
   const bridge = createBridge({
     credentialFile: config.credentialFile,
+    serviceDescriptor: config.serviceDescriptor,
+    dataDir: config.dataDir,
     baseUrl: config.baseUrl,
     token: config.token,
+    cwd: config.cwd,
   })
 
   const getSession = (exec) =>
@@ -560,6 +563,6 @@ export function apply(ctx, config = {}) {
     })
   }
   if (config.service) {
-    ctx.effect(() => superviseService(config.service))
+    console.warn('[talaria] @talaria/dsh-plugin 不再托管 Resident Service 启停生命周期，请独立运行 talaria-data up。')
   }
 }

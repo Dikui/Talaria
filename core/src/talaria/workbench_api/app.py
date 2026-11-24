@@ -1,8 +1,9 @@
-"""FastAPI 应用工厂：本地工作台快通道与静态 SPA 托管。"""
+"""[DEPRECATED] FastAPI 应用工厂：旧本地工作台快通道，已被 Rust `talaria-data` 取代（ADR-0023）。"""
 
 from __future__ import annotations
 
 import secrets
+import warnings
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 
@@ -76,6 +77,12 @@ def create_app(
     collaboration_status: Callable[[], Mapping[str, object]] | None = None,
     collaboration_host: Callable[[], str | None] | None = None,
 ) -> FastAPI:
+    """创建旧版 Python FastAPI 工作台应用（已弃用，请改用 Rust `talaria-data`）。"""
+    warnings.warn(
+        "talaria.workbench_api.app.create_app is deprecated per ADR-0023; use Rust `talaria-data`.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     token = settings.token or secrets.token_urlsafe(32)
 
     @asynccontextmanager

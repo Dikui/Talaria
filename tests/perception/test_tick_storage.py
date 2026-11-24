@@ -121,6 +121,8 @@ def test_sdk_ticks_default_to_service_or_offline_clock(tmp_path, monkeypatch, on
             )])
 
     def get_health(request):
+        if request.url.path == "/api/ticks.arrow":
+            return httpx.Response(404)
         assert request.url.path == "/api/health"
         return httpx.Response(200, headers={
             DATA_DIR_HEADER: data_dir_id(tmp_path), NOW_MS_HEADER: str(now),

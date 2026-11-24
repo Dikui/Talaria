@@ -29,7 +29,7 @@ def plugin_repo(tmp_path, monkeypatch):
     actual_repo = Path(__file__).resolve().parents[2]
     source = actual_repo / "dsh/packages/talaria-dsh-plugin"
     for filename in (
-        "package.json", "index.js", "tools.js", "bridge.js", "guard.js", "service-supervisor.js",
+        "package.json", "index.js", "tools.js", "bridge.js", "guard.js",
         "cordis.patch.yml",
     ):
         shutil.copyfile(source / filename, plugin / filename)
@@ -107,7 +107,7 @@ def test_installs_profile_scoped_config_with_resolved_dsh(
                 config = archive.extractfile(f"package/{Path(patch)}").read().decode()
                 tools = {name for name in archive.getnames() if name.endswith(".tool.json")}
                 assert "package/tools.js" in archive.getnames()
-                assert "package/service-supervisor.js" in archive.getnames()
+                assert "package/service-supervisor.js" not in archive.getnames()
             for row in ("sandbox-policy", "approval", "permission", "agent-preset-registry"):
                 assert (f"- id: {row}\n" in config) is (profile == "talaria-desk")
             credential = json.dumps(str(data_dir / "runtime/dsh-bridge.json"), ensure_ascii=False)

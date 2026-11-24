@@ -218,5 +218,5 @@ class PaperInbox:
 
     @staticmethod
     def _retry_service_error(exc: httpx.HTTPError) -> None:
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500 and exc.response.status_code not in (401, 403, 429):
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500 and exc.response.status_code not in (401, 403, 404, 429):
             raise exc

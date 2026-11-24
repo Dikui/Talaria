@@ -203,6 +203,9 @@ def test_sdk_splits_http_range_without_skipping_the_boundary(tmp_path, monkeypat
             return httpx.Response(200, headers={
                 DATA_DIR_HEADER: data_dir_id(tmp_path), NOW_MS_HEADER: str(boundary + MINUTE),
             })
+        if request.url.path == "/api/bars.arrow":
+            # Legacy JSON services without Arrow IPC trigger MAX_RANGE_BARS segmentation on /api/bars.
+            return httpx.Response(404)
         query = request.url.params
         start, end = int(query["start"]), int(query["end"])
         served.append((start, end))

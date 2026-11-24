@@ -247,7 +247,10 @@ async def _subscribe(
                             yield event
                         if cursor.seq == replay_through:
                             caught_up()
-            except (ConnectionClosed, TimeoutError, OSError, TransportError):
+            except ConnectionClosed as exc:
+                if exc.rcvd is not None and exc.rcvd.code == 1013:
+                    delay = min(delay, 0.05)
+            except (TimeoutError, OSError, TransportError):
                 pass
             except HTTPStatusError as exc:
                 if exc.response.status_code < 500:

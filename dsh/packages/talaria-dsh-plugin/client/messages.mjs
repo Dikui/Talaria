@@ -4,12 +4,12 @@
  */
 export const MESSAGES = {
   offline: {
-    zh: 'Talaria 常驻服务离线。请打开 DeepSeek Harness 桌面应用或运行 talaria up --solo。',
-    en: 'The Talaria service is offline. Open the DeepSeek Harness desktop app or run talaria up --solo.',
+    zh: 'Talaria 数据引擎（talaria-data）未运行。请打开独立看盘工作台或运行 talaria-data up。',
+    en: 'Talaria data engine (talaria-data) is offline. Open Talaria Desk or run talaria-data up.',
   },
   connecting: {
-    zh: '正在连接 Talaria 常驻服务…',
-    en: 'Connecting to the Talaria service…',
+    zh: '正在连接 Talaria 数据引擎…',
+    en: 'Connecting to talaria-data…',
   },
   retry: { zh: '重试', en: 'Retry' },
   workspace: { zh: 'Talaria 工作台', en: 'Talaria Workspace' },

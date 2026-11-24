@@ -176,7 +176,10 @@ fn instant_connector(base_url: &str, retries: usize) -> BybitLinearConnector {
 
 #[test]
 fn market_pack_registry_and_crypto_perp_metadata() {
-    assert_eq!(available_pack_names(), vec!["crypto_perp"]);
+    assert_eq!(
+        available_pack_names(),
+        vec!["crypto_perp", "binance_perp", "us_equity"]
+    );
     let pack = get_market_pack("crypto_perp").expect("crypto_perp pack");
     assert_eq!(pack.name(), "crypto_perp");
     assert_eq!(pack.raw_archive_id(), "bybit_linear");

@@ -1,10 +1,11 @@
-"""常驻服务的冷库写入器，接收实时收盘柱并独立补历史。"""
+"""[DEPRECATED] 旧 Python 冷库写入器，已被 Rust `talaria-store` / `talaria-data` 取代（ADR-0023）。"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import threading
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
@@ -30,7 +31,7 @@ COMPACTION_INTERVAL_SECONDS = 15 * 60
 
 
 class ColdPublisher:
-    """REST 等待与写盘分别排队，实时监听和图表请求无需等待冷库。"""
+    """[DEPRECATED] 旧 Python 冷库写入器，已被 Rust `talaria-store` 取代（ADR-0023）。"""
 
     def __init__(
         self,
@@ -48,6 +49,11 @@ class ColdPublisher:
         funding_intervals_ms: Mapping[str, int] | None = None,
         archive_reader: TradeArchiveReader | None = None,
     ) -> None:
+        warnings.warn(
+            "talaria.perception.cold_publisher.ColdPublisher is deprecated per ADR-0023; use Rust `talaria-data`.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._store = store
         self._instruments = instruments
         self._connector = connector

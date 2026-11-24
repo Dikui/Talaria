@@ -13,6 +13,7 @@ from pathlib import Path
 
 from talaria.foundation.errors import SingleWriterViolationError
 
+WORKBENCH_STATE_DB = Path("state") / "workbench_state.sqlite"
 COLLABORATION_STATE_DB = Path("state") / "collaboration_state.sqlite"
 
 _CLAIMS: set[Path] = set()

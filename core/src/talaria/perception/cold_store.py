@@ -189,13 +189,16 @@ class ColdManifest:
     version: int
     generations: tuple[ColdGeneration, ...]
 
-    def range_fingerprint(self, start_ts: int, end_ts: int) -> str:
+    def range_fingerprint(self, start_ts: int, end_ts: int, *, compact: bool = False) -> str:
         """标识与该范围相交的文件及其内容，不受其他序列发布影响。"""
         files = [
             (item.parquet_path.as_posix(), item.sha256) for item in self.generations
             if item.last_ts >= start_ts and item.first_ts <= end_ts
         ]
-        return _sha256_bytes(json.dumps(files).encode("utf-8"))
+        encoded = (
+            json.dumps(files, separators=(",", ":")) if compact else json.dumps(files)
+        )
+        return _sha256_bytes(encoded.encode("utf-8"))
 
 
 @dataclass(frozen=True, slots=True)

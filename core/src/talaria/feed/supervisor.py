@@ -1,4 +1,4 @@
-"""Feed Supervisor：把实时传输事件整理成可复用的行情事件流。
+"""[DEPRECATED] Feed Supervisor：旧 Python 实时行情状态机，已被 Rust `talaria-feed` 取代（ADR-0023）。
 
 职责边界（docs/architecture.md §3.2）：
 - 只转发当前订阅的标的；Watchlist 通过 ``subscribe`` / ``unsubscribe`` 动态调度；
@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import logging
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -100,7 +101,7 @@ class _Inbound:
 
 
 class FeedSupervisor(MarketEventFeed):
-    """单连接的行情状态机；一个 supervisor 服务多个订阅通道。"""
+    """[DEPRECATED] 旧 Python 单连接行情状态机，已被 Rust `talaria-feed` 取代（ADR-0023）。"""
 
     def __init__(
         self,
@@ -118,6 +119,11 @@ class FeedSupervisor(MarketEventFeed):
         backoff_initial_seconds: float = BACKOFF_INITIAL_SECONDS,
         backoff_max_seconds: float = BACKOFF_MAX_SECONDS,
     ) -> None:
+        warnings.warn(
+            "talaria.feed.supervisor.FeedSupervisor is deprecated per ADR-0023; use Rust `talaria-data`.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if stale_after_ms <= 0:
             raise ValueError("stale_after_ms 必须为正数")
         self._stream = stream

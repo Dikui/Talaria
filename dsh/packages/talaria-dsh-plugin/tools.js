@@ -75,8 +75,8 @@ function descriptionOf(tool, baseDescription) {
  * 避免注入到非 Talaria 通用会话的上下文中。
  */
 export function apply(ctx, config = {}) {
-  const { credentialFile, baseUrl, token } = config
-  const bridge = createBridge({ credentialFile, baseUrl, token })
+  const { credentialFile, serviceDescriptor, dataDir, baseUrl, token, cwd } = config
+  const bridge = createBridge({ credentialFile, serviceDescriptor, dataDir, baseUrl, token, cwd })
 
   for (const tool of TOOL_NAMES) {
     const schema = toolSchemas[tool]

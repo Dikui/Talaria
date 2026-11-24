@@ -36,7 +36,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from talaria.workbench_api.service_descriptor import validate_loopback_host
+from talaria.service_endpoint import validate_loopback_host
 
 DEFAULT_DSH_PORT = 8766
 DESKTOP_PROFILE = "desktop"
@@ -400,7 +400,7 @@ def build_install_bundle(
     # pick up updates to code or config even when the package version is the same.
     manifest.pop("devDependencies", None)
     manifest.pop("scripts", None)
-    runtime_files = ("index.js", "tools.js", "bridge.js", "guard.js", "service-supervisor.js", "client/index.js")
+    runtime_files = ("index.js", "tools.js", "bridge.js", "guard.js", "client/index.js")
     tool_schema_dir = repo / "contracts/schemas/dsh-tools"
     entries = {
         "package.json": json.dumps(manifest).encode(),

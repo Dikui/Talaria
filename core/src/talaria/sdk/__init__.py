@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -13,7 +13,7 @@ from fractions import Fraction
 from itertools import chain
 from math import ceil, floor
 from pathlib import Path
-from typing import TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 
 import httpx
 
@@ -28,7 +28,16 @@ from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdManifest, ColdReader
 from talaria.perception.indicator_defaults import read_indicator_defaults
 from talaria.perception.raw_store import latest_visible_bars
+from talaria.sdk._arrow import (
+    ARROW_STREAM_CONTENT_TYPE,
+    bars_from_arrow,
+    bars_to_arrow,
+    derivatives_from_arrow,
+    quotes_from_arrow,
+    trades_from_arrow,
+)
 from talaria.sdk._derivatives import DerivativesResult
+from talaria.sdk._duckdb import asof_join, cold_parquet_paths, query_duckdb
 from talaria.sdk._ticks import QuotesResult, TradesResult
 from talaria.sdk._subscription import (
     StrategyBarEvent, StrategyDerivativeEvent, SubscriptionRejectedError, subscribe, subscribe_derivatives,
@@ -44,6 +53,7 @@ from talaria.service_endpoint import (
 )
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from pandas import DataFrame
 
 __all__ = [
@@ -55,10 +65,13 @@ __all__ = [
     "StrategyBarEvent",
     "StrategyDerivativeEvent",
     "SubscriptionRejectedError",
+    "asof_join",
     "bars",
+    "cold_parquet_paths",
     "derivatives",
     "funding_settlements",
     "indicator_defaults",
+    "query_duckdb",
     "quotes",
     "trades",
     "subscribe",
@@ -103,6 +116,38 @@ class BarsResult(Sequence[RangeBar]):
 
     def __len__(self) -> int:
         return len(self._bars)
+
+    def to_arrow(self) -> "pa.Table":
+        """转换为保留精确 decimal128 OHLCV 数值的 PyArrow 表。"""
+        return bars_to_arrow(self._bars)
+
+    def query_duckdb(
+        self,
+        sql: str,
+        *,
+        table: str = "bars",
+        params: Sequence[object] | Mapping[str, object] | None = None,
+        as_arrow: bool = False,
+    ) -> "DataFrame | pa.Table":
+        """在只读内存 DuckDB 上查询当前 K 线结果。"""
+        return query_duckdb(sql, tables={table: self.to_arrow()}, params=params, as_arrow=as_arrow)
+
+    def asof_join(
+        self,
+        other: Any,
+        *,
+        on: str = "ts_event",
+        by: Sequence[str] | str | None = None,
+        right_columns: Sequence[str] | None = None,
+        right_prefix: str = "right_",
+        tolerance_ms: int | None = None,
+        as_arrow: bool = False,
+    ) -> "DataFrame | pa.Table":
+        """基于 DuckDB ``ASOF LEFT JOIN`` 与另一序列按时点对齐。"""
+        return asof_join(
+            self, other, on=on, by=by, right_columns=right_columns,
+            right_prefix=right_prefix, tolerance_ms=tolerance_ms, as_arrow=as_arrow,
+        )
 
     def to_frame(self) -> DataFrame:
         """以 float64 表示 OHLCV 与成交额，时间列保留 UTC 毫秒。"""
@@ -185,26 +230,51 @@ def _tick_range(
     start_ts = ceil(exact_start)
     end_ts = None if exact_end is None else floor(exact_end)
     root = _data_root(data_dir)
-    cutoff = _tick_query_clock(root) if as_of is None else floor(_time_ms(as_of))
-    end_ts = cutoff if end_ts is None else min(cutoff, end_ts)
-    if end_ts < start_ts:
-        return []
-    return ColdReader(root).read_ticks(
-        spec, kind, start_ts=start_ts, end_ts=end_ts, as_of=cutoff,
-    )
-
-
-def _tick_query_clock(root: Path) -> int:
     endpoint = read_service_endpoint(root)
+    directory_id = data_dir_id(root)
+    service_now: int | None = None
     if endpoint is not None:
         try:
-            with httpx.Client(base_url=endpoint, trust_env=False, timeout=1) as client:
-                now = _service_clock(client, data_dir_id(root))
-                if now is not None:
-                    return now
+            with httpx.Client(base_url=endpoint, trust_env=False, timeout=httpx.Timeout(35, connect=1)) as client:
+                service_now = _service_clock(client, directory_id)
+                if service_now is not None:
+                    cutoff = service_now if as_of is None else floor(_time_ms(as_of))
+                    effective_end = cutoff if end_ts is None else min(cutoff, end_ts)
+                    if effective_end < start_ts:
+                        return []
+                    response = client.get(
+                        "/api/ticks.arrow",
+                        params={
+                            "instrument": instrument,
+                            "kind": kind.value,
+                            "start": start_ts,
+                            "end": effective_end,
+                            "as_of": cutoff,
+                        },
+                    )
+                    if response.status_code != 404:
+                        response.raise_for_status()
+                        if (
+                            response.headers.get(DATA_DIR_HEADER) == directory_id
+                            and response.headers.get("content-type", "").startswith(ARROW_STREAM_CONTENT_TYPE)
+                        ):
+                            return (
+                                trades_from_arrow(response.content, instrument)
+                                if kind is TickKind.TRADES
+                                else quotes_from_arrow(response.content, instrument)
+                            )
+                    return ColdReader(root).read_ticks(
+                        spec, kind, start_ts=start_ts, end_ts=effective_end, as_of=cutoff,
+                    )
         except httpx.TransportError:
             pass
-    return time.time_ns() // 1_000_000
+    cutoff = (service_now if service_now is not None else time.time_ns() // 1_000_000) if as_of is None else floor(_time_ms(as_of))
+    effective_end = cutoff if end_ts is None else min(cutoff, end_ts)
+    if effective_end < start_ts:
+        return []
+    return ColdReader(root).read_ticks(
+        spec, kind, start_ts=start_ts, end_ts=effective_end, as_of=cutoff,
+    )
 
 
 def derivatives(
@@ -231,7 +301,55 @@ def _derivative_range(
     start_ts = ceil(exact_start)
     end_ts = None if exact_end is None else floor(exact_end)
     cutoff = None if as_of is None else floor(_time_ms(as_of))
-    now = _prepare_derivative_history(root, instrument, kind, start_ts, end_ts, cutoff)
+    if end_ts is not None and end_ts < start_ts:
+        return DerivativesResult(())
+    endpoint = read_service_endpoint(root)
+    directory_id = data_dir_id(root)
+    now: int | None = None
+    if endpoint is not None:
+        try:
+            with httpx.Client(base_url=endpoint, trust_env=False, timeout=httpx.Timeout(35, connect=1)) as client:
+                now = _service_clock(client, directory_id)
+                if now is not None:
+                    effective_end = now if end_ts is None else end_ts
+                    effective_as_of = now if cutoff is None else cutoff
+                    if max(0, start_ts) <= min(now, effective_end) and (cutoff is None or start_ts <= cutoff):
+                        backfill_params: dict[str, object] = {
+                            "instrument": instrument,
+                            "kind": kind.value,
+                            "start": max(0, start_ts),
+                            "end": effective_end,
+                        }
+                        if cutoff is not None:
+                            backfill_params["as_of"] = cutoff
+                        backfill = client.get("/api/derivatives/backfill", params=backfill_params)
+                        if backfill.status_code != 404:
+                            backfill.raise_for_status()
+                            if backfill.headers.get(DATA_DIR_HEADER) != directory_id:
+                                now = None
+                    if now is not None:
+                        arrow_params: dict[str, object] = {
+                            "instrument": instrument,
+                            "kind": kind.value,
+                            "start": start_ts,
+                            "end": effective_end,
+                            "as_of": effective_as_of,
+                            "historical_only": historical_only,
+                        }
+                        arrow_resp = client.get("/api/derivatives.arrow", params=arrow_params)
+                        if arrow_resp.status_code != 404:
+                            arrow_resp.raise_for_status()
+                            if (
+                                arrow_resp.headers.get(DATA_DIR_HEADER) == directory_id
+                                and arrow_resp.headers.get("content-type", "").startswith(ARROW_STREAM_CONTENT_TYPE)
+                            ):
+                                return DerivativesResult(derivatives_from_arrow(
+                                    arrow_resp.content,
+                                    expected_instrument=instrument,
+                                    expected_kind=kind,
+                                ))
+        except httpx.TransportError:
+            pass
     if now is None:
         now = time.time_ns() // 1_000_000
     return DerivativesResult(ColdReader(root).read_derivatives(
@@ -247,34 +365,6 @@ def _archived_derivative_revisions(
     if spec is None:
         raise InstrumentNotFoundError(f"未知标的：{instrument}")
     return ColdReader(_data_root(data_dir)).read_derivative_revisions(spec, kind, start_ts=0, end_ts=end)
-
-
-def _prepare_derivative_history(
-    root: Path, instrument: str, kind: DerivativeKind, start: int, end: int | None, cutoff: int | None,
-) -> int | None:
-    endpoint = read_service_endpoint(root)
-    if endpoint is None:
-        return None
-    now = None
-    directory_id = data_dir_id(root)
-    try:
-        with httpx.Client(base_url=endpoint, trust_env=False, timeout=httpx.Timeout(35, connect=1)) as client:
-            now = _service_clock(client, directory_id)
-            if now is not None:
-                start = max(0, start)
-                stop = now if end is None else end
-                if start <= min(now, stop) and (cutoff is None or start <= cutoff):
-                    params = {"instrument": instrument, "kind": kind.value, "start": start, "end": stop}
-                    if cutoff is not None:
-                        params["as_of"] = cutoff
-                    response = client.get("/api/derivatives/backfill", params=params)
-                    if response.status_code != 404:
-                        response.raise_for_status()
-                        if response.headers.get(DATA_DIR_HEADER) != directory_id:
-                            return None
-    except httpx.TransportError:
-        pass
-    return now
 
 
 def _service_clock(client: httpx.Client, directory_id: str) -> int | None:
@@ -311,12 +401,23 @@ class _TailSegment:
     def matches(self, manifest: ColdManifest) -> bool:
         if self.fingerprint is None:  # 兼容未返回范围指纹的旧服务。
             return self.generation == manifest.version
-        return self.fingerprint == manifest.range_fingerprint(self.start, self.end)
+        return self.fingerprint in (
+            manifest.range_fingerprint(self.start, self.end, compact=True),
+            manifest.range_fingerprint(self.start, self.end),
+        )
 
 
 def _fetch_tail(
-    base_url: str, query: BarsQuery, directory_id: str,
+    base_url: str,
+    query: BarsQuery,
+    directory_id: str,
+    *,
+    expected_symbol: str | None = None,
 ) -> tuple[int, int, list[_TailSegment], list[RangeBar]] | None:
+    resolved_symbol = expected_symbol
+    if resolved_symbol is None:
+        spec = get_market_pack(DEFAULT_PACK).instrument(query.instrument)
+        resolved_symbol = spec.symbol if spec is not None else query.instrument
     interval = timeframe_ms(query.timeframe)
     span = MAX_RANGE_BARS * interval
     tail: list[RangeBar] = []
@@ -337,6 +438,46 @@ def _fetch_tail(
                     return None
                 end = last_closed_bar_start(now, interval) if end is None else end
                 cutoff = now if cutoff is None else cutoff
+            if end < query.start:
+                return end, cutoff, segments, tail
+
+            arrow_resp = client.get(
+                "/api/bars.arrow",
+                params=dict(params, start=query.start, end=end, as_of=cutoff),
+            )
+            if arrow_resp.status_code != 404:
+                arrow_resp.raise_for_status()
+                if arrow_resp.headers.get(DATA_DIR_HEADER) != directory_id:
+                    return None
+                content_type = arrow_resp.headers.get("content-type", "")
+                if content_type.startswith(ARROW_STREAM_CONTENT_TYPE):
+                    tail.extend(bars_from_arrow(
+                        arrow_resp.content,
+                        expected_symbol=resolved_symbol,
+                        expected_timeframe=query.timeframe,
+                        confirmed=not query.include_open,
+                    ))
+                    segments.append(_TailSegment(
+                        query.start,
+                        end,
+                        0,
+                        arrow_resp.headers.get(BARS_MANIFEST_HEADER),
+                        arrow_resp.headers.get(BARS_HOT_REVISION_HEADER),
+                    ))
+                    return end, cutoff, segments, tail
+                payload = BarsResponse.model_validate_json(arrow_resp.content)
+                if (payload.instrument_id, payload.timeframe) != (query.instrument, query.timeframe):
+                    raise ValueError("服务返回的标的或周期与请求不一致")
+                segments.append(_TailSegment(
+                    query.start,
+                    end,
+                    payload.generation,
+                    arrow_resp.headers.get(BARS_MANIFEST_HEADER),
+                    arrow_resp.headers.get(BARS_HOT_REVISION_HEADER),
+                ))
+                tail.extend(payload.bars)
+                return end, cutoff, segments, tail
+
             for start in range(query.start, end + 1, span):
                 segment_end = min(end, start + span - 1)
                 chunk = dict(params, start=start, end=segment_end, as_of=cutoff)
@@ -410,7 +551,7 @@ def bars(
         directory_id = data_dir_id(root)
         # 各分段必须来自同一热端版本，并与直读时所选的范围文件一致。
         for _ in range(2):
-            response = _fetch_tail(endpoint, query, directory_id)
+            response = _fetch_tail(endpoint, query, directory_id, expected_symbol=spec.symbol)
             if response is None:
                 break
             end_ts, cutoff, segments, tail = response

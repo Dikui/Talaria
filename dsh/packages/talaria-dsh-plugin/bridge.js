@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { isIPv4 } from 'node:net'
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 
 export class BridgeError extends Error {
   constructor(message, options = {}) {
@@ -12,11 +12,38 @@ export class BridgeError extends Error {
   }
 }
 
+export function offlineGuidance(baseUrl) {
+  if (baseUrl) {
+    return `无法连接 Talaria 数据引擎 ${baseUrl}：请确认 talaria-data 正在运行，或打开独立看盘工作台。(Cannot connect to talaria-data at ${baseUrl}: ensure talaria-data is running or open Talaria Desk.)`
+  }
+  return 'Talaria 数据引擎未运行（未找到 service-descriptor.json）。请打开 Talaria 独立看盘工作台或运行 talaria-data up。(Talaria data engine talaria-data is offline: service-descriptor.json not found. Open Talaria Desk or run talaria-data up.)'
+}
+
 function credentialCandidates(config) {
-  const configured = process.env.TALARIA_DSH_BRIDGE || config.credentialFile
-  if (configured) return [resolve(configured)]
+  const configured = process.env.TALARIA_DSH_BRIDGE
+    || process.env.TALARIA_SERVICE_DESCRIPTOR
+    || config.serviceDescriptor
+    || config.credentialFile
+  if (configured) {
+    const resolved = resolve(configured)
+    if (basename(resolved) === 'dsh-bridge.json') {
+      return [resolved, resolve(dirname(resolved), 'service-descriptor.json')]
+    }
+    return [resolved]
+  }
+  const dataDir = config.dataDir || process.env.TALARIA_DATA_DIR
+  if (dataDir) {
+    const root = resolve(dataDir)
+    return [
+      resolve(root, 'runtime/service-descriptor.json'),
+      resolve(root, 'runtime/dsh-bridge.json'),
+    ]
+  }
+  const cwd = config.cwd ?? process.cwd()
   return [...new Set([
-    resolve(config.cwd ?? process.cwd(), '.talaria/runtime/dsh-bridge.json'),
+    resolve(cwd, '.talaria/runtime/service-descriptor.json'),
+    resolve(homedir(), '.talaria/runtime/service-descriptor.json'),
+    resolve(cwd, '.talaria/runtime/dsh-bridge.json'),
     resolve(homedir(), '.talaria/runtime/dsh-bridge.json'),
   ])]
 }
@@ -40,10 +67,7 @@ export function assertLoopback(baseUrl) {
   return url.origin
 }
 
-function readCredential(config) {
-  if (config.baseUrl && config.token) {
-    return { base_url: config.baseUrl, token: config.token }
-  }
+function readDescriptorFiles(config) {
   for (const path of credentialCandidates(config)) {
     let raw
     try {
@@ -55,33 +79,66 @@ function readCredential(config) {
     try {
       parsed = JSON.parse(raw)
     } catch (error) {
-      throw new BridgeError(`Talaria 桥接凭据不是合法 JSON：${path}`, {
+      throw new BridgeError(`Talaria 服务描述不是合法 JSON：${path}`, {
         code: 'TALARIA_BRIDGE_CONFIG',
         cause: error,
       })
     }
     if (!parsed || typeof parsed.base_url !== 'string' || typeof parsed.token !== 'string' || parsed.token.length === 0) {
-      throw new BridgeError(`Talaria 桥接凭据缺少 base_url/token：${path}`, {
+      throw new BridgeError(`Talaria 服务描述缺少 base_url/token：${path}`, {
         code: 'TALARIA_BRIDGE_CONFIG',
       })
     }
     return parsed
   }
+  return null
+}
+
+function readCredential(config) {
+  const explicitUrl = config.baseUrl || process.env.TALARIA_SERVICE_URL
+  const explicitToken = config.token || process.env.TALARIA_SERVICE_TOKEN
+  if (explicitUrl && explicitToken) {
+    return {
+      base_url: explicitUrl,
+      token: explicitToken,
+      ...(typeof config.dataDirId === 'string' && config.dataDirId ? { data_dir_id: config.dataDirId } : {}),
+    }
+  }
+  const descriptor = readDescriptorFiles(config)
+  if (explicitUrl) {
+    if (descriptor?.token) {
+      return {
+        ...descriptor,
+        base_url: explicitUrl,
+      }
+    }
+    throw new BridgeError(
+      '已配置 TALARIA_SERVICE_URL / baseUrl，但缺少访问 token 且未找到 service-descriptor.json。(Service URL configured without token and service-descriptor.json was not found.)',
+      { code: 'TALARIA_BRIDGE_CONFIG' },
+    )
+  }
+  if (descriptor) {
+    return descriptor
+  }
   throw new BridgeError(
-    'Talaria 常驻服务离线：未找到桥接凭据。请打开 DeepSeek Harness 桌面应用或运行 talaria up --solo。',
+    offlineGuidance(),
     { code: 'TALARIA_BRIDGE_UNAVAILABLE' },
   )
 }
 
 /**
- * 创建只读桥：所有工具都经回环 HTTP + Bearer 调用 Python 守护进程。
- * JS 侧只做参数拼装与 snapshot 绑定校验，绝不在此重算任何指标。
+ * 创建只读协同桥：按 service-descriptor.json（或显式 URL）通过回环 HTTP + Bearer 调用 talaria-data。
+ * JS 侧只做参数拼装与 snapshot 绑定校验，不托管数据服务生命周期，也不在本地重算任何指标。
  */
 export function createBridge(config = {}) {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch
   function credential() {
-    const { base_url, token } = readCredential(config)
-    return { base_url: assertLoopback(base_url), token }
+    const parsed = readCredential(config)
+    const result = { base_url: assertLoopback(parsed.base_url), token: parsed.token }
+    if (typeof parsed.data_dir_id === 'string' && parsed.data_dir_id.length > 0) {
+      result.data_dir_id = parsed.data_dir_id
+    }
+    return result
   }
 
   async function requestJson(method, path, { body, signal } = {}) {
@@ -95,6 +152,7 @@ export function createBridge(config = {}) {
           Accept: 'application/json',
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
           Authorization: `Bearer ${credentials.token}`,
+          ...(credentials.data_dir_id ? { 'X-Talaria-Data-Dir': credentials.data_dir_id } : {}),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal,
@@ -102,7 +160,7 @@ export function createBridge(config = {}) {
     } catch (error) {
       if (error?.name === 'AbortError') throw error
       throw new BridgeError(
-        `无法连接 Talaria 常驻服务 ${baseUrl}：请打开 DeepSeek Harness 桌面应用或运行 talaria up --solo。`,
+        offlineGuidance(baseUrl),
         { code: 'TALARIA_BRIDGE_UNAVAILABLE', cause: error },
       )
     }
