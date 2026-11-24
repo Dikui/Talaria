@@ -181,14 +181,22 @@ impl SupervisorCore {
             return Ok((false, Vec::new()));
         }
 
+        let (status, last_activity_ts, stale_since) = match self.outage_lost_at {
+            Some(lost_at) => {
+                self.resume_pending.insert(key.clone());
+                (FeedHealthStatus::Stale, None, Some(lost_at))
+            }
+            None => (FeedHealthStatus::Live, Some(now), None),
+        };
+
         let channel = ChannelState {
             instrument_id: instrument_id.to_owned(),
             timeframe: timeframe.to_owned(),
             subscribed_ts: now,
-            status: FeedHealthStatus::Live,
+            status,
             last_event_ts: None,
-            last_activity_ts: Some(now),
-            stale_since: None,
+            last_activity_ts,
+            stale_since,
             reconnect_count: 0,
         };
         let health = channel.health_event(now);

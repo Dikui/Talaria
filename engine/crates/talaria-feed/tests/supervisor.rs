@@ -822,3 +822,89 @@ async fn manual_clock_tick_loop_marks_stale_without_real_sleep() {
     .unwrap();
     sup.stop().await;
 }
+
+#[test]
+fn subscribing_during_active_outage_starts_stale_and_recovers_on_restore() {
+    let (sup, clock, sink) = make_supervisor(ts(0) + 1_000, true);
+    sup.ingest(kline(ts(0), "100", true), Some(clock.now_ms()));
+
+    let lost_at = clock.set_wall_ms(ts(0) + 10_000);
+    sup.transport_lost(Some(lost_at));
+
+    // Subscribing a new timeframe during an active outage must inherit STALE + outage start timestamp.
+    clock.set_wall_ms(ts(0) + 15_000);
+    sup.subscribe(INSTRUMENT, "5m").unwrap();
+
+    let health_5m = sup.channel_health(INSTRUMENT, "5m").unwrap();
+    assert_eq!(health_5m.status, FeedHealthStatus::Stale);
+    assert_eq!(health_5m.stale_since, Some(lost_at));
+    assert_eq!(health_5m.reconnect_count, 0);
+    assert_eq!(sup.health().status, FeedHealthStatus::Stale);
+
+    // Staleness tick must leave the already-STALE channel untouched.
+    sup.tick(Some(clock.set_wall_ms(ts(0) + 30_000)));
+    let health_5m_after_tick = sup.channel_health(INSTRUMENT, "5m").unwrap();
+    assert_eq!(health_5m_after_tick.status, FeedHealthStatus::Stale);
+    assert_eq!(health_5m_after_tick.stale_since, Some(lost_at));
+
+    // Layout switch unsubscribing + resubscribing an existing channel during the outage also stays STALE.
+    sup.unsubscribe(INSTRUMENT, "1m");
+    clock.set_wall_ms(ts(0) + 35_000);
+    sup.subscribe(INSTRUMENT, "1m").unwrap();
+    let resub_1m = sup.channel_health(INSTRUMENT, "1m").unwrap();
+    assert_eq!(resub_1m.status, FeedHealthStatus::Stale);
+    assert_eq!(resub_1m.stale_since, Some(lost_at));
+    assert_eq!(resub_1m.reconnect_count, 0);
+
+    // Restoring transport transitions through RECOVERING -> LIVE with reconnect_count == 1.
+    let mut backfill_5m = raw_bar(ts(0), "101", "5");
+    backfill_5m.timeframe = "5m".to_owned();
+    backfill_5m.ts_available = ts(5);
+    backfill_5m.ts_ingested = ts(5);
+    backfill_5m.ts_committed = ts(5);
+    sup.transport_restored(Some(clock.set_wall_ms(ts(2) + 10_000)), &[backfill_5m]);
+
+    let healths_5m: Vec<(FeedHealthStatus, Option<i64>, u64)> = sink
+        .healths()
+        .into_iter()
+        .filter(|h| h.timeframe == "5m")
+        .map(|h| (h.status, h.stale_since, h.reconnect_count))
+        .collect();
+    assert_eq!(
+        healths_5m,
+        vec![
+            (FeedHealthStatus::Stale, Some(lost_at), 0),
+            (FeedHealthStatus::Recovering, Some(lost_at), 1),
+            (FeedHealthStatus::Live, None, 1),
+        ]
+    );
+
+    let live_5m = sup.channel_health(INSTRUMENT, "5m").unwrap();
+    assert_eq!(live_5m.status, FeedHealthStatus::Live);
+    assert_eq!(live_5m.stale_since, None);
+    assert_eq!(live_5m.reconnect_count, 1);
+
+    let live_1m = sup.channel_health(INSTRUMENT, "1m").unwrap();
+    assert_eq!(live_1m.status, FeedHealthStatus::Live);
+    assert_eq!(live_1m.stale_since, None);
+    assert_eq!(live_1m.reconnect_count, 1);
+
+    // Because 5m joined resume_pending on subscribe, the first post-outage kline gap becomes FEED_GAP.
+    clock.set_wall_ms(ts(10) + 1_000);
+    let mut kline_5m = kline(ts(10), "103", true);
+    kline_5m.timeframe = "5m".to_owned();
+    sup.ingest(kline_5m, Some(clock.now_ms()));
+
+    let bars_5m = sup.recent_bars(INSTRUMENT, "5m", None, false);
+    assert_eq!(
+        bars_5m
+            .iter()
+            .map(|b| (b.timestamp, b.status))
+            .collect::<Vec<_>>(),
+        vec![
+            (ts(0), BarStatus::Normal),
+            (ts(5), BarStatus::FeedGap),
+            (ts(10), BarStatus::Normal),
+        ]
+    );
+}
