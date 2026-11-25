@@ -5,12 +5,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use rust_decimal::Decimal;
 use talaria_contracts::{
-    DerivativeKind, Direction, FeedCapabilityTrait, InstrumentSpec, MarginEstimate, RawBar,
-    RawDerivativePoint, TraitBundle,
+    CarryTrait, DerivativeKind, Direction, FeedCapabilityTrait, InstrumentSpec, MarginEstimate,
+    MarginTrait, OrderConstraintTrait, RawBar, RawDerivativePoint, SessionTrait, TradingSession,
+    TraitBundle,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
@@ -29,7 +31,7 @@ use crate::traits::{
 
 pub const MARKET_PACK_SKILL: &str = "\
 # Talaria Multi-Venue Crypto Suite (`crypto_suite`)\n\
-- Combines OKX V5 linear swaps (primary daily realtime feed), Binance USD-M Futures via `data.binance.vision` bulk archive (history-only, `feed.realtime = false`), Hyperliquid perpetuals (1h funding on-chain reference), and Coinbase spot (US Coinbase Premium anchor).\n\
+- Combines OKX V5 linear swaps (primary daily realtime feed), Binance USD-M Futures Archive (`data.binance.vision/data/futures/um`), Binance Spot Archive (`data.binance.vision/data/spot`, both history-only `feed.realtime = false`), Hyperliquid perpetuals (1h funding on-chain reference), and Coinbase spot (US Coinbase Premium anchor).\n\
 - Feeds multiplex transparently through `MarketPack` and trait capabilities with zero exchange conditionals in `talaria-feed` or `talaria-server`.\n";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -38,6 +40,7 @@ enum VenueSlot {
     Hyperliquid = 1,
     Coinbase = 2,
     BinanceArchive = 3,
+    BinanceSpotArchive = 4,
 }
 
 impl VenueSlot {
@@ -47,6 +50,7 @@ impl VenueSlot {
             "hyperliquid" => Ok(Self::Hyperliquid),
             "coinbase" => Ok(Self::Coinbase),
             "binance" => Ok(Self::BinanceArchive),
+            "binance_spot" => Ok(Self::BinanceSpotArchive),
             other => Err(PackError::InstrumentNotFound(format!(
                 "unsupported venue `{other}` in crypto_suite"
             ))),
@@ -61,6 +65,79 @@ fn binance_id_from_suite(instrument_id: &str) -> String {
         .unwrap_or_else(|| instrument_id.to_owned())
 }
 
+fn binance_spot_archive_instruments() -> Vec<InstrumentSpec> {
+    let dec = |s: &str| Decimal::from_str(s).expect("valid static decimal literal");
+    vec![
+        InstrumentSpec {
+            instrument_id: "BTC-USDT-BN-SPOT".to_owned(),
+            venue: "binance_spot".to_owned(),
+            symbol: "BTCUSDT-SPOT".to_owned(),
+            asset_class: "crypto_spot".to_owned(),
+            tick_size: dec("0.01"),
+            qty_step: dec("0.00001"),
+            min_qty: dec("0.00001"),
+            price_precision: 2,
+            qty_precision: 5,
+        },
+        InstrumentSpec {
+            instrument_id: "ETH-USDT-BN-SPOT".to_owned(),
+            venue: "binance_spot".to_owned(),
+            symbol: "ETHUSDT-SPOT".to_owned(),
+            asset_class: "crypto_spot".to_owned(),
+            tick_size: dec("0.01"),
+            qty_step: dec("0.0001"),
+            min_qty: dec("0.0001"),
+            price_precision: 2,
+            qty_precision: 4,
+        },
+        InstrumentSpec {
+            instrument_id: "SOL-USDT-BN-SPOT".to_owned(),
+            venue: "binance_spot".to_owned(),
+            symbol: "SOLUSDT-SPOT".to_owned(),
+            asset_class: "crypto_spot".to_owned(),
+            tick_size: dec("0.01"),
+            qty_step: dec("0.001"),
+            min_qty: dec("0.001"),
+            price_precision: 2,
+            qty_precision: 3,
+        },
+    ]
+}
+
+fn binance_spot_archive_traits() -> TraitBundle {
+    TraitBundle {
+        feed: FeedCapabilityTrait {
+            realtime: false,
+            polling: false,
+            history: true,
+        },
+        margin: MarginTrait {
+            margin_asset: "USDT".to_owned(),
+            max_leverage: Decimal::ONE,
+            contract_multiplier: Decimal::ONE,
+        },
+        carry: CarryTrait {
+            funding_interval_hours: None,
+        },
+        session: SessionTrait {
+            session_kind: "24x7".to_owned(),
+            timezone: Some("UTC".to_owned()),
+            day_start: "00:00".to_owned(),
+            sessions: vec![TradingSession {
+                name: "continuous".to_owned(),
+                start: "00:00".to_owned(),
+                end: "23:59".to_owned(),
+                timezone: Some("UTC".to_owned()),
+            }],
+        },
+        order_constraint: OrderConstraintTrait {
+            post_only: true,
+            max_market_qty: None,
+        },
+        derivatives: None,
+    }
+}
+
 /// Composite `HistoryConnector` routing `symbol` lookups to the owning venue connector.
 pub struct CompositeHistoryConnector {
     slot_by_symbol: BTreeMap<String, VenueSlot>,
@@ -68,6 +145,7 @@ pub struct CompositeHistoryConnector {
     hyperliquid: Arc<dyn HistoryConnector>,
     coinbase: Arc<dyn HistoryConnector>,
     binance_archive: Arc<dyn HistoryConnector>,
+    binance_spot_archive: Arc<dyn HistoryConnector>,
 }
 
 impl CompositeHistoryConnector {
@@ -77,6 +155,7 @@ impl CompositeHistoryConnector {
             Some(VenueSlot::Hyperliquid) => Ok(&self.hyperliquid),
             Some(VenueSlot::Coinbase) => Ok(&self.coinbase),
             Some(VenueSlot::BinanceArchive) => Ok(&self.binance_archive),
+            Some(VenueSlot::BinanceSpotArchive) => Ok(&self.binance_spot_archive),
             None => Err(PackError::InstrumentNotFound(format!(
                 "unknown symbol `{symbol}` in crypto_suite"
             ))),
@@ -272,7 +351,10 @@ impl FeedTransport for CompositeFeedTransport {
                 .get(instrument_id)
                 .copied()
                 .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
-            if slot == VenueSlot::BinanceArchive {
+            if matches!(
+                slot,
+                VenueSlot::BinanceArchive | VenueSlot::BinanceSpotArchive
+            ) {
                 return Ok(());
             }
             let idx = slot as usize;
@@ -299,7 +381,10 @@ impl FeedTransport for CompositeFeedTransport {
             let Some(slot) = self.slot_by_instrument.get(instrument_id).copied() else {
                 return Ok(());
             };
-            if slot == VenueSlot::BinanceArchive {
+            if matches!(
+                slot,
+                VenueSlot::BinanceArchive | VenueSlot::BinanceSpotArchive
+            ) {
                 return Ok(());
             }
             let transport = {
@@ -475,6 +560,12 @@ impl CompositeMarketPack {
             instruments.push(spec);
         }
 
+        for spec in binance_spot_archive_instruments() {
+            slot_by_instrument.insert(spec.instrument_id.clone(), VenueSlot::BinanceSpotArchive);
+            slot_by_symbol.insert(spec.symbol.clone(), VenueSlot::BinanceSpotArchive);
+            instruments.push(spec);
+        }
+
         for spec in hyperliquid
             .instruments()
             .iter()
@@ -503,7 +594,7 @@ impl CompositeMarketPack {
         match slot {
             VenueSlot::Okx => self.okx.as_ref(),
             VenueSlot::Hyperliquid => self.hyperliquid.as_ref(),
-            VenueSlot::Coinbase => self.coinbase.as_ref(),
+            VenueSlot::Coinbase | VenueSlot::BinanceSpotArchive => self.coinbase.as_ref(),
             VenueSlot::BinanceArchive => self.binance.as_ref(),
         }
     }
@@ -543,6 +634,9 @@ impl MarketPack for CompositeMarketPack {
             .get(instrument_id)
             .copied()
             .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
+        if slot == VenueSlot::BinanceSpotArchive {
+            return Ok(binance_spot_archive_traits());
+        }
         if slot == VenueSlot::BinanceArchive {
             let bn_id = binance_id_from_suite(instrument_id);
             let mut bundle = self.binance.traits(&bn_id)?;
@@ -578,6 +672,20 @@ impl MarketPack for CompositeMarketPack {
                 Arc::clone(&config.now_ms),
             )?)
         };
+        let binance_spot_archive: Arc<dyn HistoryConnector> = if let Some(dir) = config
+            .fixture_dir
+            .as_ref()
+            .map(|d| d.join("binance_spot"))
+            .filter(|p| p.exists())
+        {
+            Arc::new(BinanceFixtureConnector::new(dir))
+        } else {
+            Arc::new(BinanceVisionArchiveConnector::new_spot(
+                DEFAULT_ARCHIVE_BASE_URL,
+                config.timeout,
+                Arc::clone(&config.now_ms),
+            )?)
+        };
         let okx_cfg = HistoryConnectorConfig {
             fixture_dir: config.fixture_dir.as_ref().map(|d| d.join("okx")),
             ..config.clone()
@@ -597,6 +705,7 @@ impl MarketPack for CompositeMarketPack {
             hyperliquid: self.hyperliquid.create_history_connector(hl_cfg)?,
             coinbase: self.coinbase.create_history_connector(cb_cfg)?,
             binance_archive,
+            binance_spot_archive,
         }))
     }
 

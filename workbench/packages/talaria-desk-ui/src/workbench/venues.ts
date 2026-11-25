@@ -7,7 +7,9 @@ export function venueDisplayName(venue: string, locale: Locale = getLocale()): s
     case "okx":
       return "OKX";
     case "binance":
-      return tFor(locale, "Binance (归档)", "Binance (Archive)");
+      return tFor(locale, "Binance 永续 (归档)", "Binance Perp (Archive)");
+    case "binance_spot":
+      return tFor(locale, "Binance 现货 (归档)", "Binance Spot (Archive)");
     case "hyperliquid":
       return "Hyperliquid";
     case "coinbase":
@@ -26,7 +28,9 @@ export function venueShortLabel(venue: string): string {
     case "okx":
       return "OKX";
     case "binance":
-      return "Binance";
+      return "BN Perp";
+    case "binance_spot":
+      return "BN Spot";
     case "hyperliquid":
       return "HL";
     case "coinbase":

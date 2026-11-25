@@ -55,10 +55,22 @@ fn registry_exposes_advanced_crypto_suite_and_component_packs() {
     }
 
     let suite = get_market_pack("crypto_suite").expect("crypto_suite");
-    assert_eq!(suite.instruments().len(), 12);
+    assert_eq!(suite.instruments().len(), 15);
     assert_eq!(suite.instrument("BTC-USDT-PERP").unwrap().venue, "okx");
     assert_eq!(suite.instrument("BTC-USDT-BN-PERP").unwrap().venue, "binance");
     assert_eq!(suite.instrument("BTC-USDT-BN-PERP").unwrap().symbol, "BTCUSDT");
+    assert_eq!(
+        suite.instrument("BTC-USDT-BN-SPOT").unwrap().venue,
+        "binance_spot"
+    );
+    assert_eq!(
+        suite.instrument("BTC-USDT-BN-SPOT").unwrap().asset_class,
+        "crypto_spot"
+    );
+    assert_eq!(
+        suite.instrument("BTC-USDT-BN-SPOT").unwrap().symbol,
+        "BTCUSDT-SPOT"
+    );
     assert_eq!(
         suite.instrument("BTC-USD-HL-PERP").unwrap().venue,
         "hyperliquid"
@@ -70,6 +82,13 @@ fn registry_exposes_advanced_crypto_suite_and_component_packs() {
     assert!(!bn_traits.feed.polling);
     assert!(bn_traits.feed.history);
     assert!(bn_traits.derivatives.as_ref().is_some_and(|d| !d.realtime && !d.history));
+
+    let bn_spot_traits = suite.traits("BTC-USDT-BN-SPOT").unwrap();
+    assert!(!bn_spot_traits.feed.realtime);
+    assert!(!bn_spot_traits.feed.polling);
+    assert!(bn_spot_traits.feed.history);
+    assert!(bn_spot_traits.derivatives.is_none());
+    assert_eq!(bn_spot_traits.margin.max_leverage, Decimal::ONE);
 
     assert_eq!(
         suite.traits("BTC-USD-HL-PERP").unwrap().carry.funding_interval_hours,
@@ -427,4 +446,91 @@ async fn composite_suite_archive_transport_noop_and_margin_delegation() {
         )
         .expect("binance archive margin valuation");
     assert!(liq > Decimal::ZERO);
+
+    transport
+        .subscribe("BTC-USDT-BN-SPOT", "1m")
+        .await
+        .expect("spot archive subscribe is a clean no-op");
+    transport
+        .unsubscribe("BTC-USDT-BN-SPOT", "1m")
+        .await
+        .expect("spot archive unsubscribe is a clean no-op");
+}
+
+#[tokio::test]
+async fn binance_spot_archive_normalizes_microseconds_and_fetches_spot_path() {
+    // 2024-12-31T23:59:00Z = 1735689540000 ms (13-digit ms format)
+    // 2025-01-01T00:00:00Z = 1735689600000 ms = 1735689600000000 us (16-digit us format)
+    let (dec_zip, dec_csum) = build_archive_zip_and_checksum(
+        "BTCUSDT-1m-2024-12.csv",
+        "BTCUSDT-1m-2024-12.zip",
+        "1735689540000,93500.00,93600.00,93400.00,93576.00,10.5,1735689599999,982548.00,120,5.0,467880.00,0\n",
+    );
+    let (jan_zip, jan_csum) = build_archive_zip_and_checksum(
+        "BTCUSDT-1m-2025-01.csv",
+        "BTCUSDT-1m-2025-01.zip",
+        "1735689600000000,93576.00,93700.00,93500.00,93650.00,12.25,1735689659999999,1147212.50,150,6.5,608725.00,0\n",
+    );
+
+    let decoded_ms = decode_klines_zip_bytes(&dec_zip, "BTCUSDT-SPOT", "1m", 60_000, 1_736_000_000_000)
+        .expect("decode ms csv");
+    assert_eq!(decoded_ms.len(), 1);
+    assert_eq!(decoded_ms[0].ts_event, 1_735_689_540_000);
+    assert_eq!(decoded_ms[0].ts_available, 1_735_689_600_000);
+
+    let decoded_us = decode_klines_zip_bytes(&jan_zip, "BTCUSDT-SPOT", "1m", 60_000, 1_736_000_000_000)
+        .expect("decode us csv");
+    assert_eq!(decoded_us.len(), 1);
+    assert_eq!(decoded_us[0].ts_event, 1_735_689_600_000);
+    assert_eq!(decoded_us[0].ts_available, 1_735_689_660_000);
+    assert_eq!(decoded_us[0].symbol, "BTCUSDT-SPOT");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let dz = dec_zip.clone();
+            let dc = dec_csum.clone();
+            let jz = jan_zip.clone();
+            let jc = jan_csum.clone();
+            tokio::spawn(async move {
+                let mut req_buf = [0u8; 2048];
+                let n = stream.read(&mut req_buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&req_buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("/");
+                let (status, body): (&str, &[u8]) = if path == "/data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-12.zip" {
+                    ("200 OK", &dz)
+                } else if path == "/data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-12.zip.CHECKSUM" {
+                    ("200 OK", &dc)
+                } else if path == "/data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-01.zip" {
+                    ("200 OK", &jz)
+                } else if path == "/data/spot/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2025-01.zip.CHECKSUM" {
+                    ("200 OK", &jc)
+                } else {
+                    ("404 Not Found", b"not found")
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(body).await;
+            });
+        }
+    });
+
+    let connector = BinanceVisionArchiveConnector::new_spot(
+        format!("http://{addr}"),
+        Duration::from_secs(5),
+        Arc::new(|| 1_736_000_000_000),
+    )
+    .unwrap();
+    let bars = connector
+        .fetch_bars_in_range("BTCUSDT-SPOT", "1m", 1_735_689_540_000, 1_735_689_600_000)
+        .await
+        .expect("spot archive fetch_bars_in_range");
+    assert_eq!(bars.len(), 2);
+    assert_eq!(bars[0].ts_event, 1_735_689_540_000);
+    assert_eq!(bars[1].ts_event, 1_735_689_600_000);
+    assert_eq!(bars[0].symbol, "BTCUSDT-SPOT");
 }

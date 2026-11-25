@@ -356,6 +356,72 @@ fn stdin_is_pipe_or_socket() -> bool {
     }
 }
 
+fn is_archive_venue(venue: &str) -> bool {
+    venue == "binance" || venue == "binance_spot"
+}
+
+fn utc_year_start_ms(year: i32) -> i64 {
+    let is_leap = |y: i32| (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
+    let mut days: i64 = 0;
+    if year >= 1970 {
+        for y in 1970..year {
+            days += if is_leap(y) { 366 } else { 365 };
+        }
+    } else {
+        for y in year..1970 {
+            days -= if is_leap(y) { 366 } else { 365 };
+        }
+    }
+    days * 86_400_000
+}
+
+fn year_chunks(start_ms: i64, end_ms: i64) -> Vec<(i32, i64, i64)> {
+    if end_ms < start_ms {
+        return Vec::new();
+    }
+    let mut year = 1970;
+    while utc_year_start_ms(year) > start_ms {
+        year -= 1;
+    }
+    while utc_year_start_ms(year + 1) <= start_ms {
+        year += 1;
+    }
+    let mut chunks = Vec::new();
+    loop {
+        let y_start = utc_year_start_ms(year).max(start_ms);
+        let next_start = utc_year_start_ms(year + 1);
+        let y_end = (next_start - 1).min(end_ms);
+        if y_start <= y_end {
+            chunks.push((year, y_start, y_end));
+        }
+        if next_start > end_ms {
+            break;
+        }
+        year += 1;
+    }
+    chunks
+}
+
+fn publish_bars_by_month(
+    store: &ColdStore,
+    spec: &talaria_contracts::InstrumentSpec,
+    timeframe: &str,
+    rows: Vec<RawBar>,
+) -> anyhow::Result<usize> {
+    let mut count = 0usize;
+    let mut by_month: BTreeMap<String, Vec<RawBar>> = BTreeMap::new();
+    for bar in rows {
+        count += 1;
+        let month = partition_month(bar.ts_event).unwrap_or_else(|_| "unknown".to_owned());
+        by_month.entry(month).or_default().push(bar);
+    }
+    for (_, mut batch) in by_month {
+        batch.sort_by_key(|b| (b.ts_event, b.revision));
+        store.publish_bars(spec, timeframe, &batch)?;
+    }
+    Ok(count)
+}
+
 async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<()> {
     let resolved = resolve_data_dir(&data_dir)?;
     let mut lock = DataDirLock::acquire(&resolved, "backfill")
@@ -369,9 +435,9 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
                 .instrument(id)
                 .cloned()
                 .ok_or_else(|| anyhow::anyhow!("unknown instrument: {id}"))?;
-            if args.source == BackfillSource::Archive && spec.venue != "binance" {
+            if args.source == BackfillSource::Archive && !is_archive_venue(&spec.venue) {
                 bail!(
-                    "instrument `{id}` (venue `{}`) is not supported with `--source archive` (requires venue `binance`)",
+                    "instrument `{id}` (venue `{}`) is not supported with `--source archive` (requires venue `binance` or `binance_spot`)",
                     spec.venue
                 );
             }
@@ -380,7 +446,7 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
         None => {
             let all = pack.instruments().to_vec();
             if args.source == BackfillSource::Archive {
-                all.into_iter().filter(|s| s.venue == "binance").collect()
+                all.into_iter().filter(|s| is_archive_venue(&s.venue)).collect()
             } else {
                 all
             }
@@ -389,7 +455,10 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
 
     enum BackfillBackend {
         Rest(Arc<dyn HistoryConnector>),
-        Archive(BinanceVisionArchiveConnector),
+        Archive {
+            perp: BinanceVisionArchiveConnector,
+            spot: BinanceVisionArchiveConnector,
+        },
     }
 
     let backend = match args.source {
@@ -410,11 +479,18 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
             let base = args
                 .history_base_url
                 .unwrap_or_else(|| DEFAULT_ARCHIVE_BASE_URL.to_owned());
-            BackfillBackend::Archive(BinanceVisionArchiveConnector::new(
-                base,
-                Duration::from_secs(30),
-                Arc::new(system_now_ms),
-            )?)
+            BackfillBackend::Archive {
+                perp: BinanceVisionArchiveConnector::new(
+                    base.clone(),
+                    Duration::from_secs(60),
+                    Arc::new(system_now_ms),
+                )?,
+                spot: BinanceVisionArchiveConnector::new_spot(
+                    base,
+                    Duration::from_secs(60),
+                    Arc::new(system_now_ms),
+                )?,
+            }
         }
     };
     let store = ColdStore::open(&resolved)?;
@@ -431,36 +507,41 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
                 page_limit: 1000,
             })
         }
-        BackfillBackend::Archive(_) => None,
+        BackfillBackend::Archive { .. } => None,
     };
 
+    let chunks = year_chunks(args.start, end);
     let mut total_bars = 0usize;
     for spec in &specs {
-        let rows = match &backend {
+        match &backend {
             BackfillBackend::Rest(connector) => {
-                backfill_bars(
+                let rows = backfill_bars(
                     connector.as_ref(),
                     &spec.symbol,
                     &args.timeframe,
                     rest_window.expect("rest window"),
                 )
-                .await?
+                .await?;
+                total_bars += publish_bars_by_month(&store, spec, &args.timeframe, rows)?;
             }
-            BackfillBackend::Archive(archive) => {
-                archive
-                    .fetch_bars_in_range(&spec.symbol, &args.timeframe, args.start, end)
-                    .await?
+            BackfillBackend::Archive { perp, spot } => {
+                let archive = if spec.venue == "binance_spot" {
+                    spot
+                } else {
+                    perp
+                };
+                for &(year, y_start, y_end) in &chunks {
+                    let rows = archive
+                        .fetch_bars_in_range(&spec.symbol, &args.timeframe, y_start, y_end)
+                        .await?;
+                    let year_bars = publish_bars_by_month(&store, spec, &args.timeframe, rows)?;
+                    total_bars += year_bars;
+                    eprintln!(
+                        "[backfill] {} {} {} -> {} bars",
+                        spec.instrument_id, args.timeframe, year, year_bars
+                    );
+                }
             }
-        };
-        let mut by_month: BTreeMap<String, Vec<RawBar>> = BTreeMap::new();
-        for bar in rows {
-            total_bars += 1;
-            let month = partition_month(bar.ts_event).unwrap_or_else(|_| "unknown".to_owned());
-            by_month.entry(month).or_default().push(bar);
-        }
-        for (_, mut batch) in by_month {
-            batch.sort_by_key(|b| (b.ts_event, b.revision));
-            store.publish_bars(spec, &args.timeframe, &batch)?;
         }
     }
 

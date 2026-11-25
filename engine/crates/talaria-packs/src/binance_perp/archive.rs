@@ -26,22 +26,49 @@ use crate::traits::{BoxFuture, ClockFn, HistoryConnector};
 /// Default Binance Public Data repository base URL.
 pub const DEFAULT_ARCHIVE_BASE_URL: &str = "https://data.binance.vision";
 
+/// Public archive dataset selector on `data.binance.vision`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinanceArchiveDataset {
+    FuturesUm,
+    Spot,
+}
+
+impl BinanceArchiveDataset {
+    pub fn path_prefix(self) -> &'static str {
+        match self {
+            Self::FuturesUm => "data/futures/um",
+            Self::Spot => "data/spot",
+        }
+    }
+
+    pub fn archive_symbol(self, symbol: &str) -> &str {
+        match self {
+            Self::FuturesUm => symbol,
+            Self::Spot => symbol.strip_suffix("-SPOT").unwrap_or(symbol),
+        }
+    }
+}
+
 fn precision_for_binance_symbol(symbol: &str) -> (u32, u32) {
     match symbol {
         "BTCUSDT" => (1, 3),
         "ETHUSDT" => (2, 3),
         "SOLUSDT" => (2, 2),
+        "BTCUSDT-SPOT" => (2, 5),
+        "ETHUSDT-SPOT" => (2, 4),
+        "SOLUSDT-SPOT" => (2, 3),
         "1000PEPEUSDT" => (7, 0),
         _ => (4, 4),
     }
 }
 
-/// Downloadable ZIP+SHA256 history connector for Binance USD-M Futures (`data.binance.vision`).
+/// Downloadable ZIP+SHA256 history connector for Binance USD-M Futures & Spot (`data.binance.vision`).
 #[derive(Clone)]
 pub struct BinanceVisionArchiveConnector {
     base_url: String,
     client: Client,
     now_ms: ClockFn,
+    dataset: BinanceArchiveDataset,
 }
 
 impl BinanceVisionArchiveConnector {
@@ -49,6 +76,23 @@ impl BinanceVisionArchiveConnector {
         base_url: impl Into<String>,
         timeout: Duration,
         now_ms: ClockFn,
+    ) -> Result<Self, PackError> {
+        Self::with_dataset(base_url, timeout, now_ms, BinanceArchiveDataset::FuturesUm)
+    }
+
+    pub fn new_spot(
+        base_url: impl Into<String>,
+        timeout: Duration,
+        now_ms: ClockFn,
+    ) -> Result<Self, PackError> {
+        Self::with_dataset(base_url, timeout, now_ms, BinanceArchiveDataset::Spot)
+    }
+
+    fn with_dataset(
+        base_url: impl Into<String>,
+        timeout: Duration,
+        now_ms: ClockFn,
+        dataset: BinanceArchiveDataset,
     ) -> Result<Self, PackError> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
         let mut builder = Client::builder()
@@ -64,28 +108,62 @@ impl BinanceVisionArchiveConnector {
             base_url,
             client,
             now_ms,
+            dataset,
         })
     }
 
     async fn fetch_optional_bytes(&self, rel_path: &str) -> Result<Option<Vec<u8>>, PackError> {
         let url = format!("{}/{}", self.base_url, rel_path.trim_start_matches('/'));
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|err| PackError::FeedUnavailable(format!("archive GET `{url}` failed: {err}")))?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
+        let backoffs = [
+            Duration::from_millis(500),
+            Duration::from_millis(1500),
+            Duration::from_millis(3000),
+        ];
+
+        for attempt in 0..=backoffs.len() {
+            match self.client.get(&url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status == reqwest::StatusCode::NOT_FOUND {
+                        return Ok(None);
+                    }
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                        if let Some(delay) = backoffs.get(attempt) {
+                            tokio::time::sleep(*delay).await;
+                            continue;
+                        }
+                        return Err(PackError::FeedUnavailable(format!(
+                            "archive HTTP {status} for `{url}` after retries"
+                        )));
+                    }
+                    let resp = resp.error_for_status().map_err(|err| {
+                        PackError::FeedUnavailable(format!("archive HTTP error `{url}`: {err}"))
+                    })?;
+                    match resp.bytes().await {
+                        Ok(bytes) => return Ok(Some(bytes.to_vec())),
+                        Err(err) => {
+                            if let Some(delay) = backoffs.get(attempt) {
+                                tokio::time::sleep(*delay).await;
+                                continue;
+                            }
+                            return Err(PackError::FeedUnavailable(format!(
+                                "archive body `{url}` failed: {err}"
+                            )));
+                        }
+                    }
+                }
+                Err(err) => {
+                    if let Some(delay) = backoffs.get(attempt) {
+                        tokio::time::sleep(*delay).await;
+                        continue;
+                    }
+                    return Err(PackError::FeedUnavailable(format!(
+                        "archive GET `{url}` failed: {err}"
+                    )));
+                }
+            }
         }
-        let resp = resp
-            .error_for_status()
-            .map_err(|err| PackError::FeedUnavailable(format!("archive HTTP error `{url}`: {err}")))?;
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|err| PackError::FeedUnavailable(format!("archive body `{url}` failed: {err}")))?;
-        Ok(Some(bytes.to_vec()))
+        unreachable!("retry loop always returns")
     }
 
     async fn fetch_verified_archive_bars(
@@ -109,7 +187,7 @@ impl BinanceVisionArchiveConnector {
     }
 
     /// Fetch closed bars covering `[start_ts, end_ts]` from monthly (and daily fallback) archives
-    /// using bounded concurrency (`6` in-flight downloads).
+    /// using bounded concurrency (`8` in-flight downloads).
     pub async fn fetch_bars_in_range(
         &self,
         symbol: &str,
@@ -123,17 +201,20 @@ impl BinanceVisionArchiveConnector {
         let interval = timeframe_ms(timeframe)?;
         let bn_iv = rest_interval_for(timeframe)?;
         let now = (self.now_ms)();
+        let prefix = self.dataset.path_prefix();
+        let arch_sym = self.dataset.archive_symbol(symbol);
 
         let start_date = date_from_ms(start_ts);
         let end_date = date_from_ms(end_ts);
         let months = months_overlapping(start_date, end_date);
 
-        let sem = Arc::new(Semaphore::new(6));
+        let sem = Arc::new(Semaphore::new(8));
         let mut monthly_set = JoinSet::new();
         for (year, month) in months {
             let connector = self.clone();
             let sem = Arc::clone(&sem);
             let sym = symbol.to_owned();
+            let arch = arch_sym.to_owned();
             let tf = timeframe.to_owned();
             let iv_str = bn_iv.to_owned();
             monthly_set.spawn(async move {
@@ -141,7 +222,7 @@ impl BinanceVisionArchiveConnector {
                     PackError::FeedUnavailable("archive semaphore closed".to_owned())
                 })?;
                 let zip_rel = format!(
-                    "data/futures/um/monthly/klines/{sym}/{iv_str}/{sym}-{iv_str}-{year:04}-{month:02}.zip"
+                    "{prefix}/monthly/klines/{arch}/{iv_str}/{arch}-{iv_str}-{year:04}-{month:02}.zip"
                 );
                 let bars = connector
                     .fetch_verified_archive_bars(&zip_rel, &sym, &tf, interval, now)
@@ -151,6 +232,8 @@ impl BinanceVisionArchiveConnector {
         }
 
         let mut collected: BTreeMap<i64, RawBar> = BTreeMap::new();
+        let trailing_cutoff_date = prev_month(prev_month(end_date));
+        let trailing_cutoff = (trailing_cutoff_date.year(), trailing_cutoff_date.month());
         let mut missing_months = Vec::new();
         while let Some(res) = monthly_set.join_next().await {
             let (year, month, bars_opt) = res.map_err(|e| {
@@ -164,7 +247,10 @@ impl BinanceVisionArchiveConnector {
                         }
                     }
                 }
-                None => missing_months.push((year, month)),
+                None if (year, month) >= trailing_cutoff => {
+                    missing_months.push((year, month));
+                }
+                None => {}
             }
         }
 
@@ -175,6 +261,7 @@ impl BinanceVisionArchiveConnector {
                     let connector = self.clone();
                     let sem = Arc::clone(&sem);
                     let sym = symbol.to_owned();
+                    let arch = arch_sym.to_owned();
                     let tf = timeframe.to_owned();
                     let iv_str = bn_iv.to_owned();
                     daily_set.spawn(async move {
@@ -182,7 +269,7 @@ impl BinanceVisionArchiveConnector {
                             PackError::FeedUnavailable("archive semaphore closed".to_owned())
                         })?;
                         let zip_rel = format!(
-                            "data/futures/um/daily/klines/{sym}/{iv_str}/{sym}-{iv_str}-{:04}-{:02}-{:02}.zip",
+                            "{prefix}/daily/klines/{arch}/{iv_str}/{arch}-{iv_str}-{:04}-{:02}-{:02}.zip",
                             day.year(),
                             day.month(),
                             day.day()
@@ -278,8 +365,14 @@ pub fn decode_klines_zip_bytes(
             )));
         }
         // Binance archives since 2022 include a header row `open_time,open,high,...`.
-        let Ok(ts_event) = cols[0].trim().parse::<i64>() else {
+        // Spot archives starting in 2025-01 switched timestamps from 13-digit ms to 16-digit us.
+        let Ok(raw_ts) = cols[0].trim().parse::<i64>() else {
             continue;
+        };
+        let ts_event = if raw_ts >= 1_000_000_000_000_000 {
+            raw_ts / 1_000
+        } else {
+            raw_ts
         };
         let open = quantize_dp(
             parse_decimal_str(cols[1].trim())
@@ -415,6 +508,8 @@ impl HistoryConnector for BinanceVisionArchiveConnector {
                 days_desc.push(day_cursor);
                 day_cursor -= ChronoDuration::days(1);
             }
+            let prefix = self.dataset.path_prefix();
+            let arch_sym = self.dataset.archive_symbol(symbol);
             let sem = Arc::new(Semaphore::new(6));
             for chunk in days_desc.chunks(6) {
                 if collected.len() >= limit {
@@ -425,6 +520,7 @@ impl HistoryConnector for BinanceVisionArchiveConnector {
                     let connector = self.clone();
                     let sem = Arc::clone(&sem);
                     let sym = symbol.to_owned();
+                    let arch = arch_sym.to_owned();
                     let tf = timeframe.to_owned();
                     let iv_str = bn_iv.to_owned();
                     set.spawn(async move {
@@ -432,7 +528,7 @@ impl HistoryConnector for BinanceVisionArchiveConnector {
                             PackError::FeedUnavailable("archive semaphore closed".to_owned())
                         })?;
                         let zip_rel = format!(
-                            "data/futures/um/daily/klines/{sym}/{iv_str}/{sym}-{iv_str}-{:04}-{:02}-{:02}.zip",
+                            "{prefix}/daily/klines/{arch}/{iv_str}/{arch}-{iv_str}-{:04}-{:02}-{:02}.zip",
                             day.year(),
                             day.month(),
                             day.day()
@@ -467,7 +563,7 @@ impl HistoryConnector for BinanceVisionArchiveConnector {
                     break;
                 }
                 let zip_rel = format!(
-                    "data/futures/um/monthly/klines/{symbol}/{bn_iv}/{symbol}-{bn_iv}-{:04}-{:02}.zip",
+                    "{prefix}/monthly/klines/{arch_sym}/{bn_iv}/{arch_sym}-{bn_iv}-{:04}-{:02}.zip",
                     month_cursor.year(),
                     month_cursor.month()
                 );
