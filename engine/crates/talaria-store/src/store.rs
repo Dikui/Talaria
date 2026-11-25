@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use talaria_contracts::{
@@ -956,6 +956,117 @@ impl StoreInner {
         }
         Ok((staging_removed, temp_removed))
     }
+
+    fn migrate_legacy_venue(&mut self, old_venue: &str, new_venue: &str) -> Result<()> {
+        let old_root = self.data_dir.join(COLD_SUBDIR).join(old_venue);
+        let has_dir = old_root.exists();
+        let old_prefix = format!("{COLD_SUBDIR}/{old_venue}/");
+        let new_prefix = format!("{COLD_SUBDIR}/{new_venue}/");
+        let old_like = format!("{old_prefix}%");
+
+        let has_db_rows = {
+            let conn = self.conn()?;
+            let gen_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM generations WHERE venue = ?1)",
+                params![old_venue],
+                |r| r.get(0),
+            )?;
+            let cur_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cursors WHERE venue = ?1)",
+                params![old_venue],
+                |r| r.get(0),
+            )?;
+            let ret_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM retired_files WHERE parquet_path LIKE ?1)",
+                params![&old_like],
+                |r| r.get(0),
+            )?;
+            gen_exists || cur_exists || ret_exists
+        };
+
+        if !has_dir && !has_db_rows {
+            return Ok(());
+        }
+
+        if has_dir {
+            let new_root = self.data_dir.join(COLD_SUBDIR).join(new_venue);
+            move_venue_tree_recursive(&old_root, &new_root)?;
+            let _ = fs::remove_dir(&old_root);
+        }
+
+        let old_prefix_len = old_prefix.len() as i64;
+        let conn = self.conn_mut()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut changed = 0usize;
+        changed += tx.execute(
+            "UPDATE OR IGNORE generations SET venue = ?2, parquet_path = ?3 || substr(parquet_path, ?4 + 1) WHERE venue = ?1 AND parquet_path LIKE ?5",
+            params![old_venue, new_venue, &new_prefix, old_prefix_len, &old_like],
+        )?;
+        changed += tx.execute(
+            "UPDATE OR IGNORE generations SET venue = ?2 WHERE venue = ?1",
+            params![old_venue, new_venue],
+        )?;
+        changed += tx.execute(
+            "DELETE FROM generations WHERE venue = ?1",
+            params![old_venue],
+        )?;
+        changed += tx.execute(
+            "UPDATE OR IGNORE cursors SET venue = ?2 WHERE venue = ?1",
+            params![old_venue, new_venue],
+        )?;
+        changed += tx.execute(
+            "DELETE FROM cursors WHERE venue = ?1",
+            params![old_venue],
+        )?;
+        changed += tx.execute(
+            "UPDATE OR IGNORE retired_files SET parquet_path = ?1 || substr(parquet_path, ?2 + 1) WHERE parquet_path LIKE ?3",
+            params![&new_prefix, old_prefix_len, &old_like],
+        )?;
+        changed += tx.execute(
+            "DELETE FROM retired_files WHERE parquet_path LIKE ?1",
+            params![&old_like],
+        )?;
+        if changed > 0 {
+            tx.execute(
+                "UPDATE manifest_version SET version = version + 1 WHERE id = 1",
+                [],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+fn move_venue_tree_recursive(src_dir: &Path, dst_dir: &Path) -> Result<()> {
+    for entry in fs::read_dir(src_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let dst = dst_dir.join(entry.file_name());
+        if path.is_dir() {
+            move_venue_tree_recursive(&path, &dst)?;
+            let _ = fs::remove_dir(&path);
+        } else if path.is_file() {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            if dst.exists() {
+                if sha256_file(&path)? != sha256_file(&dst)? {
+                    return Err(StoreError::Integrity(format!(
+                        "legacy venue migration collision with different bytes: {} vs {}",
+                        path.display(),
+                        dst.display()
+                    )));
+                }
+                fs::remove_file(&path)?;
+            } else {
+                fs::rename(&path, &dst)?;
+                if let Some(parent) = dst.parent() {
+                    fsync_dir(parent)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Drop for StoreInner {
@@ -1005,13 +1116,14 @@ impl ColdStore {
             }
         };
 
-        let inner = StoreInner {
+        let mut inner = StoreInner {
             data_dir: data_dir.clone(),
             db_key: Some(db_key),
             conn: Some(conn),
             fault_hook,
         };
         let _ = inner.cleanup_staging_and_temps();
+        inner.migrate_legacy_venue("binance_spot", "binance")?;
 
         Ok(Self {
             data_dir,

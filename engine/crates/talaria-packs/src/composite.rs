@@ -50,7 +50,6 @@ impl VenueSlot {
             "hyperliquid" => Ok(Self::Hyperliquid),
             "coinbase" => Ok(Self::Coinbase),
             "binance" => Ok(Self::BinanceArchive),
-            "binance_spot" => Ok(Self::BinanceSpotArchive),
             other => Err(PackError::InstrumentNotFound(format!(
                 "unsupported venue `{other}` in crypto_suite"
             ))),
@@ -70,7 +69,7 @@ fn binance_spot_archive_instruments() -> Vec<InstrumentSpec> {
     vec![
         InstrumentSpec {
             instrument_id: "BTC-USDT-BN-SPOT".to_owned(),
-            venue: "binance_spot".to_owned(),
+            venue: "binance".to_owned(),
             symbol: "BTCUSDT-SPOT".to_owned(),
             asset_class: "crypto_spot".to_owned(),
             tick_size: dec("0.01"),
@@ -81,7 +80,7 @@ fn binance_spot_archive_instruments() -> Vec<InstrumentSpec> {
         },
         InstrumentSpec {
             instrument_id: "ETH-USDT-BN-SPOT".to_owned(),
-            venue: "binance_spot".to_owned(),
+            venue: "binance".to_owned(),
             symbol: "ETHUSDT-SPOT".to_owned(),
             asset_class: "crypto_spot".to_owned(),
             tick_size: dec("0.01"),
@@ -92,7 +91,7 @@ fn binance_spot_archive_instruments() -> Vec<InstrumentSpec> {
         },
         InstrumentSpec {
             instrument_id: "SOL-USDT-BN-SPOT".to_owned(),
-            venue: "binance_spot".to_owned(),
+            venue: "binance".to_owned(),
             symbol: "SOLUSDT-SPOT".to_owned(),
             asset_class: "crypto_spot".to_owned(),
             tick_size: dec("0.01"),

@@ -1207,3 +1207,54 @@ fn test_publish_without_raw_archive_and_prune_unreferenced_raw_archive() {
     assert!(!g2_archive.exists());
     assert_eq!(store.read_bars(&spec, "1m", None, None, None).unwrap().len(), 3);
 }
+
+#[test]
+fn migrates_legacy_binance_spot_venue_to_binance_on_open() {
+    let tmp = TempDir::new().unwrap();
+    let t0 = base_ts();
+    let legacy_spec = InstrumentSpec {
+        instrument_id: "BTC-USDT-BN-SPOT".to_owned(),
+        venue: "binance_spot".to_owned(),
+        symbol: "BTCUSDT-SPOT".to_owned(),
+        asset_class: "crypto_spot".to_owned(),
+        tick_size: Decimal::new(1, 2),
+        qty_step: Decimal::new(1, 5),
+        min_qty: Decimal::new(1, 5),
+        price_precision: 2,
+        qty_precision: 5,
+    };
+    let mut bar = make_bar(t0, "100.50", 0);
+    bar.symbol = "BTCUSDT-SPOT".to_owned();
+    bar.volume = dec("1.00000");
+    bar.turnover = dec("100.50000");
+
+    let store = ColdStore::open(tmp.path()).unwrap();
+    store
+        .publish_bars(&legacy_spec, "1m", std::slice::from_ref(&bar))
+        .unwrap();
+    store.close().unwrap();
+
+    assert!(tmp.path().join("data/cold/binance_spot/BTCUSDT-SPOT").exists());
+
+    // Reopen triggers automatic idempotent migration from binance_spot -> binance.
+    let reopened = ColdStore::open(tmp.path()).unwrap();
+    reopened.close().unwrap();
+
+    assert!(!tmp.path().join("data/cold/binance_spot").exists());
+    assert!(tmp.path().join("data/cold/binance/BTCUSDT-SPOT").exists());
+
+    let migrated_spec = InstrumentSpec {
+        venue: "binance".to_owned(),
+        ..legacy_spec
+    };
+    let bars = ColdReader::new(tmp.path())
+        .read_bars(&migrated_spec, "1m", None, None, None)
+        .unwrap();
+    assert_eq!(bars.len(), 1);
+    assert_eq!(bars[0].symbol, "BTCUSDT-SPOT");
+    assert_eq!(bars[0].close, dec("100.50"));
+
+    // Second reopen is a clean no-op.
+    let reopened_again = ColdStore::open(tmp.path()).unwrap();
+    reopened_again.close().unwrap();
+}

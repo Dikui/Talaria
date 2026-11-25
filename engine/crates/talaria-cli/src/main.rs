@@ -386,7 +386,7 @@ fn stdin_is_pipe_or_socket() -> bool {
 }
 
 fn is_archive_venue(venue: &str) -> bool {
-    venue == "binance" || venue == "binance_spot"
+    venue == "binance"
 }
 
 fn utc_year_start_ms(year: i32) -> i64 {
@@ -471,7 +471,7 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
                 .ok_or_else(|| anyhow::anyhow!("unknown instrument: {id}"))?;
             if args.source == BackfillSource::Archive && !is_archive_venue(&spec.venue) {
                 bail!(
-                    "instrument `{id}` (venue `{}`) is not supported with `--source archive` (requires venue `binance` or `binance_spot`)",
+                    "instrument `{id}` (venue `{}`) is not supported with `--source archive` (requires venue `binance`)",
                     spec.venue
                 );
             }
@@ -559,7 +559,7 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
                 total_bars += publish_bars_by_month(&store, spec, &args.timeframe, rows, true)?;
             }
             BackfillBackend::Archive { perp, spot } => {
-                let archive = if spec.venue == "binance_spot" {
+                let archive = if spec.asset_class == "crypto_spot" {
                     spot
                 } else {
                     perp

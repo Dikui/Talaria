@@ -61,7 +61,7 @@ fn registry_exposes_advanced_crypto_suite_and_component_packs() {
     assert_eq!(suite.instrument("BTC-USDT-BN-PERP").unwrap().symbol, "BTCUSDT");
     assert_eq!(
         suite.instrument("BTC-USDT-BN-SPOT").unwrap().venue,
-        "binance_spot"
+        "binance"
     );
     assert_eq!(
         suite.instrument("BTC-USDT-BN-SPOT").unwrap().asset_class,

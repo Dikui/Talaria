@@ -7,9 +7,7 @@ export function venueDisplayName(venue: string, locale: Locale = getLocale()): s
     case "okx":
       return "OKX";
     case "binance":
-      return tFor(locale, "Binance 永续 (归档)", "Binance Perp (Archive)");
-    case "binance_spot":
-      return tFor(locale, "Binance 现货 (归档)", "Binance Spot (Archive)");
+      return tFor(locale, "Binance (归档)", "Binance (Archive)");
     case "hyperliquid":
       return "Hyperliquid";
     case "coinbase":
@@ -28,9 +26,7 @@ export function venueShortLabel(venue: string): string {
     case "okx":
       return "OKX";
     case "binance":
-      return "BN Perp";
-    case "binance_spot":
-      return "BN Spot";
+      return "BN";
     case "hyperliquid":
       return "HL";
     case "coinbase":
@@ -78,6 +74,17 @@ export function pickInstrumentForVenue(
   const venueInstruments = instruments.filter((inst) => inst.venue === targetVenue);
   if (venueInstruments.length === 0) return null;
   const base = extractBaseAsset(currentInstrumentId);
+  const currentAssetClass = instruments
+    .find((inst) => inst.instrument_id === currentInstrumentId)
+    ?.asset_class.toLowerCase();
+  if (currentAssetClass) {
+    const exact = venueInstruments.find(
+      (inst) =>
+        extractBaseAsset(inst.instrument_id) === base &&
+        inst.asset_class.toLowerCase() === currentAssetClass,
+    );
+    if (exact) return exact;
+  }
   return (
     venueInstruments.find((inst) => extractBaseAsset(inst.instrument_id) === base) ??
     venueInstruments[0]
