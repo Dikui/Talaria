@@ -1,4 +1,4 @@
-import type { DrawingsDocument } from "@luxalgo/vela";
+import type { DrawingsDocument, ReplayState, TradeExecution } from "@luxalgo/vela";
 import type {
   AgentAnnotationRecord,
   CompactBar,
@@ -12,10 +12,38 @@ import type { Locale } from "../lib/i18n";
 import type { Theme } from "../lib/theme";
 import type {
   ChartMountOptions,
+  ChartReplayControl,
   ChartSurfaceAdapter,
   ExecutionBarrierItem,
   RenderBackendMode,
+  ReplayDrawingFilter,
 } from "./adapter";
+
+const IDLE_REPLAY_STATE: ReplayState = {
+  active: false,
+  playing: false,
+  cursorTime: null,
+  remaining: 0,
+  nextTime: null,
+  intervalMs: 1000,
+};
+
+const NOOP_REPLAY_CONTROL: ChartReplayControl = {
+  async start() {},
+  step: () => false,
+  stepUpdate: () => false,
+  play() {},
+  pause() {},
+  stop() {},
+  setTicks() {},
+  get state() {
+    return IDLE_REPLAY_STATE;
+  },
+  get bounds() {
+    return null;
+  },
+  on: () => () => undefined,
+};
 
 export interface KLineChartFallbackInstance {
   dispose?(): void;
@@ -32,6 +60,7 @@ export interface KLineChartRuntime {
  * stays strictly on `@luxalgo/vela` (Apache-2.0) unless an explicit runtime is injected.
  */
 export class KLineChartAdapter implements ChartSurfaceAdapter {
+  readonly replay: ChartReplayControl = NOOP_REPLAY_CONTROL;
   private instance: KLineChartFallbackInstance | null = null;
   private readonly runtime: KLineChartRuntime | null;
 
@@ -52,10 +81,12 @@ export class KLineChartAdapter implements ChartSurfaceAdapter {
   setBars(_bars: CompactBar[]): void {}
   updateLiveBar(_event: KlineEvent): void {}
   setIndicators(_series: IndicatorSeries[]): void {}
+  setTradeMarkers(_trades: TradeExecution[]): void {}
   setSystemLevels(_levels: KeyLevel[]): void {}
   setAgentAnnotations(_annotations: AgentAnnotationRecord[]): void {}
   setExecutionBarriers(_barriers: ExecutionBarrierItem[]): void {}
   loadHumanDrawings(_drawings: DrawingRecord[]): void {}
+  setReplayDrawingFilter(_filter: ReplayDrawingFilter): void {}
   setDrawingTool(_tool: string | null): void {}
   selectHumanDrawing(_drawingId: string | null): void {}
   exportDrawingsDocument(): DrawingsDocument | null {
@@ -68,6 +99,9 @@ export class KLineChartAdapter implements ChartSurfaceAdapter {
   setExternalCrosshair(_time: number | null, _price?: number | null): void {}
   setVisibleRange(_range: { from: number; to: number }): void {}
   getVisibleRange(): { from: number; to: number } | null {
+    return null;
+  }
+  getOldestLoadedBarTime(): number | null {
     return null;
   }
   async refresh(): Promise<void> {}

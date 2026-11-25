@@ -18,6 +18,7 @@ from typing import Annotated, Any, Iterable, Literal, TypeAliasType, Union, get_
 from pydantic import BaseModel
 
 from talaria.components.operators import OPERATORS
+from talaria.components.rule_vectors import render_rule_vectors
 from talaria.foundation.operators import CHANNELS
 from talaria.foundation.alerts import (
     AlertCreate,
@@ -119,6 +120,26 @@ from talaria.foundation.paper import (
     ExitBarrierSpec, TrailingStopSpec, ConfirmedDraft, DraftConfirmation, DraftContent, DraftDeliveryRequest, DraftEdit, DraftEvidence,
     DraftReceipt, DraftRecord, PaperAccountView, PaperFill, PaperRound,
 )
+from talaria.foundation.runs import (
+    ReplayTick,
+    RunAccountCurrencySummary,
+    RunBarrierChange,
+    RunBarrierChangeKind,
+    RunEquityPoint,
+    RunEquityResponse,
+    RunExportArtifacts,
+    RunExportSummary,
+    RunFillKind,
+    RunFillReason,
+    RunListResponse,
+    RunRoundFill,
+    RunRoundPhase,
+    RunRoundRecord,
+    RunRoundsResponse,
+    RunStatus,
+    TicksJsonResponse,
+)
+from talaria.foundation.ticks import TickKind
 from talaria.foundation.scanner import (
     ScannerConditionKind,
     ScannerEvidence,
@@ -318,6 +339,18 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "annotation_adopt_response": AnnotationAdoptResponse,
     "annotation_clear_request": AnnotationClearRequest,
     "annotation_clear_response": AnnotationClearResponse,
+    "run_round_fill": RunRoundFill,
+    "run_barrier_change": RunBarrierChange,
+    "run_round_record": RunRoundRecord,
+    "run_account_currency_summary": RunAccountCurrencySummary,
+    "run_export_artifacts": RunExportArtifacts,
+    "run_export_summary": RunExportSummary,
+    "run_list_response": RunListResponse,
+    "run_rounds_response": RunRoundsResponse,
+    "run_equity_point": RunEquityPoint,
+    "run_equity_response": RunEquityResponse,
+    "replay_tick": ReplayTick,
+    "ticks_json_response": TicksJsonResponse,
 }
 
 RULE_NODE_TYPES = (
@@ -359,6 +392,12 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     EvidenceKind,
     AnnotationKind,
     AnnotationStatus,
+    TickKind,
+    RunStatus,
+    RunFillKind,
+    RunFillReason,
+    RunBarrierChangeKind,
+    RunRoundPhase,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
@@ -393,12 +432,39 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "threshold",
         "observed",
         "overlay_ratio",
+        "quantity",
+        "stop",
+        "entry_price",
+        "exit_price",
+        "max_quantity",
+        "remaining_quantity",
+        "net_pnl",
+        "max_drawdown",
+        "fees",
+        "funding",
+        "liquidation_fees",
+        "initial_capital",
+        "final_equity",
+        "mae",
+        "mfe",
+        "realized_pnl",
+        "fee",
+        "realized_pnl_delta",
+        "fee_delta",
+        "funding_delta",
+        "liquidation_fee_delta",
+        "equity",
+        "peak_pnl",
+        "drawdown",
     }
 )
 
 SCHEMA_DIR = Path("contracts/schemas")
+RULE_VECTOR_DIR = Path("contracts/rule_vectors")
 DSH_TOOL_DIR = SCHEMA_DIR / "dsh-tools"
 TS_PATH = Path("dsh/packages/talaria-contracts/src/generated.ts")
+WORKBENCH_TS_PATH = Path("workbench/packages/talaria-contracts/src/generated.ts")
+TS_PATHS = (TS_PATH, WORKBENCH_TS_PATH)
 DSH_TOOL_SPECS: dict[str, tuple[type[BaseModel], str]] = {
     "get_snapshot": (
         SnapshotRequest,
@@ -694,7 +760,11 @@ def render_contracts(root: Path | None = None) -> dict[Path, str]:
         artifacts[DSH_TOOL_PATHS[name]] = _dump_json(tool_payload)
     plugin_alert_tool = Path("dsh/packages/talaria-dsh-plugin/create_alert.tool.json")
     artifacts[plugin_alert_tool] = artifacts[DSH_TOOL_PATHS["create_alert"]]
-    artifacts[TS_PATH] = _render_ts()
+    for filename, content in render_rule_vectors().items():
+        artifacts[RULE_VECTOR_DIR / filename] = content
+    ts_content = _render_ts()
+    for ts_path in TS_PATHS:
+        artifacts[ts_path] = ts_content
     return artifacts
 
 
@@ -771,6 +841,13 @@ def check_contracts(root: Path | None = None) -> list[str]:
     expected_schemas = {path.name for path in expected if path.parent == SCHEMA_DIR}
     for extra in sorted(actual_schemas - expected_schemas):
         problems.append(f"未登记的 schema：{SCHEMA_DIR / extra}")
+
+    actual_rule_vectors = {
+        path.name for path in (root / RULE_VECTOR_DIR).glob("*.json") if path.is_file()
+    }
+    expected_rule_vectors = {path.name for path in expected if path.parent == RULE_VECTOR_DIR}
+    for extra in sorted(actual_rule_vectors - expected_rule_vectors):
+        problems.append(f"未登记的规则黄金向量：{RULE_VECTOR_DIR / extra}")
 
     ts_text = (root / TS_PATH).read_text(encoding="utf-8") if (root / TS_PATH).is_file() else ""
     if "export type DecimalString = string;" not in ts_text:

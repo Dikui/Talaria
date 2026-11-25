@@ -22,6 +22,7 @@ import type {
   IndicatorName,
   InstrumentSpec,
   KeyLevel,
+  RunRoundRecord,
 } from "@talaria/contracts";
 
 import { VELA_ATTRIBUTION } from "../chart/adapter";
@@ -53,6 +54,8 @@ import {
   type KeyLevelFilter,
 } from "../features/key-levels/model";
 import { useKeyLevels } from "../features/key-levels/useKeyLevels";
+import { RunsPanel } from "../features/runs/RunsPanel";
+import { useRuns } from "../features/runs/useRuns";
 import { ScannerPanel } from "../features/scanner/ScannerPanel";
 import { useScanner } from "../features/scanner/useScanner";
 import { WatchlistPanel } from "../features/watchlist/WatchlistPanel";
@@ -81,6 +84,8 @@ import {
   WorkbenchProvider,
   useWorkbenchContext,
   type ActiveChartTelemetry,
+  type ChartJumpRequest,
+  type ReplayTriggerRequest,
   type WorkbenchContextValue,
 } from "./WorkbenchContext";
 
@@ -123,6 +128,7 @@ function DockAlertsPanel() {
       onLocate={ctx.onLocateTarget}
       link={ctx.primaryLink}
       formSeed={ctx.alertSeed}
+      replayActive={ctx.replayActive}
     />
   );
 }
@@ -189,7 +195,7 @@ function DockDrawingsPanel() {
     <DrawingManager
       drawings={ctx.drawings}
       selectedId={ctx.selectedDrawingId}
-      readOnly={ctx.readOnly}
+      readOnly={ctx.readOnly || ctx.replayActive}
       onSelect={ctx.onDrawingSelected}
       onDelete={(id) => void ctx.onDeleteDrawing(id)}
       onAttachAlert={(drawing) => {
@@ -212,8 +218,20 @@ function DockAnnotationsPanel() {
   return (
     <AnnotationPanel
       controller={ctx.annotationsController}
-      readOnly={ctx.readOnly}
+      readOnly={ctx.readOnly || ctx.replayActive}
       onAdopted={() => ctx.primaryLink.notifyDrawingsChanged(ctx.activeInstrumentId)}
+    />
+  );
+}
+
+function DockRunsPanel() {
+  const ctx = useWorkbenchContext();
+  return (
+    <RunsPanel
+      controller={ctx.runsController}
+      activeTimeframe={ctx.activeTimeframe}
+      onJumpToRound={ctx.onJumpToRound}
+      onReplayBeforeRound={ctx.onReplayBeforeRound}
     />
   );
 }
@@ -226,6 +244,7 @@ const DOCKVIEW_COMPONENTS = {
   scanner: DockScannerPanel,
   drawings: DockDrawingsPanel,
   annotations: DockAnnotationsPanel,
+  runs: DockRunsPanel,
 };
 
 export interface WorkbenchShellProps {
@@ -246,6 +265,7 @@ const RIGHT_DOCK_TABS = [
   "scanner",
   "drawings",
   "annotations",
+  "runs",
 ] as const;
 
 type RightTabId = (typeof RIGHT_DOCK_TABS)[number];
@@ -321,6 +341,7 @@ export function WorkbenchShell({
   const budget = useWebglBudget();
   const alertsController = useAlerts();
   const scannerController = useScanner(true);
+  const runsController = useRuns();
   const annotationsController = useAnnotations({
     instrumentId: telemetry.instrumentId || primarySnap.instrumentId,
     onDrawingsChanged: primaryLink.notifyDrawingsChanged,
@@ -331,6 +352,36 @@ export function WorkbenchShell({
     timeframe: telemetry.timeframe || primarySnap.timeframe,
     streamed: null,
   });
+
+  const [replayPanes, setReplayPanes] = useState<Record<string, boolean>>({});
+  const replayActive = useMemo(
+    () => Object.values(replayPanes).some(Boolean),
+    [replayPanes],
+  );
+  const [replayRequest, setReplayRequest] = useState<ReplayTriggerRequest | null>(null);
+  const [jumpRequest, setJumpRequest] = useState<ChartJumpRequest | null>(null);
+
+  const onPaneReplayActiveChange = useCallback((paneId: string, active: boolean) => {
+    setReplayPanes((prev) => {
+      if (Boolean(prev[paneId]) === active) return prev;
+      return { ...prev, [paneId]: active };
+    });
+  }, []);
+
+  const clearReplayRequest = useCallback((nonce: number) => {
+    setReplayRequest((prev) => (prev && prev.nonce === nonce ? null : prev));
+  }, []);
+
+  const clearJumpRequest = useCallback((nonce: number) => {
+    setJumpRequest((prev) => (prev && prev.nonce === nonce ? null : prev));
+  }, []);
+
+  const selectedRunRound = useMemo(
+    () =>
+      runsController.rounds.find((r) => r.round_id === runsController.selectedRoundId) ??
+      null,
+    [runsController.rounds, runsController.selectedRoundId],
+  );
 
   useEffect(() => {
     const onResize = () => setViewportWidth(window.innerWidth);
@@ -431,6 +482,39 @@ export function WorkbenchShell({
       alertsController.markSeen();
     },
     [primaryLink, alertsController],
+  );
+
+  const onJumpToRound = useCallback(
+    (round: RunRoundRecord, timeframe?: string) => {
+      if (round.instrument_id !== (telemetry.instrumentId || primarySnap.instrumentId)) {
+        primaryLink.setSymbol(round.instrument_id, timeframe);
+      }
+      if (round.opened_ts !== null && round.opened_ts !== undefined) {
+        setJumpRequest({
+          nonce: Date.now() + Math.random(),
+          instrumentId: round.instrument_id,
+          timeframe,
+          openedTs: round.opened_ts,
+          closedTs: round.closed_ts,
+        });
+      }
+    },
+    [primaryLink, telemetry.instrumentId, primarySnap.instrumentId],
+  );
+
+  const onReplayBeforeRound = useCallback(
+    (params: { instrumentId: string; timeframe?: string; fromTs: number }) => {
+      if (params.instrumentId !== (telemetry.instrumentId || primarySnap.instrumentId)) {
+        primaryLink.setSymbol(params.instrumentId, params.timeframe);
+      }
+      setReplayRequest({
+        nonce: Date.now() + Math.random(),
+        instrumentId: params.instrumentId,
+        timeframe: params.timeframe,
+        fromTs: params.fromTs,
+      });
+    },
+    [primaryLink, telemetry.instrumentId, primarySnap.instrumentId],
   );
 
   const onSeedAlert = useCallback((seed: Omit<AlertFormSeed, "nonce">) => {
@@ -555,8 +639,18 @@ export function WorkbenchShell({
       onSeedAlert,
       scannerController,
       annotationsController,
+      runsController,
+      selectedRunRound,
+      replayActive,
+      onPaneReplayActiveChange,
+      replayRequest,
+      clearReplayRequest,
+      jumpRequest,
+      clearJumpRequest,
       onSelectInstrument,
       onLocateTarget,
+      onJumpToRound,
+      onReplayBeforeRound,
       onPopoutChart,
       onOpenRightTab,
       onAdoptKeyLevel,
@@ -591,8 +685,18 @@ export function WorkbenchShell({
       onSeedAlert,
       scannerController,
       annotationsController,
+      runsController,
+      selectedRunRound,
+      replayActive,
+      onPaneReplayActiveChange,
+      replayRequest,
+      clearReplayRequest,
+      jumpRequest,
+      clearJumpRequest,
       onSelectInstrument,
       onLocateTarget,
+      onJumpToRound,
+      onReplayBeforeRound,
       onPopoutChart,
       onOpenRightTab,
       onAdoptKeyLevel,
@@ -864,6 +968,7 @@ export function WorkbenchShell({
                     {mobileTab === "scanner" && <DockScannerPanel />}
                     {mobileTab === "drawings" && <DockDrawingsPanel />}
                     {mobileTab === "annotations" && <DockAnnotationsPanel />}
+                    {mobileTab === "runs" && <DockRunsPanel />}
                   </div>
                 </div>
               )}

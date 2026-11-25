@@ -60,7 +60,7 @@ export function IndicatorToolbar({
                 onClick={() => onChange(name, { enabled: !item.enabled })}
               >
                 <span className="indicator-swatch" style={{ background: color }} />
-                <span>{series ? describeParams(series) : indicatorLabel(name, locale)}</span>
+                <span>{series ? describeParams(series, locale) : indicatorLabel(name, locale)}</span>
                 {series && (
                   <span className="indicator-latest">{describeLatest(series)}</span>
                 )}

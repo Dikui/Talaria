@@ -29,6 +29,7 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 - [ADR-0021：DSH 桌面应用作为工作台宿主](./adr/0021-dsh-desktop-app-as-host.md)（已被 ADR-0023 取代）
 - [ADR-0022：常驻服务由 DSH 桌面应用启停](./adr/0022-dsh-desktop-app-owns-service-lifecycle.md)（已被 ADR-0023 取代）
 - [ADR-0023：链路 1 作为一等核心：Rust 纯数据引擎 `talaria-data` 与独立看盘工作台](./adr/0023-standalone-workbench-and-rust-data-engine.md)
+- [ADR-0024：`talaria-data` 对 `run_export` 回测导出投影的只读边界（`summary.json` 原子就绪标记）](./adr/0024-readonly-run-export-projection.md)
 
 调研证据存档于 `docs/research/`（仅本地）；Phase 0 实证实验存档于 `docs/experiments/chain1-phase0-poc.md`（仅本地）。
 
@@ -574,7 +575,7 @@ flowchart LR
 | `state/runtime_snapshots.sqlite` + `state/hot_snapshots/*.parquet` | `Resident Service` | 证据快照索引与物化数据 | 改造中 |
 | `state/workbench_state.sqlite`（兼容迁自 `state/collaboration_state.sqlite`） | `Resident Service`（专用写通道，ADR-0012） | `Watchlist`、`Chart Overlay` 版本链、`Key Level` 反馈、`Alert` 与触发记录、协同标注/会诊/简报（兼容保留） | 改造中 |
 | `accounts/<sub_account_id>/ledger.sqlite` | 持有该子账户锁的 `Account Process`（模拟盘） | 子账户复式账本、持仓批次、`Trade Journal` | 规划中 |
-| `runs/<run_id>/`（`ledger.sqlite`、`run_state.sqlite`） | 该次回放的 `Account Process` | 回放的账本、规则状态、草案；回放不写工作台状态库 | 规划中 |
+| `runs/<run_id>/`（`ledger.sqlite`、`run_state.sqlite`、`rounds.parquet`、`equity.parquet`、`summary.json`） | 该次回放的 `Account Process` | 回放的账本、规则状态、草案与只读导出投影（`summary.json` 为原子就绪标记，ADR-0024）；回放不写工作台状态库 | 改造中 |
 | `studies/study_registry.sqlite` + `studies/<id>/journal.log` | `study_optimizer` 主进程；每个试验是一次回放，写自己的 `runs/<run_id>/`，Worker 只追加 `journal.log` | 三段切分封存、`n_trials`、晋升审计 | 以后 |
 
 ### 8.3 降级与契约门禁

@@ -1,8 +1,8 @@
 import type { OHLCV, SeriesPoint } from "@luxalgo/vela";
 import type { IndicatorSeries } from "@talaria/contracts";
 
-import { getLocale, t } from "./i18n";
-import { INDICATOR_CHANNELS } from "../features/indicators/config";
+import { getLocale, type Locale } from "./i18n";
+import { INDICATOR_CHANNELS, indicatorLabel } from "../features/indicators/config";
 
 export type IndicatorValueMap = Map<number, Record<string, string | null>>;
 
@@ -59,19 +59,24 @@ function trimNumber(value: number): string {
     : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-export function describeParams(series: IndicatorSeries): string {
+export function describeParams(series: IndicatorSeries, locale: Locale = getLocale()): string {
+  const label = indicatorLabel(series.name, locale);
   const period = series.params.period;
   if (series.name === "BOLL") {
-    return `BOLL(${period}, ${trimNumber(Number(series.params.std_dev ?? "2"))}σ)`;
+    return `${label}(${period}, ${trimNumber(Number(series.params.std_dev ?? "2"))}σ)`;
   }
   if (series.name === "VWAP") {
-    return `VWAP(${
+    return `${label}(${
       series.params.anchor === "session"
-        ? t("UTC 日界", "UTC day boundary")
-        : t("快照起点", "snapshot start")
+        ? locale === "zh"
+          ? "UTC 日界"
+          : "UTC day boundary"
+        : locale === "zh"
+          ? "快照起点"
+          : "snapshot start"
     })`;
   }
-  return `${series.name}(${period})`;
+  return `${label}(${period})`;
 }
 
 export function formatIndicatorValue(

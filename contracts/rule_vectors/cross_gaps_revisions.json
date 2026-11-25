@@ -1,0 +1,809 @@
+{
+  "cases": [
+    {
+      "derivatives": [],
+      "description": "FEED_GAP must yield None and prevent fabricating a cross on the next NORMAL bar.",
+      "drawings": [],
+      "levels": [],
+      "name": "cross_above_constant_across_feed_gap",
+      "rule": {
+        "expression": {
+          "left": {
+            "field": "close",
+            "source": "bar"
+          },
+          "op": "compare",
+          "right": {
+            "source": "constant",
+            "value": "105"
+          },
+          "test": "cross_above"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "100",
+            "threshold": "105"
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "100",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": null,
+              "high": null,
+              "low": null,
+              "open": null,
+              "precision": "SECOND_VERIFIED",
+              "status": "FEED_GAP",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": null,
+              "volume": null
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "110",
+              "high": "110",
+              "low": "110",
+              "open": "110",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "110",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000180000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "112",
+            "threshold": "105"
+          },
+          "now_ms": 1700000240000,
+          "upsert_bars": [
+            {
+              "close": "112",
+              "high": "112",
+              "low": "112",
+              "open": "112",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000180000,
+              "ts_available": 1700000240000,
+              "turnover": "112",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000240000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "102",
+            "threshold": "105"
+          },
+          "now_ms": 1700000300000,
+          "upsert_bars": [
+            {
+              "close": "102",
+              "high": "102",
+              "low": "102",
+              "open": "102",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000240000,
+              "ts_available": 1700000300000,
+              "turnover": "102",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000300000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": 1700000300000,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "108",
+            "threshold": "105"
+          },
+          "now_ms": 1700000360000,
+          "upsert_bars": [
+            {
+              "close": "108",
+              "high": "108",
+              "low": "108",
+              "open": "108",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000300000,
+              "ts_available": 1700000360000,
+              "turnover": "108",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "NO_TRADES preserves previous close as valid prior bar for cross_below.",
+      "drawings": [],
+      "levels": [],
+      "name": "cross_below_constant_across_no_trades",
+      "rule": {
+        "expression": {
+          "left": {
+            "field": "close",
+            "source": "bar"
+          },
+          "op": "compare",
+          "right": {
+            "source": "constant",
+            "value": "100"
+          },
+          "test": "cross_below"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "102",
+            "threshold": "100"
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "102",
+              "high": "102",
+              "low": "102",
+              "open": "102",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "102",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "102",
+            "threshold": "100"
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "102",
+              "high": "102",
+              "low": "102",
+              "open": "102",
+              "precision": "SECOND_VERIFIED",
+              "status": "NO_TRADES",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "0",
+              "volume": "0"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": 1700000120000,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "99",
+            "threshold": "100"
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "99",
+              "high": "99",
+              "low": "99",
+              "open": "99",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "99",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000180000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "99",
+            "threshold": "100"
+          },
+          "now_ms": 1700000240000,
+          "upsert_bars": [
+            {
+              "close": "99",
+              "high": "99",
+              "low": "99",
+              "open": "99",
+              "precision": "SECOND_VERIFIED",
+              "status": "NO_TRADES",
+              "timestamp": 1700000180000,
+              "ts_available": 1700000240000,
+              "turnover": "0",
+              "volume": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "EMA resets across FEED_GAP and sustains state across NO_TRADES before crossing.",
+      "drawings": [],
+      "levels": [],
+      "name": "cross_above_ema_across_feed_gap_and_no_trades",
+      "rule": {
+        "expression": {
+          "left": {
+            "field": "close",
+            "source": "bar"
+          },
+          "op": "compare",
+          "right": {
+            "name": "EMA",
+            "params": {
+              "period": 3
+            },
+            "source": "indicator"
+          },
+          "test": "cross_above"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "100",
+            "threshold": "100"
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "100",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "100",
+            "threshold": "100.0"
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NO_TRADES",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "0",
+              "volume": "0"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": 1700000120000,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "106",
+            "threshold": "103.00"
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "106",
+              "high": "106",
+              "low": "106",
+              "open": "106",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "106",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000180000,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "now_ms": 1700000240000,
+          "upsert_bars": [
+            {
+              "close": null,
+              "high": null,
+              "low": null,
+              "open": null,
+              "precision": "SECOND_VERIFIED",
+              "status": "FEED_GAP",
+              "timestamp": 1700000180000,
+              "ts_available": 1700000240000,
+              "turnover": null,
+              "volume": null
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000240000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "110",
+            "threshold": "110"
+          },
+          "now_ms": 1700000300000,
+          "upsert_bars": [
+            {
+              "close": "110",
+              "high": "110",
+              "low": "110",
+              "open": "110",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000240000,
+              "ts_available": 1700000300000,
+              "turnover": "110",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000300000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": 1700000300000,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "114",
+            "threshold": "112.0"
+          },
+          "now_ms": 1700000360000,
+          "upsert_bars": [
+            {
+              "close": "114",
+              "high": "114",
+              "low": "114",
+              "open": "114",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000300000,
+              "ts_available": 1700000360000,
+              "turnover": "114",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "Confirmed bar revision updating close above threshold triggers cross on revised bar and suppresses redundant cross on next bar.",
+      "drawings": [],
+      "levels": [],
+      "name": "cross_above_bar_revision_flips_signal",
+      "rule": {
+        "expression": {
+          "left": {
+            "field": "close",
+            "source": "bar"
+          },
+          "op": "compare",
+          "right": {
+            "source": "constant",
+            "value": "105"
+          },
+          "test": "cross_above"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "100",
+            "threshold": "105"
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "100",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "104",
+            "threshold": "105"
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "104",
+              "high": "104",
+              "low": "104",
+              "open": "104",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "104",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": {
+            "kind": "kline",
+            "payload": {
+              "bar": {
+                "close": "106",
+                "high": "106",
+                "low": "106",
+                "open": "106",
+                "precision": "SECOND_VERIFIED",
+                "status": "NORMAL",
+                "timestamp": 1700000060000,
+                "ts_available": 1700000135000,
+                "turnover": "106",
+                "volume": "1"
+              },
+              "confirmed": true,
+              "instrument_id": "BTC-USDT-PERP",
+              "revision": 1,
+              "timeframe": "1m"
+            }
+          },
+          "expected": {
+            "crossed_at": 1700000060000,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "106",
+            "threshold": "105"
+          },
+          "now_ms": 1700000135000,
+          "upsert_bars": [
+            {
+              "close": "106",
+              "high": "106",
+              "low": "106",
+              "open": "106",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000135000,
+              "turnover": "106",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "108",
+            "threshold": "105"
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "108",
+              "high": "108",
+              "low": "108",
+              "open": "108",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "108",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "Non-contiguous bar timestamp acts as a gap even without an explicit FEED_GAP row.",
+      "drawings": [],
+      "levels": [],
+      "name": "cross_below_sma_implicit_time_gap",
+      "rule": {
+        "expression": {
+          "left": {
+            "field": "close",
+            "source": "bar"
+          },
+          "op": "compare",
+          "right": {
+            "name": "SMA",
+            "params": {
+              "period": 2
+            },
+            "source": "indicator"
+          },
+          "test": "cross_below"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "100",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "95",
+              "high": "95",
+              "low": "95",
+              "open": "95",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "95",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000180000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "90",
+            "threshold": "92.5"
+          },
+          "now_ms": 1700000240000,
+          "upsert_bars": [
+            {
+              "close": "90",
+              "high": "90",
+              "low": "90",
+              "open": "90",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000180000,
+              "ts_available": 1700000240000,
+              "turnover": "90",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "category": "cross_above_cross_below_gaps_no_trades_revisions",
+  "instrument_id": "BTC-USDT-PERP",
+  "schema_version": 1,
+  "timeframe": "1m"
+}

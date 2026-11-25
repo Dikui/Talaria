@@ -1557,6 +1557,164 @@ fn all_115_json_schemas_roundtrip_without_drift() {
         &mut covered,
     );
 
+    let replay_tick = ReplayTick {
+        price: Decimal::from_str("64550.5").unwrap(),
+        open: Some(Decimal::from_str("64540").unwrap()),
+        high: Some(Decimal::from_str("64560").unwrap()),
+        low: Some(Decimal::from_str("64535").unwrap()),
+        volume: Some(Decimal::from_str("1.25").unwrap()),
+    };
+    assert_schema_roundtrip("replay_tick", &replay_tick, &mut covered);
+    assert_schema_roundtrip(
+        "ticks_json_response",
+        &TicksJsonResponse {
+            instrument_id: "BTC-USDT-PERP".to_owned(),
+            kind: TickKind::Trades,
+            start: 1_700_000_000_000,
+            end: 1_700_000_060_000,
+            as_of: Some(1_700_000_060_000),
+            aggregated: true,
+            ticks: vec![replay_tick],
+        },
+        &mut covered,
+    );
+
+    let run_fill = RunRoundFill {
+        event_id: "evt_1".to_owned(),
+        ts_event: 1_700_000_010_000,
+        kind: RunFillKind::EntryFilled,
+        side: RunFillSide::Buy,
+        price: Decimal::from_str("64500").unwrap(),
+        quantity: Decimal::from_str("0.1").unwrap(),
+        reason: RunFillReason::Entry,
+        raw_reason: Some("signal".to_owned()),
+        fill_tier: Some(RunFillTier::L1),
+        realized_pnl: None,
+        fee: Some(Decimal::from_str("1.29").unwrap()),
+    };
+    assert_schema_roundtrip("run_round_fill", &run_fill, &mut covered);
+
+    let barrier_change = RunBarrierChange {
+        event_id: "evt_2".to_owned(),
+        ts_event: 1_700_000_020_000,
+        kind: RunBarrierChangeKind::BarrierTightened,
+        stop: Decimal::from_str("64300").unwrap(),
+        take_profit: vec![Decimal::from_str("65500").unwrap()],
+        reason: Some("trailing".to_owned()),
+        amendment_id: Some("amd_1".to_owned()),
+    };
+    assert_schema_roundtrip("run_barrier_change", &barrier_change, &mut covered);
+
+    let run_round = RunRoundRecord {
+        round_id: "rnd_1".to_owned(),
+        sub_account_id: "sa-breakout".to_owned(),
+        currency: "USDT".to_owned(),
+        instrument_id: "BTC-USDT-PERP".to_owned(),
+        direction: Direction::Long,
+        phase: RunRoundPhase::Closed,
+        opened_ts: Some(1_700_000_010_000),
+        closed_ts: Some(1_700_000_060_000),
+        entry_price: Some(Decimal::from_str("64500").unwrap()),
+        exit_price: Some(Decimal::from_str("65500").unwrap()),
+        max_quantity: Decimal::from_str("0.1").unwrap(),
+        remaining_quantity: Decimal::ZERO,
+        stop: Decimal::from_str("64300").unwrap(),
+        take_profit: vec![Decimal::from_str("65500").unwrap()],
+        exit_reason: Some(RunFillReason::Tp),
+        raw_exit_reason: Some("take_profit".to_owned()),
+        net_pnl: Decimal::from_str("97.42").unwrap(),
+        fees: Decimal::from_str("2.58").unwrap(),
+        funding: Decimal::ZERO,
+        liquidation_fees: Decimal::ZERO,
+        mae: Some(Decimal::from_str("-20").unwrap()),
+        mfe: Some(Decimal::from_str("100").unwrap()),
+        fills: vec![run_fill],
+        barrier_changes: vec![barrier_change],
+    };
+    assert_schema_roundtrip("run_round_record", &run_round, &mut covered);
+
+    let acct_summary = RunAccountCurrencySummary {
+        sub_account_id: "sa-breakout".to_owned(),
+        currency: "USDT".to_owned(),
+        round_count: 1,
+        trade_count: 1,
+        net_pnl: Decimal::from_str("97.42").unwrap(),
+        max_drawdown: Decimal::ZERO,
+        fees: Decimal::from_str("2.58").unwrap(),
+        funding: Decimal::ZERO,
+        liquidation_fees: Decimal::ZERO,
+        initial_capital: Some(Decimal::from_str("10000").unwrap()),
+        final_equity: Some(Decimal::from_str("10097.42").unwrap()),
+    };
+    assert_schema_roundtrip("run_account_currency_summary", &acct_summary, &mut covered);
+
+    let artifacts = RunExportArtifacts::default();
+    assert_schema_roundtrip("run_export_artifacts", &artifacts, &mut covered);
+
+    let run_summary = RunExportSummary {
+        schema_version: 1,
+        run_id: "run_001".to_owned(),
+        status: RunStatus::Succeeded,
+        error: None,
+        scheme: "breakout_v1".to_owned(),
+        fill_plugin: "l1_trade_sim".to_owned(),
+        instrument_id: Some("BTC-USDT-PERP".to_owned()),
+        instruments: vec!["BTC-USDT-PERP".to_owned()],
+        timeframe: Some("1m".to_owned()),
+        start: Some(1_700_000_000_000),
+        end: Some(1_700_000_060_000),
+        signal_bars: Some(60),
+        pnl_basis: "booked".to_owned(),
+        artifacts,
+        accounts: vec![acct_summary],
+    };
+    assert_schema_roundtrip("run_export_summary", &run_summary, &mut covered);
+    assert_schema_roundtrip(
+        "run_list_response",
+        &RunListResponse {
+            runs: vec![run_summary],
+        },
+        &mut covered,
+    );
+    assert_schema_roundtrip(
+        "run_rounds_response",
+        &RunRoundsResponse {
+            run_id: "run_001".to_owned(),
+            rounds: vec![run_round],
+        },
+        &mut covered,
+    );
+
+    let equity_point = RunEquityPoint {
+        sub_account_id: "sa-breakout".to_owned(),
+        currency: "USDT".to_owned(),
+        seq: 1,
+        ts_event: 1_700_000_060_000,
+        event_id: "evt_3".to_owned(),
+        event_kind: "EXIT_FILLED".to_owned(),
+        round_id: Some("rnd_1".to_owned()),
+        pnl_basis: "booked".to_owned(),
+        realized_pnl_delta: Decimal::from_str("100").unwrap(),
+        fee_delta: Decimal::from_str("2.58").unwrap(),
+        funding_delta: Decimal::ZERO,
+        liquidation_fee_delta: Decimal::ZERO,
+        net_pnl: Decimal::from_str("97.42").unwrap(),
+        equity: Decimal::from_str("10097.42").unwrap(),
+        peak_pnl: Decimal::from_str("97.42").unwrap(),
+        drawdown: Decimal::ZERO,
+        max_drawdown: Decimal::ZERO,
+    };
+    assert_schema_roundtrip("run_equity_point", &equity_point, &mut covered);
+    assert_schema_roundtrip(
+        "run_equity_response",
+        &RunEquityResponse {
+            run_id: "run_001".to_owned(),
+            pnl_basis: "booked".to_owned(),
+            points: vec![equity_point],
+        },
+        &mut covered,
+    );
+
     // Ensure every single *.schema.json in contracts/schemas/ was validated!
     let mut disk_schemas = BTreeSet::new();
     for entry in fs::read_dir(schemas_dir()).unwrap() {

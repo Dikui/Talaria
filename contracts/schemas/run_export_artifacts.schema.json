@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "description": "`runs/<run_id>/` 下由账户进程原子产出的导出文件相对路径。",
+  "properties": {
+    "equity_path": {
+      "default": "equity.parquet",
+      "title": "Equity Path",
+      "type": "string"
+    },
+    "overlays_path": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Overlays Path"
+    },
+    "rounds_path": {
+      "default": "rounds.parquet",
+      "title": "Rounds Path",
+      "type": "string"
+    }
+  },
+  "title": "RunExportArtifacts",
+  "type": "object"
+}

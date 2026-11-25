@@ -14,7 +14,7 @@ from pydantic import Field, StrictInt, model_validator
 from talaria import sdk
 from talaria.account.contracts import MarketData, MarketEvent
 from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParams, SchemeError, Slot, SlotPlugin
-from talaria.components.runtime import confirmed_bars
+from talaria.components.runtime import cached_cold_bar_reader, confirmed_bars
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.ticks import Quote, TickKind, Trade, trade_version
@@ -93,14 +93,15 @@ class TickReplay:
             and 0 < bar.low <= min(bar.open, bar.close) <= max(bar.open, bar.close) <= bar.high
         }
         self._coverage: dict[int, bool] = {}
-        self._page = -1
+        self._loaded_pages: set[int] = set()
+        self._page_width = timeframe_ms("1d") if len(self._bars) > 5 else 5 * self._minute
 
     def covers(self, opening: int) -> bool:
         if opening not in self._bars:
             return False
-        width = 5 * self._minute
+        width = self._page_width
         page = opening // width * width
-        if self._page != page:
+        if page not in self._loaded_pages:
             end = min(page + width - 1, 2**63 - 1)
             rows = self._reader.read_tick_revisions(
                 self._spec, TickKind.TRADES, start_ts=page, end_ts=end, as_of=end,
@@ -116,18 +117,16 @@ class TickReplay:
             slots: dict[int, list[Trade]] = {}
             for row in first.values():
                 slot = row.ts_event // self._minute * self._minute
-                if row.ts_available < slot + self._minute:
+                if slot in self._bars and row.ts_available < slot + self._minute:
                     slots.setdefault(slot, []).append(row)
-            self._coverage = {}
             for slot, trades in slots.items():
-                bar = self._bars.get(slot)
-                if bar is not None:
-                    self._coverage[slot] = (
-                        min(row.price for row in trades) == bar.low
-                        and max(row.price for row in trades) == bar.high
-                        and sum(Fraction(row.size) for row in trades) == Fraction(bar.volume)
-                    )
-            self._page = page
+                bar = self._bars[slot]
+                self._coverage[slot] = (
+                    min(row.price for row in trades) == bar.low
+                    and max(row.price for row in trades) == bar.high
+                    and sum(Fraction(row.size) for row in trades) == Fraction(bar.volume)
+                )
+            self._loaded_pages.add(page)
         return self._coverage.get(opening, False)
 
     def events(self, start: int, end: int, *, seed_from: int | None = None) -> Iterator[TickMarketEvent]:
@@ -248,8 +247,10 @@ class ParquetReplay:
 
     def _bars(self, timeframe: str, *, strategy: bool) -> Iterator[MarketEvent]:
         params = self._params
-        read = partial(sdk.bars, _cold_reader=self._reader)
         history_start = params.start if params.history_start is None else params.history_start
+        read = cached_cold_bar_reader(
+            self._reader, start=history_start if strategy else params.start, end=params.end,
+        )
         for as_of, bar, tail_completed in confirmed_bars(
             read, params.instrument, timeframe, start=params.start, end=params.end,
         ):

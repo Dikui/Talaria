@@ -1,4 +1,13 @@
-import { Vela, type IndicatorHandle } from "@luxalgo/vela";
+import {
+  Vela,
+  type IndicatorHandle,
+  type ReplayBounds,
+  type ReplayStartOptions,
+  type ReplayState,
+  type ReplayTickSource,
+  type TradeExecution,
+  type VelaEventMap,
+} from "@luxalgo/vela";
 import type {
   AgentAnnotationRecord,
   CompactBar,
@@ -10,12 +19,16 @@ import type {
 
 import { compactBarToOHLCV, compactBarsToVelaSeries, timeframeToMs } from "../lib/chartData";
 import type { Locale } from "../lib/i18n";
+import { describeParams } from "../lib/indicatorData";
 import type { Theme } from "../lib/theme";
 import type {
   ChartMountOptions,
+  ChartReplayControl,
   ChartSurfaceAdapter,
   ExecutionBarrierItem,
   RenderBackendMode,
+  ReplayDrawingFilter,
+  ReplayEventName,
 } from "./adapter";
 import {
   VelaDrawingSyncBridge,
@@ -23,11 +36,16 @@ import {
 } from "./drawingBridge";
 import { VelaMarketFeed } from "./VelaMarketFeed";
 import {
-  TALARIA_OVERLAY_INDICATOR_TYPE,
-  TALARIA_STUDY_INDICATOR_TYPE,
+  TALARIA_INDICATOR_LANGUAGE,
+  TALARIA_TRADE_MARKERS_LANGUAGE,
+  TALARIA_TRADE_MARKERS_TYPE,
   clearAuthoritativeIndicatorSlot,
-  ensureTalariaIndicatorsRegistered,
+  clearChartTradeMarkers,
+  createAuthoritativeIndicatorEngine,
+  createTradeMarkersEngine,
+  setAuthoritativeIndicatorLocale,
   setAuthoritativeIndicatorSlot,
+  setChartTradeMarkers,
 } from "./velaIndicators";
 import {
   LAYER_AGENT_ANNOTATION,
@@ -46,6 +64,15 @@ const INITIAL_DEPTH = 300;
 const DEPTH_STEP = 300;
 const LEFT_EDGE_BARS_THRESHOLD = 24;
 
+const IDLE_REPLAY_STATE: ReplayState = {
+  active: false,
+  playing: false,
+  cursorTime: null,
+  remaining: 0,
+  nextTime: null,
+  intervalMs: 1000,
+};
+
 /**
  * Primary ChartSurfaceAdapter implementation backed by `@luxalgo/vela@0.10.17`
  * (Apache-2.0 headless core + `@luxalgo/vela/plugin` SDK).
@@ -63,7 +90,9 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
   private currentDepth = INITIAL_DEPTH;
   private expandingHistory = false;
   private backendMode: RenderBackendMode = "auto";
+  private locale: Locale = "zh";
   private readOnly = false;
+  private replayActive = false;
 
   private systemLevels: KeyLevel[] = [];
   private systemHighlightId: string | null = null;
@@ -72,12 +101,52 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
   private executionBarriers: ExecutionBarrierItem[] = [];
 
   private indicatorHandles = new Map<string, { handle: IndicatorHandle; version: number; pane: "main" | "sub" }>();
+  private tradeMarkersHandle: IndicatorHandle | null = null;
+  private tradeMarkersVersion = 0;
   private unsubscribers: Array<() => void> = [];
+
+  readonly replay: ChartReplayControl;
+
+  constructor() {
+    const self = this;
+    this.replay = {
+      start: async (opts: ReplayStartOptions) => {
+        if (!self.chart) return;
+        await self.chart.replay.start(opts);
+      },
+      step: () => self.chart?.replay.step() ?? false,
+      stepUpdate: () => self.chart?.replay.stepUpdate() ?? false,
+      play: (intervalMs?: number) => {
+        self.chart?.replay.play(intervalMs);
+      },
+      pause: () => {
+        self.chart?.replay.pause();
+      },
+      stop: () => {
+        self.chart?.replay.stop();
+      },
+      setTicks: (source: ReplayTickSource | null) => {
+        self.chart?.replay.setTicks(source);
+      },
+      get state(): ReplayState {
+        return self.chart?.replay.state ?? IDLE_REPLAY_STATE;
+      },
+      get bounds(): ReplayBounds | null {
+        return self.chart?.replay.bounds ?? null;
+      },
+      on: <K extends ReplayEventName>(
+        event: K,
+        handler: (payload: VelaEventMap[K]) => void,
+      ) => {
+        if (!self.chart) return () => undefined;
+        return self.chart.on(event, handler);
+      },
+    };
+  }
 
   mount(container: HTMLElement, options: ChartMountOptions): void {
     this.destroy();
 
-    ensureTalariaIndicatorsRegistered();
     ensureTalariaLayersRegistered();
 
     this.options = options;
@@ -85,6 +154,7 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     this.instrumentId = options.instrumentId;
     this.timeframe = options.timeframe;
     this.pricePrecision = options.pricePrecision;
+    this.locale = options.locale;
     this.readOnly = options.readOnly ?? false;
     this.currentDepth = INITIAL_DEPTH;
 
@@ -123,6 +193,16 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     chart.addNativeIndicator(LAYER_SYSTEM_LEVEL, { inputs: { chartId: this.chartId } });
     chart.addNativeIndicator(LAYER_AGENT_ANNOTATION, { inputs: { chartId: this.chartId } });
     chart.addNativeIndicator(LAYER_EXECUTION_BARRIER, { inputs: { chartId: this.chartId } });
+    chart.registerEngine(TALARIA_INDICATOR_LANGUAGE, createAuthoritativeIndicatorEngine());
+    chart.registerEngine(TALARIA_TRADE_MARKERS_LANGUAGE, createTradeMarkersEngine());
+    this.tradeMarkersVersion = 0;
+    this.tradeMarkersHandle = chart.addIndicator(TALARIA_TRADE_MARKERS_TYPE, {
+      id: `talaria-trades-${this.chartId}`,
+      language: TALARIA_TRADE_MARKERS_LANGUAGE,
+      overlay: true,
+      pane: "price",
+      inputs: { chartId: this.chartId, version: 0 },
+    });
 
     this.drawingBridge = new VelaDrawingSyncBridge({
       chart,
@@ -143,6 +223,12 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     }
 
     this.unsubscribers.push(
+      chart.on("replay:start", () => {
+        this.replayActive = true;
+      }),
+      chart.on("replay:end", () => {
+        this.replayActive = false;
+      }),
       chart.renderer.onCrosshairMove((event) => {
         options.onCrosshairMove?.({
           time: event.time,
@@ -273,7 +359,7 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
 
       if (existing && existing.pane === series.pane) {
         const nextVersion = existing.version + 1;
-        setAuthoritativeIndicatorSlot(slotKey, series, nextVersion);
+        setAuthoritativeIndicatorSlot(slotKey, series, nextVersion, this.locale);
         existing.version = nextVersion;
         existing.handle.setInputs({ slotKey, version: nextVersion });
       } else {
@@ -282,12 +368,12 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
           clearAuthoritativeIndicatorSlot(slotKey);
         }
         const version = 1;
-        setAuthoritativeIndicatorSlot(slotKey, series, version);
-        const type =
-          series.pane === "main"
-            ? TALARIA_OVERLAY_INDICATOR_TYPE
-            : TALARIA_STUDY_INDICATOR_TYPE;
-        const handle = this.chart.addNativeIndicator(type, {
+        setAuthoritativeIndicatorSlot(slotKey, series, version, this.locale);
+        const handle = this.chart.addIndicator(slotKey, {
+          language: TALARIA_INDICATOR_LANGUAGE,
+          overlay: series.pane === "main",
+          pane: series.pane === "main" ? "price" : "new",
+          title: describeParams(series, this.locale),
           inputs: { slotKey, version },
         });
         this.indicatorHandles.set(key, { handle, version, pane: series.pane });
@@ -301,6 +387,16 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
         this.indicatorHandles.delete(key);
       }
     }
+  }
+
+  setTradeMarkers(trades: TradeExecution[]): void {
+    if (!this.chart || !this.chartId) return;
+    this.tradeMarkersVersion += 1;
+    setChartTradeMarkers(this.chartId, trades, this.tradeMarkersVersion);
+    this.tradeMarkersHandle?.setInputs({
+      chartId: this.chartId,
+      version: this.tradeMarkersVersion,
+    });
   }
 
   setSystemLevels(
@@ -347,8 +443,12 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     this.drawingBridge?.loadFromRecords(drawings);
   }
 
+  setReplayDrawingFilter(filter: ReplayDrawingFilter): void {
+    this.drawingBridge?.setReplayFilter(filter);
+  }
+
   setDrawingTool(tool: string | null): void {
-    if (!this.chart || this.readOnly) return;
+    if (!this.chart || this.readOnly || this.replayActive) return;
     this.chart.drawings.setTool((tool as never) ?? null);
   }
 
@@ -366,7 +466,15 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
   }
 
   setLocale(locale: Locale): void {
+    this.locale = locale;
     this.chart?.setLocale(locale === "zh" ? "zh-Hans" : "en");
+    for (const [key, entry] of this.indicatorHandles.entries()) {
+      const slotKey = `${this.chartId}:${key}`;
+      if (setAuthoritativeIndicatorLocale(slotKey, locale)) {
+        entry.version += 1;
+        entry.handle.setInputs({ slotKey, version: entry.version });
+      }
+    }
   }
 
   setReadOnly(readOnly: boolean): void {
@@ -390,6 +498,10 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
 
   getVisibleRange(): { from: number; to: number } | null {
     return this.chart?.getVisibleRange() ?? null;
+  }
+
+  getOldestLoadedBarTime(): number | null {
+    return this.chart?.replay.bounds?.first ?? this.feed?.oldestLoadedTimestamp() ?? null;
   }
 
   async refresh(): Promise<void> {
@@ -418,6 +530,13 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
       clearAuthoritativeIndicatorSlot(`${this.chartId}:${key}`);
     }
     this.indicatorHandles.clear();
+
+    this.tradeMarkersHandle?.remove();
+    this.tradeMarkersHandle = null;
+    if (this.chartId) {
+      clearChartTradeMarkers(this.chartId);
+    }
+    this.replayActive = false;
 
     this.unbindAlertAction?.();
     this.unbindAlertAction = null;

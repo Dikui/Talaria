@@ -1,0 +1,459 @@
+{
+  "$defs": {
+    "Direction": {
+      "enum": [
+        "LONG",
+        "SHORT"
+      ],
+      "type": "string"
+    },
+    "RunBarrierChange": {
+      "additionalProperties": false,
+      "description": "回合存续期内的止损/止盈屏障变更。",
+      "properties": {
+        "amendment_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Amendment Id"
+        },
+        "event_id": {
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/RunBarrierChangeKind"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "stop": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Stop",
+          "type": "string"
+        },
+        "take_profit": {
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "title": "Take Profit",
+          "type": "array"
+        },
+        "ts_event": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Ts Event",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "ts_event",
+        "kind",
+        "stop"
+      ],
+      "title": "RunBarrierChange",
+      "type": "object"
+    },
+    "RunBarrierChangeKind": {
+      "description": "保护屏障变更类型。",
+      "enum": [
+        "BARRIER_TIGHTENED",
+        "BARRIER_AMENDED"
+      ],
+      "title": "RunBarrierChangeKind",
+      "type": "string"
+    },
+    "RunFillKind": {
+      "description": "回合内单笔成交方向事件类型。",
+      "enum": [
+        "ENTRY_FILLED",
+        "EXIT_FILLED"
+      ],
+      "title": "RunFillKind",
+      "type": "string"
+    },
+    "RunFillReason": {
+      "description": "归因标准化后的开平仓原因简称。",
+      "enum": [
+        "ENTRY",
+        "SL",
+        "TP",
+        "TIME",
+        "LIQUIDATION",
+        "OTHER"
+      ],
+      "title": "RunFillReason",
+      "type": "string"
+    },
+    "RunRoundFill": {
+      "additionalProperties": false,
+      "description": "回合同级归档中的单笔成交明细。",
+      "properties": {
+        "event_id": {
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "fee": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fee"
+        },
+        "fill_tier": {
+          "anyOf": [
+            {
+              "enum": [
+                "l1",
+                "trade",
+                "bar_1m",
+                "mark"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fill Tier"
+        },
+        "kind": {
+          "$ref": "#/$defs/RunFillKind"
+        },
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "quantity": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Quantity",
+          "type": "string"
+        },
+        "raw_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Reason"
+        },
+        "realized_pnl": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Realized Pnl"
+        },
+        "reason": {
+          "$ref": "#/$defs/RunFillReason"
+        },
+        "side": {
+          "enum": [
+            "buy",
+            "sell"
+          ],
+          "title": "Side",
+          "type": "string"
+        },
+        "ts_event": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Ts Event",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event_id",
+        "ts_event",
+        "kind",
+        "side",
+        "price",
+        "quantity",
+        "reason"
+      ],
+      "title": "RunRoundFill",
+      "type": "object"
+    },
+    "RunRoundPhase": {
+      "description": "仓位闭合回合的生命周期阶段。",
+      "enum": [
+        "PENDING_ENTRY",
+        "PARTIALLY_FILLED_PROTECTED",
+        "ACTIVE_PROTECTED",
+        "EXITING",
+        "CLOSED",
+        "CANCELLED",
+        "LIQUIDATED"
+      ],
+      "title": "RunRoundPhase",
+      "type": "string"
+    },
+    "RunRoundRecord": {
+      "additionalProperties": false,
+      "description": "`rounds.parquet` 与 `GET /api/runs/{run_id}/rounds` 的单个仓位闭合回合记录。",
+      "properties": {
+        "barrier_changes": {
+          "items": {
+            "$ref": "#/$defs/RunBarrierChange"
+          },
+          "title": "Barrier Changes",
+          "type": "array"
+        },
+        "closed_ts": {
+          "anyOf": [
+            {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Closed Ts"
+        },
+        "currency": {
+          "minLength": 1,
+          "title": "Currency",
+          "type": "string"
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "entry_price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry Price"
+        },
+        "exit_price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Price"
+        },
+        "exit_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunFillReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fees": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Fees",
+          "type": "string"
+        },
+        "fills": {
+          "items": {
+            "$ref": "#/$defs/RunRoundFill"
+          },
+          "title": "Fills",
+          "type": "array"
+        },
+        "funding": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Funding",
+          "type": "string"
+        },
+        "instrument_id": {
+          "minLength": 1,
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "liquidation_fees": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Liquidation Fees",
+          "type": "string"
+        },
+        "mae": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mae"
+        },
+        "max_quantity": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Max Quantity",
+          "type": "string"
+        },
+        "mfe": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mfe"
+        },
+        "net_pnl": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Net Pnl",
+          "type": "string"
+        },
+        "opened_ts": {
+          "anyOf": [
+            {
+              "maximum": 9223372036854775807,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Opened Ts"
+        },
+        "phase": {
+          "$ref": "#/$defs/RunRoundPhase"
+        },
+        "raw_exit_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Exit Reason"
+        },
+        "remaining_quantity": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Remaining Quantity",
+          "type": "string"
+        },
+        "round_id": {
+          "minLength": 1,
+          "title": "Round Id",
+          "type": "string"
+        },
+        "stop": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Stop",
+          "type": "string"
+        },
+        "sub_account_id": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Sub Account Id",
+          "type": "string"
+        },
+        "take_profit": {
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "title": "Take Profit",
+          "type": "array"
+        }
+      },
+      "required": [
+        "round_id",
+        "sub_account_id",
+        "currency",
+        "instrument_id",
+        "direction",
+        "phase",
+        "max_quantity",
+        "remaining_quantity",
+        "stop",
+        "net_pnl",
+        "fees",
+        "funding",
+        "liquidation_fees"
+      ],
+      "title": "RunRoundRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "`GET /api/runs/{run_id}/rounds` 只读响应。",
+  "properties": {
+    "rounds": {
+      "items": {
+        "$ref": "#/$defs/RunRoundRecord"
+      },
+      "title": "Rounds",
+      "type": "array"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id"
+  ],
+  "title": "RunRoundsResponse",
+  "type": "object"
+}

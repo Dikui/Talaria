@@ -40,6 +40,7 @@ from talaria.account.ownership import AccountOwnership, hold_sub_accounts
 from talaria.account.parameters import validate_parameters
 from talaria.account.paper import DraftIntake, PaperInbox
 from talaria.account.paper_ledger import PaperLedger, open_paper_ledger
+from talaria.account.run_export import export_run
 from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
 from talaria.account.plugins.l1_trade_sim import L1TradeSim, l1_trade_sim
 from talaria.account.plugins.live_ws import LiveWS, PaperMark, PaperPulse, live_ws
@@ -854,6 +855,7 @@ def run_backtest(
         with _open_process(config, "backtest", registry, files=files, run=run) as process:
             with open_ledger(run.directory / "ledger.sqlite", run.run_id, process.scheme.sub_accounts) as ledger:
                 completion.signal_bars = process.run(ledger, valuation=valuation)
+        export_run(run.directory, config=config, completion=completion)
     return run
 
 

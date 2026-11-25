@@ -1,0 +1,138 @@
+{
+  "$defs": {
+    "ReplayTick": {
+      "additionalProperties": false,
+      "description": "主线 A 轻量化逐笔回放节点，对应 Vela `ReplayTick` 形状。",
+      "properties": {
+        "high": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "High"
+        },
+        "low": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Low"
+        },
+        "open": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Open"
+        },
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Volume"
+        }
+      },
+      "required": [
+        "price"
+      ],
+      "title": "ReplayTick",
+      "type": "object"
+    },
+    "TickKind": {
+      "enum": [
+        "trades",
+        "quotes"
+      ],
+      "title": "TickKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "`GET /api/ticks` 轻量 JSON 逐笔响应。",
+  "properties": {
+    "aggregated": {
+      "default": false,
+      "title": "Aggregated",
+      "type": "boolean"
+    },
+    "as_of": {
+      "anyOf": [
+        {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "As Of"
+    },
+    "end": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "End",
+      "type": "integer"
+    },
+    "instrument_id": {
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/TickKind",
+      "default": "trades"
+    },
+    "start": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Start",
+      "type": "integer"
+    },
+    "ticks": {
+      "items": {
+        "$ref": "#/$defs/ReplayTick"
+      },
+      "title": "Ticks",
+      "type": "array"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "start",
+    "end"
+  ],
+  "title": "TicksJsonResponse",
+  "type": "object"
+}

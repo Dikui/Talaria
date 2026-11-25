@@ -1,0 +1,512 @@
+{
+  "cases": [
+    {
+      "derivatives": [],
+      "description": "bar_close rule returns None on OrderBookEvent, DerivativeTickEvent, and unconfirmed KlineEvent, evaluating only on confirmed close.",
+      "drawings": [],
+      "levels": [],
+      "name": "bar_close_rejects_non_confirmed_events",
+      "rule": {
+        "expression": {
+          "left": {
+            "field": "close",
+            "source": "bar"
+          },
+          "op": "compare",
+          "right": {
+            "source": "constant",
+            "value": "100"
+          },
+          "test": "gt"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "order_book",
+            "payload": {
+              "ask_price": "151",
+              "ask_size": "1",
+              "bid_price": "150",
+              "bid_size": "1",
+              "instrument_id": "BTC-USDT-PERP",
+              "ts_event": 1700000010000,
+              "ts_ingested": 1700000010000
+            }
+          },
+          "expected": null,
+          "now_ms": 1700000010000,
+          "upsert_bars": [
+            {
+              "close": "150",
+              "high": "150",
+              "low": "150",
+              "open": "150",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "150",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "derivative_tick",
+            "payload": {
+              "funding_rate": null,
+              "instrument_id": "BTC-USDT-PERP",
+              "mark_price": "150",
+              "next_funding_ts": null,
+              "open_interest": null,
+              "ts_event": 1700000020000,
+              "ts_ingested": 1700000020000
+            }
+          },
+          "expected": null,
+          "now_ms": 1700000020000,
+          "upsert_bars": []
+        },
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "kline",
+            "payload": {
+              "bar": {
+                "close": "150",
+                "high": "150",
+                "low": "150",
+                "open": "150",
+                "precision": "SECOND_VERIFIED",
+                "status": "NORMAL",
+                "timestamp": 1700000000000,
+                "ts_available": 1700000030000,
+                "turnover": "150",
+                "volume": "1"
+              },
+              "confirmed": false,
+              "instrument_id": "BTC-USDT-PERP",
+              "revision": 0,
+              "timeframe": "1m"
+            }
+          },
+          "expected": null,
+          "now_ms": 1700000030000,
+          "upsert_bars": []
+        },
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": {
+            "kind": "kline",
+            "payload": {
+              "bar": {
+                "close": "150",
+                "high": "150",
+                "low": "150",
+                "open": "150",
+                "precision": "SECOND_VERIFIED",
+                "status": "NORMAL",
+                "timestamp": 1700000000000,
+                "ts_available": 1700000060000,
+                "turnover": "150",
+                "volume": "1"
+              },
+              "confirmed": true,
+              "instrument_id": "BTC-USDT-PERP",
+              "revision": 0,
+              "timeframe": "1m"
+            }
+          },
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "150",
+            "threshold": "100"
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": []
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "event rule requires an event, reads only confirmed indicator bars up to now, and rejects future ts_ingested events.",
+      "drawings": [],
+      "levels": [],
+      "name": "event_orderbook_uses_confirmed_indicator_and_visibility_guard",
+      "rule": {
+        "expression": {
+          "left": {
+            "metric": "bid_price",
+            "source": "event"
+          },
+          "op": "compare",
+          "right": {
+            "name": "EMA",
+            "params": {
+              "period": 1
+            },
+            "source": "indicator"
+          },
+          "test": "gt"
+        },
+        "timing": "event",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "now_ms": 1700000070000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "100",
+              "volume": "1"
+            },
+            {
+              "close": "200",
+              "high": "200",
+              "low": "200",
+              "open": "200",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "200",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "order_book",
+            "payload": {
+              "ask_price": "121",
+              "ask_size": "1",
+              "bid_price": "120",
+              "bid_size": "1",
+              "instrument_id": "BTC-USDT-PERP",
+              "ts_event": 1700000070000,
+              "ts_ingested": 1700000070000
+            }
+          },
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "120",
+            "threshold": "100"
+          },
+          "now_ms": 1700000070000,
+          "upsert_bars": []
+        },
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "order_book",
+            "payload": {
+              "ask_price": "121",
+              "ask_size": "1",
+              "bid_price": "120",
+              "bid_size": "1",
+              "instrument_id": "BTC-USDT-PERP",
+              "ts_event": 1700000070000,
+              "ts_ingested": 1700000070001
+            }
+          },
+          "expected": null,
+          "now_ms": 1700000070000,
+          "upsert_bars": []
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "Unconfirmed KlineEvent at t1 caps SMA history at t0 (<= t1 - tf_ms) while reading LAST_PRICE from the open update.",
+      "drawings": [],
+      "levels": [],
+      "name": "event_unconfirmed_kline_caps_indicator_history_before_open_slot",
+      "rule": {
+        "expression": {
+          "left": {
+            "metric": "last_price",
+            "source": "event"
+          },
+          "op": "compare",
+          "right": {
+            "name": "SMA",
+            "params": {
+              "period": 1
+            },
+            "source": "indicator"
+          },
+          "test": "gt"
+        },
+        "timing": "event",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "kline",
+            "payload": {
+              "bar": {
+                "close": "110",
+                "high": "110",
+                "low": "110",
+                "open": "110",
+                "precision": "SECOND_VERIFIED",
+                "status": "NORMAL",
+                "timestamp": 1700000060000,
+                "ts_available": 1700000120000,
+                "turnover": "110",
+                "volume": "1"
+              },
+              "confirmed": false,
+              "instrument_id": "BTC-USDT-PERP",
+              "revision": 1,
+              "timeframe": "1m"
+            }
+          },
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "110",
+            "threshold": "100"
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "100",
+              "volume": "1"
+            },
+            {
+              "close": "200",
+              "high": "200",
+              "low": "200",
+              "open": "200",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "200",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "OrderBookEvent leaves bar-dependent overlay nodes as None (unknown), whereas unconfirmed KlineEvent evaluates them against kline.bar.",
+      "drawings": [
+        {
+          "created_ts": 0,
+          "deleted_at": null,
+          "drawing_id": "seg_1",
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "SEGMENT",
+          "points": [
+            {
+              "price": "150",
+              "ts": 1700000000000
+            },
+            {
+              "price": "150",
+              "ts": 1700000120000
+            }
+          ],
+          "style": {
+            "color": "#4c8dff",
+            "fill_opacity": 0.12,
+            "line_style": "solid",
+            "line_width": 1
+          },
+          "text": "",
+          "updated_ts": 0,
+          "version": 1,
+          "visible_timeframes": []
+        }
+      ],
+      "levels": [],
+      "name": "event_any_with_orderbook_vs_unconfirmed_kline_bar_nodes",
+      "rule": {
+        "expression": {
+          "args": [
+            {
+              "left": {
+                "metric": "bid_price",
+                "source": "event"
+              },
+              "op": "compare",
+              "right": {
+                "source": "constant",
+                "value": "150"
+              },
+              "test": "gt"
+            },
+            {
+              "direction": "ABOVE",
+              "drawing_id": "seg_1",
+              "mode": "TOUCH",
+              "op": "overlay"
+            }
+          ],
+          "op": "any"
+        },
+        "timing": "event",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "order_book",
+            "payload": {
+              "ask_price": "141",
+              "ask_size": "1",
+              "bid_price": "140",
+              "bid_size": "1",
+              "instrument_id": "BTC-USDT-PERP",
+              "ts_event": 1700000070000,
+              "ts_ingested": 1700000070000
+            }
+          },
+          "expected": null,
+          "now_ms": 1700000070000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "100",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "order_book",
+            "payload": {
+              "ask_price": "161",
+              "ask_size": "1",
+              "bid_price": "160",
+              "bid_size": "1",
+              "instrument_id": "BTC-USDT-PERP",
+              "ts_event": 1700000070000,
+              "ts_ingested": 1700000070000
+            }
+          },
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "160",
+            "threshold": "150"
+          },
+          "now_ms": 1700000070000,
+          "upsert_bars": []
+        },
+        {
+          "bar_ts": null,
+          "consume_retests": true,
+          "event": {
+            "kind": "kline",
+            "payload": {
+              "bar": {
+                "close": "140",
+                "high": "155",
+                "low": "140",
+                "open": "140",
+                "precision": "SECOND_VERIFIED",
+                "status": "NORMAL",
+                "timestamp": 1700000060000,
+                "ts_available": 1700000080000,
+                "turnover": "140",
+                "volume": "1"
+              },
+              "confirmed": false,
+              "instrument_id": "BTC-USDT-PERP",
+              "revision": 0,
+              "timeframe": "1m"
+            }
+          },
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "SEGMENT",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "140",
+            "threshold": "150"
+          },
+          "now_ms": 1700000080000,
+          "upsert_bars": []
+        }
+      ]
+    }
+  ],
+  "category": "event_vs_bar_close_evaluation_boundary",
+  "instrument_id": "BTC-USDT-PERP",
+  "schema_version": 1,
+  "timeframe": "1m"
+}

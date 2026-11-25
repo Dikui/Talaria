@@ -22,4 +22,13 @@ tests/cli/test_cli.py  "token": descriptor\.token
 tests/cli/test_service.py  "HTTP_PROXY": "http://test-user:(p&ss|secret)@proxy\.example:8080
 tests/cli/test_trade_backfill.py  (token="local-token"|token=settings\.token)
 tests/workbench_api/test_paper_api.py  token="trader-session"
+engine/crates/talaria-server/src/routes/analysis.rs  let ev_token = evidence_class\.trim\(\)\.to_uppercase\(\);
+engine/crates/talaria-server/src/server.rs  token: token\.clone\(\),
+workbench/packages/talaria-desk-ui/src/features/feed/deskSocketHub.ts  const token = getApiToken\(\);
+workbench/packages/talaria-desk-ui/src/lib/api.ts  (apiToken = config\.token \?\? null;|const token = getApiToken\(\);|const metaToken = readMetaContent\("talaria-token"\);|configureApi\(\{ baseUrl: (conn\.base_url|metaBaseUrl \|\| apiBaseUrl), token: (conn\.token|metaMatch\[1\]) \}\);|token: (injected|data)\.token,|let token = readSessionToken\(\);|token = readSessionToken\(\);)
+workbench/packages/talaria-desk-ui/src/chart/velaIndicators.ts  token: instanceId,
+workbench/src-tauri/src/service.rs  (token: desc\.token\.clone\(\),|"token": info\.token,|"token": "secret-token-123",)
+dsh/packages/talaria-dsh-plugin/bridge.js  (const explicitToken = config\.token \|\| process\.env\.TALARIA_SERVICE_TOKEN|token: explicitToken,|token: parsed\.token \})
+dsh/packages/talaria-dsh-plugin/test/bridge.test.mjs  token: '(rust|desc)-token'
+engine/crates/talaria-packs/src/us_equity/stream.rs  "secret": self\.api_secret,
 ```

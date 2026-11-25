@@ -1,0 +1,132 @@
+{
+  "$defs": {
+    "RunFillKind": {
+      "description": "回合内单笔成交方向事件类型。",
+      "enum": [
+        "ENTRY_FILLED",
+        "EXIT_FILLED"
+      ],
+      "title": "RunFillKind",
+      "type": "string"
+    },
+    "RunFillReason": {
+      "description": "归因标准化后的开平仓原因简称。",
+      "enum": [
+        "ENTRY",
+        "SL",
+        "TP",
+        "TIME",
+        "LIQUIDATION",
+        "OTHER"
+      ],
+      "title": "RunFillReason",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "回合同级归档中的单笔成交明细。",
+  "properties": {
+    "event_id": {
+      "minLength": 1,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "fee": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fee"
+    },
+    "fill_tier": {
+      "anyOf": [
+        {
+          "enum": [
+            "l1",
+            "trade",
+            "bar_1m",
+            "mark"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fill Tier"
+    },
+    "kind": {
+      "$ref": "#/$defs/RunFillKind"
+    },
+    "price": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Price",
+      "type": "string"
+    },
+    "quantity": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Quantity",
+      "type": "string"
+    },
+    "raw_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Raw Reason"
+    },
+    "realized_pnl": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Realized Pnl"
+    },
+    "reason": {
+      "$ref": "#/$defs/RunFillReason"
+    },
+    "side": {
+      "enum": [
+        "buy",
+        "sell"
+      ],
+      "title": "Side",
+      "type": "string"
+    },
+    "ts_event": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Ts Event",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "event_id",
+    "ts_event",
+    "kind",
+    "side",
+    "price",
+    "quantity",
+    "reason"
+  ],
+  "title": "RunRoundFill",
+  "type": "object"
+}

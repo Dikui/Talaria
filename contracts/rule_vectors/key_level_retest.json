@@ -1,0 +1,835 @@
+{
+  "cases": [
+    {
+      "derivatives": [],
+      "description": "Arms UP breakout, consumes once on retest, suppresses subsequent UP retest, resets inside zone, and re-arms on next UP breakout.",
+      "drawings": [],
+      "levels": [
+        {
+          "category": "SESSION",
+          "evidence_class": "OBSERVED",
+          "formed_ts": 0,
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "PREV_DAY_HIGH",
+          "last_touch_ts": null,
+          "level_id": "kl_zone",
+          "method_version": "key-levels@2",
+          "parameters": {},
+          "price": null,
+          "price_high": "102",
+          "price_low": "100",
+          "status": "BROKEN",
+          "strength": 0.8,
+          "timeframe": "1m",
+          "touch_count": 0,
+          "ts_available": 0,
+          "volume_weight": "1"
+        }
+      ],
+      "name": "retest_multi_bar_consumption_and_zone_reset",
+      "rule": {
+        "expression": {
+          "event": "RETEST",
+          "level_id": "kl_zone",
+          "op": "level_event"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": false,
+            "observed": "105",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {
+              "root": [
+                "UP",
+                1700000000000
+              ]
+            },
+            "consumed_sides": {}
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "105",
+              "high": "106",
+              "low": "103",
+              "open": "105",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "105",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": true,
+            "observed": "104",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {
+              "root": "UP"
+            }
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "104",
+              "high": "105",
+              "low": "101",
+              "open": "104",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "104",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": false,
+            "observed": "103",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {
+              "root": "UP"
+            }
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "103",
+              "high": "104",
+              "low": "100.5",
+              "open": "103",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "103",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000180000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": false,
+            "observed": "101",
+            "threshold": "100"
+          },
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {}
+          },
+          "now_ms": 1700000240000,
+          "upsert_bars": [
+            {
+              "close": "101",
+              "high": "102",
+              "low": "100",
+              "open": "101",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000180000,
+              "ts_available": 1700000240000,
+              "turnover": "101",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000240000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": false,
+            "observed": "104",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {
+              "root": [
+                "UP",
+                1700000240000
+              ]
+            },
+            "consumed_sides": {}
+          },
+          "now_ms": 1700000300000,
+          "upsert_bars": [
+            {
+              "close": "104",
+              "high": "105",
+              "low": "102.5",
+              "open": "104",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000240000,
+              "ts_available": 1700000300000,
+              "turnover": "104",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000300000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": true,
+            "observed": "103",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {
+              "root": "UP"
+            }
+          },
+          "now_ms": 1700000360000,
+          "upsert_bars": [
+            {
+              "close": "103",
+              "high": "104",
+              "low": "102",
+              "open": "103",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000300000,
+              "ts_available": 1700000360000,
+              "turnover": "103",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "Consumed UP side is cleared and immediately replaced when close flips below lower bound.",
+      "drawings": [],
+      "levels": [
+        {
+          "category": "SESSION",
+          "evidence_class": "OBSERVED",
+          "formed_ts": 0,
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "PREV_DAY_HIGH",
+          "last_touch_ts": null,
+          "level_id": "kl_zone",
+          "method_version": "key-levels@2",
+          "parameters": {},
+          "price": null,
+          "price_high": "102",
+          "price_low": "100",
+          "status": "BROKEN",
+          "strength": 0.8,
+          "timeframe": "1m",
+          "touch_count": 0,
+          "ts_available": 0,
+          "volume_weight": "1"
+        }
+      ],
+      "name": "retest_direct_side_flip_up_to_down",
+      "rule": {
+        "expression": {
+          "event": "RETEST",
+          "level_id": "kl_zone",
+          "op": "level_event"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": false,
+            "observed": "105",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {
+              "root": [
+                "UP",
+                1700000000000
+              ]
+            },
+            "consumed_sides": {}
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "105",
+              "high": "106",
+              "low": "103",
+              "open": "105",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "105",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": true,
+            "observed": "104",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {
+              "root": "UP"
+            }
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "104",
+              "high": "105",
+              "low": "101",
+              "open": "104",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "104",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "DOWN",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": false,
+            "observed": "98",
+            "threshold": "100"
+          },
+          "expected_state": {
+            "breakouts": {
+              "root": [
+                "DOWN",
+                1700000120000
+              ]
+            },
+            "consumed_sides": {}
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "98",
+              "high": "101",
+              "low": "97",
+              "open": "98",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "98",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000180000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "DOWN",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": true,
+            "observed": "99",
+            "threshold": "100"
+          },
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {
+              "root": "DOWN"
+            }
+          },
+          "now_ms": 1700000240000,
+          "upsert_bars": [
+            {
+              "close": "99",
+              "high": "100.5",
+              "low": "98",
+              "open": "99",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000180000,
+              "ts_available": 1700000240000,
+              "turnover": "99",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "A local RETEST match must NOT be consumed into consumed_sides if the parent ALL expression fails.",
+      "drawings": [],
+      "levels": [
+        {
+          "category": "SESSION",
+          "evidence_class": "OBSERVED",
+          "formed_ts": 0,
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "PREV_DAY_HIGH",
+          "last_touch_ts": null,
+          "level_id": "kl_zone",
+          "method_version": "key-levels@2",
+          "parameters": {},
+          "price": null,
+          "price_high": "102",
+          "price_low": "100",
+          "status": "BROKEN",
+          "strength": 0.8,
+          "timeframe": "1m",
+          "touch_count": 0,
+          "ts_available": 0,
+          "volume_weight": "1"
+        }
+      ],
+      "name": "retest_not_consumed_when_parent_all_fails",
+      "rule": {
+        "expression": {
+          "args": [
+            {
+              "event": "RETEST",
+              "level_id": "kl_zone",
+              "op": "level_event"
+            },
+            {
+              "left": {
+                "field": "close",
+                "source": "bar"
+              },
+              "op": "compare",
+              "right": {
+                "source": "constant",
+                "value": "105"
+              },
+              "test": "gt"
+            }
+          ],
+          "op": "all"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": false,
+            "observed": "104",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {
+              "root.0": [
+                "UP",
+                1700000000000
+              ]
+            },
+            "consumed_sides": {}
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "104",
+              "high": "105",
+              "low": "103",
+              "open": "104",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "104",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "103",
+            "threshold": "105"
+          },
+          "expected_state": {
+            "breakouts": {
+              "root.0": [
+                "UP",
+                1700000000000
+              ]
+            },
+            "consumed_sides": {}
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "103",
+              "high": "104",
+              "low": "101",
+              "open": "103",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "103",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": true,
+            "observed": "106",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {
+              "root.0": "UP"
+            }
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "106",
+              "high": "107",
+              "low": "101.5",
+              "open": "106",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "106",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "While KeyLevel.status is ACTIVE, closes outside bounds yield None without arming RETEST.",
+      "drawings": [],
+      "levels": [
+        {
+          "category": "SESSION",
+          "evidence_class": "OBSERVED",
+          "formed_ts": 0,
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "PREV_DAY_HIGH",
+          "last_touch_ts": null,
+          "level_id": "kl_zone",
+          "method_version": "key-levels@2",
+          "parameters": {},
+          "price": null,
+          "price_high": "102",
+          "price_low": "100",
+          "status": "ACTIVE",
+          "strength": 0.8,
+          "timeframe": "1m",
+          "touch_count": 0,
+          "ts_available": 0,
+          "volume_weight": "1"
+        }
+      ],
+      "name": "active_level_defers_retest_until_broken",
+      "rule": {
+        "expression": {
+          "event": "RETEST",
+          "level_id": "kl_zone",
+          "op": "level_event"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {}
+          },
+          "levels": [
+            {
+              "category": "SESSION",
+              "evidence_class": "OBSERVED",
+              "formed_ts": 0,
+              "instrument_id": "BTC-USDT-PERP",
+              "kind": "PREV_DAY_HIGH",
+              "last_touch_ts": null,
+              "level_id": "kl_zone",
+              "method_version": "key-levels@2",
+              "parameters": {},
+              "price": null,
+              "price_high": "102",
+              "price_low": "100",
+              "status": "ACTIVE",
+              "strength": 0.8,
+              "timeframe": "1m",
+              "touch_count": 0,
+              "ts_available": 0,
+              "volume_weight": "1"
+            }
+          ],
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "105",
+              "high": "106",
+              "low": "103",
+              "open": "105",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "105",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": false,
+            "observed": "104",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {
+              "root": [
+                "UP",
+                1700000060000
+              ]
+            },
+            "consumed_sides": {}
+          },
+          "levels": [
+            {
+              "category": "SESSION",
+              "evidence_class": "OBSERVED",
+              "formed_ts": 0,
+              "instrument_id": "BTC-USDT-PERP",
+              "kind": "PREV_DAY_HIGH",
+              "last_touch_ts": null,
+              "level_id": "kl_zone",
+              "method_version": "key-levels@2",
+              "parameters": {},
+              "price": null,
+              "price_high": "102",
+              "price_low": "100",
+              "status": "BROKEN",
+              "strength": 0.8,
+              "timeframe": "1m",
+              "touch_count": 0,
+              "ts_available": 0,
+              "volume_weight": "1"
+            }
+          ],
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "104",
+              "high": "105",
+              "low": "101",
+              "open": "104",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "104",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": "UP",
+            "level_event": "RETEST",
+            "level_id": "kl_zone",
+            "matched": true,
+            "observed": "103",
+            "threshold": "102"
+          },
+          "expected_state": {
+            "breakouts": {},
+            "consumed_sides": {
+              "root": "UP"
+            }
+          },
+          "levels": [
+            {
+              "category": "SESSION",
+              "evidence_class": "OBSERVED",
+              "formed_ts": 0,
+              "instrument_id": "BTC-USDT-PERP",
+              "kind": "PREV_DAY_HIGH",
+              "last_touch_ts": null,
+              "level_id": "kl_zone",
+              "method_version": "key-levels@2",
+              "parameters": {},
+              "price": null,
+              "price_high": "102",
+              "price_low": "100",
+              "status": "BROKEN",
+              "strength": 0.8,
+              "timeframe": "1m",
+              "touch_count": 0,
+              "ts_available": 0,
+              "volume_weight": "1"
+            }
+          ],
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "103",
+              "high": "104",
+              "low": "101",
+              "open": "103",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "103",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "category": "key_level_retest_state_machine",
+  "instrument_id": "BTC-USDT-PERP",
+  "schema_version": 1,
+  "timeframe": "1m"
+}

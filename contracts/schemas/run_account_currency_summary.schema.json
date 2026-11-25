@@ -1,0 +1,90 @@
+{
+  "additionalProperties": false,
+  "description": "按 `(sub_account_id, currency)` 聚合的回放收益与回撤汇总。",
+  "properties": {
+    "currency": {
+      "minLength": 1,
+      "title": "Currency",
+      "type": "string"
+    },
+    "fees": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Fees",
+      "type": "string"
+    },
+    "final_equity": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Final Equity"
+    },
+    "funding": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Funding",
+      "type": "string"
+    },
+    "initial_capital": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Initial Capital"
+    },
+    "liquidation_fees": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Liquidation Fees",
+      "type": "string"
+    },
+    "max_drawdown": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Max Drawdown",
+      "type": "string"
+    },
+    "net_pnl": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Net Pnl",
+      "type": "string"
+    },
+    "round_count": {
+      "minimum": 0,
+      "title": "Round Count",
+      "type": "integer"
+    },
+    "sub_account_id": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "title": "Sub Account Id",
+      "type": "string"
+    },
+    "trade_count": {
+      "minimum": 0,
+      "title": "Trade Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "sub_account_id",
+    "currency",
+    "round_count",
+    "trade_count",
+    "net_pnl",
+    "max_drawdown",
+    "fees",
+    "funding",
+    "liquidation_fees"
+  ],
+  "title": "RunAccountCurrencySummary",
+  "type": "object"
+}

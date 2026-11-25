@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from talaria.foundation.drawings import DrawingKind, DrawingPoint, DrawingRecord
+from talaria.foundation.operators.core import with_operator_context
 
 #: 矩形/通道等有厚度的图元，方向决定使用上沿还是下沿。
 THICK_KINDS = frozenset(
@@ -41,6 +42,7 @@ def _time_span(points: list[DrawingPoint]) -> tuple[int, int]:
     return min(timestamps), max(timestamps)
 
 
+@with_operator_context
 def overlay_bounds(
     drawing: DrawingRecord,
     ts: int,

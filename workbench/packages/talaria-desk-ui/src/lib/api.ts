@@ -48,11 +48,17 @@ import type {
   PaperRound,
   RulePreviewRequest,
   RulePreviewResponse,
+  RunEquityResponse,
+  RunExportSummary,
+  RunListResponse,
+  RunRoundsResponse,
   ScannerBriefing,
   ScannerFocusResponse,
   ScannerScanResponse,
   ScannerTriggerListResponse,
   SnapshotMeta,
+  TickKind,
+  TicksJsonResponse,
   UsageSummaryResponse,
   Watchlist,
 } from "@talaria/contracts";
@@ -252,8 +258,9 @@ async function parseError(response: Response): Promise<ApiError> {
   );
 }
 
-async function getJson<T>(path: string): Promise<T> {
+async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(apiPath(path), {
+    signal,
     headers: { Accept: "application/json", ...authorizationHeader() },
   });
   if (!response.ok) {
@@ -377,6 +384,80 @@ export const api = {
     return getJson<IndicatorBundle>(
       `/api/snapshots/${encodeURIComponent(snapshotId)}/indicators?${query.toString()}`,
     );
+  },
+
+  indicatorsAt(options: {
+    instrumentId: string;
+    timeframe: string;
+    names: string[];
+    asOf?: number | null;
+    limit?: number;
+    live?: boolean;
+  }): Promise<IndicatorBundle> {
+    const query = new URLSearchParams({
+      instrument_id: options.instrumentId,
+      timeframe: options.timeframe,
+      names: options.names.join(","),
+      limit: String(options.limit ?? 300),
+    });
+    if (options.asOf !== undefined && options.asOf !== null) {
+      query.set("as_of", String(options.asOf));
+    }
+    if (options.live) query.set("live", "true");
+    return getJson<IndicatorBundle>(`/api/indicators?${query.toString()}`);
+  },
+
+  ticks(
+    options: {
+      instrument: string;
+      kind?: TickKind;
+      start: number;
+      end: number;
+      asOf?: number | null;
+      limit?: number;
+    },
+    signal?: AbortSignal,
+  ): Promise<TicksJsonResponse> {
+    const query = new URLSearchParams({
+      instrument: options.instrument,
+      kind: options.kind ?? "trades",
+      start: String(options.start),
+      end: String(options.end),
+      limit: String(options.limit ?? 2000),
+    });
+    if (options.asOf !== undefined && options.asOf !== null) {
+      query.set("as_of", String(options.asOf));
+    }
+    return getJson<TicksJsonResponse>(`/api/ticks?${query.toString()}`, signal);
+  },
+
+  keyLevelsAt(options: {
+    instrument: string;
+    timeframe: string;
+    asOf: number;
+  }): Promise<KeyLevelSet> {
+    const query = new URLSearchParams({
+      instrument: options.instrument,
+      timeframe: options.timeframe,
+      as_of: String(options.asOf),
+    });
+    return getJson<KeyLevelSet>(`/api/key-levels/at?${query.toString()}`);
+  },
+
+  runs(): Promise<RunListResponse> {
+    return getJson<RunListResponse>("/api/runs");
+  },
+
+  run(runId: string): Promise<RunExportSummary> {
+    return getJson<RunExportSummary>(`/api/runs/${encodeURIComponent(runId)}`);
+  },
+
+  runRounds(runId: string): Promise<RunRoundsResponse> {
+    return getJson<RunRoundsResponse>(`/api/runs/${encodeURIComponent(runId)}/rounds`);
+  },
+
+  runEquity(runId: string): Promise<RunEquityResponse> {
+    return getJson<RunEquityResponse>(`/api/runs/${encodeURIComponent(runId)}/equity`);
   },
 
   computeOperator(request: OperatorRequest, live = false): Promise<IndicatorSeries> {

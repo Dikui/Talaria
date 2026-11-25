@@ -9,7 +9,9 @@ pub mod analysis;
 pub mod arrow;
 pub mod bars;
 pub mod desk_static;
+pub mod runs;
 pub mod state;
+pub mod ticks;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -39,6 +41,8 @@ pub fn api_router(state: std::sync::Arc<AppState>) -> Router<std::sync::Arc<AppS
         .merge(arrow::router())
         .merge(bars::router())
         .merge(analysis::router())
+        .merge(ticks::router())
+        .merge(runs::router())
         .merge(state::router())
         .merge(desk_static::router(state))
 }

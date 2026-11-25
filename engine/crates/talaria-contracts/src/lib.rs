@@ -14,6 +14,7 @@ pub mod indicators;
 pub mod key_levels;
 pub mod market;
 pub mod rules;
+pub mod runs;
 pub mod scanner;
 pub mod snapshot;
 pub mod strategy_subscription;
@@ -94,7 +95,13 @@ pub use strategy_subscription::{
     StrategyBarEvent, StrategyDerivativeEvent, SubscriptionCursor, SubscriptionReady,
     SubscriptionReadyType, SubscriptionRequest,
 };
-pub use ticks::{Quote, TickKind, Trade, TradeAvailability, TradeSide};
+pub use ticks::{Quote, ReplayTick, TickKind, TicksJsonResponse, Trade, TradeAvailability, TradeSide};
+pub use runs::{
+    RunAccountCurrencySummary, RunBarrierChange, RunBarrierChangeKind, RunEquityPoint,
+    RunEquityResponse, RunExportArtifacts, RunExportSummary, RunFillKind, RunFillReason,
+    RunFillSide, RunFillTier, RunListResponse, RunRoundFill, RunRoundPhase, RunRoundRecord,
+    RunRoundsResponse, RunStatus,
+};
 pub use timeframes::{SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms};
 pub use types::{PrecisionTier, TemporalStamp};
 pub use watchlist::{

@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "RunBarrierChangeKind": {
+      "description": "保护屏障变更类型。",
+      "enum": [
+        "BARRIER_TIGHTENED",
+        "BARRIER_AMENDED"
+      ],
+      "title": "RunBarrierChangeKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "回合存续期内的止损/止盈屏障变更。",
+  "properties": {
+    "amendment_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Amendment Id"
+    },
+    "event_id": {
+      "minLength": 1,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/RunBarrierChangeKind"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "stop": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Stop",
+      "type": "string"
+    },
+    "take_profit": {
+      "items": {
+        "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+        "type": "string"
+      },
+      "title": "Take Profit",
+      "type": "array"
+    },
+    "ts_event": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Ts Event",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "event_id",
+    "ts_event",
+    "kind",
+    "stop"
+  ],
+  "title": "RunBarrierChange",
+  "type": "object"
+}

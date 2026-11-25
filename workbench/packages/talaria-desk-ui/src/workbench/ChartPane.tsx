@@ -24,7 +24,12 @@ import { IndicatorToolbar } from "../features/indicators/IndicatorToolbar";
 import { indicatorRequests } from "../features/indicators/config";
 import { formatLevelPrice, keyLevelKindLabel, visibleKeyLevels } from "../features/key-levels/model";
 import { annotationPriceLabel } from "../features/annotations/model";
+import { ReplayToolbar } from "../features/replay/ReplayToolbar";
+import { filterReplayAnnotations } from "../features/replay/filters";
+import { useChartReplay } from "../features/replay/useChartReplay";
+import { roundsToTradeExecutions, runRoundToBarrier } from "../features/runs/model";
 import { api } from "../lib/api";
+import { timeframeToMs } from "../lib/chartData";
 import { t, useLocale } from "../lib/i18n";
 import { TIMEFRAMES } from "./panels";
 import { useLinkCrosshair, useLinkSnapshot, usePanelLink } from "./usePanelLink";
@@ -76,6 +81,34 @@ export function ChartPane({
   const [inspectedAnnotation, setInspectedAnnotation] =
     useState<AgentAnnotationRecord | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  const tfMs = timeframeToMs(timeframe);
+  const { onPaneReplayActiveChange } = ctx;
+
+  const replay = useChartReplay({
+    paneId,
+    instrumentId,
+    timeframe,
+    group,
+    adapterRef,
+    indicatorSettings: ctx.indicatorSettings,
+    indicatorSeries: indicatorBundle?.series ?? [],
+    onIndicatorSeriesBackfilled: (series) => {
+      setIndicatorBundle({
+        snapshot_id: snapshot?.snapshot_id ?? "replay",
+        instrument_id: instrumentId,
+        timeframe,
+        series,
+      });
+    },
+  });
+
+  useEffect(() => {
+    onPaneReplayActiveChange(paneId, replay.active);
+    return () => {
+      onPaneReplayActiveChange(paneId, false);
+    };
+  }, [paneId, replay.active, onPaneReplayActiveChange]);
 
   const spec = useMemo(
     () => ctx.instruments.find((item) => item.instrument_id === instrumentId),
@@ -263,10 +296,44 @@ export function ChartPane({
   }, [instrumentId]);
 
   useEffect(() => {
+    if (ctx.selectedRunRound && ctx.selectedRunRound.instrument_id === instrumentId) {
+      adapterRef.current?.setExecutionBarriers([runRoundToBarrier(ctx.selectedRunRound)]);
+      return;
+    }
     adapterRef.current?.setExecutionBarriers(
       snapshotCutoff === null ? roundsToBarriers(barriers) : [],
     );
-  }, [barriers, snapshotCutoff]);
+  }, [barriers, snapshotCutoff, ctx.selectedRunRound, instrumentId]);
+
+  const runTradeMarkers = useMemo(
+    () => roundsToTradeExecutions(ctx.runsController.rounds, tfMs, instrumentId),
+    [ctx.runsController.rounds, tfMs, instrumentId],
+  );
+
+  useEffect(() => {
+    adapterRef.current?.setTradeMarkers(runTradeMarkers);
+  }, [runTradeMarkers]);
+
+  useEffect(() => {
+    const req = ctx.jumpRequest;
+    if (!req || req.instrumentId !== instrumentId) return;
+    if (ctx.activePaneId !== paneId && !isPopout) return;
+    const from = req.openedTs - 30 * tfMs;
+    const to = req.closedTs
+      ? Math.max(req.openedTs + 40 * tfMs, req.closedTs + 15 * tfMs)
+      : req.openedTs + 50 * tfMs;
+    adapterRef.current?.setVisibleRange({ from, to });
+    ctx.clearJumpRequest(req.nonce);
+  }, [ctx.jumpRequest, ctx.activePaneId, ctx.clearJumpRequest, instrumentId, paneId, isPopout, tfMs]);
+
+  useEffect(() => {
+    const req = ctx.replayRequest;
+    if (!req || req.instrumentId !== instrumentId) return;
+    if (ctx.activePaneId !== paneId && !isPopout) return;
+    if (req.timeframe && req.timeframe !== timeframe) return;
+    void replay.startAt(req.fromTs);
+    ctx.clearReplayRequest(req.nonce);
+  }, [ctx.replayRequest, ctx.activePaneId, ctx.clearReplayRequest, instrumentId, paneId, isPopout, timeframe, replay]);
 
   // Fetch backend authoritative indicators (zero frontend math).
   const latestLive = snapshotCutoff === null ? stream.bars.at(-1) : undefined;
@@ -330,15 +397,20 @@ export function ChartPane({
   }, [snapshot, timeframe, liveTick, ctx.indicatorSettings, snapshotCutoff]);
 
   // Sync SYSTEM_LEVEL and AGENT_ANNOTATION read-only layers.
+  const effectiveLevelsSource =
+    replay.active && replay.replayLevels !== null
+      ? replay.replayLevels
+      : ctx.keyLevelsController.levels;
+
   const visibleLevels = useMemo(
     () =>
       visibleKeyLevels(
-        ctx.keyLevelsController.levels,
+        effectiveLevelsSource,
         ctx.keyLevelFilter,
         ctx.keyLevelsController.ignoredIds,
       ),
     [
-      ctx.keyLevelsController.levels,
+      effectiveLevelsSource,
       ctx.keyLevelFilter,
       ctx.keyLevelsController.ignoredIds,
     ],
@@ -351,11 +423,26 @@ export function ChartPane({
     });
   }, [visibleLevels, pricePrecision, ctx.highlightedLevelId]);
 
+  const replayVisibleAnnotations = useMemo(
+    () =>
+      filterReplayAnnotations(ctx.annotationsController.annotations, {
+        active: replay.active,
+        cursorTime: replay.cursorTime,
+        showAll: replay.showAllDrawings,
+      }),
+    [
+      ctx.annotationsController.annotations,
+      replay.active,
+      replay.cursorTime,
+      replay.showAllDrawings,
+    ],
+  );
+
   useEffect(() => {
-    adapterRef.current?.setAgentAnnotations(ctx.annotationsController.annotations, {
+    adapterRef.current?.setAgentAnnotations(replayVisibleAnnotations, {
       timeframe,
     });
-  }, [ctx.annotationsController.annotations, timeframe]);
+  }, [replayVisibleAnnotations, timeframe]);
 
   // Report telemetry for the active pane.
   useEffect(() => {
@@ -510,12 +597,38 @@ export function ChartPane({
         error={indicatorError}
       />
 
-      <FeedAlert
-        health={stream.feedHealth}
-        now={stream.now}
-        live={streamLive}
-        connection={stream.connection}
+      <ReplayToolbar
+        active={replay.active}
+        playing={replay.playing}
+        isMaster={replay.isMaster}
+        cursorTime={replay.cursorTime}
+        remaining={replay.remaining}
+        intervalMs={replay.intervalMs}
+        bounds={replay.bounds}
+        tickReplayEnabled={replay.tickReplayEnabled}
+        showAllDrawings={replay.showAllDrawings}
+        timeframe={timeframe}
+        tfMs={tfMs}
+        underflowWarning={replay.underflowWarning}
+        onStartAt={(from) => void replay.startAt(from)}
+        onStepBar={replay.stepBar}
+        onStepTick={replay.stepTick}
+        onPlay={replay.play}
+        onPause={replay.pause}
+        onStop={replay.stop}
+        onChangeSpeed={replay.changeSpeed}
+        onToggleTickReplay={replay.toggleTickReplay}
+        onToggleShowAllDrawings={replay.toggleShowAllDrawings}
       />
+
+      {!replay.active && (
+        <FeedAlert
+          health={stream.feedHealth}
+          now={stream.now}
+          live={streamLive}
+          connection={stream.connection}
+        />
+      )}
 
       {loadError && (
         <div className="panel-error" role="alert">
@@ -555,7 +668,7 @@ export function ChartPane({
             <span className="layer-inspect-meta">
               {t("只读系统关键位（不可拖拽）", "Read-only system key level (non-draggable)")}
             </span>
-            {!ctx.readOnly && (
+            {!(ctx.readOnly || replay.active) && (
               <div className="layer-inspect-actions">
                 <button
                   type="button"
@@ -610,7 +723,7 @@ export function ChartPane({
             <span className="layer-inspect-meta">
               {t("只读智能体标注（不可拖拽）", "Read-only agent annotation (non-draggable)")}
             </span>
-            {!ctx.readOnly && inspectedAnnotation.status === "ACTIVE" && (
+            {!(ctx.readOnly || replay.active) && inspectedAnnotation.status === "ACTIVE" && (
               <div className="layer-inspect-actions">
                 <button
                   type="button"

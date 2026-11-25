@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::decimal::{DecimalStr, serde_decimal_str};
+use crate::decimal::{DecimalStr, serde_decimal_str, serde_decimal_str_opt};
 use crate::types::PrecisionTier;
 
 /// Tick dataset kind.
@@ -99,4 +99,41 @@ pub struct Quote {
     pub connection_id: Option<Uuid>,
     #[serde(default)]
     pub update_id: Option<i64>,
+}
+
+/// Lightweight intrabar tick update matching Vela `ReplayTick` shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplayTick {
+    #[serde(with = "serde_decimal_str")]
+    pub price: DecimalStr,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub open: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub high: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub low: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub volume: Option<DecimalStr>,
+}
+
+/// Lightweight JSON response for `GET /api/ticks`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TicksJsonResponse {
+    pub instrument_id: String,
+    #[serde(default = "default_tick_kind")]
+    pub kind: TickKind,
+    pub start: i64,
+    pub end: i64,
+    #[serde(default)]
+    pub as_of: Option<i64>,
+    #[serde(default)]
+    pub aggregated: bool,
+    #[serde(default)]
+    pub ticks: Vec<ReplayTick>,
+}
+
+fn default_tick_kind() -> TickKind {
+    TickKind::Trades
 }

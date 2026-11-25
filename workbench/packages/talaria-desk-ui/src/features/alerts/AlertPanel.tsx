@@ -56,6 +56,7 @@ export interface AlertPanelProps {
   currentInstrument: string;
   currentTimeframe: string;
   formSeed: AlertFormSeed | null;
+  replayActive?: boolean;
   onLocate: (trigger: AlertTriggerRecord) => void;
 }
 
@@ -67,6 +68,7 @@ export function AlertPanel({
   currentInstrument,
   currentTimeframe,
   formSeed,
+  replayActive = false,
   onLocate,
 }: AlertPanelProps) {
   useLocale();
@@ -144,7 +146,12 @@ export function AlertPanel({
     >
       <header className="dock-panel-head">
         <div>
-          <h2>{t("预警", "Alerts")}</h2>
+          <h2>
+            {t("预警", "Alerts")}{" "}
+            <span className="alerts-live-badge" data-testid="alerts-live-badge">
+              {t("实时", "LIVE")}
+            </span>
+          </h2>
           <span className="dock-panel-meta">
             {t("阈值 · 指标 · 画线 · 关键位", "Threshold · Indicator · Drawing · Level")}
           </span>
@@ -162,6 +169,15 @@ export function AlertPanel({
           {formOpen ? t("取消", "Cancel") : t("+ 新建预警", "+ New alert")}
         </button>
       </header>
+
+      {replayActive && (
+        <p className="panel-note" data-testid="alerts-replay-isolation-note" role="status">
+          {t(
+            "实时预警按实时行情触发，回放期间不叠加到回放图表。",
+            "Live alerts run on real-time market data and do not overlay onto replay charts.",
+          )}
+        </p>
+      )}
 
       {deniedAlerts.length > 0 && (
         <p className="panel-note" role="status">

@@ -17,8 +17,21 @@ import type {
 
 import { api } from "../lib/api";
 import { t } from "../lib/i18n";
-import type { DrawingSyncSource } from "./adapter";
+import type { DrawingSyncSource, ReplayDrawingFilter } from "./adapter";
 import { createSerialQueue } from "./writeQueue";
+
+export function filterReplayDrawings(
+  records: readonly DrawingRecord[],
+  filter: ReplayDrawingFilter,
+): DrawingRecord[] {
+  return records.filter((record) => {
+    if (record.deleted_at != null) return false;
+    if (!filter.active || filter.showAll || filter.cursorTime === null) {
+      return true;
+    }
+    return record.created_ts <= filter.cursorTime;
+  });
+}
 
 const VELA_EXTENSION_PREFIX = "[talaria-vela:v1]";
 const ALERT_ACTION_ID = "talaria.create_price_alert";
@@ -256,6 +269,11 @@ export class VelaDrawingSyncBridge {
   private debounceTimers = new Map<string, number>();
   private suppressEvents = false;
   private readOnly = false;
+  private replayFilter: ReplayDrawingFilter = {
+    active: false,
+    cursorTime: null,
+    showAll: false,
+  };
   private unsubscribers: Array<() => void> = [];
   private onChanged?: (records: DrawingRecord[], source: DrawingSyncSource) => void;
   private onSelected?: (drawingId: string | null) => void;
@@ -285,22 +303,32 @@ export class VelaDrawingSyncBridge {
     this.attachEvents();
   }
 
+  private isEffectiveReadOnly(): boolean {
+    return this.readOnly || this.replayFilter.active;
+  }
+
+  private applyInteractiveState(): void {
+    const effective = this.isEffectiveReadOnly();
+    this.chart.renderer.set("drawingsInteractive", !effective);
+    this.chart.drawings.showToolbar(!effective);
+  }
+
   private attachEvents(): void {
     this.unsubscribers.push(
       this.chart.on("drawing:created", ({ id }) => {
-        if (this.suppressEvents || this.readOnly) return;
+        if (this.suppressEvents || this.isEffectiveReadOnly()) return;
         this.scheduleCreate(id);
       }),
       this.chart.on("drawing:edited", ({ id }) => {
-        if (this.suppressEvents || this.readOnly) return;
+        if (this.suppressEvents || this.isEffectiveReadOnly()) return;
         this.scheduleEdit(id);
       }),
       this.chart.on("drawing:removed", ({ id }) => {
-        if (this.suppressEvents || this.readOnly) return;
+        if (this.suppressEvents || this.isEffectiveReadOnly()) return;
         this.scheduleDelete(id);
       }),
       this.chart.on("drawing:history", () => {
-        if (this.suppressEvents || this.readOnly) return;
+        if (this.suppressEvents || this.isEffectiveReadOnly()) return;
         void this.reconcileFullSnapshot();
       }),
       this.chart.on("drawing:selected", ({ id }) => {
@@ -318,8 +346,28 @@ export class VelaDrawingSyncBridge {
 
   setReadOnly(readOnly: boolean): void {
     this.readOnly = readOnly;
-    this.chart.renderer.set("drawingsInteractive", !readOnly);
-    this.chart.drawings.showToolbar(!readOnly);
+    this.applyInteractiveState();
+  }
+
+  setReplayFilter(filter: ReplayDrawingFilter): void {
+    this.replayFilter = { ...filter };
+    this.applyInteractiveState();
+    this.renderFromRemoteRecords();
+  }
+
+  private renderFromRemoteRecords(): void {
+    this.suppressEvents = true;
+    try {
+      const visible = filterReplayDrawings(
+        [...this.remoteRecords.values()],
+        this.replayFilter,
+      );
+      const serialized = visible.map((r) => contractDrawingToSerialized(r));
+      const doc: DrawingsDocument = { version: 1, drawings: serialized };
+      this.chart.drawings.fromJSON(doc);
+    } finally {
+      this.suppressEvents = false;
+    }
   }
 
   loadFromRecords(records: readonly DrawingRecord[]): void {
@@ -327,15 +375,12 @@ export class VelaDrawingSyncBridge {
     try {
       this.localToRemoteId.clear();
       this.remoteRecords.clear();
-      const serialized = records
-        .filter((r) => r.deleted_at == null)
-        .map((r) => {
-          this.remoteRecords.set(r.drawing_id, r);
-          this.localToRemoteId.set(r.drawing_id, r.drawing_id);
-          return contractDrawingToSerialized(r);
-        });
-      const doc: DrawingsDocument = { version: 1, drawings: serialized };
-      this.chart.drawings.fromJSON(doc);
+      for (const r of records) {
+        if (r.deleted_at != null) continue;
+        this.remoteRecords.set(r.drawing_id, r);
+        this.localToRemoteId.set(r.drawing_id, r.drawing_id);
+      }
+      this.renderFromRemoteRecords();
       // Initial fetch and peer refreshes are remote loads; must not re-broadcast drawings-changed.
       this.onChanged?.([...this.remoteRecords.values()], "load");
     } finally {
@@ -359,9 +404,11 @@ export class VelaDrawingSyncBridge {
   }
 
   private scheduleCreate(localId: string): void {
+    if (this.isEffectiveReadOnly()) return;
     this.clearTimer(localId);
     const timer = window.setTimeout(() => {
       this.debounceTimers.delete(localId);
+      if (this.isEffectiveReadOnly()) return;
       const drawing = this.chart.drawings.all().find((d) => d.id === localId);
       if (!drawing) return;
       const payload = serializedDrawingToCreate(
@@ -385,9 +432,11 @@ export class VelaDrawingSyncBridge {
   }
 
   private scheduleEdit(localId: string): void {
+    if (this.isEffectiveReadOnly()) return;
     this.clearTimer(localId);
     const timer = window.setTimeout(() => {
       this.debounceTimers.delete(localId);
+      if (this.isEffectiveReadOnly()) return;
       const drawing = this.chart.drawings.all().find((d) => d.id === localId);
       if (!drawing) return;
       const remoteId = this.localToRemoteId.get(localId) ?? localId;
@@ -422,6 +471,7 @@ export class VelaDrawingSyncBridge {
   }
 
   private scheduleDelete(localId: string): void {
+    if (this.isEffectiveReadOnly()) return;
     this.clearTimer(localId);
     const remoteId = this.localToRemoteId.get(localId) ?? localId;
     if (!this.remoteRecords.has(remoteId)) return;
@@ -438,6 +488,7 @@ export class VelaDrawingSyncBridge {
   }
 
   private async reconcileFullSnapshot(): Promise<void> {
+    if (this.isEffectiveReadOnly()) return;
     const current = this.chart.drawings.all();
     const presentRemoteIds = new Set(
       current.map((d) => this.localToRemoteId.get(d.id) ?? d.id),

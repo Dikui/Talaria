@@ -79,6 +79,7 @@ pub fn router() -> Router<Arc<AppState>> {
             get(get_snapshot_key_levels),
         )
         .route("/api/key-levels", get(get_key_levels_alias))
+        .route("/api/key-levels/at", get(get_key_levels_at))
         .route(
             "/api/key-levels/ignored",
             get(list_ignored_key_levels).put(set_ignored_key_level),
@@ -388,6 +389,12 @@ struct IndicatorsAliasQuery {
     limit: usize,
     #[serde(default, deserialize_with = "crate::error::deserialize_lenient_bool")]
     live: bool,
+    #[serde(default)]
+    as_of: Option<i64>,
+    #[serde(default)]
+    start: Option<i64>,
+    #[serde(default)]
+    end: Option<i64>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -512,6 +519,20 @@ async fn get_indicators_alias(
     ApiQuery(q): ApiQuery<IndicatorsAliasQuery>,
 ) -> Result<ApiJson<IndicatorBundle>, ApiError> {
     let _ = validate_timeframe(&q.timeframe)?;
+    if q.as_of.is_some_and(|ts| ts < 0) {
+        return Err(ApiError::validation("as_of must be non-negative"));
+    }
+    if q.start.is_some_and(|ts| ts < 0) {
+        return Err(ApiError::validation("start must be non-negative"));
+    }
+    if q.end.is_some_and(|ts| ts < 0) {
+        return Err(ApiError::validation("end must be non-negative"));
+    }
+    if let (Some(start_ts), Some(end_ts)) = (q.start, q.end)
+        && end_ts < start_ts
+    {
+        return Err(ApiError::validation("end must not precede start"));
+    }
     let limit = q.limit.clamp(1, 5000);
     let mut parsed_names = Vec::new();
     for raw in q.names.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -524,12 +545,26 @@ async fn get_indicators_alias(
     let state_c = Arc::clone(&state);
     let tf = q.timeframe.clone();
     let live = q.live;
+    let as_of_opt = q.as_of;
+    let start_opt = q.start;
+    let end_opt = q.end;
 
     if let Some(snap_id) = q.snapshot_id {
         let bundle = tokio::task::spawn_blocking(move || -> Result<IndicatorBundle, ApiError> {
-            let (meta, bars) = state_c.snapshots.get_bars(&snap_id, &tf)?;
+            let (meta, mut bars) = state_c.snapshots.get_bars(&snap_id, &tf)?;
             let (_, derivs) = state_c.snapshots.get_derivatives(&snap_id, &tf)?;
-            compute_bundle_sync(
+            if let Some(as_of) = as_of_opt {
+                bars.retain(|b| b.ts_available <= as_of);
+            }
+            if let Some(end_ts) = end_opt {
+                bars.retain(|b| b.timestamp <= end_ts);
+            }
+            let compute_limit = if start_opt.is_some() {
+                bars.len().max(1)
+            } else {
+                limit
+            };
+            let mut bundle = compute_bundle_sync(
                 &state_c,
                 snap_id,
                 meta.instrument_id,
@@ -538,9 +573,13 @@ async fn get_indicators_alias(
                 &derivs,
                 &parsed_names,
                 &effective,
-                limit,
-                live,
-            )
+                compute_limit,
+                live && as_of_opt.is_none(),
+            )?;
+            if start_opt.is_some() || end_opt.is_some() {
+                filter_bundle_points_by_range(&mut bundle, start_opt, end_opt, limit);
+            }
+            Ok(bundle)
         })
         .await
         .map_err(|e| ApiError::internal(e.to_string()))??;
@@ -553,14 +592,24 @@ async fn get_indicators_alias(
         .ok_or_else(|| ApiError::validation("snapshot_id or instrument_id is required"))?;
     let spec = find_instrument(&state, &inst_id)?;
     let now = state.now_ms();
+    let effective_as_of = as_of_opt.map(|a| a.min(now)).unwrap_or(now);
+    let effective_live = live && as_of_opt.is_none();
     let bundle = tokio::task::spawn_blocking(move || -> Result<IndicatorBundle, ApiError> {
-        let bars = load_confirmed_series(&state_c, &spec.instrument_id, &tf, now, 5000)?;
-        let (funding, oi, mark) = load_derivative_points(&state_c, &spec, now);
+        let mut bars = load_confirmed_series(&state_c, &spec.instrument_id, &tf, effective_as_of, 5000)?;
+        if let Some(end_ts) = end_opt {
+            bars.retain(|b| b.timestamp <= end_ts);
+        }
+        let (funding, oi, mark) = load_derivative_points(&state_c, &spec, effective_as_of);
         let mut derivs = Vec::with_capacity(funding.len() + oi.len() + mark.len());
         derivs.extend(funding);
         derivs.extend(oi);
         derivs.extend(mark);
-        compute_bundle_sync(
+        let compute_limit = if start_opt.is_some() {
+            bars.len().max(1)
+        } else {
+            limit
+        };
+        let mut bundle = compute_bundle_sync(
             &state_c,
             "live".to_owned(),
             spec.instrument_id,
@@ -569,14 +618,60 @@ async fn get_indicators_alias(
             &derivs,
             &parsed_names,
             &effective,
-            limit,
-            live,
-        )
+            compute_limit,
+            effective_live,
+        )?;
+        if start_opt.is_some() || end_opt.is_some() {
+            filter_bundle_points_by_range(&mut bundle, start_opt, end_opt, limit);
+        }
+        Ok(bundle)
     })
     .await
     .map_err(|e| ApiError::internal(e.to_string()))??;
 
     Ok(ApiJson(bundle))
+}
+
+fn filter_bundle_points_by_range(
+    bundle: &mut IndicatorBundle,
+    start: Option<i64>,
+    end: Option<i64>,
+    limit: usize,
+) {
+    for series in &mut bundle.series {
+        series.points.retain(|p| {
+            start.is_none_or(|s| p.timestamp >= s) && end.is_none_or(|e| p.timestamp <= e)
+        });
+        if series.points.len() > limit {
+            let drain_end = series.points.len() - limit;
+            series.points.drain(0..drain_end);
+        }
+        let latest = series
+            .points
+            .last()
+            .map(|p| p.values.clone())
+            .unwrap_or_else(|| {
+                series
+                    .name
+                    .channels()
+                    .iter()
+                    .map(|c| ((*c).to_owned(), None))
+                    .collect()
+            });
+        let warmup_bars = series
+            .points
+            .iter()
+            .position(|p| p.values.values().all(Option::is_some))
+            .unwrap_or(series.points.len());
+        let valid_points = series
+            .points
+            .iter()
+            .filter(|p| p.values.values().all(Option::is_some))
+            .count();
+        series.summary.latest = latest;
+        series.summary.warmup_bars = warmup_bars;
+        series.summary.valid_points = valid_points;
+    }
 }
 
 #[derive(Deserialize)]
@@ -909,6 +1004,35 @@ struct KeyLevelsAliasQuery {
     instrument: Option<String>,
     timeframe: String,
     #[serde(default)]
+    as_of: Option<i64>,
+    #[serde(default)]
+    categories: Option<String>,
+    #[serde(default)]
+    min_strength: f64,
+    #[serde(default = "default_order")]
+    order: String,
+    #[serde(default = "default_200")]
+    limit: usize,
+    #[serde(default = "default_all")]
+    evidence_class: String,
+    #[serde(default = "default_session")]
+    vwap_anchor: String,
+    #[serde(default)]
+    vwap_anchor_ts: Option<i64>,
+    #[serde(default = "default_value_area")]
+    value_area_ratio: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyLevelsAtQuery {
+    #[serde(default)]
+    instrument_id: Option<String>,
+    #[serde(default)]
+    instrument: Option<String>,
+    timeframe: String,
+    as_of: i64,
+    #[serde(default)]
     categories: Option<String>,
     #[serde(default)]
     min_strength: f64,
@@ -1161,6 +1285,32 @@ async fn get_key_levels_alias(
         .instrument_id
         .or(q.instrument)
         .ok_or_else(|| ApiError::validation("snapshot_id or instrument_id is required"))?;
+    if let Some(as_of) = q.as_of {
+        if as_of < 0 {
+            return Err(ApiError::validation("as_of must be non-negative"));
+        }
+        let state_c = Arc::clone(&state);
+        let tf = q.timeframe.clone();
+        let order = q.order.clone();
+        let limit = q.limit;
+        let set = tokio::task::spawn_blocking(move || {
+            compute_key_levels_at_sync(
+                &state_c,
+                &inst_id,
+                &tf,
+                as_of,
+                &cats,
+                q.min_strength,
+                &order,
+                limit,
+                evidence,
+                &kl_params,
+            )
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))??;
+        return Ok(ApiJson(set));
+    }
     let spec = find_instrument(&state, &inst_id)?;
     let mut level_set = state
         .key_levels
@@ -1185,6 +1335,103 @@ async fn get_key_levels_alias(
         q.limit,
     );
     Ok(ApiJson(level_set))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_key_levels_at_sync(
+    state: &AppState,
+    instrument_id: &str,
+    timeframe: &str,
+    as_of: i64,
+    categories: &HashSet<KeyLevelCategory>,
+    min_strength: f64,
+    order: &str,
+    limit: usize,
+    evidence: Option<EvidenceClass>,
+    kl_params: &KeyLevelParams,
+) -> Result<KeyLevelSet, ApiError> {
+    let spec = find_instrument(state, instrument_id)?;
+    let effective_as_of = as_of.min(state.now_ms());
+    let bars = load_confirmed_series(state, &spec.instrument_id, timeframe, effective_as_of, 5000)?;
+    let (funding, oi, mark) = load_derivative_points(state, &spec, effective_as_of);
+    let mut derivs = Vec::with_capacity(funding.len() + oi.len() + mark.len());
+    derivs.extend(funding);
+    derivs.extend(oi);
+    derivs.extend(mark);
+    let session_profile = state
+        .pack
+        .traits(&spec.instrument_id)
+        .ok()
+        .map(|t| SessionProfile::from(&t.session));
+
+    let computation = compute_key_levels_with_notes(
+        &spec.instrument_id,
+        timeframe,
+        &bars,
+        effective_as_of,
+        session_profile.as_ref(),
+        Some(kl_params),
+        &derivs,
+    )?;
+
+    let mut levels = computation.levels;
+    filter_and_sort_levels(&mut levels, categories, min_strength, evidence, order, limit);
+
+    Ok(KeyLevelSet {
+        snapshot_id: "at".to_owned(),
+        instrument_id: spec.instrument_id,
+        timeframe: timeframe.to_owned(),
+        cutoff_ts: effective_as_of,
+        as_of_ts: effective_as_of,
+        method_version: KEY_LEVEL_METHOD_VERSION.to_owned(),
+        parameters: kl_params.as_parameters()?,
+        notes: computation.notes,
+        levels,
+    })
+}
+
+async fn get_key_levels_at(
+    State(state): State<Arc<AppState>>,
+    ApiQuery(q): ApiQuery<KeyLevelsAtQuery>,
+) -> Result<ApiJson<KeyLevelSet>, ApiError> {
+    let _ = validate_timeframe(&q.timeframe)?;
+    if q.as_of < 0 {
+        return Err(ApiError::validation("as_of must be non-negative"));
+    }
+    let inst_id = q
+        .instrument_id
+        .or(q.instrument)
+        .ok_or_else(|| ApiError::validation("instrument or instrument_id is required"))?;
+    let (cats, evidence, kl_params) = parse_key_level_filters(
+        q.categories.as_deref(),
+        q.min_strength,
+        &q.evidence_class,
+        &q.vwap_anchor,
+        q.vwap_anchor_ts,
+        q.value_area_ratio,
+    )?;
+    let state_c = Arc::clone(&state);
+    let tf = q.timeframe.clone();
+    let order = q.order.clone();
+    let limit = q.limit;
+    let as_of = q.as_of;
+    let set = tokio::task::spawn_blocking(move || {
+        compute_key_levels_at_sync(
+            &state_c,
+            &inst_id,
+            &tf,
+            as_of,
+            &cats,
+            q.min_strength,
+            &order,
+            limit,
+            evidence,
+            &kl_params,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))??;
+    Ok(ApiJson(set))
 }
 
 #[derive(Deserialize)]

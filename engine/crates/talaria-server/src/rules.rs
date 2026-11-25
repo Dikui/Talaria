@@ -23,8 +23,8 @@ use talaria_contracts::rules::{
 use talaria_contracts::snapshot::SnapshotMeta;
 use talaria_contracts::timeframe_ms;
 use talaria_operators::{
-    DerivativeSample, OperatorSpec, compute_indicator_series, compute_series, derivative_samples,
-    legacy_alert_points,
+    DerivativeSample, GdaDecimal, OperatorSpec, compute_indicator_series, compute_series,
+    derivative_samples, legacy_alert_points,
 };
 
 use crate::error::ApiError;
@@ -40,13 +40,16 @@ pub struct OverlayBounds {
     pub upper: Decimal,
 }
 
-fn interpolate_point(first: &DrawingPoint, second: &DrawingPoint, ts: i64) -> Decimal {
+fn interpolate_gda(first: &DrawingPoint, second: &DrawingPoint, ts: i64) -> Option<GdaDecimal> {
+    let first_price = GdaDecimal::from_decimal(first.price);
     if second.ts == first.ts {
-        return first.price;
+        return Some(first_price);
     }
-    let span = Decimal::from(second.ts - first.ts);
-    let progress = Decimal::from(ts - first.ts);
-    first.price + (second.price - first.price) * progress / span
+    let second_price = GdaDecimal::from_decimal(second.price);
+    let span = GdaDecimal::from_i64(second.ts - first.ts);
+    let progress = GdaDecimal::from_i64(ts - first.ts);
+    let delta = second_price.sub(&first_price).mul(&progress).div(&span).ok()?;
+    Some(first_price.add(&delta))
 }
 
 fn time_span(points: &[DrawingPoint]) -> (i64, i64) {
@@ -60,6 +63,9 @@ fn time_span(points: &[DrawingPoint]) -> (i64, i64) {
 }
 
 /// Deterministic geometric bounds for a human drawing at timestamp `ts`.
+///
+/// Uses IBM GDA (`prec = 28`, `ROUND_HALF_EVEN`) via [`GdaDecimal`] so slope
+/// interpolation and ratio arithmetic match Python `Decimal` character-for-character.
 pub fn overlay_bounds(drawing: &DrawingRecord, ts: i64, ratio: Decimal) -> Option<OverlayBounds> {
     if drawing.points.is_empty() || drawing.deleted_at.is_some() {
         return None;
@@ -79,7 +85,7 @@ pub fn overlay_bounds(drawing: &DrawingRecord, ts: i64, ratio: Decimal) -> Optio
             if (second.ts > first.ts && ts < first.ts) || (second.ts < first.ts && ts > first.ts) {
                 return None;
             }
-            let price = interpolate_point(first, second, ts);
+            let price = interpolate_gda(first, second, ts)?.to_decimal().ok()?;
             Some(OverlayBounds {
                 lower: price,
                 upper: price,
@@ -93,7 +99,7 @@ pub fn overlay_bounds(drawing: &DrawingRecord, ts: i64, ratio: Decimal) -> Optio
             if ts < low || ts > high {
                 return None;
             }
-            let price = interpolate_point(&points[0], &points[1], ts);
+            let price = interpolate_gda(&points[0], &points[1], ts)?.to_decimal().ok()?;
             Some(OverlayBounds {
                 lower: price,
                 upper: price,
@@ -107,7 +113,10 @@ pub fn overlay_bounds(drawing: &DrawingRecord, ts: i64, ratio: Decimal) -> Optio
             if ts < low || ts > high {
                 return None;
             }
-            let price = points[0].price + (points[1].price - points[0].price) * ratio;
+            let p0 = GdaDecimal::from_decimal(points[0].price);
+            let p1 = GdaDecimal::from_decimal(points[1].price);
+            let r = GdaDecimal::from_decimal(ratio);
+            let price = p0.add(&p1.sub(&p0).mul(&r)).to_decimal().ok()?;
             Some(OverlayBounds {
                 lower: price,
                 upper: price,
@@ -134,12 +143,23 @@ pub fn overlay_bounds(drawing: &DrawingRecord, ts: i64, ratio: Decimal) -> Optio
             if ts < low || ts > high {
                 return None;
             }
-            let base = interpolate_point(first, second, ts);
-            let anchor = interpolate_point(first, second, third.ts);
-            let offset = third.price - anchor;
+            let base = interpolate_gda(first, second, ts)?;
+            let anchor = interpolate_gda(first, second, third.ts)?;
+            let offset = GdaDecimal::from_decimal(third.price).sub(&anchor);
+            let zero = GdaDecimal::zero();
+            let lower_off = if offset.cmp_numeric(&zero).is_le() {
+                &offset
+            } else {
+                &zero
+            };
+            let upper_off = if offset.cmp_numeric(&zero).is_ge() {
+                &offset
+            } else {
+                &zero
+            };
             Some(OverlayBounds {
-                lower: base + offset.min(Decimal::ZERO),
-                upper: base + offset.max(Decimal::ZERO),
+                lower: base.add(lower_off).to_decimal().ok()?,
+                upper: base.add(upper_off).to_decimal().ok()?,
             })
         }
     }

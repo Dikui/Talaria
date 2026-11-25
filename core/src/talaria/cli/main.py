@@ -23,6 +23,7 @@ import uvicorn
 from talaria.cli.ticks import add_tick_commands
 from talaria.cli.account import add_account_command
 from talaria.cli.replay import add_replay_command
+from talaria.cli.runs import add_runs_command
 from talaria.cli.contracts_io import (
     DSH_TOOL_SPECS,
     check_contracts,
@@ -920,6 +921,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_account_command(subparsers)
     add_replay_command(subparsers)
+    add_runs_command(subparsers)
     add_tick_commands(subparsers)
 
     up = subparsers.add_parser("up", help="启动本地看盘守护进程")

@@ -1,0 +1,673 @@
+{
+  "cases": [
+    {
+      "derivatives": [],
+      "description": "Exact midpoint interpolation on SEGMENT and None outside [t0, t2].",
+      "drawings": [
+        {
+          "created_ts": 0,
+          "deleted_at": null,
+          "drawing_id": "seg_exact",
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "SEGMENT",
+          "points": [
+            {
+              "price": "100",
+              "ts": 1700000000000
+            },
+            {
+              "price": "102",
+              "ts": 1700000120000
+            }
+          ],
+          "style": {
+            "color": "#4c8dff",
+            "fill_opacity": 0.12,
+            "line_style": "solid",
+            "line_width": 1
+          },
+          "text": "",
+          "updated_ts": 0,
+          "version": 1,
+          "visible_timeframes": []
+        }
+      ],
+      "levels": [],
+      "name": "segment_exact_midpoint_touch_and_out_of_range",
+      "rule": {
+        "expression": {
+          "direction": "ABOVE",
+          "drawing_id": "seg_exact",
+          "mode": "TOUCH",
+          "op": "overlay"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "SEGMENT",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "99",
+            "threshold": "100"
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "99",
+              "high": "100",
+              "low": "99",
+              "open": "99",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "99",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "SEGMENT",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "100.5",
+            "threshold": "101"
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "100.5",
+              "high": "101",
+              "low": "100.5",
+              "open": "100.5",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "100.5",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "SEGMENT",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "101",
+            "threshold": "102"
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "101",
+              "high": "101.9",
+              "low": "101",
+              "open": "101",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "101",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000180000,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "now_ms": 1700000240000,
+          "upsert_bars": [
+            {
+              "close": "105",
+              "high": "106",
+              "low": "105",
+              "open": "105",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000180000,
+              "ts_available": 1700000240000,
+              "turnover": "105",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "RAY 1/3 slope interpolation & forward extrapolation tests prec=28 vs rust_decimal rounding.",
+      "drawings": [
+        {
+          "created_ts": 0,
+          "deleted_at": null,
+          "drawing_id": "ray_third",
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "RAY",
+          "points": [
+            {
+              "price": "100",
+              "ts": 1700000000000
+            },
+            {
+              "price": "101",
+              "ts": 1700000180000
+            }
+          ],
+          "style": {
+            "color": "#4c8dff",
+            "fill_opacity": 0.12,
+            "line_style": "solid",
+            "line_width": 1
+          },
+          "text": "",
+          "updated_ts": 0,
+          "version": 1,
+          "visible_timeframes": []
+        }
+      ],
+      "levels": [],
+      "name": "ray_repeating_one_third_slope_extrapolation",
+      "rule": {
+        "expression": {
+          "direction": "ABOVE",
+          "drawing_id": "ray_third",
+          "mode": "CLOSE_BREAK",
+          "op": "overlay"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000000000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "RAY",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "100",
+            "threshold": "100"
+          },
+          "now_ms": 1700000060000,
+          "upsert_bars": [
+            {
+              "close": "100",
+              "high": "100",
+              "low": "100",
+              "open": "100",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000000000,
+              "ts_available": 1700000060000,
+              "turnover": "100",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "RAY",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "100.3333333333333333333333334",
+            "threshold": "100.3333333333333333333333333"
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "100.3333333333333333333333334",
+              "high": "100.3333333333333333333333334",
+              "low": "100.3333333333333333333333334",
+              "open": "100.3333333333333333333333334",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "100.3333333333333333333333334",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "RAY",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "100.6666666666666666666666666",
+            "threshold": "100.6666666666666666666666667"
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "100.6666666666666666666666666",
+              "high": "100.6666666666666666666666666",
+              "low": "100.6666666666666666666666666",
+              "open": "100.6666666666666666666666666",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "100.6666666666666666666666666",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000240000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "RAY",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "101.4",
+            "threshold": "101.3333333333333333333333333"
+          },
+          "now_ms": 1700000300000,
+          "upsert_bars": [
+            {
+              "close": "101.4",
+              "high": "101.4",
+              "low": "101.4",
+              "open": "101.4",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000240000,
+              "ts_available": 1700000300000,
+              "turnover": "101.4",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "PARALLEL_CHANNEL with 1/7 slope at BTC 80000 scale using both upper and lower bounds.",
+      "drawings": [
+        {
+          "created_ts": 0,
+          "deleted_at": null,
+          "drawing_id": "chan_seventh",
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "PARALLEL_CHANNEL",
+          "points": [
+            {
+              "price": "80000",
+              "ts": 1700000000000
+            },
+            {
+              "price": "80001",
+              "ts": 1700000420000
+            },
+            {
+              "price": "80100.5",
+              "ts": 1700000180000
+            }
+          ],
+          "style": {
+            "color": "#4c8dff",
+            "fill_opacity": 0.12,
+            "line_style": "solid",
+            "line_width": 1
+          },
+          "text": "",
+          "updated_ts": 0,
+          "version": 1,
+          "visible_timeframes": []
+        }
+      ],
+      "levels": [],
+      "name": "parallel_channel_one_seventh_slope_and_offset",
+      "rule": {
+        "expression": {
+          "args": [
+            {
+              "left": {
+                "field": "close",
+                "source": "bar"
+              },
+              "op": "compare",
+              "right": {
+                "drawing_id": "chan_seventh",
+                "edge": "lower",
+                "source": "drawing_price"
+              },
+              "test": "gt"
+            },
+            {
+              "direction": "ABOVE",
+              "drawing_id": "chan_seventh",
+              "mode": "TOUCH",
+              "op": "overlay"
+            }
+          ],
+          "op": "all"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": null,
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "80050",
+            "threshold": "80000.14285714285714285714286"
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "80050",
+              "high": "80120",
+              "low": "80050",
+              "open": "80050",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "80050",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000120000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "PARALLEL_CHANNEL",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": false,
+            "observed": "80050",
+            "threshold": "80100.35714285714285714285714"
+          },
+          "now_ms": 1700000180000,
+          "upsert_bars": [
+            {
+              "close": "80050",
+              "high": "80090",
+              "low": "80050",
+              "open": "80050",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000120000,
+              "ts_available": 1700000180000,
+              "turnover": "80050",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "FIB_RETRACEMENT with 24 fractional digits and ratio=0.618.",
+      "drawings": [
+        {
+          "created_ts": 0,
+          "deleted_at": null,
+          "drawing_id": "fib_prec",
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "FIB_RETRACEMENT",
+          "points": [
+            {
+              "price": "100.123456789012345678901234",
+              "ts": 1700000000000
+            },
+            {
+              "price": "200.987654321098765432109876",
+              "ts": 1700000120000
+            }
+          ],
+          "style": {
+            "color": "#4c8dff",
+            "fill_opacity": 0.12,
+            "line_style": "solid",
+            "line_width": 1
+          },
+          "text": "",
+          "updated_ts": 0,
+          "version": 1,
+          "visible_timeframes": []
+        }
+      ],
+      "levels": [],
+      "name": "fib_retracement_high_precision_ratio",
+      "rule": {
+        "expression": {
+          "direction": "ABOVE",
+          "drawing_id": "fib_prec",
+          "mode": "CLOSE_BREAK",
+          "op": "overlay",
+          "ratio": "0.618"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "FIB_RETRACEMENT",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "162.5",
+            "threshold": "162.4575308638417530863841748"
+          },
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "162.5",
+              "high": "162.5",
+              "low": "162.5",
+              "open": "162.5",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "162.5",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "derivatives": [],
+      "description": "Soft-deleted drawings and drawings with updated_ts > now return None.",
+      "drawings": [
+        {
+          "created_ts": 0,
+          "deleted_at": 1700000060000,
+          "drawing_id": "deleted_line",
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "HORIZONTAL_LINE",
+          "points": [
+            {
+              "price": "100",
+              "ts": 1700000000000
+            }
+          ],
+          "style": {
+            "color": "#4c8dff",
+            "fill_opacity": 0.12,
+            "line_style": "solid",
+            "line_width": 1
+          },
+          "text": "",
+          "updated_ts": 0,
+          "version": 1,
+          "visible_timeframes": []
+        },
+        {
+          "created_ts": 0,
+          "deleted_at": null,
+          "drawing_id": "future_line",
+          "instrument_id": "BTC-USDT-PERP",
+          "kind": "HORIZONTAL_LINE",
+          "points": [
+            {
+              "price": "100",
+              "ts": 1700000000000
+            }
+          ],
+          "style": {
+            "color": "#4c8dff",
+            "fill_opacity": 0.12,
+            "line_style": "solid",
+            "line_width": 1
+          },
+          "text": "",
+          "updated_ts": 1700000180000,
+          "version": 1,
+          "visible_timeframes": []
+        }
+      ],
+      "levels": [],
+      "name": "drawing_deleted_and_future_updated_ts_invisible",
+      "rule": {
+        "expression": {
+          "args": [
+            {
+              "direction": "ABOVE",
+              "drawing_id": "deleted_line",
+              "mode": "TOUCH",
+              "op": "overlay"
+            },
+            {
+              "direction": "ABOVE",
+              "drawing_id": "future_line",
+              "mode": "TOUCH",
+              "op": "overlay"
+            }
+          ],
+          "op": "any"
+        },
+        "timing": "bar_close",
+        "version": "1"
+      },
+      "start_ts": 1700000000000,
+      "steps": [
+        {
+          "bar_ts": 1700000060000,
+          "consume_retests": true,
+          "event": null,
+          "expected": null,
+          "now_ms": 1700000120000,
+          "upsert_bars": [
+            {
+              "close": "105",
+              "high": "110",
+              "low": "105",
+              "open": "105",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000060000,
+              "ts_available": 1700000120000,
+              "turnover": "105",
+              "volume": "1"
+            }
+          ]
+        },
+        {
+          "bar_ts": 1700000180000,
+          "consume_retests": true,
+          "event": null,
+          "expected": {
+            "crossed_at": null,
+            "drawing_kind": "HORIZONTAL_LINE",
+            "level_direction": null,
+            "level_event": null,
+            "level_id": null,
+            "matched": true,
+            "observed": "105",
+            "threshold": "100"
+          },
+          "now_ms": 1700000240000,
+          "upsert_bars": [
+            {
+              "close": "105",
+              "high": "110",
+              "low": "105",
+              "open": "105",
+              "precision": "SECOND_VERIFIED",
+              "status": "NORMAL",
+              "timestamp": 1700000180000,
+              "ts_available": 1700000240000,
+              "turnover": "105",
+              "volume": "1"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "category": "overlay_bounds_interpolation_and_rounding",
+  "instrument_id": "BTC-USDT-PERP",
+  "schema_version": 1,
+  "timeframe": "1m"
+}

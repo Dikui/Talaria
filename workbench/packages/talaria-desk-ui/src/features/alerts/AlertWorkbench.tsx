@@ -14,6 +14,7 @@ export interface AlertWorkbenchProps {
   onLocate: (target: LocateTarget) => void;
   link: Pick<PanelLink, "subscribeDrawings">;
   formSeed?: AlertFormSeed | null;
+  replayActive?: boolean;
 }
 
 export function AlertWorkbench({
@@ -23,6 +24,7 @@ export function AlertWorkbench({
   onLocate,
   link,
   formSeed,
+  replayActive = false,
 }: AlertWorkbenchProps) {
   const controller = useAlerts();
   const { alert, deniedAlerts } = useMarketStream(instrumentId, timeframe);
@@ -62,9 +64,10 @@ export function AlertWorkbench({
         currentInstrument={instrumentId}
         currentTimeframe={timeframe}
         formSeed={formSeed ?? null}
+        replayActive={replayActive}
         onLocate={onLocate}
       />
-      {controller.toast && (
+      {!replayActive && controller.toast && (
         <AlertToast
           trigger={controller.toast}
           onLocate={(trig) => {

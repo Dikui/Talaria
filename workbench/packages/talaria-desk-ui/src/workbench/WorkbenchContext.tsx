@@ -5,6 +5,7 @@ import type {
   IndicatorName,
   InstrumentSpec,
   KeyLevel,
+  RunRoundRecord,
 } from "@talaria/contracts";
 
 import type { ChartStats, RenderBackendMode } from "../chart/adapter";
@@ -14,10 +15,26 @@ import type { AnnotationsController } from "../features/annotations/useAnnotatio
 import type { IndicatorDefaults, IndicatorSetting, IndicatorSettings } from "../features/indicators/config";
 import type { KeyLevelFilter } from "../features/key-levels/model";
 import type { KeyLevelsController } from "../features/key-levels/useKeyLevels";
+import type { RunsController } from "../features/runs/useRuns";
 import type { ScannerController } from "../features/scanner/useScanner";
 import type { Locale } from "../lib/i18n";
 import type { Theme } from "../lib/theme";
 import type { LocateTarget, PanelLink } from "./link";
+
+export interface ReplayTriggerRequest {
+  nonce: number;
+  instrumentId: string;
+  timeframe?: string;
+  fromTs: number;
+}
+
+export interface ChartJumpRequest {
+  nonce: number;
+  instrumentId: string;
+  timeframe?: string;
+  openedTs: number;
+  closedTs?: number | null;
+}
 
 export interface ActiveChartTelemetry {
   paneId: string;
@@ -71,15 +88,32 @@ export interface WorkbenchContextValue {
 
   scannerController: ScannerController;
   annotationsController: AnnotationsController;
+  runsController: RunsController;
+  selectedRunRound: RunRoundRecord | null;
+
+  replayActive: boolean;
+  onPaneReplayActiveChange: (paneId: string, active: boolean) => void;
+  replayRequest: ReplayTriggerRequest | null;
+  clearReplayRequest: (nonce: number) => void;
+  jumpRequest: ChartJumpRequest | null;
+  clearJumpRequest: (nonce: number) => void;
 
   onSelectInstrument: (instrumentId: string) => void;
   onLocateTarget: (target: LocateTarget) => void;
+  onJumpToRound: (round: RunRoundRecord, timeframe?: string) => void;
+  onReplayBeforeRound: (params: {
+    instrumentId: string;
+    timeframe?: string;
+    fromTs: number;
+  }) => void;
   onPopoutChart: (params: {
     paneId: string;
     instrumentId: string;
     timeframe: string;
   }) => void;
-  onOpenRightTab: (tab: "watchlist" | "alerts" | "levels" | "scanner" | "drawings" | "annotations") => void;
+  onOpenRightTab: (
+    tab: "watchlist" | "alerts" | "levels" | "scanner" | "drawings" | "annotations" | "runs",
+  ) => void;
   onAdoptKeyLevel: (level: KeyLevel) => Promise<void>;
   onAdoptAnnotation: (annotation: AgentAnnotationRecord) => Promise<void>;
 }

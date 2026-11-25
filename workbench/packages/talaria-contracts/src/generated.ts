@@ -64,6 +64,18 @@ export type AnnotationKind = "LEVEL" | "ZONE";
 
 export type AnnotationStatus = "ACTIVE" | "ADOPTED" | "DISMISSED" | "ARCHIVED";
 
+export type TickKind = "trades" | "quotes";
+
+export type RunStatus = "succeeded" | "failed";
+
+export type RunFillKind = "ENTRY_FILLED" | "EXIT_FILLED";
+
+export type RunFillReason = "ENTRY" | "SL" | "TP" | "TIME" | "LIQUIDATION" | "OTHER";
+
+export type RunBarrierChangeKind = "BARRIER_TIGHTENED" | "BARRIER_AMENDED";
+
+export type RunRoundPhase = "PENDING_ENTRY" | "PARTIALLY_FILLED_PROTECTED" | "ACTIVE_PROTECTED" | "EXITING" | "CLOSED" | "CANCELLED" | "LIQUIDATED";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -905,6 +917,136 @@ export interface AnnotationClearResponse {
   instrument_id: string;
   session_id: string | null;
   cleared: number;
+}
+export interface RunRoundFill {
+  event_id: string;
+  ts_event: number;
+  kind: RunFillKind;
+  side: "buy" | "sell";
+  price: DecimalString;
+  quantity: DecimalString;
+  reason: RunFillReason;
+  raw_reason?: string | null;
+  fill_tier?: "l1" | "trade" | "bar_1m" | "mark" | null;
+  realized_pnl?: DecimalString | null;
+  fee?: DecimalString | null;
+}
+export interface RunBarrierChange {
+  event_id: string;
+  ts_event: number;
+  kind: RunBarrierChangeKind;
+  stop: DecimalString;
+  take_profit?: DecimalString[];
+  reason?: string | null;
+  amendment_id?: string | null;
+}
+export interface RunRoundRecord {
+  round_id: string;
+  sub_account_id: string;
+  currency: string;
+  instrument_id: string;
+  direction: "LONG" | "SHORT";
+  phase: RunRoundPhase;
+  opened_ts?: number | null;
+  closed_ts?: number | null;
+  entry_price?: DecimalString | null;
+  exit_price?: DecimalString | null;
+  max_quantity: DecimalString;
+  remaining_quantity: DecimalString;
+  stop: DecimalString;
+  take_profit?: DecimalString[];
+  exit_reason?: RunFillReason | null;
+  raw_exit_reason?: string | null;
+  net_pnl: DecimalString;
+  fees: DecimalString;
+  funding: DecimalString;
+  liquidation_fees: DecimalString;
+  mae?: DecimalString | null;
+  mfe?: DecimalString | null;
+  fills?: RunRoundFill[];
+  barrier_changes?: RunBarrierChange[];
+}
+export interface RunAccountCurrencySummary {
+  sub_account_id: string;
+  currency: string;
+  round_count: number;
+  trade_count: number;
+  net_pnl: DecimalString;
+  max_drawdown: DecimalString;
+  fees: DecimalString;
+  funding: DecimalString;
+  liquidation_fees: DecimalString;
+  initial_capital?: DecimalString | null;
+  final_equity?: DecimalString | null;
+}
+export interface RunExportArtifacts {
+  rounds_path?: string;
+  equity_path?: string;
+  overlays_path?: string | null;
+}
+export interface RunExportSummary {
+  schema_version?: 1;
+  run_id: string;
+  status: RunStatus;
+  error?: string | null;
+  scheme: string;
+  fill_plugin: string;
+  instrument_id?: string | null;
+  instruments?: string[];
+  timeframe?: string | null;
+  start?: number | null;
+  end?: number | null;
+  signal_bars?: number | null;
+  pnl_basis?: "booked";
+  artifacts?: RunExportArtifacts;
+  accounts?: RunAccountCurrencySummary[];
+}
+export interface RunListResponse {
+  runs?: RunExportSummary[];
+}
+export interface RunRoundsResponse {
+  run_id: string;
+  rounds?: RunRoundRecord[];
+}
+export interface RunEquityPoint {
+  sub_account_id: string;
+  currency: string;
+  seq: number;
+  ts_event: number;
+  event_id: string;
+  event_kind: string;
+  round_id?: string | null;
+  pnl_basis?: "booked";
+  realized_pnl_delta: DecimalString;
+  fee_delta: DecimalString;
+  funding_delta: DecimalString;
+  liquidation_fee_delta: DecimalString;
+  net_pnl: DecimalString;
+  equity: DecimalString;
+  peak_pnl: DecimalString;
+  drawdown: DecimalString;
+  max_drawdown: DecimalString;
+}
+export interface RunEquityResponse {
+  run_id: string;
+  pnl_basis?: "booked";
+  points?: RunEquityPoint[];
+}
+export interface ReplayTick {
+  price: DecimalString;
+  open?: DecimalString | null;
+  high?: DecimalString | null;
+  low?: DecimalString | null;
+  volume?: DecimalString | null;
+}
+export interface TicksJsonResponse {
+  instrument_id: string;
+  kind?: TickKind;
+  start: number;
+  end: number;
+  as_of?: number | null;
+  aggregated?: boolean;
+  ticks?: ReplayTick[];
 }
 export interface ExitBarrierSpec {
   stop: DecimalString;

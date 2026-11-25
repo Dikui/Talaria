@@ -1,0 +1,119 @@
+{
+  "additionalProperties": false,
+  "description": "`equity.parquet` 与 `GET /api/runs/{run_id}/equity` 的逐分录已实现净值节点。",
+  "properties": {
+    "currency": {
+      "minLength": 1,
+      "title": "Currency",
+      "type": "string"
+    },
+    "drawdown": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Drawdown",
+      "type": "string"
+    },
+    "equity": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Equity",
+      "type": "string"
+    },
+    "event_id": {
+      "minLength": 1,
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_kind": {
+      "minLength": 1,
+      "title": "Event Kind",
+      "type": "string"
+    },
+    "fee_delta": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Fee Delta",
+      "type": "string"
+    },
+    "funding_delta": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Funding Delta",
+      "type": "string"
+    },
+    "liquidation_fee_delta": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Liquidation Fee Delta",
+      "type": "string"
+    },
+    "max_drawdown": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Max Drawdown",
+      "type": "string"
+    },
+    "net_pnl": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Net Pnl",
+      "type": "string"
+    },
+    "peak_pnl": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Peak Pnl",
+      "type": "string"
+    },
+    "pnl_basis": {
+      "const": "booked",
+      "default": "booked",
+      "title": "Pnl Basis",
+      "type": "string"
+    },
+    "realized_pnl_delta": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Realized Pnl Delta",
+      "type": "string"
+    },
+    "round_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Round Id"
+    },
+    "seq": {
+      "minimum": 1,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "sub_account_id": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "title": "Sub Account Id",
+      "type": "string"
+    },
+    "ts_event": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Ts Event",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "sub_account_id",
+    "currency",
+    "seq",
+    "ts_event",
+    "event_id",
+    "event_kind",
+    "realized_pnl_delta",
+    "fee_delta",
+    "funding_delta",
+    "liquidation_fee_delta",
+    "net_pnl",
+    "equity",
+    "peak_pnl",
+    "drawdown",
+    "max_drawdown"
+  ],
+  "title": "RunEquityPoint",
+  "type": "object"
+}

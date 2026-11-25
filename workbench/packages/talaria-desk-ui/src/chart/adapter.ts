@@ -1,4 +1,12 @@
-import type { DrawingsDocument } from "@luxalgo/vela";
+import type {
+  DrawingsDocument,
+  ReplayBounds,
+  ReplayStartOptions,
+  ReplayState,
+  ReplayTickSource,
+  TradeExecution,
+  VelaEventMap,
+} from "@luxalgo/vela";
 import type {
   AgentAnnotationRecord,
   CompactBar,
@@ -74,11 +82,42 @@ export interface ChartMountOptions {
   onLoadError?: (error: unknown) => void;
 }
 
+export type ReplayEventName =
+  | "replay:start"
+  | "replay:step"
+  | "replay:tick"
+  | "replay:play"
+  | "replay:pause"
+  | "replay:end";
+
+export interface ChartReplayControl {
+  start(opts: ReplayStartOptions): Promise<void>;
+  step(): boolean;
+  stepUpdate(): boolean;
+  play(intervalMs?: number): void;
+  pause(): void;
+  stop(): void;
+  setTicks(source: ReplayTickSource | null): void;
+  readonly state: ReplayState;
+  readonly bounds: ReplayBounds | null;
+  on<K extends ReplayEventName>(
+    event: K,
+    handler: (payload: VelaEventMap[K]) => void,
+  ): () => void;
+}
+
+export interface ReplayDrawingFilter {
+  active: boolean;
+  cursorTime: number | null;
+  showAll: boolean;
+}
+
 /**
  * Narrow surface contract isolating the charting library (`VelaChartAdapter` primary,
  * `KLineChartAdapter` optional fallback) from React dockview workspace components.
  */
 export interface ChartSurfaceAdapter {
+  readonly replay: ChartReplayControl;
   mount(container: HTMLElement, options: ChartMountOptions): void;
   setMarket(params: {
     instrumentId: string;
@@ -91,6 +130,7 @@ export interface ChartSurfaceAdapter {
   setBars(bars: CompactBar[], opts?: { preserveView?: boolean }): void;
   updateLiveBar(event: KlineEvent): void;
   setIndicators(series: IndicatorSeries[]): void;
+  setTradeMarkers(trades: TradeExecution[]): void;
   setSystemLevels(
     levels: KeyLevel[],
     opts?: { precision?: number; highlightId?: string | null },
@@ -101,6 +141,7 @@ export interface ChartSurfaceAdapter {
   ): void;
   setExecutionBarriers(barriers: ExecutionBarrierItem[]): void;
   loadHumanDrawings(drawings: DrawingRecord[]): void;
+  setReplayDrawingFilter(filter: ReplayDrawingFilter): void;
   setDrawingTool(tool: string | null): void;
   selectHumanDrawing(drawingId: string | null): void;
   exportDrawingsDocument(): DrawingsDocument | null;
@@ -111,6 +152,7 @@ export interface ChartSurfaceAdapter {
   setExternalCrosshair(time: number | null, price?: number | null): void;
   setVisibleRange(range: { from: number; to: number }): void;
   getVisibleRange(): { from: number; to: number } | null;
+  getOldestLoadedBarTime(): number | null;
   refresh(): Promise<void>;
   resize(): void;
   destroy(): void;
