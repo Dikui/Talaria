@@ -63,10 +63,12 @@ impl SnapshotStore {
             .map_err(|e| ApiError::internal(e.to_string()))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=FULL;
-             PRAGMA foreign_keys=ON;",
+             PRAGMA synchronous=FULL;",
         )
         .map_err(|e| ApiError::internal(e.to_string()))?;
+        migrate_legacy_snapshots_schema(&conn)?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
         conn.execute_batch(SCHEMA_SQL)
             .map_err(|e| ApiError::internal(e.to_string()))?;
         Ok(Self {
@@ -231,5 +233,149 @@ impl SnapshotStore {
                 .map_err(|e| ApiError::internal(e.to_string()))?;
         }
         Ok(())
+    }
+}
+
+fn migrate_legacy_snapshots_schema(conn: &Connection) -> Result<(), ApiError> {
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(\"snapshots\")")
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let cols: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if cols.is_empty() {
+        return Ok(());
+    }
+    let has_meta = cols.iter().any(|c| c == "meta_json");
+    let has_deriv = cols.iter().any(|c| c == "derivatives_json");
+    if has_meta && has_deriv {
+        return Ok(());
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let frames_exists: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='snapshot_frames'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if frames_exists.is_some() {
+        let legacy_frames_exists: Option<String> = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='snapshot_frames_legacy_v0'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snapshot_frames", [], |r| r.get(0))
+            .unwrap_or(0);
+        if count > 0 && legacy_frames_exists.is_none() {
+            conn.execute_batch("ALTER TABLE snapshot_frames RENAME TO snapshot_frames_legacy_v0;")
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+        } else {
+            conn.execute_batch("DROP TABLE IF EXISTS snapshot_frames;")
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+        }
+    }
+
+    let legacy_snap_exists: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='snapshots_legacy_v0'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    if legacy_snap_exists.is_none() {
+        conn.execute_batch("ALTER TABLE snapshots RENAME TO snapshots_legacy_v0;")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+    } else {
+        conn.execute_batch("DROP TABLE snapshots;")
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+    use rust_decimal::Decimal;
+    use talaria_contracts::{BarStatus, PrecisionTier, SnapshotMode};
+
+    #[test]
+    fn migrates_legacy_python_snapshots_schema_cleanly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state_dir = dir.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+        let db_path = dir.path().join(SNAPSHOT_DB);
+
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    instrument_id TEXT NOT NULL,
+                    timeframes TEXT NOT NULL,
+                    cutoff_ts INTEGER NOT NULL,
+                    created_ts INTEGER NOT NULL,
+                    mode TEXT NOT NULL,
+                    bar_counts TEXT NOT NULL,
+                    parquet_path TEXT NOT NULL
+                );
+                CREATE TABLE snapshot_frames (
+                    snapshot_id TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    bars_json TEXT NOT NULL,
+                    PRIMARY KEY (snapshot_id, timeframe),
+                    FOREIGN KEY (snapshot_id) REFERENCES snapshots(snapshot_id) ON DELETE CASCADE
+                );
+                INSERT INTO snapshots VALUES ('old1','BTC-USDT-PERP','[\"1m\"]',1000,1000,'HISTORICAL_PIT','{}','/tmp');",
+            )
+            .unwrap();
+        }
+
+        let store = SnapshotStore::open(dir.path()).expect("open & migrate");
+        let meta = SnapshotMeta {
+            snapshot_id: "snap_new".to_owned(),
+            instrument_id: "BTC-USDT-PERP".to_owned(),
+            timeframes: vec!["1m".to_owned()],
+            cutoff_ts: 1_700_000_060_000,
+            created_ts: 1_700_000_060_000,
+            mode: SnapshotMode::HistoricalPit,
+            bar_counts: BTreeMap::from([("1m".to_owned(), 1)]),
+        };
+        let bar = CompactBar {
+            timestamp: 1_700_000_000_000,
+            open: Some(Decimal::from_str("58000.0").unwrap()),
+            high: Some(Decimal::from_str("58100.0").unwrap()),
+            low: Some(Decimal::from_str("57900.0").unwrap()),
+            close: Some(Decimal::from_str("58050.0").unwrap()),
+            volume: Some(Decimal::from_str("10.0").unwrap()),
+            turnover: Some(Decimal::from_str("580500.0").unwrap()),
+            status: BarStatus::Normal,
+            ts_available: 1_700_000_060_000,
+            precision: PrecisionTier::SecondVerified,
+        };
+        store
+            .save(&FrozenSnapshot {
+                meta: meta.clone(),
+                frames: BTreeMap::from([("1m".to_owned(), vec![bar])]),
+                derivatives: Vec::new(),
+            })
+            .expect("save new snapshot");
+
+        let loaded = store.get_meta("snap_new").expect("get_meta");
+        assert_eq!(loaded.snapshot_id, "snap_new");
+        let (_, bars) = store.get_bars("snap_new", "1m").expect("get_bars");
+        assert_eq!(bars.len(), 1);
     }
 }

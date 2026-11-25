@@ -409,7 +409,7 @@ impl HyperliquidStream {
                     }
                     _ = ping_ticker.tick(), if ping_interval.is_some() => {
                         if let Some(iv) = ping_interval
-                            && last_rx.elapsed() >= iv
+                            && last_rx.elapsed() >= iv / 2
                         {
                             let ping = json!({"method": "ping"}).to_string();
                             if let Err(err) = write.send(Message::Text(ping.into())).await {

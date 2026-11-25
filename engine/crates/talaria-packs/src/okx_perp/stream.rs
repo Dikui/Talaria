@@ -496,7 +496,7 @@ impl OkxPerpStream {
                     }
                     _ = ping_ticker.tick(), if ping_interval.is_some() => {
                         if let Some(iv) = ping_interval
-                            && last_rx.elapsed() >= iv
+                            && last_rx.elapsed() >= iv / 2
                             && let Err(err) = write.send(Message::Text("ping".into())).await
                         {
                             let _ = events_tx.send(Err(PackError::FeedTransport(format!("OKX WS ping failed: {err}"))));
