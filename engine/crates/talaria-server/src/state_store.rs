@@ -12,9 +12,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use rust_decimal::Decimal;
 use talaria_contracts::{
     AgentAnnotationRecord, AlertRecord, AlertStatus, AlertTriggerRecord,
-    AnnotationAdoptionRecord, AnnotationSessionSummary, AnnotationStatus, DrawingKind,
-    DrawingPoint, DrawingRecord, DrawingStyle, KeyLevelAdoptionRecord, KeyLevelIgnoreRecord,
-    ScannerBriefing, error_codes,
+    AnnotationAdoptionRecord, AnnotationSessionSummary, AnnotationStatus, BriefingContent,
+    BriefingStatus, DrawingKind, DrawingPoint, DrawingRecord, DrawingStyle, EvidenceRef,
+    KeyLevelAdoptionRecord, KeyLevelIgnoreRecord, ScannerBriefing, error_codes,
 };
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -418,13 +418,28 @@ fn maybe_migrate_legacy(
             "key_level_adoptions",
             "agent_annotations",
             "annotation_adoptions",
-            "scanner_briefings",
         ];
         for tbl in copy_order {
             if legacy_tables.contains(tbl) {
-                let sql = format!("INSERT OR IGNORE INTO main.{tbl} SELECT * FROM legacy.{tbl}");
-                tx.execute(&sql, []).map_err(map_sqlite_err)?;
+                let main_cols = table_columns(&tx, "main", tbl)?;
+                let legacy_cols: HashSet<String> =
+                    table_columns(&tx, "legacy", tbl)?.into_iter().collect();
+                let shared_cols: Vec<String> = main_cols
+                    .into_iter()
+                    .filter(|col| legacy_cols.contains(col))
+                    .map(|col| format!("\"{col}\""))
+                    .collect();
+                if !shared_cols.is_empty() {
+                    let cols_sql = shared_cols.join(", ");
+                    let sql = format!(
+                        "INSERT OR IGNORE INTO main.\"{tbl}\" ({cols_sql}) SELECT {cols_sql} FROM legacy.\"{tbl}\""
+                    );
+                    tx.execute(&sql, []).map_err(map_sqlite_err)?;
+                }
             }
+        }
+        if legacy_tables.contains("scanner_briefings") {
+            migrate_legacy_scanner_briefings(&tx)?;
         }
         tx.execute(
             "INSERT INTO main.meta (key, value, updated_ts) VALUES (?1, ?2, ?3)
@@ -438,6 +453,168 @@ fn maybe_migrate_legacy(
 
     let _ = conn.execute("DETACH DATABASE legacy", []);
     migrate_res
+}
+
+fn table_columns(conn: &Connection, schema: &str, table: &str) -> Result<Vec<String>, ApiError> {
+    let sql = format!("PRAGMA {schema}.table_info(\"{table}\")");
+    let mut stmt = conn.prepare(&sql).map_err(map_sqlite_err)?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .map_err(map_sqlite_err)?;
+    let mut cols = Vec::new();
+    for col in rows {
+        cols.push(col.map_err(map_sqlite_err)?);
+    }
+    Ok(cols)
+}
+
+fn migrate_legacy_scanner_briefings(conn: &Connection) -> Result<(), ApiError> {
+    let legacy_cols: HashSet<String> =
+        table_columns(conn, "legacy", "scanner_briefings")?
+            .into_iter()
+            .collect();
+    if legacy_cols.contains("payload") {
+        let main_cols = table_columns(conn, "main", "scanner_briefings")?;
+        let shared: Vec<String> = main_cols
+            .into_iter()
+            .filter(|col| legacy_cols.contains(col))
+            .map(|col| format!("\"{col}\""))
+            .collect();
+        if !shared.is_empty() {
+            let cols_sql = shared.join(", ");
+            let sql = format!(
+                "INSERT OR IGNORE INTO main.scanner_briefings ({cols_sql}) SELECT {cols_sql} FROM legacy.scanner_briefings"
+            );
+            conn.execute(&sql, []).map_err(map_sqlite_err)?;
+        }
+        return Ok(());
+    }
+
+    if !(legacy_cols.contains("id") && legacy_cols.contains("instrument")) {
+        tracing::warn!(
+            "skipping unrecognized legacy scanner_briefings schema: {:?}",
+            legacy_cols
+        );
+        return Ok(());
+    }
+
+    let mut select_stmt = conn
+        .prepare(
+            "SELECT id, trigger_id, snapshot_id, instrument, timeframe, status, summary, evidence_refs, abstain_reason, created_ts, read_ts FROM legacy.scanner_briefings",
+        )
+        .map_err(map_sqlite_err)?;
+    let rows = select_stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, Option<String>>(8)?,
+                r.get::<_, i64>(9)?,
+                r.get::<_, Option<i64>>(10)?,
+            ))
+        })
+        .map_err(map_sqlite_err)?;
+
+    let mut insert_stmt = conn
+        .prepare(
+            "INSERT OR IGNORE INTO main.scanner_briefings
+             (briefing_id, trigger_id, snapshot_id, instrument_id, timeframe, status, created_ts, read_ts, payload)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        )
+        .map_err(map_sqlite_err)?;
+
+    for row in rows {
+        let (
+            briefing_id,
+            trigger_id,
+            snapshot_id,
+            instrument_id,
+            timeframe,
+            status_raw,
+            summary_raw,
+            evidence_raw,
+            abstain_reason,
+            created_ts,
+            read_ts,
+        ) = row.map_err(map_sqlite_err)?;
+
+        let status = match serde_json::from_value::<BriefingStatus>(serde_json::Value::String(
+            status_raw.clone(),
+        )) {
+            Ok(val) => val,
+            Err(err) => {
+                tracing::warn!(
+                    briefing_id = %briefing_id,
+                    status = %status_raw,
+                    "skipping legacy scanner_briefing row with invalid status: {err}"
+                );
+                continue;
+            }
+        };
+        let summary = match summary_raw {
+            Some(ref raw) if !raw.trim().is_empty() => {
+                match serde_json::from_str::<BriefingContent>(raw) {
+                    Ok(val) => Some(val),
+                    Err(err) => {
+                        tracing::warn!(
+                            briefing_id = %briefing_id,
+                            "skipping legacy scanner_briefing row with invalid summary: {err}"
+                        );
+                        continue;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let evidence_refs = match serde_json::from_str::<Vec<EvidenceRef>>(&evidence_raw) {
+            Ok(val) => val,
+            Err(err) => {
+                tracing::warn!(
+                    briefing_id = %briefing_id,
+                    "skipping legacy scanner_briefing row with invalid evidence_refs: {err}"
+                );
+                continue;
+            }
+        };
+
+        let briefing = ScannerBriefing {
+            id: briefing_id.clone(),
+            trigger_id: trigger_id.clone(),
+            snapshot_id: snapshot_id.clone(),
+            instrument_id: instrument_id.clone(),
+            timeframe: timeframe.clone(),
+            status,
+            summary,
+            evidence_refs,
+            abstain_reason,
+            created_ts,
+            read_ts,
+        };
+        let payload = serde_json::to_string(&briefing)
+            .map_err(|e| ApiError::internal(format!("failed to encode briefing payload: {e}")))?;
+
+        insert_stmt
+            .execute(params![
+                briefing_id,
+                trigger_id,
+                snapshot_id,
+                instrument_id,
+                timeframe,
+                status_raw,
+                created_ts,
+                read_ts,
+                payload
+            ])
+            .map_err(map_sqlite_err)?;
+    }
+
+    Ok(())
 }
 
 // ============================================================================
@@ -1918,4 +2095,72 @@ pub fn load_indicator_defaults_overrides(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn migrates_legacy_eleven_column_python_scanner_briefings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state_dir = dir.path().join("state");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        let legacy_path = dir.path().join(LEGACY_COLLAB_DB);
+
+        {
+            let conn = Connection::open(&legacy_path).expect("open legacy db");
+            conn.execute_batch(
+                "CREATE TABLE scanner_briefings (
+                    id TEXT PRIMARY KEY,
+                    trigger_id TEXT NOT NULL,
+                    snapshot_id TEXT NOT NULL,
+                    instrument TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary TEXT,
+                    evidence_refs TEXT NOT NULL,
+                    abstain_reason TEXT,
+                    created_ts INTEGER NOT NULL,
+                    read_ts INTEGER
+                );",
+            )
+            .expect("create legacy table");
+            let summary = r#"{"trigger_reason":"volume spike","key_levels":[{"label":"POC","price":"62668.79","note":"pivot"}],"risks":["thin sample"]}"#;
+            let evidence = r#"[{"evidence_id":"snapshot:snap1","kind":"SNAPSHOT","label":"snap","detail":"details","price_low":null,"price_high":null}]"#;
+            conn.execute(
+                "INSERT INTO scanner_briefings (id, trigger_id, snapshot_id, instrument, timeframe, status, summary, evidence_refs, abstain_reason, created_ts, read_ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL)",
+                params![
+                    "brf_legacy_1",
+                    "scn_1",
+                    "snap1",
+                    "BTC-USDT-PERP",
+                    "1m",
+                    "READY",
+                    summary,
+                    evidence,
+                    1_700_000_000_000_i64,
+                ],
+            )
+            .expect("insert legacy briefing");
+        }
+
+        let now_fn: NowMsFn = Arc::new(|| 1_700_000_000_500);
+        let store = WorkbenchStateStore::open(dir.path(), now_fn).expect("open workbench store");
+        let (items, unread) = store
+            .read_sync(|conn| briefings_list(conn, 50, false))
+            .expect("list briefings");
+        assert_eq!(unread, 1);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "brf_legacy_1");
+        assert_eq!(items[0].instrument_id, "BTC-USDT-PERP");
+        assert_eq!(items[0].status, BriefingStatus::Ready);
+        assert_eq!(
+            items[0].summary.as_ref().expect("summary").trigger_reason,
+            "volume spike"
+        );
+        assert_eq!(items[0].evidence_refs.len(), 1);
+        store.shutdown().await.expect("shutdown store");
+    }
 }
