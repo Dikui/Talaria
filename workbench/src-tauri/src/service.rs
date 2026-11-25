@@ -302,6 +302,12 @@ pub fn discover_or_spawn_service(state: &mut ShellRuntimeState, desk_dist: Optio
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
+    if let Ok(pack) = std::env::var("TALARIA_PACK")
+        && !pack.trim().is_empty()
+    {
+        cmd.arg("--pack").arg(pack.trim());
+    }
+
     if let Some(dist) = desk_dist
         && dist.is_dir()
     {

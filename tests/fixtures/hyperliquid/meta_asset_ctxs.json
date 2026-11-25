@@ -1,0 +1,4 @@
+[
+  {"universe": [{"name": "BTC", "szDecimals": 5, "maxLeverage": 40}, {"name": "ETH", "szDecimals": 4, "maxLeverage": 25}]},
+  [{"markPx": "58201.5", "funding": "0.0000125", "openInterest": "2450.12345"}, {"markPx": "2950.25", "funding": "0.00001", "openInterest": "12000.5"}]
+]

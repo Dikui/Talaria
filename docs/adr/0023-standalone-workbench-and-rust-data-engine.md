@@ -11,7 +11,7 @@ status: accepted
    - `talaria-contracts`：零 I/O 的 L0 契约、定点 `DecimalStr`、五重时点、`InstrumentSpec` 与六大 `Capability Traits`。
    - `talaria-operators`：基于 `rust_decimal` 的确定性算子与 `Key Level` 引擎，必须 100% 通过 `contracts/operator_vectors/` 全部 11 份黄金向量逐字符验收。
    - `talaria-store`：唯一冷库写者，写入符合 [ADR-0017](./0017-cold-store-per-instrument-decimal128.md) 物理 `INT64` 规范的 `decimal128(18, s)` Parquet（ZSTD）与 `data_manifest.sqlite`，并维护热缓冲 `HotStreamBuffer`。
-   - `talaria-packs` 与 `talaria-feed`：`Market Pack` 协议与 `FeedSupervisor`（`LIVE → STALE → RECOVERING`、`NO_TRADES` / `FEED_GAP` 与 JSONL 回放时钟）。
+   - `talaria-packs` 与 `talaria-feed`：`Market Pack` 协议与 `FeedSupervisor`（`LIVE → STALE → RECOVERING`、`NO_TRADES` / `FEED_GAP` 与 JSONL 回放时钟）；支持多市场与多交易所组合包 `crypto_suite`（合并 `okx_perp` 主日常源、`hyperliquid_perp` 链上资金费率与 `coinbase_spot` 美盘现货基准）以及 `binance_perp` 官方 `data.binance.vision`（SHA-256 校验 ZIP 归档）历史回填。
    - `talaria-server` 与 `talaria-cli`（产出 `talaria-data`）：仅绑定 `127.0.0.1` 回环地址，持有 `<data-dir>/runtime/service.lock` 排他锁并发布 `0600` 权限 `<data-dir>/runtime/service-descriptor.json`；提供 Arrow IPC 批量取数端点（`/api/bars.arrow`、`/api/ticks.arrow`、`/api/derivatives.arrow`）、兼容 JSON 接口、双语义 WebSocket（`/ws/desk` 与带 `(epoch, seq)` 重连补发的 `/ws/strategy`）以及单写工作台状态库 `state/workbench_state.sqlite`。
 3. **`Resident Service` 生命周期归属**：日常桌面形态下，由独立 `Tauri v2` 桌面应用通过 sidecar（`--exit-with-parent`）启停与监控 `talaria-data`（支持探测复用已运行实例或配置关闭主窗后台驻留）；独立运行形态下，通过 `talaria-data up` 启动。不再由 DSH 桌面应用独占托管启停，也不采用 `launchd`。
 4. **外围消费方边界**：

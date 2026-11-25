@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::bail;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use talaria_contracts::RawBar;
 use talaria_feed::DEFAULT_STALE_AFTER_MS;
 use talaria_packs::{
-    BackfillWindow, DEFAULT_PACK_NAME, HistoryConnectorConfig, backfill_bars, get_market_pack,
+    BackfillWindow, DEFAULT_PACK_NAME, HistoryConnector, HistoryConnectorConfig, backfill_bars,
+    binance_perp::archive::{BinanceVisionArchiveConnector, DEFAULT_ARCHIVE_BASE_URL},
+    get_market_pack,
 };
 use talaria_server::security::resolve_data_dir;
 use talaria_server::{ServerConfig, start_server};
@@ -118,9 +120,19 @@ struct BackfillArgs {
     #[arg(long, alias = "bybit-base-url")]
     history_base_url: Option<String>,
 
+    /// History source backend (`rest` or `archive` for `data.binance.vision` bulk ZIPs).
+    #[arg(long, value_enum, default_value_t = BackfillSource::Rest)]
+    source: BackfillSource,
+
     /// Compact cold partitions after writing.
     #[arg(long, default_value_t = false)]
     compact: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum BackfillSource {
+    Rest,
+    Archive,
 }
 
 #[derive(Debug, Args)]
@@ -349,12 +361,27 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
     let mut lock = DataDirLock::acquire(&resolved, "backfill")
         .map_err(|e| anyhow::anyhow!("failed to lock {}: {e}", resolved.display()))?;
     let pack = get_market_pack(&args.pack)?;
-    let connector = pack.create_history_connector(HistoryConnectorConfig {
-        base_url: args.history_base_url,
-        fixture_dir: args.fixture_dir,
-        now_ms: Arc::new(system_now_ms),
-        ..HistoryConnectorConfig::default()
-    })?;
+    let connector: Arc<dyn HistoryConnector> = match args.source {
+        BackfillSource::Rest => pack.create_history_connector(HistoryConnectorConfig {
+            base_url: args.history_base_url,
+            fixture_dir: args.fixture_dir,
+            now_ms: Arc::new(system_now_ms),
+            ..HistoryConnectorConfig::default()
+        })?,
+        BackfillSource::Archive => {
+            if args.pack != "binance_perp" {
+                bail!("`--source archive` is currently supported only for `--pack binance_perp`");
+            }
+            let base = args
+                .history_base_url
+                .unwrap_or_else(|| DEFAULT_ARCHIVE_BASE_URL.to_owned());
+            Arc::new(BinanceVisionArchiveConnector::new(
+                base,
+                Duration::from_secs(30),
+                Arc::new(system_now_ms),
+            )?)
+        }
+    };
     let store = ColdStore::open(&resolved)?;
 
     let end = args.end.unwrap_or_else(system_now_ms);

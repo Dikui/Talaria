@@ -190,7 +190,15 @@ fn binance_kline_row(open_ms: i64, close_px: &str, volume: &str) -> Value {
 fn registry_and_capability_trait_matrix_across_all_three_packs() {
     assert_eq!(
         available_pack_names(),
-        vec!["crypto_perp", "binance_perp", "us_equity"]
+        vec![
+            "crypto_perp",
+            "binance_perp",
+            "us_equity",
+            "okx_perp",
+            "hyperliquid_perp",
+            "coinbase_spot",
+            "crypto_suite"
+        ]
     );
 
     let bybit = get_market_pack("crypto_perp").expect("crypto_perp");

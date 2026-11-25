@@ -48,3 +48,4 @@ uuid = { version = "1", features = ["v4", "serde"] }
 fs2 = "0.4"
 tempfile = "3"
 jsonschema = "0.30"
+zip = { version = "2", default-features = false, features = ["deflate"] }

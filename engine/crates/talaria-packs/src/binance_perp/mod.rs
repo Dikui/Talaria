@@ -1,5 +1,6 @@
 //! Binance USD-M Futures market pack (`binance_perp`, second `crypto_perp` venue).
 
+pub mod archive;
 pub mod connector;
 pub mod stream;
 

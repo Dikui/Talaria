@@ -1,8 +1,12 @@
 //! Market pack abstractions, exchange connectors, offline fixture connector, and WS transports.
 
 pub mod binance_perp;
+pub mod coinbase_spot;
+pub mod composite;
 pub mod crypto_perp;
 pub mod error;
+pub mod hyperliquid_perp;
+pub mod okx_perp;
 pub mod proxy;
 pub mod testing;
 pub mod traits;
@@ -12,8 +16,12 @@ mod uuid_util;
 use std::sync::Arc;
 
 pub use binance_perp::{BinancePerpPack, binance_perp_pack};
+pub use coinbase_spot::{CoinbaseSpotPack, coinbase_spot_pack};
+pub use composite::{CompositeMarketPack, crypto_suite_pack};
 pub use crypto_perp::{CryptoPerpPack, crypto_perp_pack};
 pub use error::PackError;
+pub use hyperliquid_perp::{HyperliquidPerpPack, hyperliquid_perp_pack};
+pub use okx_perp::{OkxPerpPack, okx_perp_pack};
 pub use testing::FixtureConnector;
 pub use traits::{
     BackfillWindow, BoxFuture, ClockFn, FeedTransport, HistoryConnector, HistoryConnectorConfig,
@@ -32,15 +40,27 @@ pub const DEFAULT_PACK_NAME: &str = "crypto_perp";
 
 /// Return all registered market pack names.
 pub fn available_pack_names() -> Vec<&'static str> {
-    vec![DEFAULT_PACK_NAME, "binance_perp", "us_equity"]
+    vec![
+        DEFAULT_PACK_NAME,
+        "binance_perp",
+        "us_equity",
+        "okx_perp",
+        "hyperliquid_perp",
+        "coinbase_spot",
+        "crypto_suite",
+    ]
 }
 
-/// Look up a registered [`MarketPack`] by name (`"crypto_perp"`, `"binance_perp"`, `"us_equity"`).
+/// Look up a registered [`MarketPack`] by name.
 pub fn get_market_pack(name: &str) -> Result<Arc<dyn MarketPack>, PackError> {
     match name {
         "crypto_perp" => Ok(crypto_perp_pack()),
         "binance_perp" => Ok(binance_perp_pack()),
         "us_equity" => Ok(us_equity_pack()),
+        "okx_perp" => Ok(okx_perp_pack()),
+        "hyperliquid_perp" => Ok(hyperliquid_perp_pack()),
+        "coinbase_spot" => Ok(coinbase_spot_pack()),
+        "crypto_suite" => Ok(crypto_suite_pack()),
         other => Err(PackError::InvalidRequest(format!(
             "unknown market pack `{other}`; available: {}",
             available_pack_names().join(", ")
