@@ -53,6 +53,17 @@ export function useMarketStream(
           },
         });
       },
+      onChannelMode(realtime) {
+        dispatch({
+          type: "message",
+          message: {
+            type: "channel_mode",
+            instrument_id: instrumentId,
+            timeframe,
+            realtime,
+          },
+        });
+      },
       onAlertQuota(deniedAlerts) {
         dispatch({
           type: "message",

@@ -361,21 +361,56 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
     let mut lock = DataDirLock::acquire(&resolved, "backfill")
         .map_err(|e| anyhow::anyhow!("failed to lock {}: {e}", resolved.display()))?;
     let pack = get_market_pack(&args.pack)?;
-    let connector: Arc<dyn HistoryConnector> = match args.source {
-        BackfillSource::Rest => pack.create_history_connector(HistoryConnectorConfig {
-            base_url: args.history_base_url,
-            fixture_dir: args.fixture_dir,
-            now_ms: Arc::new(system_now_ms),
-            ..HistoryConnectorConfig::default()
-        })?,
+
+    let end = args.end.unwrap_or_else(system_now_ms);
+    let specs: Vec<_> = match &args.instrument {
+        Some(id) => {
+            let spec = pack
+                .instrument(id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("unknown instrument: {id}"))?;
+            if args.source == BackfillSource::Archive && spec.venue != "binance" {
+                bail!(
+                    "instrument `{id}` (venue `{}`) is not supported with `--source archive` (requires venue `binance`)",
+                    spec.venue
+                );
+            }
+            vec![spec]
+        }
+        None => {
+            let all = pack.instruments().to_vec();
+            if args.source == BackfillSource::Archive {
+                all.into_iter().filter(|s| s.venue == "binance").collect()
+            } else {
+                all
+            }
+        }
+    };
+
+    enum BackfillBackend {
+        Rest(Arc<dyn HistoryConnector>),
+        Archive(BinanceVisionArchiveConnector),
+    }
+
+    let backend = match args.source {
+        BackfillSource::Rest => BackfillBackend::Rest(pack.create_history_connector(
+            HistoryConnectorConfig {
+                base_url: args.history_base_url,
+                fixture_dir: args.fixture_dir,
+                now_ms: Arc::new(system_now_ms),
+                ..HistoryConnectorConfig::default()
+            },
+        )?),
         BackfillSource::Archive => {
-            if args.pack != "binance_perp" {
-                bail!("`--source archive` is currently supported only for `--pack binance_perp`");
+            if args.pack != "binance_perp" && args.pack != "crypto_suite" {
+                bail!(
+                    "`--source archive` is currently supported only for `--pack binance_perp` or `--pack crypto_suite`"
+                );
             }
             let base = args
                 .history_base_url
                 .unwrap_or_else(|| DEFAULT_ARCHIVE_BASE_URL.to_owned());
-            Arc::new(BinanceVisionArchiveConnector::new(
+            BackfillBackend::Archive(BinanceVisionArchiveConnector::new(
                 base,
                 Duration::from_secs(30),
                 Arc::new(system_now_ms),
@@ -384,29 +419,39 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
     };
     let store = ColdStore::open(&resolved)?;
 
-    let end = args.end.unwrap_or_else(system_now_ms);
-    let specs: Vec<_> = match &args.instrument {
-        Some(id) => vec![
-            pack.instrument(id)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("unknown instrument: {id}"))?,
-        ],
-        None => pack.instruments().to_vec(),
+    let rest_window = match &backend {
+        BackfillBackend::Rest(_) => {
+            let interval = talaria_contracts::timeframe_ms(&args.timeframe)?;
+            let expected = (((end - args.start).max(0) / interval) as usize).saturating_add(2);
+            Some(BackfillWindow {
+                start_ts: Some(args.start),
+                end_ts: Some(end),
+                target_count: expected.max(1000),
+                max_pages: (expected / 300).saturating_add(5).max(5),
+                page_limit: 1000,
+            })
+        }
+        BackfillBackend::Archive(_) => None,
     };
 
     let mut total_bars = 0usize;
     for spec in &specs {
-        let rows = backfill_bars(
-            connector.as_ref(),
-            &spec.symbol,
-            &args.timeframe,
-            BackfillWindow {
-                start_ts: Some(args.start),
-                end_ts: Some(end),
-                ..BackfillWindow::default()
-            },
-        )
-        .await?;
+        let rows = match &backend {
+            BackfillBackend::Rest(connector) => {
+                backfill_bars(
+                    connector.as_ref(),
+                    &spec.symbol,
+                    &args.timeframe,
+                    rest_window.expect("rest window"),
+                )
+                .await?
+            }
+            BackfillBackend::Archive(archive) => {
+                archive
+                    .fetch_bars_in_range(&spec.symbol, &args.timeframe, args.start, end)
+                    .await?
+            }
+        };
         let mut by_month: BTreeMap<String, Vec<RawBar>> = BTreeMap::new();
         for bar in rows {
             total_bars += 1;

@@ -12,6 +12,7 @@ import { t } from "../../lib/i18n";
 
 export type DeskMessage =
   | { type: "hello"; feed_mode: string; server_ts: number; live: boolean; denied_alerts?: string[] }
+  | { type: "channel_mode"; instrument_id: string; timeframe: string; realtime: boolean }
   | { type: "alert_quota"; denied_alerts: string[] }
   | { type: "bar"; data: KlineEvent }
   | { type: "book"; data: OrderBookEvent }
@@ -70,6 +71,17 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
         live: record.live === true,
         ...(denied !== null && { denied_alerts: denied }),
       };
+    case "channel_mode":
+      return typeof record.instrument_id === "string" &&
+        typeof record.timeframe === "string" &&
+        typeof record.realtime === "boolean"
+        ? {
+            type: "channel_mode",
+            instrument_id: record.instrument_id,
+            timeframe: record.timeframe,
+            realtime: record.realtime,
+          }
+        : null;
     case "bar":
       return hasInstrumentId(record.data)
         ? { type: "bar", data: record.data as KlineEvent }

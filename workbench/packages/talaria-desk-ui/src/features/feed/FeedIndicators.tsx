@@ -10,6 +10,7 @@ interface FeedHealthBadgeProps {
   now: number;
   live: boolean | null;
   connection: ConnectionState;
+  channelRealtime?: boolean | null;
 }
 
 export function FeedHealthBadge({
@@ -17,9 +18,10 @@ export function FeedHealthBadge({
   now,
   live,
   connection,
+  channelRealtime,
 }: FeedHealthBadgeProps) {
   const locale = useLocale();
-  const view = feedBadgeView(health, now, live, connection, locale);
+  const view = feedBadgeView(health, now, live, connection, locale, channelRealtime);
   return (
     <span
       className={`feed-health feed-health--${view.tone}`}
@@ -83,11 +85,18 @@ interface FeedAlertProps {
   now: number;
   live: boolean | null;
   connection: ConnectionState;
+  channelRealtime?: boolean | null;
 }
 
-export function FeedAlert({ health, now, live, connection }: FeedAlertProps) {
-  useLocale();
-  const view = feedAlertView(health, now, live, connection);
+export function FeedAlert({
+  health,
+  now,
+  live,
+  connection,
+  channelRealtime,
+}: FeedAlertProps) {
+  const locale = useLocale();
+  const view = feedAlertView(health, now, live, connection, locale, channelRealtime);
   if (view === null) {
     return null;
   }

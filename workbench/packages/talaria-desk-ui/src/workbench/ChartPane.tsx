@@ -33,6 +33,13 @@ import { timeframeToMs } from "../lib/chartData";
 import { t, useLocale } from "../lib/i18n";
 import { TIMEFRAMES } from "./panels";
 import { useLinkCrosshair, useLinkSnapshot, usePanelLink } from "./usePanelLink";
+import {
+  groupInstrumentsByVenue,
+  pickInstrumentForVenue,
+  symbolDisplayName,
+  venueDisplayName,
+  venueShortLabel,
+} from "./venues";
 import { useWorkbenchContext } from "./WorkbenchContext";
 
 export interface ChartPaneProps {
@@ -52,7 +59,7 @@ export function ChartPane({
   isPopout = false,
   onTitleChange,
 }: ChartPaneProps) {
-  useLocale();
+  const locale = useLocale();
   const ctx = useWorkbenchContext();
   const link = usePanelLink({
     key: paneId,
@@ -110,16 +117,31 @@ export function ChartPane({
     };
   }, [paneId, replay.active, onPaneReplayActiveChange]);
 
+  const venueGroups = useMemo(
+    () => groupInstrumentsByVenue(ctx.instruments),
+    [ctx.instruments],
+  );
   const spec = useMemo(
     () => ctx.instruments.find((item) => item.instrument_id === instrumentId),
     [ctx.instruments, instrumentId],
   );
+  const activeVenue = spec?.venue ?? venueGroups[0]?.venue ?? "";
+  const activeVenueInstruments = useMemo(() => {
+    if (venueGroups.length <= 1) return ctx.instruments;
+    return (
+      venueGroups.find((item) => item.venue === activeVenue)?.instruments ?? ctx.instruments
+    );
+  }, [venueGroups, activeVenue, ctx.instruments]);
   const pricePrecision = spec?.price_precision ?? 2;
   const volumePrecision = spec?.qty_precision ?? 3;
 
   useEffect(() => {
-    onTitleChange?.(`${instrumentId} · ${timeframe}`);
-  }, [instrumentId, timeframe, onTitleChange]);
+    const title =
+      venueGroups.length > 1 && spec
+        ? `${venueShortLabel(spec.venue)} · ${symbolDisplayName(spec)} · ${timeframe}`
+        : `${instrumentId} · ${timeframe}`;
+    onTitleChange?.(title);
+  }, [venueGroups.length, spec, instrumentId, timeframe, onTitleChange]);
 
   // Mount VelaChartAdapter once per ChartPane lifecycle.
   useEffect(() => {
@@ -480,7 +502,14 @@ export function ChartPane({
   );
   const totalGaps = stats.gaps + liveGapCount;
   const streamLive = stream.hello?.live ?? null;
-  const badge = feedBadgeView(stream.feedHealth, stream.now, streamLive, stream.connection);
+  const badge = feedBadgeView(
+    stream.feedHealth,
+    stream.now,
+    streamLive,
+    stream.connection,
+    locale,
+    stream.channelRealtime,
+  );
 
   const derivativeSummary = derivativeBundle?.summary;
   const liveDeriv = stream.derivatives;
@@ -498,17 +527,42 @@ export function ChartPane({
     >
       <div className="chart-pane-toolbar">
         <div className="chart-pane-selectors">
+          {venueGroups.length > 1 && (
+            <select
+              className="chart-venue-select"
+              data-testid={`venue-select-${paneId}`}
+              aria-label={t("选择数据源", "Select data source")}
+              value={activeVenue}
+              onChange={(e) => {
+                const next = pickInstrumentForVenue(
+                  ctx.instruments,
+                  e.target.value,
+                  instrumentId,
+                );
+                if (next) {
+                  link.setSymbol(next.instrument_id, timeframe);
+                }
+              }}
+            >
+              {venueGroups.map((venueGroup) => (
+                <option key={venueGroup.venue} value={venueGroup.venue}>
+                  {venueDisplayName(venueGroup.venue, locale)}
+                </option>
+              ))}
+            </select>
+          )}
           <select
+            data-testid={`instrument-select-${paneId}`}
             aria-label={t("选择标的", "Select instrument")}
             value={instrumentId}
             onChange={(e) => link.setSymbol(e.target.value, timeframe)}
           >
-            {(ctx.instruments.length > 0
-              ? ctx.instruments
-              : [{ instrument_id: instrumentId }]
+            {(activeVenueInstruments.length > 0
+              ? activeVenueInstruments
+              : [{ instrument_id: instrumentId, venue: activeVenue }]
             ).map((item) => (
               <option key={item.instrument_id} value={item.instrument_id}>
-                {item.instrument_id}
+                {symbolDisplayName(item)}
               </option>
             ))}
           </select>
@@ -543,6 +597,7 @@ export function ChartPane({
             now={stream.now}
             live={streamLive}
             connection={stream.connection}
+            channelRealtime={stream.channelRealtime}
           />
           <span
             className={`backend-pill backend-pill--${backend}`}
@@ -627,6 +682,7 @@ export function ChartPane({
           now={stream.now}
           live={streamLive}
           connection={stream.connection}
+          channelRealtime={stream.channelRealtime}
         />
       )}
 

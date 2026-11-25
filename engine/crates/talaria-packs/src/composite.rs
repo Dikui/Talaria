@@ -1,6 +1,7 @@
 //! Composite multi-venue market pack (`crypto_suite`):
-//! Combines `okx_perp` (primary daily swaps) + `hyperliquid_perp` (on-chain sentiment)
-//! + `coinbase_spot` (US spot reference) behind the single `MarketPack` trait.
+//! Combines `okx_perp` (primary daily swaps), `binance` (Binance Vision historical archive),
+//! `hyperliquid_perp` (on-chain sentiment), and `coinbase_spot` (US spot reference)
+//! behind the single `MarketPack` trait.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -8,12 +9,15 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use rust_decimal::Decimal;
 use talaria_contracts::{
-    DerivativeKind, Direction, InstrumentSpec, MarginEstimate, RawBar, RawDerivativePoint,
-    TraitBundle,
+    DerivativeKind, Direction, FeedCapabilityTrait, InstrumentSpec, MarginEstimate, RawBar,
+    RawDerivativePoint, TraitBundle,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
+use crate::binance_perp::archive::{BinanceVisionArchiveConnector, DEFAULT_ARCHIVE_BASE_URL};
+use crate::binance_perp::connector::BinanceFixtureConnector;
+use crate::binance_perp::{BinancePerpPack, binance_perp_pack};
 use crate::coinbase_spot::{CoinbaseSpotPack, coinbase_spot_pack};
 use crate::error::PackError;
 use crate::hyperliquid_perp::{HyperliquidPerpPack, hyperliquid_perp_pack};
@@ -25,14 +29,15 @@ use crate::traits::{
 
 pub const MARKET_PACK_SKILL: &str = "\
 # Talaria Multi-Venue Crypto Suite (`crypto_suite`)\n\
-- Combines OKX V5 linear swaps (primary daily feed), Hyperliquid perpetuals (1h funding on-chain reference), and Coinbase spot (US Coinbase Premium anchor).\n\
-- Feeds multiplex transparently through `MarketPack` with zero exchange conditionals in `talaria-feed` or `talaria-server`.\n";
+- Combines OKX V5 linear swaps (primary daily realtime feed), Binance USD-M Futures via `data.binance.vision` bulk archive (history-only, `feed.realtime = false`), Hyperliquid perpetuals (1h funding on-chain reference), and Coinbase spot (US Coinbase Premium anchor).\n\
+- Feeds multiplex transparently through `MarketPack` and trait capabilities with zero exchange conditionals in `talaria-feed` or `talaria-server`.\n";
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum VenueSlot {
     Okx = 0,
     Hyperliquid = 1,
     Coinbase = 2,
+    BinanceArchive = 3,
 }
 
 impl VenueSlot {
@@ -41,11 +46,19 @@ impl VenueSlot {
             "okx" => Ok(Self::Okx),
             "hyperliquid" => Ok(Self::Hyperliquid),
             "coinbase" => Ok(Self::Coinbase),
+            "binance" => Ok(Self::BinanceArchive),
             other => Err(PackError::InstrumentNotFound(format!(
                 "unsupported venue `{other}` in crypto_suite"
             ))),
         }
     }
+}
+
+fn binance_id_from_suite(instrument_id: &str) -> String {
+    instrument_id
+        .strip_suffix("-BN-PERP")
+        .map(|base| format!("{base}-PERP"))
+        .unwrap_or_else(|| instrument_id.to_owned())
 }
 
 /// Composite `HistoryConnector` routing `symbol` lookups to the owning venue connector.
@@ -54,6 +67,7 @@ pub struct CompositeHistoryConnector {
     okx: Arc<dyn HistoryConnector>,
     hyperliquid: Arc<dyn HistoryConnector>,
     coinbase: Arc<dyn HistoryConnector>,
+    binance_archive: Arc<dyn HistoryConnector>,
 }
 
 impl CompositeHistoryConnector {
@@ -62,6 +76,7 @@ impl CompositeHistoryConnector {
             Some(VenueSlot::Okx) => Ok(&self.okx),
             Some(VenueSlot::Hyperliquid) => Ok(&self.hyperliquid),
             Some(VenueSlot::Coinbase) => Ok(&self.coinbase),
+            Some(VenueSlot::BinanceArchive) => Ok(&self.binance_archive),
             None => Err(PackError::InstrumentNotFound(format!(
                 "unknown symbol `{symbol}` in crypto_suite"
             ))),
@@ -257,6 +272,9 @@ impl FeedTransport for CompositeFeedTransport {
                 .get(instrument_id)
                 .copied()
                 .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
+            if slot == VenueSlot::BinanceArchive {
+                return Ok(());
+            }
             let idx = slot as usize;
             let (started, transport) = {
                 let mut guard = self.state.lock().await;
@@ -281,6 +299,9 @@ impl FeedTransport for CompositeFeedTransport {
             let Some(slot) = self.slot_by_instrument.get(instrument_id).copied() else {
                 return Ok(());
             };
+            if slot == VenueSlot::BinanceArchive {
+                return Ok(());
+            }
             let transport = {
                 let mut guard = self.state.lock().await;
                 guard
@@ -325,6 +346,7 @@ struct CompositeMarginValuation {
     slot_by_instrument: BTreeMap<String, VenueSlot>,
     okx: Option<Arc<dyn MarginValuation>>,
     hyperliquid: Option<Arc<dyn MarginValuation>>,
+    binance: Option<Arc<dyn MarginValuation>>,
 }
 
 impl MarginValuation for CompositeMarginValuation {
@@ -341,16 +363,20 @@ impl MarginValuation for CompositeMarginValuation {
         isolated_margin: Decimal,
         as_of: i64,
     ) -> Result<Decimal, PackError> {
-        let mv = match self.slot_by_instrument.get(instrument_id).copied() {
-            Some(VenueSlot::Okx) => self.okx.as_ref(),
-            Some(VenueSlot::Hyperliquid) => self.hyperliquid.as_ref(),
-            _ => None,
-        }
-        .ok_or_else(|| {
+        let slot = self.slot_by_instrument.get(instrument_id).copied();
+        let (mv, mapped_id) = match slot {
+            Some(VenueSlot::Okx) => (self.okx.as_ref(), instrument_id.to_owned()),
+            Some(VenueSlot::Hyperliquid) => (self.hyperliquid.as_ref(), instrument_id.to_owned()),
+            Some(VenueSlot::BinanceArchive) => {
+                (self.binance.as_ref(), binance_id_from_suite(instrument_id))
+            }
+            _ => (None, instrument_id.to_owned()),
+        };
+        let mv = mv.ok_or_else(|| {
             PackError::InvalidRequest(format!("margin valuation unavailable for `{instrument_id}`"))
         })?;
         mv.isolated_liquidation_price(
-            instrument_id,
+            &mapped_id,
             direction,
             quantity,
             entry_price,
@@ -373,22 +399,41 @@ impl MarginValuation for CompositeMarginValuation {
                 maintenance_margin: Decimal::ZERO,
             });
         };
-        let mv = match self.slot_by_instrument.get(&first.0).copied() {
+        let slot = self.slot_by_instrument.get(&first.0).copied();
+        let mv = match slot {
             Some(VenueSlot::Okx) => self.okx.as_ref(),
             Some(VenueSlot::Hyperliquid) => self.hyperliquid.as_ref(),
+            Some(VenueSlot::BinanceArchive) => self.binance.as_ref(),
             _ => None,
         }
         .ok_or_else(|| {
             PackError::InvalidRequest(format!("margin valuation unavailable for `{}`", first.0))
         })?;
+        if slot == Some(VenueSlot::BinanceArchive) {
+            let mapped_positions: Vec<(String, Direction, Decimal, Decimal)> = positions
+                .iter()
+                .map(|(id, dir, qty, entry)| (binance_id_from_suite(id), *dir, *qty, *entry))
+                .collect();
+            let mapped_marks: BTreeMap<String, Decimal> = mark_prices
+                .iter()
+                .map(|(id, price)| (binance_id_from_suite(id), *price))
+                .collect();
+            return mv.cross_maintenance_margin(
+                &mapped_positions,
+                &mapped_marks,
+                leverage,
+                collateral,
+            );
+        }
         mv.cross_maintenance_margin(positions, mark_prices, leverage, collateral)
     }
 }
 
-/// Multi-venue `crypto_suite` combining OKX + Hyperliquid + Coinbase.
+/// Multi-venue `crypto_suite` combining OKX + Binance Archive + Hyperliquid + Coinbase.
 #[derive(Clone)]
 pub struct CompositeMarketPack {
     okx: Arc<OkxPerpPack>,
+    binance: Arc<BinancePerpPack>,
     hyperliquid: Arc<HyperliquidPerpPack>,
     coinbase: Arc<CoinbaseSpotPack>,
     instruments: Vec<InstrumentSpec>,
@@ -400,6 +445,7 @@ pub struct CompositeMarketPack {
 impl CompositeMarketPack {
     pub fn new() -> Self {
         let okx = okx_perp_pack();
+        let binance = binance_perp_pack();
         let hyperliquid = hyperliquid_perp_pack();
         let coinbase = coinbase_spot_pack();
 
@@ -407,10 +453,31 @@ impl CompositeMarketPack {
         let mut slot_by_instrument = BTreeMap::new();
         let mut slot_by_symbol = BTreeMap::new();
 
-        for spec in okx
+        for spec in okx.instruments() {
+            let slot = VenueSlot::from_venue(&spec.venue).expect("known composite venue");
+            slot_by_instrument.insert(spec.instrument_id.clone(), slot);
+            slot_by_symbol.insert(spec.symbol.clone(), slot);
+            instruments.push(spec.clone());
+        }
+
+        for (src_id, suite_id) in [
+            ("BTC-USDT-PERP", "BTC-USDT-BN-PERP"),
+            ("ETH-USDT-PERP", "ETH-USDT-BN-PERP"),
+            ("SOL-USDT-PERP", "SOL-USDT-BN-PERP"),
+        ] {
+            let mut spec = binance
+                .instrument(src_id)
+                .cloned()
+                .expect("known binance_perp instrument");
+            spec.instrument_id = suite_id.to_owned();
+            slot_by_instrument.insert(spec.instrument_id.clone(), VenueSlot::BinanceArchive);
+            slot_by_symbol.insert(spec.symbol.clone(), VenueSlot::BinanceArchive);
+            instruments.push(spec);
+        }
+
+        for spec in hyperliquid
             .instruments()
             .iter()
-            .chain(hyperliquid.instruments().iter())
             .chain(coinbase.instruments().iter())
         {
             let slot = VenueSlot::from_venue(&spec.venue).expect("known composite venue");
@@ -422,6 +489,7 @@ impl CompositeMarketPack {
         let _ = (DerivativeKind::MarkPrice,);
         Self {
             okx,
+            binance,
             hyperliquid,
             coinbase,
             instruments,
@@ -436,6 +504,7 @@ impl CompositeMarketPack {
             VenueSlot::Okx => self.okx.as_ref(),
             VenueSlot::Hyperliquid => self.hyperliquid.as_ref(),
             VenueSlot::Coinbase => self.coinbase.as_ref(),
+            VenueSlot::BinanceArchive => self.binance.as_ref(),
         }
     }
 }
@@ -474,6 +543,20 @@ impl MarketPack for CompositeMarketPack {
             .get(instrument_id)
             .copied()
             .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
+        if slot == VenueSlot::BinanceArchive {
+            let bn_id = binance_id_from_suite(instrument_id);
+            let mut bundle = self.binance.traits(&bn_id)?;
+            bundle.feed = FeedCapabilityTrait {
+                realtime: false,
+                polling: false,
+                history: true,
+            };
+            if let Some(ref mut d) = bundle.derivatives {
+                d.realtime = false;
+                d.history = false;
+            }
+            return Ok(bundle);
+        }
         self.subpack_for_slot(slot).traits(instrument_id)
     }
 
@@ -481,6 +564,20 @@ impl MarketPack for CompositeMarketPack {
         &self,
         config: HistoryConnectorConfig,
     ) -> Result<Arc<dyn HistoryConnector>, PackError> {
+        let binance_archive: Arc<dyn HistoryConnector> = if let Some(dir) = config
+            .fixture_dir
+            .as_ref()
+            .map(|d| d.join("binance"))
+            .filter(|p| p.exists())
+        {
+            Arc::new(BinanceFixtureConnector::new(dir))
+        } else {
+            Arc::new(BinanceVisionArchiveConnector::new(
+                DEFAULT_ARCHIVE_BASE_URL,
+                config.timeout,
+                Arc::clone(&config.now_ms),
+            )?)
+        };
         let okx_cfg = HistoryConnectorConfig {
             fixture_dir: config.fixture_dir.as_ref().map(|d| d.join("okx")),
             ..config.clone()
@@ -499,6 +596,7 @@ impl MarketPack for CompositeMarketPack {
             okx: self.okx.create_history_connector(okx_cfg)?,
             hyperliquid: self.hyperliquid.create_history_connector(hl_cfg)?,
             coinbase: self.coinbase.create_history_connector(cb_cfg)?,
+            binance_archive,
         }))
     }
 
@@ -545,6 +643,7 @@ impl MarketPack for CompositeMarketPack {
             slot_by_instrument: self.slot_by_instrument.clone(),
             okx: self.okx.margin_valuation(),
             hyperliquid: self.hyperliquid.margin_valuation(),
+            binance: self.binance.margin_valuation(),
         }))
     }
 }

@@ -34,6 +34,7 @@ export function deskSocketUrl(): string {
 export interface DeskChannelCallbacks {
   onConnection?: (state: ConnectionState) => void;
   onHello?: (hello: FeedHello, deniedAlerts: string[]) => void;
+  onChannelMode?: (realtime: boolean) => void;
   onBar?: (event: KlineEvent) => void;
   onBook?: (event: OrderBookEvent) => void;
   onDerivatives?: (event: DerivativeTickEvent) => void;
@@ -66,6 +67,7 @@ export class DeskSocketHub {
   private quotaTimers = new Map<string, number>();
   private subscribers = new Map<number, SubscriptionEntry>();
   private activeChannels = new Map<string, number>();
+  private channelModes = new Map<string, boolean>();
   private nextId = 1;
   private disposed = false;
 
@@ -114,6 +116,7 @@ export class DeskSocketHub {
       if (this.socket === socket) {
         this.socket = null;
       }
+      this.channelModes.clear();
       this.setConnection("closed");
       if (!this.disposed && this.subscribers.size > 0) {
         this.scheduleReconnect();
@@ -167,6 +170,19 @@ export class DeskSocketHub {
           sub.callbacks.onHello?.(this.hello, this.deniedAlerts);
         }
         break;
+      case "channel_mode": {
+        const key = this.channelKey(msg.instrument_id, msg.timeframe);
+        this.channelModes.set(key, msg.realtime);
+        for (const sub of this.subscribers.values()) {
+          if (
+            sub.instrumentId === msg.instrument_id &&
+            sub.timeframe === msg.timeframe
+          ) {
+            sub.callbacks.onChannelMode?.(msg.realtime);
+          }
+        }
+        break;
+      }
       case "alert_quota":
         this.deniedAlerts = msg.denied_alerts;
         for (const sub of this.subscribers.values()) {
@@ -291,6 +307,10 @@ export class DeskSocketHub {
     if (this.hello) {
       callbacks.onHello?.(this.hello, this.deniedAlerts);
     }
+    const cachedMode = this.channelModes.get(key);
+    if (cachedMode !== undefined) {
+      callbacks.onChannelMode?.(cachedMode);
+    }
 
     if (prevCount === 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
       this.sendOp(this.socket, "subscribe", instrumentId, timeframe);
@@ -302,6 +322,7 @@ export class DeskSocketHub {
       const current = this.activeChannels.get(key) ?? 0;
       if (current <= 1) {
         this.activeChannels.delete(key);
+        this.channelModes.delete(key);
         const qt = this.quotaTimers.get(key);
         if (qt !== undefined) {
           window.clearTimeout(qt);
@@ -330,6 +351,7 @@ export class DeskSocketHub {
     socket?.close();
     this.connection = "closed";
     this.hello = null;
+    this.channelModes.clear();
   }
 
   destroy(): void {

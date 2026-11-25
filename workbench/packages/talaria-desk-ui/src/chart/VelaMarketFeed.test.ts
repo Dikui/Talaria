@@ -4,6 +4,7 @@ import type { CompactBar, FeedHealthEvent, KlineEvent, SnapshotMeta } from "@tal
 import { VelaMarketFeed } from "./VelaMarketFeed";
 import { compactBarsToVelaSeries } from "../lib/chartData";
 import { feedAlertView, feedBadgeView, staleDurationMs } from "../features/feed/health";
+import { parseDeskMessage } from "../features/feed/messages";
 import { feedReducer, initialFeedState } from "../features/feed/reducer";
 
 function makeBar(timestamp: number, status: CompactBar["status"] = "NORMAL"): CompactBar {
@@ -184,5 +185,85 @@ describe("VelaMarketFeed and FEED_GAP / STALE / RECOVERING semantics", () => {
     expect(liveBadge.tone).toBe("live");
     expect(liveBadge.label).toBe("Live");
     expect(feedAlertView(state.health, now + 1500, true, state.connection)).toBeNull();
+  });
+
+  it("shows ARCHIVE badge and suppresses alerts when channel_mode has realtime=false", () => {
+    const parsed = parseDeskMessage(
+      JSON.stringify({
+        type: "channel_mode",
+        instrument_id: "BTC-BN-USDT-PERP",
+        timeframe: "1m",
+        realtime: false,
+      }),
+    );
+    expect(parsed).toEqual({
+      type: "channel_mode",
+      instrument_id: "BTC-BN-USDT-PERP",
+      timeframe: "1m",
+      realtime: false,
+    });
+
+    let state = feedReducer(initialFeedState, { type: "opened" });
+    state = feedReducer(state, {
+      type: "message",
+      message: { type: "hello", feed_mode: "live", server_ts: 1_700_000_000_000, live: true },
+    });
+    state = feedReducer(state, { type: "message", message: parsed! });
+    expect(state.channelRealtime).toBe(false);
+
+    const now = 1_700_000_030_000;
+    const badgeEn = feedBadgeView(
+      null,
+      now,
+      true,
+      state.connection,
+      "en",
+      state.channelRealtime,
+    );
+    expect(badgeEn).toEqual({
+      status: "ARCHIVE",
+      label: "Archive",
+      tone: "offline",
+    });
+
+    const badgeZh = feedBadgeView(
+      null,
+      now,
+      true,
+      state.connection,
+      "zh",
+      state.channelRealtime,
+    );
+    expect(badgeZh).toEqual({
+      status: "ARCHIVE",
+      label: "历史归档",
+      tone: "offline",
+    });
+
+    const staleHealth: FeedHealthEvent = {
+      instrument_id: "BTC-BN-USDT-PERP",
+      timeframe: "1m",
+      status: "STALE",
+      ts: now,
+      last_event_ts: now - 20_000,
+      stale_since: now - 20_000,
+      reconnect_count: 2,
+    };
+    const archiveOverStale = feedBadgeView(
+      staleHealth,
+      now,
+      true,
+      state.connection,
+      "en",
+      state.channelRealtime,
+    );
+    expect(archiveOverStale.status).toBe("ARCHIVE");
+    expect(archiveOverStale.tone).toBe("offline");
+    expect(
+      feedAlertView(staleHealth, now, true, state.connection, "en", state.channelRealtime),
+    ).toBeNull();
+
+    const resetState = feedReducer(state, { type: "reset" });
+    expect(resetState.channelRealtime).toBeNull();
   });
 });

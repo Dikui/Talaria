@@ -9,6 +9,12 @@ import type {
 import { ApiError, api } from "../../lib/api";
 import { t, useLocale } from "../../lib/i18n";
 import { PerspectiveTableSlot } from "../../workbench/PerspectiveTableSlot";
+import {
+  groupInstrumentsByVenue,
+  symbolDisplayName,
+  venueDisplayName,
+  venueShortLabel,
+} from "../../workbench/venues";
 import { isEmptyWatchlist, isInstrumentSelected, moveId, quoteView } from "./model";
 
 const POLL_MS = 8_000;
@@ -28,6 +34,7 @@ function errorMessage(error: unknown): string {
 function ItemRow({
   item,
   group,
+  spec,
   precision,
   selected,
   busy,
@@ -37,6 +44,7 @@ function ItemRow({
 }: {
   item: WatchlistItem;
   group: WatchlistGroup;
+  spec?: InstrumentSpec;
   precision: number;
   selected: boolean;
   busy: boolean;
@@ -47,6 +55,8 @@ function ItemRow({
   const locale = useLocale();
   const quote = quoteView(item, precision, locale);
   const index = group.items.findIndex((e) => e.instrument_id === item.instrument_id);
+  const venueLabel = spec ? venueShortLabel(spec.venue) : null;
+  const displaySymbol = spec ? symbolDisplayName(spec) : item.instrument_id;
   return (
     <li className="watchlist-item-row">
       <button
@@ -56,8 +66,12 @@ function ItemRow({
         aria-pressed={selected}
         onClick={() => onSelect(item.instrument_id)}
       >
-        <span className="watchlist-symbol" title={item.instrument_id}>
-          {item.instrument_id}
+        <span
+          className="watchlist-symbol"
+          title={venueLabel ? `${venueLabel} · ${item.instrument_id}` : item.instrument_id}
+        >
+          {venueLabel && <span className="watchlist-venue-pill">{venueLabel}</span>}
+          {displaySymbol}
         </span>
         <span className="watchlist-quote">
           <span className="watchlist-price">{quote.price}</span>
@@ -122,7 +136,7 @@ export function WatchlistPanel({
   selectedInstrumentId,
   onSelect,
 }: WatchlistPanelProps) {
-  useLocale();
+  const locale = useLocale();
   const [data, setData] = useState<Watchlist | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -131,8 +145,12 @@ export function WatchlistPanel({
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [addDraft, setAddDraft] = useState("");
 
-  const precisions = useMemo(
-    () => new Map(instruments.map((inst) => [inst.instrument_id, inst.price_precision])),
+  const specById = useMemo(
+    () => new Map(instruments.map((inst) => [inst.instrument_id, inst])),
+    [instruments],
+  );
+  const venueGroups = useMemo(
+    () => groupInstrumentsByVenue(instruments),
     [instruments],
   );
 
@@ -260,11 +278,24 @@ export function WatchlistPanel({
                   {addingTo === group.group_id && (
                     <div className="watchlist-add-row">
                       <select value={addDraft} onChange={(e) => setAddDraft(e.target.value)}>
-                        {instruments.map((inst) => (
-                          <option key={inst.instrument_id} value={inst.instrument_id}>
-                            {inst.instrument_id}
-                          </option>
-                        ))}
+                        {venueGroups.length > 1
+                          ? venueGroups.map((venueGroup) => (
+                              <optgroup
+                                key={venueGroup.venue}
+                                label={venueDisplayName(venueGroup.venue, locale)}
+                              >
+                                {venueGroup.instruments.map((inst) => (
+                                  <option key={inst.instrument_id} value={inst.instrument_id}>
+                                    {symbolDisplayName(inst)}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ))
+                          : instruments.map((inst) => (
+                              <option key={inst.instrument_id} value={inst.instrument_id}>
+                                {inst.instrument_id}
+                              </option>
+                            ))}
                       </select>
                       <button
                         type="button"
@@ -283,13 +314,16 @@ export function WatchlistPanel({
                     </div>
                   )}
                   <ul className="watchlist-list">
-                    {group.items.map((item) => (
-                      <ItemRow
-                        key={item.instrument_id}
-                        item={item}
-                        group={group}
-                        precision={precisions.get(item.instrument_id) ?? 2}
-                        selected={isInstrumentSelected(item.instrument_id, selectedInstrumentId)}
+                    {group.items.map((item) => {
+                      const itemSpec = specById.get(item.instrument_id);
+                      return (
+                        <ItemRow
+                          key={item.instrument_id}
+                          item={item}
+                          group={group}
+                          spec={itemSpec}
+                          precision={itemSpec?.price_precision ?? 2}
+                          selected={isInstrumentSelected(item.instrument_id, selectedInstrumentId)}
                         busy={busy}
                         onSelect={onSelect}
                         onMove={(dir) => {
@@ -300,11 +334,12 @@ export function WatchlistPanel({
                           );
                           void mutate(() => api.orderWatchlistItems(group.group_id, nextIds));
                         }}
-                        onRemove={() =>
-                          void mutate(() => api.removeWatchlistItem(item.instrument_id))
-                        }
-                      />
-                    ))}
+                          onRemove={() =>
+                            void mutate(() => api.removeWatchlistItem(item.instrument_id))
+                          }
+                        />
+                      );
+                    })}
                   </ul>
                 </div>
               ))}

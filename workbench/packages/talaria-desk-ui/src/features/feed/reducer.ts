@@ -23,6 +23,7 @@ export interface FeedHello {
 export interface FeedState {
   connection: ConnectionState;
   hello: FeedHello | null;
+  channelRealtime: boolean | null;
   health: FeedHealthEvent | null;
   book: OrderBookEvent | null;
   derivatives: DerivativeTickEvent | null;
@@ -38,6 +39,7 @@ export interface FeedState {
 export const initialFeedState: FeedState = {
   connection: "connecting",
   hello: null,
+  channelRealtime: null,
   health: null,
   book: null,
   derivatives: null,
@@ -85,6 +87,8 @@ function applyMessage(state: FeedState, message: DeskMessage): FeedState {
         },
         error: null,
       };
+    case "channel_mode":
+      return { ...state, channelRealtime: message.realtime };
     case "bar": {
       const index = state.bars.findIndex(
         (event) => event.bar.timestamp === message.data.bar.timestamp,
@@ -135,6 +139,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
     case "reset":
       return {
         ...state,
+        channelRealtime: null,
         chartQuotaDenied: false,
         bars: [],
         book: null,

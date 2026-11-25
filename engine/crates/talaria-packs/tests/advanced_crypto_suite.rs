@@ -55,13 +55,21 @@ fn registry_exposes_advanced_crypto_suite_and_component_packs() {
     }
 
     let suite = get_market_pack("crypto_suite").expect("crypto_suite");
-    assert_eq!(suite.instruments().len(), 9);
+    assert_eq!(suite.instruments().len(), 12);
     assert_eq!(suite.instrument("BTC-USDT-PERP").unwrap().venue, "okx");
+    assert_eq!(suite.instrument("BTC-USDT-BN-PERP").unwrap().venue, "binance");
+    assert_eq!(suite.instrument("BTC-USDT-BN-PERP").unwrap().symbol, "BTCUSDT");
     assert_eq!(
         suite.instrument("BTC-USD-HL-PERP").unwrap().venue,
         "hyperliquid"
     );
     assert_eq!(suite.instrument("BTC-USD-CB-SPOT").unwrap().venue, "coinbase");
+
+    let bn_traits = suite.traits("BTC-USDT-BN-PERP").unwrap();
+    assert!(!bn_traits.feed.realtime);
+    assert!(!bn_traits.feed.polling);
+    assert!(bn_traits.feed.history);
+    assert!(bn_traits.derivatives.as_ref().is_some_and(|d| !d.realtime && !d.history));
 
     assert_eq!(
         suite.traits("BTC-USD-HL-PERP").unwrap().carry.funding_interval_hours,
@@ -283,4 +291,140 @@ async fn binance_vision_archive_verifies_sha256_and_rejects_tampered_zip() {
     assert_eq!(bars.len(), 2);
     assert_eq!(bars[0].open, dec("58000"));
     assert_eq!(bars[1].close, dec("58110"));
+}
+
+fn build_archive_zip_and_checksum(csv_name: &str, zip_name: &str, csv: &str) -> (Vec<u8>, Vec<u8>) {
+    let mut zip_buf = Cursor::new(Vec::new());
+    {
+        let mut w = ZipWriter::new(&mut zip_buf);
+        w.start_file(csv_name, SimpleFileOptions::default()).unwrap();
+        w.write_all(csv.as_bytes()).unwrap();
+        w.finish().unwrap();
+    }
+    let zip_bytes = zip_buf.into_inner();
+    let digest = hex::encode(Sha256::digest(&zip_bytes));
+    let checksum_body = format!("{digest}  {zip_name}\n").into_bytes();
+    (zip_bytes, checksum_body)
+}
+
+#[tokio::test]
+async fn binance_vision_archive_fetch_bars_in_range_spans_monthly_and_daily_fallback() {
+    // 2026-10-31T23:58:00Z = 1793491080000
+    // 2026-10-31T23:59:00Z = 1793491140000
+    // 2026-11-01T00:00:00Z = 1793491200000
+    // 2026-11-02T00:00:00Z = 1793577600000
+    // 2026-11-02T00:01:00Z = 1793577660000
+    let (oct_zip, oct_csum) = build_archive_zip_and_checksum(
+        "BTCUSDT-1m-2026-10.csv",
+        "BTCUSDT-1m-2026-10.zip",
+        concat!(
+            "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n",
+            "1793491080000,57900.0,57910.0,57890.0,57905.0,5.0,1793491139999,289500.0,40,2.5,144750.0,0\n",
+            "1793491140000,57905.0,57950.0,57900.0,57940.0,7.5,1793491199999,434500.0,50,3.5,202750.0,0\n",
+        ),
+    );
+    let (nov01_zip, nov01_csum) = build_archive_zip_and_checksum(
+        "BTCUSDT-1m-2026-11-01.csv",
+        "BTCUSDT-1m-2026-11-01.zip",
+        concat!(
+            "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n",
+            "1793491200000,57940.0,58010.0,57930.0,58000.0,10.0,1793491259999,579800.0,70,5.0,289900.0,0\n",
+        ),
+    );
+    let (nov02_zip, nov02_csum) = build_archive_zip_and_checksum(
+        "BTCUSDT-1m-2026-11-02.csv",
+        "BTCUSDT-1m-2026-11-02.zip",
+        concat!(
+            "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n",
+            "1793577600000,58000.0,58050.0,57990.0,58040.0,11.0,1793577659999,638200.0,80,6.0,348100.0,0\n",
+            "1793577660000,58040.0,58090.0,58030.0,58080.0,12.0,1793577719999,696700.0,90,6.5,377400.0,0\n",
+        ),
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let oct_z = oct_zip.clone();
+            let oct_c = oct_csum.clone();
+            let n1_z = nov01_zip.clone();
+            let n1_c = nov01_csum.clone();
+            let n2_z = nov02_zip.clone();
+            let n2_c = nov02_csum.clone();
+            tokio::spawn(async move {
+                let mut req_buf = [0u8; 2048];
+                let n = stream.read(&mut req_buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&req_buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("/");
+                let (status, body): (&str, &[u8]) = if path.ends_with("2026-10.zip") {
+                    ("200 OK", &oct_z)
+                } else if path.ends_with("2026-10.zip.CHECKSUM") {
+                    ("200 OK", &oct_c)
+                } else if path.ends_with("2026-11-01.zip") {
+                    ("200 OK", &n1_z)
+                } else if path.ends_with("2026-11-01.zip.CHECKSUM") {
+                    ("200 OK", &n1_c)
+                } else if path.ends_with("2026-11-02.zip") {
+                    ("200 OK", &n2_z)
+                } else if path.ends_with("2026-11-02.zip.CHECKSUM") {
+                    ("200 OK", &n2_c)
+                } else {
+                    ("404 Not Found", b"not found")
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(body).await;
+            });
+        }
+    });
+
+    let base_url = format!("http://{addr}");
+    let now_fn = Arc::new(|| 1_793_600_000_000_i64);
+    let connector =
+        BinanceVisionArchiveConnector::new(base_url, Duration::from_secs(5), now_fn).unwrap();
+    // Range excludes first Oct bar (1793491080000) and last Nov-02 bar (1793577660000)
+    let bars = connector
+        .fetch_bars_in_range("BTCUSDT", "1m", 1_793_491_140_000, 1_793_577_600_000)
+        .await
+        .expect("fetch_bars_in_range");
+    assert_eq!(bars.len(), 3);
+    assert_eq!(bars[0].ts_event, 1_793_491_140_000);
+    assert_eq!(bars[1].ts_event, 1_793_491_200_000);
+    assert_eq!(bars[2].ts_event, 1_793_577_600_000);
+    assert_eq!(bars[0].close, dec("57940"));
+    assert_eq!(bars[1].close, dec("58000"));
+    assert_eq!(bars[2].close, dec("58040"));
+}
+
+#[tokio::test]
+async fn composite_suite_archive_transport_noop_and_margin_delegation() {
+    let suite = get_market_pack("crypto_suite").expect("crypto_suite");
+    let transport = suite
+        .create_realtime_stream(talaria_packs::RealtimeStreamConfig::default())
+        .expect("composite transport");
+    transport
+        .subscribe("BTC-USDT-BN-PERP", "1m")
+        .await
+        .expect("archive subscribe is a clean no-op");
+    transport
+        .unsubscribe("BTC-USDT-BN-PERP", "1m")
+        .await
+        .expect("archive unsubscribe is a clean no-op");
+    transport.close().await.expect("close transport");
+
+    let mv = suite.margin_valuation().expect("margin valuation");
+    let liq = mv
+        .isolated_liquidation_price(
+            "BTC-USDT-BN-PERP",
+            talaria_contracts::Direction::Long,
+            dec("1"),
+            dec("50000"),
+            dec("5000"),
+            0,
+        )
+        .expect("binance archive margin valuation");
+    assert!(liq > Decimal::ZERO);
 }

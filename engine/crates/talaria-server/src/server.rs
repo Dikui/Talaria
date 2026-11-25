@@ -129,6 +129,13 @@ impl AppState {
         &self.feed_mode_label
     }
 
+    pub fn is_realtime_instrument(&self, instrument_id: &str) -> bool {
+        self.pack
+            .traits(instrument_id)
+            .map(|t| t.feed.realtime)
+            .unwrap_or(true)
+    }
+
     pub fn reconcile_watchlist_subscriptions(&self) {
         let records = match self.state_store.read_sync(watchlist_list) {
             Ok(r) => r,
@@ -139,7 +146,9 @@ impl AppState {
         for g in &records.groups {
             if !g.is_system {
                 for item in records.items_for(&g.group_id) {
-                    if seen.insert(item.instrument_id.clone()) {
+                    if self.is_realtime_instrument(&item.instrument_id)
+                        && seen.insert(item.instrument_id.clone())
+                    {
                         ordered.push(item.instrument_id.clone());
                     }
                 }

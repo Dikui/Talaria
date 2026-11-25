@@ -435,28 +435,39 @@ fn handle_desk_command(
             if !desk.subscribe_client(client_id, key.clone()) {
                 return;
             }
-            let had_channel = supervisor
-                .map(|s| s.has_channel(&cmd.instrument_id, &cmd.timeframe))
-                .unwrap_or(false);
-            if let Err(err) = scheduler.acquire_chart(key.clone()) {
-                desk.unsubscribe_client(client_id, &key);
-                push_error(
-                    queue,
-                    err.code,
-                    &err.message,
-                    Some("chart"),
-                    Some(&cmd.instrument_id),
-                    Some(&cmd.timeframe),
-                );
-                return;
+            let is_realtime = state.is_realtime_instrument(&cmd.instrument_id);
+            if let Ok(json) = serde_json::to_string(&serde_json::json!({
+                "type": "channel_mode",
+                "instrument_id": cmd.instrument_id,
+                "timeframe": cmd.timeframe,
+                "realtime": is_realtime,
+            })) {
+                queue.push_drop_oldest(json);
             }
-            state.reconcile_watchlist_subscriptions();
-            if had_channel
-                && let Some(sup) = supervisor
-                && let Some(health) = sup.channel_health(&cmd.instrument_id, &cmd.timeframe)
-                && let Some((ty, data)) = feed_event_payload(&FeedEvent::Health(health))
-            {
-                queue.push_drop_oldest(format!(r#"{{"type":"{ty}","data":{data}}}"#));
+            if is_realtime {
+                let had_channel = supervisor
+                    .map(|s| s.has_channel(&cmd.instrument_id, &cmd.timeframe))
+                    .unwrap_or(false);
+                if let Err(err) = scheduler.acquire_chart(key.clone()) {
+                    desk.unsubscribe_client(client_id, &key);
+                    push_error(
+                        queue,
+                        err.code,
+                        &err.message,
+                        Some("chart"),
+                        Some(&cmd.instrument_id),
+                        Some(&cmd.timeframe),
+                    );
+                    return;
+                }
+                state.reconcile_watchlist_subscriptions();
+                if had_channel
+                    && let Some(sup) = supervisor
+                    && let Some(health) = sup.channel_health(&cmd.instrument_id, &cmd.timeframe)
+                    && let Some((ty, data)) = feed_event_payload(&FeedEvent::Health(health))
+                {
+                    queue.push_drop_oldest(format!(r#"{{"type":"{ty}","data":{data}}}"#));
+                }
             }
             if let Some(latest) = key_levels.latest(&cmd.instrument_id, &cmd.timeframe)
                 && let Ok(data) = serde_json::to_string(&latest)
@@ -465,7 +476,9 @@ fn handle_desk_command(
             }
         }
         "unsubscribe" => {
-            if desk.unsubscribe_client(client_id, &key) {
+            if desk.unsubscribe_client(client_id, &key)
+                && state.is_realtime_instrument(&cmd.instrument_id)
+            {
                 scheduler.release_chart(&key);
                 if desk.chart_subscriber_count(&key) == 0 {
                     state.reconcile_watchlist_subscriptions();
@@ -501,7 +514,114 @@ fn push_error(
 fn cleanup_client(state: &AppState, client_id: u64) {
     let removed = state.desk.detach(client_id);
     for key in removed {
-        state.scheduler.release_chart(&key);
+        if state.is_realtime_instrument(&key.0) {
+            state.scheduler.release_chart(&key);
+        }
     }
     state.reconcile_watchlist_subscriptions();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::{Value, json};
+    use tempfile::TempDir;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    use crate::server::{ServerConfig, start_server};
+
+    #[tokio::test]
+    async fn desk_ws_archive_instrument_emits_channel_mode_without_acquiring_quota_or_supervisor() {
+        let tmp = TempDir::new().unwrap();
+        let replay_path = tmp.path().join("events.jsonl");
+        fs::write(&replay_path, "{\"offset_ms\":0,\"type\":\"heartbeat\"}\n").unwrap();
+
+        let mut cfg = ServerConfig::new(tmp.path());
+        cfg.pack = "crypto_suite".to_owned();
+        cfg.replay_file = Some(replay_path);
+        cfg.realtime_quota = 1;
+        cfg.now_ms = Some(Arc::new(|| 1_793_500_000_000));
+
+        let srv = start_server(cfg).await.unwrap();
+        let ws_base = srv.base_url().replace("http://", "ws://");
+
+        let (mut ws, _) = connect_async(format!("{ws_base}/ws/desk")).await.unwrap();
+        let hello_txt = ws.next().await.unwrap().unwrap().into_text().unwrap();
+        let hello: Value = serde_json::from_str(&hello_txt).unwrap();
+        assert_eq!(hello["type"], "hello");
+
+        ws.send(WsMessage::Text(
+            json!({"op": "subscribe", "instrument_id": "BTC-USDT-BN-PERP", "timeframe": "1m"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+
+        let frame_txt = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("channel_mode timeout")
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        let frame: Value = serde_json::from_str(&frame_txt).unwrap();
+        assert_eq!(frame["type"], "channel_mode");
+        assert_eq!(frame["instrument_id"], "BTC-USDT-BN-PERP");
+        assert_eq!(frame["timeframe"], "1m");
+        assert_eq!(frame["realtime"], false);
+
+        assert_eq!(srv.state.scheduler.used(), 0);
+        assert!(
+            !srv.state
+                .supervisor
+                .as_ref()
+                .unwrap()
+                .has_channel("BTC-USDT-BN-PERP", "1m")
+        );
+
+        // Realtime quota=1 must still be completely free for a realtime instrument.
+        ws.send(WsMessage::Text(
+            json!({"op": "subscribe", "instrument_id": "BTC-USDT-PERP", "timeframe": "1m"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+
+        let rt_txt = tokio::time::timeout(Duration::from_secs(2), ws.next())
+            .await
+            .expect("realtime channel_mode timeout")
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        let rt_frame: Value = serde_json::from_str(&rt_txt).unwrap();
+        assert_eq!(rt_frame["type"], "channel_mode");
+        assert_eq!(rt_frame["instrument_id"], "BTC-USDT-PERP");
+        assert_eq!(rt_frame["realtime"], true);
+        assert_eq!(srv.state.scheduler.used(), 1);
+        assert!(
+            srv.state
+                .supervisor
+                .as_ref()
+                .unwrap()
+                .has_channel("BTC-USDT-PERP", "1m")
+        );
+
+        ws.send(WsMessage::Text(
+            json!({"op": "unsubscribe", "instrument_id": "BTC-USDT-BN-PERP", "timeframe": "1m"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        let _ = ws.close(None).await;
+        srv.shutdown().await;
+    }
 }

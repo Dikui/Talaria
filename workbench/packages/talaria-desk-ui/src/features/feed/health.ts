@@ -79,12 +79,20 @@ export function feedBadgeView(
   live: boolean | null,
   connection: ConnectionState,
   locale: Locale = getLocale(),
+  channelRealtime?: boolean | null,
 ): FeedBadgeView {
   if (browserDisconnected(live, connection)) {
     return {
       status: "DISCONNECTED",
       label: tFor(locale, "连接断开 · 重连中", "Disconnected · Reconnecting"),
       tone: "disconnected",
+    };
+  }
+  if (channelRealtime === false) {
+    return {
+      status: "ARCHIVE",
+      label: tFor(locale, "历史归档", "Archive"),
+      tone: "offline",
     };
   }
   if (health === null) {
@@ -114,6 +122,7 @@ export function feedAlertView(
   live: boolean | null,
   connection: ConnectionState,
   locale: Locale = getLocale(),
+  channelRealtime?: boolean | null,
 ): FeedAlertView | null {
   if (browserDisconnected(live, connection)) {
     return {
@@ -124,6 +133,9 @@ export function feedAlertView(
         "The connection to the local daemon was lost and is reconnecting. The chart keeps the last snapshot.",
       ),
     };
+  }
+  if (channelRealtime === false) {
+    return null;
   }
   if (health === null || health.status !== "STALE") {
     return null;

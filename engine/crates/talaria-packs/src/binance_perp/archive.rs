@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, Utc};
@@ -12,6 +13,8 @@ use reqwest::Client;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use talaria_contracts::{PrecisionTier, RawBar, parse_decimal_str, timeframe_ms};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use zip::ZipArchive;
 
 use crate::binance_perp::connector::rest_interval_for;
@@ -103,6 +106,109 @@ impl BinanceVisionArchiveConnector {
         verify_sha256_checksum(&zip_bytes, &checksum_bytes, zip_rel)?;
         let bars = decode_klines_zip_bytes(&zip_bytes, symbol, timeframe, interval, now)?;
         Ok(Some(bars))
+    }
+
+    /// Fetch closed bars covering `[start_ts, end_ts]` from monthly (and daily fallback) archives
+    /// using bounded concurrency (`6` in-flight downloads).
+    pub async fn fetch_bars_in_range(
+        &self,
+        symbol: &str,
+        timeframe: &str,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Vec<RawBar>, PackError> {
+        if end_ts < start_ts {
+            return Ok(Vec::new());
+        }
+        let interval = timeframe_ms(timeframe)?;
+        let bn_iv = rest_interval_for(timeframe)?;
+        let now = (self.now_ms)();
+
+        let start_date = date_from_ms(start_ts);
+        let end_date = date_from_ms(end_ts);
+        let months = months_overlapping(start_date, end_date);
+
+        let sem = Arc::new(Semaphore::new(6));
+        let mut monthly_set = JoinSet::new();
+        for (year, month) in months {
+            let connector = self.clone();
+            let sem = Arc::clone(&sem);
+            let sym = symbol.to_owned();
+            let tf = timeframe.to_owned();
+            let iv_str = bn_iv.to_owned();
+            monthly_set.spawn(async move {
+                let _permit = sem.acquire_owned().await.map_err(|_| {
+                    PackError::FeedUnavailable("archive semaphore closed".to_owned())
+                })?;
+                let zip_rel = format!(
+                    "data/futures/um/monthly/klines/{sym}/{iv_str}/{sym}-{iv_str}-{year:04}-{month:02}.zip"
+                );
+                let bars = connector
+                    .fetch_verified_archive_bars(&zip_rel, &sym, &tf, interval, now)
+                    .await?;
+                Ok::<_, PackError>((year, month, bars))
+            });
+        }
+
+        let mut collected: BTreeMap<i64, RawBar> = BTreeMap::new();
+        let mut missing_months = Vec::new();
+        while let Some(res) = monthly_set.join_next().await {
+            let (year, month, bars_opt) = res.map_err(|e| {
+                PackError::FeedUnavailable(format!("archive monthly task failed: {e}"))
+            })??;
+            match bars_opt {
+                Some(bars) => {
+                    for bar in bars {
+                        if start_ts <= bar.ts_event && bar.ts_event <= end_ts {
+                            collected.insert(bar.ts_event, bar);
+                        }
+                    }
+                }
+                None => missing_months.push((year, month)),
+            }
+        }
+
+        if !missing_months.is_empty() {
+            let mut daily_set = JoinSet::new();
+            for (year, month) in missing_months {
+                for day in days_in_month_overlapping(year, month, start_date, end_date) {
+                    let connector = self.clone();
+                    let sem = Arc::clone(&sem);
+                    let sym = symbol.to_owned();
+                    let tf = timeframe.to_owned();
+                    let iv_str = bn_iv.to_owned();
+                    daily_set.spawn(async move {
+                        let _permit = sem.acquire_owned().await.map_err(|_| {
+                            PackError::FeedUnavailable("archive semaphore closed".to_owned())
+                        })?;
+                        let zip_rel = format!(
+                            "data/futures/um/daily/klines/{sym}/{iv_str}/{sym}-{iv_str}-{:04}-{:02}-{:02}.zip",
+                            day.year(),
+                            day.month(),
+                            day.day()
+                        );
+                        connector
+                            .fetch_verified_archive_bars(&zip_rel, &sym, &tf, interval, now)
+                            .await
+                    });
+                }
+            }
+
+            while let Some(res) = daily_set.join_next().await {
+                let bars_opt = res.map_err(|e| {
+                    PackError::FeedUnavailable(format!("archive daily task failed: {e}"))
+                })??;
+                if let Some(bars) = bars_opt {
+                    for bar in bars {
+                        if start_ts <= bar.ts_event && bar.ts_event <= end_ts {
+                            collected.insert(bar.ts_event, bar);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(collected.into_values().collect())
     }
 }
 
@@ -240,6 +346,40 @@ fn prev_month(date: NaiveDate) -> NaiveDate {
     first - ChronoDuration::days(1)
 }
 
+fn months_overlapping(start_date: NaiveDate, end_date: NaiveDate) -> Vec<(i32, u32)> {
+    let mut months = Vec::new();
+    let mut year = start_date.year();
+    let mut month = start_date.month();
+    let end_ym = (end_date.year(), end_date.month());
+    while (year, month) <= end_ym {
+        months.push((year, month));
+        if month == 12 {
+            year += 1;
+            month = 1;
+        } else {
+            month += 1;
+        }
+    }
+    months
+}
+
+fn days_in_month_overlapping(
+    year: i32,
+    month: u32,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> Vec<NaiveDate> {
+    let mut days = Vec::new();
+    let mut d = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month start");
+    while d.year() == year && d.month() == month {
+        if d >= start_date && d <= end_date {
+            days.push(d);
+        }
+        d += ChronoDuration::days(1);
+    }
+    days
+}
+
 impl HistoryConnector for BinanceVisionArchiveConnector {
     fn feed_mode(&self) -> &str {
         "binance_archive"
@@ -265,38 +405,64 @@ impl HistoryConnector for BinanceVisionArchiveConnector {
             let end_date = date_from_ms(effective_end);
             let current_month_key = (end_date.year(), end_date.month());
 
-            // Try daily files first within the active/recent month where monthly zip may not yet exist.
+            // Try daily files first within the active/recent month (bounded to 6 concurrent downloads).
+            let mut days_desc = Vec::new();
             let mut day_cursor = end_date;
             for _ in 0..31 {
-                if collected.len() >= limit || (day_cursor.year(), day_cursor.month()) != current_month_key {
+                if (day_cursor.year(), day_cursor.month()) != current_month_key {
                     break;
                 }
-                let zip_rel = format!(
-                    "data/futures/um/daily/klines/{symbol}/{bn_iv}/{symbol}-{bn_iv}-{:04}-{:02}-{:02}.zip",
-                    day_cursor.year(),
-                    day_cursor.month(),
-                    day_cursor.day()
-                );
-                if let Some(bars) = self
-                    .fetch_verified_archive_bars(&zip_rel, symbol, timeframe, interval, now)
-                    .await?
-                {
-                    for bar in bars {
-                        if bar.ts_event <= effective_end {
-                            collected.insert(bar.ts_event, bar);
+                days_desc.push(day_cursor);
+                day_cursor -= ChronoDuration::days(1);
+            }
+            let sem = Arc::new(Semaphore::new(6));
+            for chunk in days_desc.chunks(6) {
+                if collected.len() >= limit {
+                    break;
+                }
+                let mut set = JoinSet::new();
+                for &day in chunk {
+                    let connector = self.clone();
+                    let sem = Arc::clone(&sem);
+                    let sym = symbol.to_owned();
+                    let tf = timeframe.to_owned();
+                    let iv_str = bn_iv.to_owned();
+                    set.spawn(async move {
+                        let _permit = sem.acquire_owned().await.map_err(|_| {
+                            PackError::FeedUnavailable("archive semaphore closed".to_owned())
+                        })?;
+                        let zip_rel = format!(
+                            "data/futures/um/daily/klines/{sym}/{iv_str}/{sym}-{iv_str}-{:04}-{:02}-{:02}.zip",
+                            day.year(),
+                            day.month(),
+                            day.day()
+                        );
+                        connector
+                            .fetch_verified_archive_bars(&zip_rel, &sym, &tf, interval, now)
+                            .await
+                    });
+                }
+                while let Some(res) = set.join_next().await {
+                    let bars_opt = res.map_err(|e| {
+                        PackError::FeedUnavailable(format!("archive daily task failed: {e}"))
+                    })??;
+                    if let Some(bars) = bars_opt {
+                        for bar in bars {
+                            if bar.ts_event <= effective_end {
+                                collected.insert(bar.ts_event, bar);
+                            }
                         }
                     }
                 }
-                day_cursor -= ChronoDuration::days(1);
             }
 
-            // Walk backward month by month via monthly archives until `limit` is satisfied (max 6 months per page).
+            // Walk backward month by month via monthly archives until `limit` is satisfied (max 18 months).
             let mut month_cursor = if collected.is_empty() {
                 end_date
             } else {
                 prev_month(end_date)
             };
-            for _ in 0..6 {
+            for _ in 0..18 {
                 if collected.len() >= limit {
                     break;
                 }
