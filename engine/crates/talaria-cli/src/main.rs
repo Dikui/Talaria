@@ -142,6 +142,29 @@ struct ContractCheckArgs {
     pack: String,
 }
 
+#[derive(Debug, Args)]
+struct GcArgs {
+    /// Market pack identifier.
+    #[arg(long, default_value = DEFAULT_PACK_NAME)]
+    pack: String,
+
+    /// Compact and deduplicate partitions on `(ts_event, revision)`.
+    #[arg(long, default_value_t = false)]
+    dedup: bool,
+
+    /// Immediately delete retired parquet files and clear `retired_files`.
+    #[arg(long, default_value_t = false)]
+    prune_retired: bool,
+
+    /// Delete unreferenced `.jsonl` files under `data/raw_archive/`.
+    #[arg(long, default_value_t = false)]
+    prune_raw_archive: bool,
+
+    /// Run all maintenance tasks (`--dedup --prune-retired --prune-raw-archive`).
+    #[arg(long, default_value_t = false)]
+    all: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Start the resident data service.
@@ -151,6 +174,8 @@ enum Command {
     Replay(ServeArgs),
     /// Backfill historical cold store partitions.
     Backfill(BackfillArgs),
+    /// Compact, deduplicate, and prune retired/orphaned storage files.
+    Gc(GcArgs),
     /// Verify contract & runtime storage compatibility.
     ContractCheck(ContractCheckArgs),
 }
@@ -181,6 +206,10 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Backfill(args)) => {
             let data_dir = cli.data_dir.unwrap_or(default_dir);
             run_backfill(data_dir, args).await
+        }
+        Some(Command::Gc(args)) => {
+            let data_dir = cli.data_dir.unwrap_or(default_dir);
+            run_gc(data_dir, args)
         }
         Some(Command::ContractCheck(args)) => run_contract_check(cli.data_dir, args),
         None => {
@@ -407,6 +436,7 @@ fn publish_bars_by_month(
     spec: &talaria_contracts::InstrumentSpec,
     timeframe: &str,
     rows: Vec<RawBar>,
+    write_raw_archive: bool,
 ) -> anyhow::Result<usize> {
     let mut count = 0usize;
     let mut by_month: BTreeMap<String, Vec<RawBar>> = BTreeMap::new();
@@ -417,7 +447,11 @@ fn publish_bars_by_month(
     }
     for (_, mut batch) in by_month {
         batch.sort_by_key(|b| (b.ts_event, b.revision));
-        store.publish_bars(spec, timeframe, &batch)?;
+        if write_raw_archive {
+            store.publish_bars(spec, timeframe, &batch)?;
+        } else {
+            store.publish_bars_without_raw_archive(spec, timeframe, &batch)?;
+        }
     }
     Ok(count)
 }
@@ -522,7 +556,7 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
                     rest_window.expect("rest window"),
                 )
                 .await?;
-                total_bars += publish_bars_by_month(&store, spec, &args.timeframe, rows)?;
+                total_bars += publish_bars_by_month(&store, spec, &args.timeframe, rows, true)?;
             }
             BackfillBackend::Archive { perp, spot } => {
                 let archive = if spec.venue == "binance_spot" {
@@ -534,7 +568,8 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
                     let rows = archive
                         .fetch_bars_in_range(&spec.symbol, &args.timeframe, y_start, y_end)
                         .await?;
-                    let year_bars = publish_bars_by_month(&store, spec, &args.timeframe, rows)?;
+                    let year_bars =
+                        publish_bars_by_month(&store, spec, &args.timeframe, rows, false)?;
                     total_bars += year_bars;
                     eprintln!(
                         "[backfill] {} {} {} -> {} bars",
@@ -557,6 +592,60 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
         "pack": args.pack,
         "timeframe": args.timeframe,
         "bars": total_bars,
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+fn run_gc(data_dir: PathBuf, args: GcArgs) -> anyhow::Result<()> {
+    let resolved = resolve_data_dir(&data_dir)?;
+    let mut lock = DataDirLock::acquire(&resolved, "gc")
+        .map_err(|e| anyhow::anyhow!("failed to lock {}: {e}", resolved.display()))?;
+    let pack = get_market_pack(&args.pack)?;
+    let specs = pack.instruments().to_vec();
+    let store = ColdStore::open(&resolved)?;
+
+    let do_dedup = args.all || args.dedup;
+    let do_prune_retired = args.all || args.prune_retired;
+    let do_prune_raw = args.all || args.prune_raw_archive;
+
+    let mut compact_groups = 0usize;
+    let mut dedup_groups = 0usize;
+    if do_dedup {
+        let c = store.compact(&specs, None)?;
+        compact_groups = c.compacted_groups;
+        let d = store.deduplicate_partitions(&specs, None)?;
+        dedup_groups = d.compacted_groups;
+    }
+
+    let pruned_retired = if do_prune_retired {
+        store.prune_retired_now()?
+    } else {
+        0
+    };
+
+    let (pruned_raw_files, pruned_raw_bytes) = if do_prune_raw {
+        store.prune_unreferenced_raw_archive()?
+    } else {
+        (0, 0)
+    };
+
+    let orphans = store.cleanup_orphans()?;
+    store.close()?;
+    lock.release();
+
+    let out = serde_json::json!({
+        "ok": true,
+        "data_dir": resolved.to_string_lossy(),
+        "pack": args.pack,
+        "compact_groups": compact_groups,
+        "dedup_groups": dedup_groups,
+        "pruned_retired": pruned_retired,
+        "pruned_raw_files": pruned_raw_files,
+        "pruned_raw_bytes": pruned_raw_bytes,
+        "staging_dirs_removed": orphans.staging_dirs_removed,
+        "temp_files_removed": orphans.temp_files_removed,
+        "unreferenced_parquet_removed": orphans.unreferenced_parquet_removed,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

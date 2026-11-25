@@ -23,10 +23,11 @@ use crate::decimal_codec::{
 };
 use crate::error::{Result, StoreError};
 use crate::manifest::{
-    all_referenced_parquet_paths, canonical_db_key, checkpoint_wal, claim_writer, commit_manifest,
-    open_reader_connection, open_writer_connection, path_under_root, posix_rel_path, prune_retired,
-    read_cursor, read_manifest_version, release_writer, select_distinct_series,
-    select_generation_by_id, select_generations, select_matching_bounds,
+    all_referenced_content_sha256, all_referenced_parquet_paths, canonical_db_key, checkpoint_wal,
+    claim_writer, commit_manifest, open_reader_connection, open_writer_connection, path_under_root,
+    posix_rel_path, prune_all_retired, prune_retired, read_cursor, read_manifest_version,
+    release_writer, select_distinct_series, select_generation_by_id, select_generations,
+    select_matching_bounds,
 };
 use crate::parquet_io::{
     read_bars_parquet, read_derivatives_parquet, read_quotes_parquet, read_trades_parquet,
@@ -571,8 +572,33 @@ impl StoreInner {
         archive_content: Vec<u8>,
         compacted: bool,
     ) -> Result<ColdGeneration> {
+        self.prepare_generation_with_archive_mode(
+            payload,
+            generation_id,
+            archive_content,
+            compacted,
+            true,
+        )
+    }
+
+    fn prepare_generation_with_archive_mode(
+        &self,
+        payload: &PublishPayload<'_>,
+        generation_id: &str,
+        archive_content: Vec<u8>,
+        compacted: bool,
+        write_raw_archive: bool,
+    ) -> Result<ColdGeneration> {
         let content_sha = sha256_bytes(&archive_content);
-        let archived = self.archive_content(&archive_content, &content_sha)?;
+        let archived = if write_raw_archive {
+            self.archive_content(&archive_content, &content_sha)?
+        } else {
+            ArchivedBatch {
+                path: PathBuf::from(ARCHIVE_SUBDIR).join(format!("{content_sha}.jsonl")),
+                sha256: content_sha,
+                bytes: archive_content.len(),
+            }
+        };
         let staging_path = self.write_staging(&archived, payload)?;
         self.quality_check(&staging_path, payload, compacted)?;
         let final_path = self.promote(&staging_path, payload, generation_id, compacted)?;
@@ -814,7 +840,7 @@ impl StoreInner {
                     let path = verify_generation_file(&self.data_dir, item)?;
                     bars.extend(read_bars_parquet(&path, None, None)?);
                 }
-                bars.sort_by_key(|b| (b.ts_event, b.revision));
+                dedup_bars_same_revision(&mut bars);
                 let content = bar_content_bytes(&bars, true)?;
                 let mut hasher = Sha256::new();
                 hasher.update(b"partition\n");
@@ -828,6 +854,76 @@ impl StoreInner {
                 self.prepare_generation(&PublishPayload::Bars(&batch), &generation_id, archive, true)?
             };
 
+            self.commit_generation(&new_gen, &group, Some(now_ms))?;
+            report.compacted_groups += 1;
+            report.retired_files_added += group.len();
+        }
+        Ok(())
+    }
+
+    fn deduplicate_bar_series(
+        &mut self,
+        instrument: &InstrumentSpec,
+        timeframe: &str,
+        now_ms: i64,
+        report: &mut CompactionReport,
+    ) -> Result<()> {
+        let version = instrument.instrument_spec_sha256();
+        let tail_prefix = format!("tail-{version}-");
+        let partition_prefix = format!("partition-{version}-");
+
+        let generations = select_generations(self.conn()?, instrument, timeframe, None, None)?;
+        let mut groups: BTreeMap<String, Vec<ColdGeneration>> = BTreeMap::new();
+        for generation_item in generations {
+            let month = partition_month(generation_item.first_ts)?;
+            let name = generation_item
+                .parquet_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if name.starts_with(&tail_prefix) || name.starts_with(&partition_prefix) {
+                groups.entry(month).or_default().push(generation_item);
+            } else {
+                let last_month = partition_month(generation_item.last_ts)?;
+                let drop_keys: Vec<String> = groups
+                    .keys()
+                    .filter(|gm| **gm >= month && **gm <= last_month)
+                    .cloned()
+                    .collect();
+                for k in drop_keys {
+                    groups.remove(&k);
+                }
+            }
+        }
+
+        for (_month, group) in groups {
+            let mut bars = Vec::new();
+            for item in &group {
+                let path = verify_generation_file(&self.data_dir, item)?;
+                bars.extend(read_bars_parquet(&path, None, None)?);
+            }
+            let raw_len = bars.len();
+            dedup_bars_same_revision(&mut bars);
+            if group.len() <= 1 && bars.len() == raw_len {
+                continue;
+            }
+            let archive = compaction_archive_bytes(&group)?;
+            let content = bar_content_bytes(&bars, true)?;
+            let mut hasher = Sha256::new();
+            hasher.update(b"partition\n");
+            hasher.update(&content);
+            let generation_id = hex::encode(hasher.finalize());
+            let batch = ColdBatch {
+                instrument,
+                timeframe,
+                bars: &bars,
+            };
+            let new_gen = self.prepare_generation(
+                &PublishPayload::Bars(&batch),
+                &generation_id,
+                archive,
+                true,
+            )?;
             self.commit_generation(&new_gen, &group, Some(now_ms))?;
             report.compacted_groups += 1;
             report.retired_files_added += group.len();
@@ -959,8 +1055,11 @@ impl ColdStore {
         inner.archive_content(&content, &sha)
     }
 
-    /// Atomically publish a same-month batch of `RawBar` rows. Idempotent for equivalent batches.
-    pub fn publish(&self, batch: &ColdBatch<'_>) -> Result<ColdGeneration> {
+    fn publish_with_archive_mode(
+        &self,
+        batch: &ColdBatch<'_>,
+        write_raw_archive: bool,
+    ) -> Result<ColdGeneration> {
         let mut inner = self.lock_inner()?;
         let _ = inner.conn()?;
         validate_bars(batch.bars, batch.instrument, batch.timeframe, false)?;
@@ -995,10 +1094,20 @@ impl ColdStore {
         }
 
         let archive = bar_content_bytes(batch.bars, false)?;
-        let generation =
-            inner.prepare_generation(&PublishPayload::Bars(batch), &generation_id, archive, false)?;
+        let generation = inner.prepare_generation_with_archive_mode(
+            &PublishPayload::Bars(batch),
+            &generation_id,
+            archive,
+            false,
+            write_raw_archive,
+        )?;
         inner.commit_generation(&generation, &[], None)?;
         Ok(generation)
+    }
+
+    /// Atomically publish a same-month batch of `RawBar` rows. Idempotent for equivalent batches.
+    pub fn publish(&self, batch: &ColdBatch<'_>) -> Result<ColdGeneration> {
+        self.publish_with_archive_mode(batch, true)
     }
 
     /// Convenience wrapper for `publish(&ColdBatch { ... })`.
@@ -1013,6 +1122,24 @@ impl ColdStore {
             timeframe,
             bars,
         })
+    }
+
+    /// Publish a same-month batch of `RawBar` rows without writing an uncompressed JSONL copy
+    /// into `data/raw_archive/` (used by bulk historical archive backfills).
+    pub fn publish_bars_without_raw_archive(
+        &self,
+        instrument: &InstrumentSpec,
+        timeframe: &str,
+        bars: &[RawBar],
+    ) -> Result<ColdGeneration> {
+        self.publish_with_archive_mode(
+            &ColdBatch {
+                instrument,
+                timeframe,
+                bars,
+            },
+            false,
+        )
     }
 
     /// Atomically publish a same-month batch of `DerivativePoint` rows.
@@ -1266,6 +1393,71 @@ impl ColdStore {
         Ok(report)
     }
 
+    /// Deduplicate identical `(ts_event, revision)` bar rows inside existing monthly partitions
+    /// and consolidate multi-partition months for the matching instruments.
+    pub fn deduplicate_partitions(
+        &self,
+        instruments: &[InstrumentSpec],
+        now_ms: Option<i64>,
+    ) -> Result<CompactionReport> {
+        let mut inner = self.lock_inner()?;
+        let effective_now = now_ms.unwrap_or_else(current_time_ms);
+        let specs: BTreeMap<(&str, &str), &InstrumentSpec> = instruments
+            .iter()
+            .map(|s| ((s.venue.as_str(), s.symbol.as_str()), s))
+            .collect();
+
+        let series = select_distinct_series(inner.conn()?)?;
+        let mut report = CompactionReport::default();
+        for (venue, symbol, timeframe) in series {
+            let Some(&instrument) = specs.get(&(venue.as_str(), symbol.as_str())) else {
+                continue;
+            };
+            if parse_tick_kind(&timeframe).is_some() || parse_derivative_kind(&timeframe).is_some() {
+                continue;
+            }
+            inner.deduplicate_bar_series(instrument, &timeframe, effective_now, &mut report)?;
+        }
+        Ok(report)
+    }
+
+    /// Delete all `retired_files` from disk immediately (bypassing the 24h retention window) and
+    /// clear the `retired_files` table while keeping all active `generations` intact.
+    pub fn prune_retired_now(&self) -> Result<usize> {
+        let inner = self.lock_inner()?;
+        let conn = inner.conn()?;
+        prune_all_retired(conn, &inner.data_dir)
+    }
+
+    /// Remove `.jsonl` files under `data/raw_archive/` whose `content_sha256` stem is not
+    /// referenced by any active row in `generations`, returning `(removed_files, removed_bytes)`.
+    pub fn prune_unreferenced_raw_archive(&self) -> Result<(usize, u64)> {
+        let inner = self.lock_inner()?;
+        let conn = inner.conn()?;
+        let referenced = all_referenced_content_sha256(conn)?;
+        let archive_root = inner.data_dir.join(ARCHIVE_SUBDIR);
+        if !archive_root.is_dir() {
+            return Ok((0, 0));
+        }
+        let mut removed_files = 0usize;
+        let mut removed_bytes = 0u64;
+        for entry in fs::read_dir(&archive_root)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && !referenced.contains(stem)
+            {
+                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                fs::remove_file(&path)?;
+                removed_files += 1;
+                removed_bytes += size;
+            }
+        }
+        Ok((removed_files, removed_bytes))
+    }
+
     /// Remove crash orphan artifacts: incomplete staging dirs, stray `.tmp` files, and
     /// unreferenced `.parquet` files under `data/cold/` not present in `generations` or `retired_files`.
     pub fn cleanup_orphans(&self) -> Result<OrphanCleanupReport> {
@@ -1287,6 +1479,22 @@ impl ColdStore {
             unreferenced_parquet_removed,
         })
     }
+}
+
+fn dedup_bars_same_revision(bars: &mut Vec<RawBar>) {
+    bars.sort_by_key(|b| (b.ts_event, b.revision, b.ts_committed));
+    let mut out: Vec<RawBar> = Vec::with_capacity(bars.len());
+    for bar in bars.drain(..) {
+        if let Some(prev) = out.last_mut()
+            && prev.ts_event == bar.ts_event
+            && prev.revision == bar.revision
+        {
+            *prev = bar;
+        } else {
+            out.push(bar);
+        }
+    }
+    *bars = out;
 }
 
 fn remove_temp_files_recursive(dir: &Path) -> Result<usize> {

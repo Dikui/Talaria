@@ -221,13 +221,21 @@ async fn get_range_bars(
         if !expected_slots.is_empty()
             && let (Some(connector), Some(cold_store)) = (&state.history_connector, &state.cold_store)
         {
+            let missing_start = *expected_slots.first().unwrap();
+            let missing_end = *expected_slots.last().unwrap();
+            let max_pages = if state.is_realtime_instrument(&spec.instrument_id) {
+                BackfillWindow::default().max_pages
+            } else {
+                2
+            };
             let res = backfill_bars(
                 connector.as_ref(),
                 &spec.symbol,
                 &query.timeframe,
                 BackfillWindow {
-                    start_ts: Some(history_start),
-                    end_ts: Some(history_end + interval),
+                    start_ts: Some(missing_start),
+                    end_ts: Some(missing_end + interval),
+                    max_pages,
                     ..BackfillWindow::default()
                 },
             )

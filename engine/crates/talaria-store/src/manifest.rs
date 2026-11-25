@@ -472,6 +472,47 @@ pub fn prune_retired(conn: &Connection, data_dir: &Path, now_ms: i64) -> Result<
     Ok(pruned)
 }
 
+/// Delete all `retired_files` on disk immediately (ignoring retention age/version guards)
+/// unless a path is still referenced by `generations`, and clear `retired_files`.
+pub fn prune_all_retired(conn: &Connection, data_dir: &Path) -> Result<usize> {
+    let paths: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT parquet_path FROM retired_files \
+             WHERE parquet_path NOT IN (SELECT parquet_path FROM generations)",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        out
+    };
+    let mut removed = 0usize;
+    for relative in paths {
+        let full = path_under_root(data_dir, Path::new(&relative))?;
+        match fs::remove_file(&full) {
+            Ok(()) => {
+                removed += 1;
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    conn.execute("DELETE FROM retired_files", [])?;
+    Ok(removed)
+}
+
+/// Collect every `content_sha256` referenced in active `generations`.
+pub fn all_referenced_content_sha256(conn: &Connection) -> Result<HashSet<String>> {
+    let mut set = HashSet::new();
+    let mut stmt = conn.prepare("SELECT DISTINCT content_sha256 FROM generations")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    for r in rows {
+        set.insert(r?);
+    }
+    Ok(set)
+}
+
 /// Collect every relative POSIX parquet path referenced in `generations` or `retired_files`.
 pub fn all_referenced_parquet_paths(conn: &Connection) -> Result<HashSet<String>> {
     let mut set = HashSet::new();

@@ -534,3 +534,48 @@ async fn binance_spot_archive_normalizes_microseconds_and_fetches_spot_path() {
     assert_eq!(bars[1].ts_event, 1_735_689_600_000);
     assert_eq!(bars[0].symbol, "BTCUSDT-SPOT");
 }
+
+#[tokio::test]
+async fn binance_archive_fetch_bars_stops_early_on_prelisting_404s() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let seen_paths = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let req_c = Arc::clone(&request_count);
+    let paths_c = Arc::clone(&seen_paths);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let rc = Arc::clone(&req_c);
+            let pc = Arc::clone(&paths_c);
+            tokio::spawn(async move {
+                let mut req_buf = [0u8; 2048];
+                let n = stream.read(&mut req_buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&req_buf[..n]);
+                let path = req.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                rc.fetch_add(1, Ordering::SeqCst);
+                pc.lock().unwrap().push(path);
+                let head = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nnot found";
+                let _ = stream.write_all(head.as_bytes()).await;
+            });
+        }
+    });
+
+    // now = 2026-11-25, query end_ts = 2017-07-15T00:00:00Z (`1_500_076_800_000`, pre-listing)
+    let connector = BinanceVisionArchiveConnector::new_spot(
+        format!("http://{addr}"),
+        Duration::from_secs(5),
+        Arc::new(|| 1_795_600_000_000),
+    )
+    .unwrap();
+    let bars = connector
+        .fetch_bars("BTCUSDT-SPOT", "1d", Some(1_500_076_800_000), 100)
+        .await
+        .expect("pre-listing 404 returns empty cleanly");
+    assert!(bars.is_empty());
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
+    let logged = seen_paths.lock().unwrap();
+    assert!(logged.iter().all(|p| p.contains("/monthly/") && !p.contains("/daily/")));
+}

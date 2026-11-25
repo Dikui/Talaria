@@ -1081,3 +1081,129 @@ fn test_decimal128_18_digit_boundary_and_path_traversal_rejection() {
         Err(StoreError::Integrity(_))
     ));
 }
+
+#[test]
+fn test_compact_deduplicates_identical_revisions_and_preserves_distinct() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let t0 = base_ts();
+    let store = ColdStore::open(tmp.path()).unwrap();
+
+    store
+        .publish_bars(&spec, "1m", &[make_bar(t0, "100.0", 0)])
+        .unwrap();
+    store
+        .publish_bars(
+            &spec,
+            "1m",
+            &[make_bar(t0, "100.0", 0), make_bar(t0 + MINUTE, "101.0", 0)],
+        )
+        .unwrap();
+    store
+        .publish_bars(&spec, "1m", &[make_bar(t0, "100.5", 1)])
+        .unwrap();
+
+    let report = store.compact(std::slice::from_ref(&spec), Some(t0)).unwrap();
+    assert_eq!(report.compacted_groups, 1);
+
+    let revs = ColdReader::new(tmp.path())
+        .read_revisions(&spec, "1m", None, None)
+        .unwrap();
+    assert_eq!(revs.len(), 3);
+    assert_eq!(revs[0].ts_event, t0);
+    assert_eq!(revs[0].revision, 0);
+    assert_eq!(revs[1].ts_event, t0);
+    assert_eq!(revs[1].revision, 1);
+    assert_eq!(revs[2].ts_event, t0 + MINUTE);
+}
+
+#[test]
+fn test_deduplicate_partitions_and_prune_retired_now() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let t0 = base_ts();
+    let store = ColdStore::open(tmp.path()).unwrap();
+
+    let g1 = store
+        .publish_bars(
+            &spec,
+            "1m",
+            &[make_bar(t0, "100.0", 0), make_bar(t0 + MINUTE, "101.0", 0)],
+        )
+        .unwrap();
+    let g2 = store
+        .publish_bars(
+            &spec,
+            "1m",
+            &[make_bar(t0 + MINUTE, "101.0", 0), make_bar(t0 + 2 * MINUTE, "100.8", 0)],
+        )
+        .unwrap();
+
+    let report = store
+        .deduplicate_partitions(std::slice::from_ref(&spec), Some(t0))
+        .unwrap();
+    assert_eq!(report.compacted_groups, 1);
+    assert!(tmp.path().join(&g1.parquet_path).exists());
+    assert!(tmp.path().join(&g2.parquet_path).exists());
+
+    let revs = ColdReader::new(tmp.path())
+        .read_revisions(&spec, "1m", None, None)
+        .unwrap();
+    assert_eq!(revs.len(), 3);
+
+    let pruned = store.prune_retired_now().unwrap();
+    assert_eq!(pruned, 2);
+    assert!(!tmp.path().join(&g1.parquet_path).exists());
+    assert!(!tmp.path().join(&g2.parquet_path).exists());
+    assert_eq!(
+        ColdReader::new(tmp.path())
+            .read_bars(&spec, "1m", None, None, None)
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn test_publish_without_raw_archive_and_prune_unreferenced_raw_archive() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let t0 = base_ts();
+    let store = ColdStore::open(tmp.path()).unwrap();
+
+    let g1 = store
+        .publish_bars(&spec, "1m", &[make_bar(t0, "100.0", 0)])
+        .unwrap();
+    let g2 = store
+        .publish_bars(&spec, "1m", &[make_bar(t0 + MINUTE, "101.0", 0)])
+        .unwrap();
+    store.compact(std::slice::from_ref(&spec), Some(t0)).unwrap();
+
+    let g3 = store
+        .publish_bars_without_raw_archive(&spec, "1m", &[make_bar(t0 + 2 * MINUTE, "100.8", 0)])
+        .unwrap();
+    let g3_archive = tmp
+        .path()
+        .join(ARCHIVE_SUBDIR)
+        .join(format!("{}.jsonl", g3.content_sha256));
+    assert!(!g3_archive.exists());
+    assert_eq!(store.read_bars(&spec, "1m", None, None, None).unwrap().len(), 3);
+
+    let g1_archive = tmp
+        .path()
+        .join(ARCHIVE_SUBDIR)
+        .join(format!("{}.jsonl", g1.content_sha256));
+    let g2_archive = tmp
+        .path()
+        .join(ARCHIVE_SUBDIR)
+        .join(format!("{}.jsonl", g2.content_sha256));
+    assert!(g1_archive.exists());
+    assert!(g2_archive.exists());
+
+    let (removed_files, removed_bytes) = store.prune_unreferenced_raw_archive().unwrap();
+    assert_eq!(removed_files, 2);
+    assert!(removed_bytes > 0);
+    assert!(!g1_archive.exists());
+    assert!(!g2_archive.exists());
+    assert_eq!(store.read_bars(&spec, "1m", None, None, None).unwrap().len(), 3);
+}
