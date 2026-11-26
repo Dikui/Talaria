@@ -31,7 +31,13 @@ import { feedBadgeView } from "../features/feed/health";
 import { useMarketStream } from "../features/feed/useMarketStream";
 import { IndicatorToolbar } from "../features/indicators/IndicatorToolbar";
 import { indicatorRequests } from "../features/indicators/config";
-import { formatLevelPrice, keyLevelKindLabel, visibleKeyLevels } from "../features/key-levels/model";
+import {
+  formatLevelPrice,
+  isKeyLevelsEnabled,
+  keyLevelKindLabel,
+  toggleKeyLevelsEnabled,
+  visibleKeyLevels,
+} from "../features/key-levels/model";
 import { annotationPriceLabel } from "../features/annotations/model";
 import { BarrierDragConfirmModal } from "../features/paper/BarrierDragConfirmModal";
 import {
@@ -1017,6 +1023,11 @@ export function ChartPane({
         bundle={indicatorBundle}
         loading={indicatorsLoading}
         error={indicatorError}
+        keyLevelsEnabled={isKeyLevelsEnabled(ctx.keyLevelFilter)}
+        keyLevelsCount={visibleLevels.length}
+        onToggleKeyLevels={() =>
+          ctx.onKeyLevelFilterChange(toggleKeyLevelsEnabled(ctx.keyLevelFilter))
+        }
       />
 
       <ReplayToolbar

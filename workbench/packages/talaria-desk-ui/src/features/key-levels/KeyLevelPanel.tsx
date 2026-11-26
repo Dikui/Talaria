@@ -9,12 +9,14 @@ import {
   countByEvidence,
   evidenceMeta,
   formatLevelPrice,
+  isKeyLevelsEnabled,
   keyLevelKindLabel,
   keyLevelStatusLabel,
   levelTitle,
   selectedEvidenceClasses,
   toggleCategory,
   toggleEvidenceClass,
+  toggleKeyLevelsEnabled,
   type KeyLevelFilter,
 } from "./model";
 
@@ -63,6 +65,7 @@ export function KeyLevelPanel({
   const counts = countByCategory(allLevels);
   const evidenceCounts = countByEvidence(allLevels);
   const strengthValue = Math.round(filter.minStrength * 100);
+  const enabled = isKeyLevelsEnabled(filter);
 
   return (
     <section
@@ -78,6 +81,15 @@ export function KeyLevelPanel({
             {ignoredCount > 0 ? ` · ${t(`已忽略 ${ignoredCount}`, `${ignoredCount} ignored`)}` : ""}
           </span>
         </div>
+        <button
+          type="button"
+          className={`filter-chip${enabled ? " is-active" : ""}`}
+          aria-pressed={enabled}
+          data-testid="key-level-panel-toggle"
+          onClick={() => onFilterChange(toggleKeyLevelsEnabled(filter))}
+        >
+          {enabled ? t("已开启", "Visible") : t("已关闭", "Hidden")}
+        </button>
       </header>
 
       {readOnly && (
@@ -164,7 +176,11 @@ export function KeyLevelPanel({
         </ul>
       )}
 
-      {loading && levels.length === 0 ? (
+      {!enabled ? (
+        <p className="panel-empty">
+          {t("关键位图层已关闭，点击上方按钮或工具栏“关键位”即可开启。", "Key levels layer is hidden. Toggle it on above or in the toolbar.")}
+        </p>
+      ) : loading && levels.length === 0 ? (
         <p className="panel-empty">{t("加载关键位中…", "Loading key levels…")}</p>
       ) : levels.length === 0 ? (
         <p className="panel-empty">{t("当前筛选条件无关键位。", "No matching key levels.")}</p>

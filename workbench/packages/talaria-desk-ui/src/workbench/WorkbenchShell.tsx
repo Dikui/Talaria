@@ -39,7 +39,6 @@ import {
 } from "../features/drawings/responsive";
 import {
   INDICATOR_DEFAULTS,
-  defaultIndicatorSettings,
   defaultsFromParams,
   operatorParams,
   updateIndicatorSetting,
@@ -49,7 +48,6 @@ import {
 } from "../features/indicators/config";
 import { KeyLevelPanel } from "../features/key-levels/KeyLevelPanel";
 import {
-  defaultKeyLevelFilter,
   visibleKeyLevels,
   type KeyLevelFilter,
 } from "../features/key-levels/model";
@@ -71,6 +69,13 @@ import {
   setTauriKeepRunningInBackground,
 } from "../lib/tauriBridge";
 import { applyTheme, THEME_STORAGE_KEY, type Theme } from "../lib/theme";
+import {
+  loadIndicatorSettings,
+  loadKeyLevelFilter,
+  mergeIndicatorDefaults,
+  saveIndicatorSettings,
+  saveKeyLevelFilter,
+} from "./chartPreferences";
 import { ChartPane } from "./ChartPane";
 import {
   applyPresetLayout,
@@ -343,14 +348,16 @@ export function WorkbenchShell({
 
   const [indicatorDefaults, setIndicatorDefaults] =
     useState<IndicatorDefaults>(INDICATOR_DEFAULTS);
+  const indicatorDefaultsRef = useRef<IndicatorDefaults>(INDICATOR_DEFAULTS);
   const [indicatorSettings, setIndicatorSettings] = useState<IndicatorSettings>(() =>
-    defaultIndicatorSettings(INDICATOR_DEFAULTS),
+    loadIndicatorSettings(INDICATOR_DEFAULTS),
   );
   const [savingIndicatorDefault, setSavingIndicatorDefault] =
     useState<IndicatorName | null>(null);
 
-  const [keyLevelFilter, setKeyLevelFilter] =
-    useState<KeyLevelFilter>(defaultKeyLevelFilter);
+  const [keyLevelFilter, setKeyLevelFilter] = useState<KeyLevelFilter>(() =>
+    loadKeyLevelFilter(),
+  );
   const [highlightedLevelId, setHighlightedLevelId] = useState<string | null>(null);
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
@@ -434,8 +441,10 @@ export function WorkbenchShell({
       .then((res) => {
         if (!active) return;
         const defs = defaultsFromParams(res.defaults);
+        const prevDefs = indicatorDefaultsRef.current;
+        indicatorDefaultsRef.current = defs;
         setIndicatorDefaults(defs);
-        setIndicatorSettings(defaultIndicatorSettings(defs));
+        setIndicatorSettings((prev) => mergeIndicatorDefaults(prev, prevDefs, defs));
       })
       .catch(() => undefined);
 
@@ -471,12 +480,19 @@ export function WorkbenchShell({
 
   const onUpdateIndicator = useCallback(
     (name: IndicatorName, patch: Partial<IndicatorSetting>) => {
-      setIndicatorSettings((prev) =>
-        updateIndicatorSetting(prev, indicatorDefaults, name, patch),
-      );
+      setIndicatorSettings((prev) => {
+        const next = updateIndicatorSetting(prev, indicatorDefaults, name, patch);
+        saveIndicatorSettings(next);
+        return next;
+      });
     },
     [indicatorDefaults],
   );
+
+  const onKeyLevelFilterChange = useCallback((next: KeyLevelFilter) => {
+    setKeyLevelFilter(next);
+    saveKeyLevelFilter(next);
+  }, []);
 
   const onSaveIndicatorDefault = useCallback(
     (name: IndicatorName) => {
@@ -670,7 +686,7 @@ export function WorkbenchShell({
       onSaveIndicatorDefault,
       onResetIndicatorDefault,
       keyLevelFilter,
-      onKeyLevelFilterChange: setKeyLevelFilter,
+      onKeyLevelFilterChange,
       highlightedLevelId,
       onHoverLevelId: setHighlightedLevelId,
       keyLevelsController,
@@ -727,6 +743,7 @@ export function WorkbenchShell({
       onSaveIndicatorDefault,
       onResetIndicatorDefault,
       keyLevelFilter,
+      onKeyLevelFilterChange,
       highlightedLevelId,
       keyLevelsController,
       drawings,

@@ -99,7 +99,7 @@ export interface IndicatorSetting {
 
 export type IndicatorSettings = Record<IndicatorName, IndicatorSetting>;
 
-export const DEFAULT_ENABLED: IndicatorName[] = ["EMA", "RSI", "ATR"];
+export const DEFAULT_ENABLED: IndicatorName[] = [];
 
 export function defaultIndicatorSettings(
   defaults: IndicatorDefaults = INDICATOR_DEFAULTS,

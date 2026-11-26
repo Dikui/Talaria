@@ -237,7 +237,10 @@ describe("Track A: Multi-TF replay sync, key-level throttling, indicator backfil
         timeframe: "1m",
         group: "none",
         adapterRef: { current: mockAdapter },
-        indicatorSettings: defaultIndicatorSettings(INDICATOR_DEFAULTS),
+        indicatorSettings: {
+          ...defaultIndicatorSettings(INDICATOR_DEFAULTS),
+          EMA: { ...INDICATOR_DEFAULTS.EMA, enabled: true },
+        },
         indicatorSeries: cachedSeries,
         onIndicatorSeriesBackfilled: onBackfilled,
       }),

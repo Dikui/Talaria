@@ -118,16 +118,29 @@ export function keyLevelStatusLabel(status: KeyLevelStatus): string {
 }
 
 export interface KeyLevelFilter {
+  enabled?: boolean;
   categories: KeyLevelCategory[];
   minStrength: number;
   evidenceClasses?: EvidenceClass[];
 }
 
 export const defaultKeyLevelFilter: KeyLevelFilter = {
+  enabled: false,
   categories: [...KEY_LEVEL_CATEGORIES],
   minStrength: 0.35,
   evidenceClasses: [...EVIDENCE_CLASSES],
 };
+
+export function isKeyLevelsEnabled(filter: KeyLevelFilter): boolean {
+  return filter.enabled !== false;
+}
+
+export function toggleKeyLevelsEnabled(filter: KeyLevelFilter): KeyLevelFilter {
+  return {
+    ...filter,
+    enabled: !isKeyLevelsEnabled(filter),
+  };
+}
 
 export function levelEvidenceClass(level: KeyLevel): EvidenceClass {
   return level.evidence_class ?? "OBSERVED";
@@ -175,6 +188,7 @@ export function levelLabel(level: KeyLevel, precision: number): string {
 }
 
 export function matchesFilter(level: KeyLevel, filter: KeyLevelFilter): boolean {
+  if (!isKeyLevelsEnabled(filter)) return false;
   return (
     filter.categories.includes(level.category) &&
     level.strength >= filter.minStrength &&

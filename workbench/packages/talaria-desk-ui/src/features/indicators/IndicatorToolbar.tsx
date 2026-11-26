@@ -24,6 +24,9 @@ interface IndicatorToolbarProps {
   bundle: IndicatorBundle | null;
   loading: boolean;
   error: string | null;
+  keyLevelsEnabled?: boolean;
+  keyLevelsCount?: number;
+  onToggleKeyLevels?: () => void;
 }
 
 export function IndicatorToolbar({
@@ -36,6 +39,9 @@ export function IndicatorToolbar({
   bundle,
   loading,
   error,
+  keyLevelsEnabled = false,
+  keyLevelsCount = 0,
+  onToggleKeyLevels,
 }: IndicatorToolbarProps) {
   const locale = useLocale();
   const [editing, setEditing] = useState<IndicatorName | null>(null);
@@ -76,6 +82,23 @@ export function IndicatorToolbar({
             </div>
           );
         })}
+        {onToggleKeyLevels && (
+          <div className={`indicator-chip${keyLevelsEnabled ? " is-enabled" : ""}`}>
+            <button
+              type="button"
+              className="indicator-toggle"
+              data-testid="indicator-toggle-KEY_LEVELS"
+              aria-pressed={keyLevelsEnabled}
+              onClick={onToggleKeyLevels}
+            >
+              <span className="indicator-swatch" style={{ background: "#4c8dff" }} />
+              <span>{t("关键位", "Key Levels")}</span>
+              {keyLevelsEnabled && keyLevelsCount > 0 && (
+                <span className="indicator-latest">{keyLevelsCount}</span>
+              )}
+            </button>
+          </div>
+        )}
         {loading && (
           <span className="indicator-status">{t("计算中…", "Computing…")}</span>
         )}
