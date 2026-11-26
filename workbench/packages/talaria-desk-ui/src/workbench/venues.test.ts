@@ -42,8 +42,8 @@ describe("workbench venue helpers", () => {
   it("formats venueDisplayName in zh and en locales", () => {
     expect(venueDisplayName("okx", "zh")).toBe("OKX");
     expect(venueDisplayName("okx", "en")).toBe("OKX");
-    expect(venueDisplayName("binance", "zh")).toBe("Binance (归档)");
-    expect(venueDisplayName("binance", "en")).toBe("Binance (Archive)");
+    expect(venueDisplayName("binance", "zh")).toBe("Binance");
+    expect(venueDisplayName("binance", "en")).toBe("Binance");
     expect(venueDisplayName("hyperliquid", "en")).toBe("Hyperliquid");
     expect(venueDisplayName("coinbase", "en")).toBe("Coinbase");
     expect(venueDisplayName("bybit", "en")).toBe("Bybit");

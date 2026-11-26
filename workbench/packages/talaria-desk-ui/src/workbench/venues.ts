@@ -1,13 +1,13 @@
 import type { InstrumentSpec } from "@talaria/contracts";
 
-import { getLocale, tFor, type Locale } from "../lib/i18n";
+import { getLocale, type Locale } from "../lib/i18n";
 
-export function venueDisplayName(venue: string, locale: Locale = getLocale()): string {
+export function venueDisplayName(venue: string, _locale: Locale = getLocale()): string {
   switch (venue.toLowerCase()) {
     case "okx":
       return "OKX";
     case "binance":
-      return tFor(locale, "Binance (归档)", "Binance (Archive)");
+      return "Binance";
     case "hyperliquid":
       return "Hyperliquid";
     case "coinbase":
