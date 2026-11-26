@@ -1,0 +1,43 @@
+{
+  "additionalProperties": false,
+  "description": "丢弃未领取交易草案的请求体。",
+  "properties": {
+    "discarded_by": {
+      "anyOf": [
+        {
+          "maxLength": 80,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Discarded By"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "version": {
+      "minimum": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "title": "DraftDiscardRequest",
+  "type": "object"
+}

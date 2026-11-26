@@ -10,6 +10,7 @@ import type {
 import type {
   AgentAnnotationRecord,
   CompactBar,
+  DraftRecord,
   DrawingRecord,
   IndicatorSeries,
   KeyLevel,
@@ -20,6 +21,30 @@ import type {
 
 import type { Locale } from "../lib/i18n";
 import type { Theme } from "../lib/theme";
+import type {
+  BarrierDragDisabledEvent,
+  BarrierDragDisabledReason,
+  BarrierDragOverlay,
+  BarrierDragProposal,
+} from "./barrierDragController";
+import type { OrderGestureGeometry } from "./orderGestureTracker";
+
+export type {
+  BarrierDragDisabledEvent,
+  BarrierDragDisabledReason,
+  BarrierDragOverlay,
+  BarrierDragProposal,
+} from "./barrierDragController";
+export type { OrderGestureGeometry } from "./orderGestureTracker";
+
+export interface OrderGestureCreateDraftPayload {
+  drawingId: string;
+  direction: "LONG" | "SHORT";
+  entry: string;
+  stop: string;
+  target: string;
+  validGeometry: boolean;
+}
 
 export const VELA_ATTRIBUTION = {
   label: "Vela",
@@ -40,6 +65,17 @@ export interface ExecutionBarrierItem {
   direction: "LONG" | "SHORT";
   stop: string;
   take_profit: string[];
+  phase?: string | null;
+  entry_low?: string | null;
+  entry_high?: string | null;
+  entry_price?: string | null;
+  mark_price?: string | null;
+  unrealized_pnl?: string | null;
+  quantity?: string | null;
+  ledger_seq?: number | null;
+  draggable?: boolean;
+  disabled_reason?: BarrierDragDisabledReason | null;
+  account_trading_state?: "ACTIVE" | "REDUCING" | "HALTED" | null;
 }
 
 export function roundsToBarriers(rounds: readonly PaperRound[]): ExecutionBarrierItem[] {
@@ -50,6 +86,12 @@ export function roundsToBarriers(rounds: readonly PaperRound[]): ExecutionBarrie
     direction: round.direction,
     stop: round.stop,
     take_profit: Array.isArray(round.take_profit) ? round.take_profit : [],
+    phase: round.phase ?? null,
+    entry_low: round.entry_low ?? null,
+    entry_high: round.entry_high ?? null,
+    entry_price: round.entry_price ?? null,
+    mark_price: round.mark_price ?? null,
+    unrealized_pnl: round.unrealized_pnl ?? null,
   }));
 }
 
@@ -71,11 +113,19 @@ export interface ChartMountOptions {
   onBackendChange?: (backend: RenderBackendMode) => void;
   onSelectKeyLevel?: (level: KeyLevel) => void;
   onSelectAnnotation?: (annotation: AgentAnnotationRecord) => void;
+  onSelectStagedDraft?: (draft: DraftRecord) => void;
   onCreateAlertFromDrawing?: (payload: {
     drawingId: string;
     price: number | null;
     type: string;
   }) => void;
+  onOrderGestureChange?: (gesture: OrderGestureGeometry | null) => void;
+  onCreateDraftFromOrderGesture?: (payload: OrderGestureCreateDraftPayload) => void;
+  onDrawingToolChange?: (tool: string | null) => void;
+  onBarrierDragEnd?: (proposal: BarrierDragProposal) => void;
+  onBarrierDragDisabled?: (event: BarrierDragDisabledEvent) => void;
+  onBarrierPendingAckTimeout?: (overlay: BarrierDragOverlay) => void;
+  onBarrierOverlayChange?: (overlay: BarrierDragOverlay | null) => void;
   onDrawingsChanged?: (drawings: DrawingRecord[], source: DrawingSyncSource) => void;
   onDrawingSelect?: (drawingId: string | null) => void;
   onDrawingError?: (message: string) => void;
@@ -140,9 +190,18 @@ export interface ChartSurfaceAdapter {
     opts?: { timeframe?: string; highlightId?: string | null },
   ): void;
   setExecutionBarriers(barriers: ExecutionBarrierItem[]): void;
+  cancelBarrierDragConfirm(): void;
+  markBarrierDragPendingAck(commandId: string, proposal: BarrierDragProposal): void;
+  resolveBarrierDragPendingAck(commandId?: string): void;
+  setStagedDrafts(
+    drafts: DraftRecord[],
+    opts?: { precision?: number; highlightId?: string | null },
+  ): void;
   loadHumanDrawings(drawings: DrawingRecord[]): void;
   setReplayDrawingFilter(filter: ReplayDrawingFilter): void;
   setDrawingTool(tool: string | null): void;
+  armOrderGesture(direction: "LONG" | "SHORT" | null): void;
+  clearOrderGesture(): void;
   selectHumanDrawing(drawingId: string | null): void;
   exportDrawingsDocument(): DrawingsDocument | null;
   setTheme(theme: Theme): void;

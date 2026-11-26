@@ -15,6 +15,7 @@ import type { AnnotationsController } from "../features/annotations/useAnnotatio
 import type { IndicatorDefaults, IndicatorSetting, IndicatorSettings } from "../features/indicators/config";
 import type { KeyLevelFilter } from "../features/key-levels/model";
 import type { KeyLevelsController } from "../features/key-levels/useKeyLevels";
+import type { DraftSeed } from "../features/paper/DraftForm";
 import type { RunsController } from "../features/runs/useRuns";
 import type { ScannerController } from "../features/scanner/useScanner";
 import type { Locale } from "../lib/i18n";
@@ -86,6 +87,14 @@ export interface WorkbenchContextValue {
   alertSeed: AlertFormSeed | null;
   onSeedAlert: (seed: Omit<AlertFormSeed, "nonce">) => void;
 
+  draftSeed: (DraftSeed & { nonce: number }) | null;
+  onSeedDraft: (seed: DraftSeed) => void;
+  clearDraftSeed: (nonce?: number) => void;
+  selectedDraftId: string | null;
+  onSelectDraft: (draftId: string | null) => void;
+  draftsRevision: number;
+  notifyDraftsChanged: () => void;
+
   scannerController: ScannerController;
   annotationsController: AnnotationsController;
   runsController: RunsController;
@@ -112,7 +121,16 @@ export interface WorkbenchContextValue {
     timeframe: string;
   }) => void;
   onOpenRightTab: (
-    tab: "watchlist" | "alerts" | "levels" | "scanner" | "drawings" | "annotations" | "runs",
+    tab:
+      | "watchlist"
+      | "alerts"
+      | "levels"
+      | "scanner"
+      | "drawings"
+      | "annotations"
+      | "runs"
+      | "drafts"
+      | "account",
   ) => void;
   onAdoptKeyLevel: (level: KeyLevel) => Promise<void>;
   onAdoptAnnotation: (annotation: AgentAnnotationRecord) => Promise<void>;

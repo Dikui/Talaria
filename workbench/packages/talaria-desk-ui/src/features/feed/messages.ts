@@ -5,6 +5,7 @@ import type {
   KeyLevelSet,
   KlineEvent,
   OrderBookEvent,
+  PaperAccountView,
   ScannerTrigger,
 } from "@talaria/contracts";
 
@@ -21,6 +22,7 @@ export type DeskMessage =
   | { type: "levels"; data: KeyLevelSet }
   | { type: "alert"; data: AlertTriggerRecord }
   | { type: "scanner"; data: ScannerTrigger }
+  | { type: "paper_account"; data: PaperAccountView }
   | {
       type: "error";
       code: string;
@@ -125,6 +127,16 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
         typeof data.created_ts === "number" &&
         typeof data.snapshot_id === "string"
         ? { type: "scanner", data: record.data as ScannerTrigger }
+        : null;
+    }
+    case "paper_account": {
+      const data = asRecord(record.data);
+      return data !== null &&
+        typeof data.sub_account_id === "string" &&
+        Array.isArray(data.positions) &&
+        Array.isArray(data.rounds) &&
+        Array.isArray(data.fills)
+        ? { type: "paper_account", data: record.data as PaperAccountView }
         : null;
     }
     case "error":

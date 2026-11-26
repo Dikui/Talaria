@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "TradingState": {
+      "description": "子账户或全局系统交易状态。",
+      "enum": [
+        "ACTIVE",
+        "REDUCING",
+        "HALTED"
+      ],
+      "title": "TradingState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "人工干预命令的参数载荷，全部价格与比例均为十进制字符串。",
+  "properties": {
+    "ratio": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ratio"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "stop": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stop"
+    },
+    "take_profit": {
+      "anyOf": [
+        {
+          "items": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Take Profit"
+    },
+    "trading_state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TradingState"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "title": "PaperCommandPayload",
+  "type": "object"
+}

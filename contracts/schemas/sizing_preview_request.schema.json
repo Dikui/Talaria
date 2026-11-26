@@ -1,0 +1,91 @@
+{
+  "$defs": {
+    "Direction": {
+      "enum": [
+        "LONG",
+        "SHORT"
+      ],
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "工作台向常驻服务发起的无副作用定仓预演请求。",
+  "properties": {
+    "direction": {
+      "$ref": "#/$defs/Direction"
+    },
+    "entry_high": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Entry High",
+      "type": "string"
+    },
+    "entry_low": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Entry Low",
+      "type": "string"
+    },
+    "instrument_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "invalidation_stop": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Invalidation Stop",
+      "type": "string"
+    },
+    "override_quantity": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Override Quantity"
+    },
+    "round_id": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Round Id"
+    },
+    "sub_account_id": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "title": "Sub Account Id",
+      "type": "string"
+    },
+    "take_profit": {
+      "default": [],
+      "items": {
+        "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+        "type": "string"
+      },
+      "maxItems": 4,
+      "title": "Take Profit",
+      "type": "array"
+    }
+  },
+  "required": [
+    "sub_account_id",
+    "instrument_id",
+    "direction",
+    "entry_low",
+    "entry_high",
+    "invalidation_stop"
+  ],
+  "title": "SizingPreviewRequest",
+  "type": "object"
+}

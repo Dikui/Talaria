@@ -54,6 +54,9 @@ import {
   type KeyLevelFilter,
 } from "../features/key-levels/model";
 import { useKeyLevels } from "../features/key-levels/useKeyLevels";
+import { AccountPanel } from "../features/paper/AccountPanel";
+import { DraftPanel } from "../features/paper/DraftPanel";
+import type { DraftSeed } from "../features/paper/DraftForm";
 import { RunsPanel } from "../features/runs/RunsPanel";
 import { useRuns } from "../features/runs/useRuns";
 import { ScannerPanel } from "../features/scanner/ScannerPanel";
@@ -236,6 +239,26 @@ function DockRunsPanel() {
   );
 }
 
+function DockDraftsPanel() {
+  const ctx = useWorkbenchContext();
+  return (
+    <DraftPanel
+      activeInstrumentId={ctx.activeInstrumentId}
+      activeTimeframe={ctx.activeTimeframe}
+      readOnly={ctx.readOnly}
+      replayActive={ctx.replayActive}
+      externalSeed={ctx.draftSeed}
+      onExternalSeedConsumed={ctx.clearDraftSeed}
+      highlightedDraftId={ctx.selectedDraftId}
+      onDraftsMutated={ctx.notifyDraftsChanged}
+    />
+  );
+}
+
+function DockAccountPanel() {
+  return <AccountPanel />;
+}
+
 const DOCKVIEW_COMPONENTS = {
   chart: DockChartPanel,
   watchlist: DockWatchlistPanel,
@@ -245,6 +268,8 @@ const DOCKVIEW_COMPONENTS = {
   drawings: DockDrawingsPanel,
   annotations: DockAnnotationsPanel,
   runs: DockRunsPanel,
+  drafts: DockDraftsPanel,
+  account: DockAccountPanel,
 };
 
 export interface WorkbenchShellProps {
@@ -266,6 +291,8 @@ const RIGHT_DOCK_TABS = [
   "drawings",
   "annotations",
   "runs",
+  "drafts",
+  "account",
 ] as const;
 
 type RightTabId = (typeof RIGHT_DOCK_TABS)[number];
@@ -328,6 +355,9 @@ export function WorkbenchShell({
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
   const [alertSeed, setAlertSeed] = useState<AlertFormSeed | null>(null);
+  const [draftSeed, setDraftSeed] = useState<(DraftSeed & { nonce: number }) | null>(null);
+  const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
+  const [draftsRevision, setDraftsRevision] = useState(0);
 
   const [rightDockVisible, setRightDockVisible] = useState(true);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
@@ -521,6 +551,22 @@ export function WorkbenchShell({
     setAlertSeed({ ...seed, nonce: Date.now() });
   }, []);
 
+  const onSeedDraft = useCallback((seed: DraftSeed) => {
+    setDraftSeed({ ...seed, nonce: Date.now() + Math.random() });
+  }, []);
+
+  const clearDraftSeed = useCallback((nonce?: number) => {
+    setDraftSeed((prev) => {
+      if (!prev) return null;
+      if (nonce !== undefined && prev.nonce !== nonce) return prev;
+      return null;
+    });
+  }, []);
+
+  const notifyDraftsChanged = useCallback(() => {
+    setDraftsRevision((n) => n + 1);
+  }, []);
+
   const onOpenRightTab = useCallback(
     (tab: RightTabId) => {
       if (isMobile) {
@@ -637,6 +683,13 @@ export function WorkbenchShell({
       alertsController,
       alertSeed,
       onSeedAlert,
+      draftSeed,
+      onSeedDraft,
+      clearDraftSeed,
+      selectedDraftId,
+      onSelectDraft: setSelectedDraftId,
+      draftsRevision,
+      notifyDraftsChanged,
       scannerController,
       annotationsController,
       runsController,
@@ -683,6 +736,12 @@ export function WorkbenchShell({
       alertsController,
       alertSeed,
       onSeedAlert,
+      draftSeed,
+      onSeedDraft,
+      clearDraftSeed,
+      selectedDraftId,
+      draftsRevision,
+      notifyDraftsChanged,
       scannerController,
       annotationsController,
       runsController,
@@ -969,6 +1028,8 @@ export function WorkbenchShell({
                     {mobileTab === "drawings" && <DockDrawingsPanel />}
                     {mobileTab === "annotations" && <DockAnnotationsPanel />}
                     {mobileTab === "runs" && <DockRunsPanel />}
+                    {mobileTab === "drafts" && <DockDraftsPanel />}
+                    {mobileTab === "account" && <DockAccountPanel />}
                   </div>
                 </div>
               )}

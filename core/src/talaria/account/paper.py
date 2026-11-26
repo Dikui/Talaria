@@ -1,18 +1,41 @@
 """账户进程的已确认草案入口。"""
 
 from collections.abc import Callable, Sequence
+from decimal import Decimal
 from fractions import Fraction
+import logging
+from math import ceil, floor
 from pathlib import Path
+import sys
 
 import httpx
 
 from talaria import sdk
-from talaria.account.contracts import DecisionOrigin, EntryCandidate, ExecutionEvent, PlanReceipt, RejectedPlanRecord
+from talaria.account.contracts import (
+    BarrierChangeRequest,
+    BarrierReceipt,
+    DecisionOrigin,
+    EntryCandidate,
+    ExecutionEvent,
+    PlanReceipt,
+    RejectedPlanRecord,
+    RoundPhase,
+    TradingState as AccountTradingState,
+)
 from talaria.foundation.bars import CompactBar
-from talaria.foundation.paper import ConfirmedDraft, DraftEvidence, DraftReceipt
+from talaria.foundation.paper import (
+    ConfirmedDraft,
+    DraftEvidence,
+    DraftReceipt,
+    PaperCommand,
+    PaperCommandKind,
+    PaperCommandReceipt,
+)
+from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.service_endpoint import read_service_connection
 
 _MINUTE = 60_000
+_LOG = logging.getLogger(__name__)
 
 
 class DraftIntake:
@@ -20,10 +43,12 @@ class DraftIntake:
         self, freeze: Callable[[ConfirmedDraft, int], tuple[str, Sequence[CompactBar]] | None],
         submit: Callable[[EntryCandidate], PlanReceipt | RejectedPlanRecord],
         record: Callable[[ExecutionEvent], None], previous: Sequence[ExecutionEvent] = (),
+        *, quantity_lookup: Callable[[str], Decimal | None] | None = None,
     ) -> None:
         self._freeze = freeze
         self._submit = submit
         self._record = record
+        self._quantity_lookup = quantity_lookup
         self._receipts = {
             (event.draft_receipt.draft_id, event.draft_receipt.version): event.draft_receipt
             for event in previous if event.kind == "DRAFT_RESOLVED" and event.draft_receipt is not None
@@ -64,6 +89,7 @@ class DraftIntake:
         reason = _stale_reason(draft, bars, now)
 
         approved_plan_id = None
+        approved_quantity: Decimal | None = None
         if reason == "DRAFT_DATA_UNAVAILABLE":
             return None
         if reason is None:
@@ -80,9 +106,12 @@ class DraftIntake:
                 reason = result.reason or "FILL_REJECTED"
             else:
                 approved_plan_id = result.plan_id
+                if approved_plan_id is not None and self._quantity_lookup is not None:
+                    approved_quantity = self._quantity_lookup(approved_plan_id)
         receipt = DraftReceipt(
             draft_id=draft.draft_id, version=draft.version, accepted=reason is None,
             reason=reason, snapshot_id=snapshot_id, plan_id=approved_plan_id,
+            quantity=approved_quantity,
         )
         self._record(ExecutionEvent(
             kind="DRAFT_RESOLVED", sub_account_id=content.sub_account_id, ts_event=now, reason=reason,
@@ -123,10 +152,35 @@ def _crossed(draft: ConfirmedDraft, bar: CompactBar) -> bool:
 
 
 class PaperInbox:
-    def __init__(self, data_dir: Path, accounts: Sequence[str], client: httpx.Client) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        accounts: Sequence[str],
+        client: httpx.Client,
+        *,
+        on_service_warning: Callable[[str | None], None] | None = None,
+    ) -> None:
         self._data_dir = data_dir
         self._accounts = accounts
         self._client = client
+        self._on_service_warning = on_service_warning
+        self._last_service_warning: str | None = None
+
+    @property
+    def service_warning(self) -> str | None:
+        return self._last_service_warning
+
+    def _set_service_warning(self, warning: str | None) -> None:
+        if warning == self._last_service_warning:
+            return
+        self._last_service_warning = warning
+        if warning is not None:
+            _LOG.warning("PaperInbox %s", warning)
+            print(f"[talaria-account WARNING] {warning}", file=sys.stderr, flush=True)
+        else:
+            _LOG.info("PaperInbox service connection recovered")
+        if self._on_service_warning is not None:
+            self._on_service_warning(warning)
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         service = read_service_connection(self._data_dir)
@@ -136,6 +190,7 @@ class PaperInbox:
             method, service.base_url + path, headers={"Authorization": f"Bearer {service.token}"}, **kwargs,
         )
         response.raise_for_status()
+        self._set_service_warning(None)
         return response
 
     def freeze(self, draft: ConfirmedDraft, cutoff: int) -> tuple[str, Sequence[CompactBar]] | None:
@@ -216,7 +271,331 @@ class PaperInbox:
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
             self._retry_service_error(exc)
 
-    @staticmethod
-    def _retry_service_error(exc: httpx.HTTPError) -> None:
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500 and exc.response.status_code not in (401, 403, 404, 429):
-            raise exc
+    def claim_command(self, account: str) -> PaperCommand | None:
+        if account not in self._accounts:
+            raise ValueError("未知模拟盘子账户")
+        try:
+            response = self._request("POST", f"/api/paper/accounts/{account}/next-command")
+            if response.json() is None:
+                return None
+            command = PaperCommand.model_validate_json(response.content)
+            if command.sub_account_id != account:
+                raise ValueError("常驻服务提交的干预命令与子账户不一致")
+            return command
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            self._retry_service_error(exc)
+            return None
+
+    def acknowledge_command(self, account: str, receipt: PaperCommandReceipt) -> None:
+        try:
+            self._request(
+                "POST",
+                f"/api/paper/accounts/{account}/command-receipt",
+                json=receipt.model_dump(mode="json"),
+            )
+        except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+            self._retry_service_error(exc)
+
+    def _retry_service_error(self, exc: httpx.HTTPError) -> None:
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if status < 500 and status not in (401, 403, 404, 429):
+                raise exc
+            if status in (401, 403, 404):
+                code = "SERVICE_INCOMPATIBLE" if status == 404 else "SERVICE_AUTH_FAILED"
+                method = exc.request.method if exc.request is not None else "HTTP"
+                path = exc.request.url.path if exc.request is not None else ""
+                self._set_service_warning(f"{code}: HTTP {status} on {method} {path}")
+
+
+_TERMINAL_ROUND_PHASES = frozenset({RoundPhase.CLOSED, RoundPhase.CANCELLED, RoundPhase.LIQUIDATED})
+_BARRIER_EVENT_KINDS = frozenset({"BARRIER_TIGHTENED", "BARRIER_AMENDED"})
+_BARRIER_COMMAND_KINDS = frozenset({
+    PaperCommandKind.TIGHTEN_STOP,
+    PaperCommandKind.MOVE_TO_BREAKEVEN,
+    PaperCommandKind.WIDEN_STOP,
+    PaperCommandKind.MODIFY_TAKE_PROFIT,
+})
+_STATE_RANK = {
+    AccountTradingState.ACTIVE: 0,
+    AccountTradingState.REDUCING: 1,
+    AccountTradingState.HALTED: 2,
+}
+
+
+def _snap_breakeven(entry: Decimal, direction: str, tick_size: Decimal) -> Decimal:
+    ticks_frac = Fraction(entry) / Fraction(tick_size)
+    ticks = ceil(ticks_frac) if direction == "LONG" else floor(ticks_frac)
+    return Decimal(max(1, ticks)) * tick_size
+
+
+class CommandIntake:
+    """按 ADR-0015 底线 2 与 ADR-0025 D3 路由、幂等执行并记录人工干预命令。"""
+
+    def __init__(
+        self,
+        gate,
+        fill,
+        record: Callable[[ExecutionEvent], None],
+        previous: Sequence[ExecutionEvent] = (),
+        *,
+        ledger_events_reader: Callable[[], Sequence[ExecutionEvent]] | None = None,
+        ledger_seq_reader: Callable[[], int] | None = None,
+    ) -> None:
+        self._gate = gate
+        self._fill = fill
+        self._record = record
+        self._ledger_events_reader = ledger_events_reader
+        self._ledger_seq_reader = ledger_seq_reader
+        self._pack = get_market_pack(DEFAULT_PACK)
+        self._receipts: dict[str, PaperCommandReceipt] = {}
+        for event in previous:
+            if event.kind == "COMMAND_RESOLVED" and event.reason:
+                try:
+                    parsed = PaperCommandReceipt.model_validate_json(event.reason)
+                except ValueError:
+                    continue
+                self._receipts[parsed.command_id] = parsed
+
+    def _journal_events(self) -> Sequence[ExecutionEvent]:
+        if self._ledger_events_reader is not None:
+            return self._ledger_events_reader()
+        return ()
+
+    def _is_barrier_stale(self, command: PaperCommand, current_seq: int) -> bool:
+        if command.round_id is None or current_seq <= command.based_on_ledger_seq:
+            return False
+        events = self._journal_events()
+        for event in events[command.based_on_ledger_seq :]:
+            if (
+                event.sub_account_id == command.sub_account_id
+                and event.kind in _BARRIER_EVENT_KINDS
+                and event.position is not None
+                and event.position.round_id == command.round_id
+            ):
+                return True
+        return False
+
+    def _round_is_terminal(self, round_id: str) -> bool:
+        pos = getattr(self._gate, "_positions", {}).get(round_id)
+        if pos is not None and pos.quantity == 0 and pos.phase in _TERMINAL_ROUND_PHASES:
+            return True
+        if pos is not None and pos.quantity == 0 and pos.phase is None:
+            return True
+        for event in reversed(self._journal_events()):
+            if event.position is not None and event.position.round_id == round_id:
+                return event.position.quantity == 0 and (
+                    event.position.phase in _TERMINAL_ROUND_PHASES
+                    or event.kind in ("EXIT_FILLED", "ROUND_CLOSED", "ROUND_CANCELLED", "ROUND_LIQUIDATED")
+                )
+        return False
+
+    def _flush_paper_reduction_now(self, round_id: str, account: str, now: int) -> None:
+        """在模拟盘人工减仓/全平后立即按最新标记价或最近收盘价完成撮合，满足 <=2s 投影闭环。"""
+        from talaria.account.plugins.bar_sim_1m import BarSim1m, _BarLiquidity
+
+        if not isinstance(self._fill, BarSim1m):
+            return
+        executor = self._fill._rounds.get(round_id)
+        if executor is None or executor.reduction is None or not executor.quantity:
+            return
+        instrument_id = executor.instrument.instrument_id
+        state = self._gate.account_state(account)
+        ref_price: Decimal | None = None
+        mark = state.marks.get(instrument_id)
+        if mark is not None and mark.value > 0:
+            ref_price = mark.value
+        else:
+            last = self._fill._last_prices.get(instrument_id)
+            if last is not None:
+                ref_price = last[1]
+        if ref_price is None:
+            return
+        prev_now = self._fill._now
+        if now > prev_now:
+            self._fill._now = now
+        liq = _BarLiquidity(Fraction(0), executor.quantity)
+        self._fill._fill_reduction(executor, liq, ref_price)
+        self._gate.poll_events(now)
+
+    def receive(self, command: PaperCommand, now: int, *, current_ledger_seq: int) -> PaperCommandReceipt:
+        existing = self._receipts.get(command.command_id)
+        if existing is not None:
+            return existing
+
+        accepted, reason = self._execute(command, now, current_ledger_seq)
+        after_seq = (
+            self._ledger_seq_reader()
+            if self._ledger_seq_reader is not None
+            else len(self._journal_events())
+        )
+        next_seq = max(current_ledger_seq, after_seq) + 1
+        receipt = PaperCommandReceipt(
+            command_id=command.command_id,
+            sub_account_id=command.sub_account_id,
+            accepted=accepted,
+            reason=reason,
+            ledger_seq=next_seq,
+            processed_ts=now,
+        )
+        self._record(
+            ExecutionEvent(
+                kind="COMMAND_RESOLVED",
+                sub_account_id=command.sub_account_id,
+                ts_event=now,
+                plan_id=command.command_id,
+                reason=receipt.model_dump_json(),
+            )
+        )
+        self._receipts[command.command_id] = receipt
+        return receipt
+
+    def _execute(
+        self, command: PaperCommand, now: int, current_ledger_seq: int,
+    ) -> tuple[bool, str | None]:
+        account = command.sub_account_id
+        kind = command.kind
+        state = self._gate.account_state(account)
+
+        if kind is PaperCommandKind.SET_TRADING_STATE:
+            assert command.payload.trading_state is not None
+            target = AccountTradingState(command.payload.trading_state.value)
+            current = state.trading_state
+            if target == current:
+                return True, "NOOP"
+            reason_text = command.payload.reason or "MANUAL_COMMAND"
+            if _STATE_RANK[target] > _STATE_RANK[current]:
+                # 收紧交易状态：直达执行层。
+                self._gate.set_trading_state(account, target, reason_text)
+                self._gate.record_host_event(
+                    ExecutionEvent(
+                        kind="TRADING_STATE_CHANGED",
+                        sub_account_id=account,
+                        ts_event=now,
+                        reason=f"{reason_text}:{target.value}",
+                    )
+                )
+                self._gate.poll_events(now)
+                return True, None
+            # 放宽交易状态（如恢复 ACTIVE）：先过风控检查。
+            res = self._gate.relax_trading_state(account, target, reason_text)
+            if isinstance(res, RejectedPlanRecord) or not res.accepted:
+                return False, res.reason or "RISK_REJECTED"
+            self._gate.poll_events(now)
+            return True, res.reason
+
+        assert command.round_id is not None
+        round_id = command.round_id
+
+        if self._round_is_terminal(round_id):
+            return False, "COMMAND_STALE"
+
+        if kind in _BARRIER_COMMAND_KINDS and self._is_barrier_stale(command, current_ledger_seq):
+            return False, "COMMAND_STALE"
+
+        position = state.rounds.get(round_id)
+        has_reservation = any(item.round_id == round_id for item in state.reservations)
+
+        if kind is PaperCommandKind.CANCEL_ENTRY:
+            if not has_reservation:
+                if position is not None:
+                    return True, "NOOP"
+                return False, "COMMAND_STALE"
+            self._gate.intervene_position(
+                round_id, "CANCEL_ENTRY", None, command.payload.reason or "MANUAL_CANCEL_ENTRY",
+            )
+            self._gate.poll_events(now)
+            return True, None
+
+        if kind is PaperCommandKind.CLOSE_ALL:
+            if position is None and not has_reservation:
+                return False, "COMMAND_STALE"
+            self._gate.intervene_position(
+                round_id, "CLOSE_ALL", None, command.payload.reason or "MANUAL_CLOSE_ALL",
+            )
+            self._flush_paper_reduction_now(round_id, account, now)
+            self._gate.poll_events(now)
+            return True, None
+
+        if kind is PaperCommandKind.REDUCE_RATIO:
+            if position is None:
+                return False, "COMMAND_STALE"
+            assert command.payload.ratio is not None
+            before_qty = position.quantity
+            self._gate.intervene_position(
+                round_id,
+                "REDUCE_RATIO",
+                command.payload.ratio,
+                command.payload.reason or "MANUAL_REDUCE_RATIO",
+            )
+            self._flush_paper_reduction_now(round_id, account, now)
+            self._gate.poll_events(now)
+            after_pos = self._gate.account_state(account).rounds.get(round_id)
+            if after_pos is not None and after_pos.quantity == before_qty:
+                return True, "NOOP"
+            return True, None
+
+        if position is None:
+            return False, "COMMAND_STALE"
+
+        if kind is PaperCommandKind.TIGHTEN_STOP:
+            assert command.payload.stop is not None
+            new_stop = command.payload.stop
+            if new_stop == position.stop:
+                return True, "NOOP"
+            widens = new_stop < position.stop if position.direction == "LONG" else new_stop > position.stop
+            if widens:
+                return False, "STOP_WIDENING_REQUIRES_WIDEN_COMMAND"
+            res = self._gate.change_barrier(
+                BarrierChangeRequest(sub_account_id=account, round_id=round_id, stop=new_stop),
+            )
+            self._gate.poll_events(now)
+            if isinstance(res, RejectedPlanRecord) or not res.accepted:
+                return False, res.reason or "BARRIER_REJECTED"
+            return True, None
+
+        if kind is PaperCommandKind.MOVE_TO_BREAKEVEN:
+            exposure = next((item for item in state.positions if item.round_id == round_id), None)
+            if exposure is None:
+                return False, "COMMAND_STALE"
+            spec = self._pack.instrument(position.instrument_id)
+            tick_size = spec.tick_size if spec is not None else Decimal("0.01")
+            be_stop = _snap_breakeven(exposure.position.entry_price, position.direction, tick_size)
+            widens = be_stop < position.stop if position.direction == "LONG" else be_stop > position.stop
+            if be_stop == position.stop or widens:
+                return True, "NOOP"
+            res = self._gate.change_barrier(
+                BarrierChangeRequest(sub_account_id=account, round_id=round_id, stop=be_stop),
+            )
+            self._gate.poll_events(now)
+            if isinstance(res, RejectedPlanRecord) or not res.accepted:
+                return False, res.reason or "BARRIER_REJECTED"
+            return True, None
+
+        if kind is PaperCommandKind.WIDEN_STOP:
+            assert command.payload.stop is not None
+            new_stop = command.payload.stop
+            if new_stop == position.stop:
+                return True, "NOOP"
+            res = self._gate.change_barrier(
+                BarrierChangeRequest(sub_account_id=account, round_id=round_id, stop=new_stop),
+            )
+            self._gate.poll_events(now)
+            if isinstance(res, RejectedPlanRecord) or not res.accepted:
+                return False, res.reason or "RISK_REJECTED"
+            return True, None
+
+        if kind is PaperCommandKind.MODIFY_TAKE_PROFIT:
+            assert command.payload.take_profit is not None
+            res = self._gate.change_take_profit(
+                account,
+                round_id,
+                command.payload.take_profit,
+                reason=command.payload.reason,
+            )
+            self._gate.poll_events(now)
+            if isinstance(res, RejectedPlanRecord) or not res.accepted:
+                return False, res.reason or "BARRIER_REJECTED"
+            return True, res.reason
+
+        return False, "UNSUPPORTED_COMMAND"

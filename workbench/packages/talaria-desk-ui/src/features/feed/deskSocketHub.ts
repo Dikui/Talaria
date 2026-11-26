@@ -5,6 +5,7 @@ import type {
   KeyLevelSet,
   KlineEvent,
   OrderBookEvent,
+  PaperAccountView,
   ScannerTrigger,
 } from "@talaria/contracts";
 
@@ -43,6 +44,7 @@ export interface DeskChannelCallbacks {
   onAlert?: (alert: AlertTriggerRecord) => void;
   onAlertQuota?: (deniedAlerts: string[]) => void;
   onScanner?: (trigger: ScannerTrigger) => void;
+  onPaperAccount?: (view: PaperAccountView) => void;
   onError?: (msg: Extract<DeskMessage, { type: "error" }>) => void;
 }
 
@@ -66,6 +68,7 @@ export class DeskSocketHub {
   private retryTimer: number | null = null;
   private quotaTimers = new Map<string, number>();
   private subscribers = new Map<number, SubscriptionEntry>();
+  private paperAccountListeners = new Map<number, (view: PaperAccountView) => void>();
   private activeChannels = new Map<string, number>();
   private channelModes = new Map<string, boolean>();
   private nextId = 1;
@@ -118,7 +121,7 @@ export class DeskSocketHub {
       }
       this.channelModes.clear();
       this.setConnection("closed");
-      if (!this.disposed && this.subscribers.size > 0) {
+      if (!this.disposed && (this.subscribers.size > 0 || this.paperAccountListeners.size > 0)) {
         this.scheduleReconnect();
       }
     };
@@ -250,6 +253,14 @@ export class DeskSocketHub {
           sub.callbacks.onScanner?.(msg.data);
         }
         break;
+      case "paper_account":
+        for (const sub of this.subscribers.values()) {
+          sub.callbacks.onPaperAccount?.(msg.data);
+        }
+        for (const listener of this.paperAccountListeners.values()) {
+          listener(msg.data);
+        }
+        break;
       case "error": {
         if (
           msg.code === "SUBSCRIPTION_QUOTA" &&
@@ -335,7 +346,20 @@ export class DeskSocketHub {
         this.activeChannels.set(key, current - 1);
       }
 
-      if (this.subscribers.size === 0) {
+      if (this.subscribers.size === 0 && this.paperAccountListeners.size === 0) {
+        this.closeIfIdle();
+      }
+    };
+  }
+
+  subscribePaperAccounts(listener: (view: PaperAccountView) => void): () => void {
+    this.disposed = false;
+    const id = this.nextId++;
+    this.paperAccountListeners.set(id, listener);
+    this.ensureConnected();
+    return () => {
+      this.paperAccountListeners.delete(id);
+      if (this.subscribers.size === 0 && this.paperAccountListeners.size === 0) {
         this.closeIfIdle();
       }
     };
@@ -361,6 +385,7 @@ export class DeskSocketHub {
     }
     this.quotaTimers.clear();
     this.subscribers.clear();
+    this.paperAccountListeners.clear();
     this.activeChannels.clear();
     this.closeIfIdle();
   }

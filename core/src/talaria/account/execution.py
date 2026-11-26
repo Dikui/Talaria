@@ -65,6 +65,15 @@ def _widens(position: RoundStatus, stop: Decimal) -> bool:
     return stop < position.stop if position.direction == "LONG" else stop > position.stop
 
 
+def _tp_widens(direction: str, current: Sequence[Decimal], proposed: Sequence[Decimal]) -> bool:
+    """按 ADR-0015 / ADR-0025 判定改止盈是否属于放宽风险：将止盈目标推远（延长持仓暴露）视为放宽。"""
+    if not current:
+        return True
+    if direction == "LONG":
+        return max(proposed) > max(current) or min(proposed) > min(current)
+    return min(proposed) < min(current) or max(proposed) < max(current)
+
+
 @dataclass(frozen=True, slots=True)
 class _FillUpdate:
     total_filled: Fraction | None
@@ -120,6 +129,7 @@ class ExecutionGate:
         self._round_origins: dict[str, RoundStatus] = {}
         self._barriers: dict[str, ExitBarrierSpec] = {}
         self._plans: dict[str, ApprovedExecutionPlan] = {}
+        self._plan_quantities: dict[str, Decimal] = {}
         self._submitted_plan_rounds: dict[str, str | None] = {}
         self._filled: dict[str, Fraction] = {}
         self._amendment_ids: set[str] = set()
@@ -286,6 +296,7 @@ class ExecutionGate:
         self._submitted_plan_rounds[decision.plan_id] = decision.round_id if receipt.accepted else None
         if receipt.accepted:
             self._plans[decision.plan_id] = decision
+            self._plan_quantities[decision.plan_id] = decision.sizing.quantity
             if candidate.round_id is None:
                 self._round_origins[decision.round_id] = RoundStatus(
                     round_id=decision.round_id, sub_account_id=candidate.sub_account_id,
@@ -297,6 +308,12 @@ class ExecutionGate:
         if receipt.accepted and candidate.draft_plan_id is not None:
             return receipt.model_copy(update={"plan_id": decision.plan_id})
         return receipt
+
+    def plan_quantity(self, plan_id: str) -> Decimal | None:
+        if plan_id in self._plan_quantities:
+            return self._plan_quantities[plan_id]
+        plan = self._plans.get(plan_id)
+        return plan.sizing.quantity if plan is not None else None
 
     def change_barrier(self, request: BarrierChangeRequest) -> BarrierReceipt | RejectedPlanRecord:
         self._approval_lock(request.sub_account_id)
@@ -349,6 +366,144 @@ class ExecutionGate:
             raise AccountProcessError(reason)
         if receipt.accepted:
             self._positions[request.round_id] = position.model_copy(update={"stop": request.stop})
+            if request.round_id in self._barriers:
+                self._barriers[request.round_id] = self._barriers[request.round_id].model_copy(
+                    update={"stop": request.stop}
+                )
+
+    def change_take_profit(
+        self,
+        sub_account_id: str,
+        round_id: str,
+        take_profit: Sequence[Decimal],
+        *,
+        reason: str | None = None,
+    ) -> BarrierReceipt | RejectedPlanRecord:
+        self._approval_lock(sub_account_id)
+        with self._all_accounts():
+            now = max(self._market_as_of, self._last_execution_ts)
+            while pending := self._fill.poll_events(now):
+                self._process_batch(now, (), pending)
+            state = self._account_state(sub_account_id, for_approval=True)
+            decision = self._change_take_profit(sub_account_id, round_id, tuple(take_profit), state, reason=reason)
+            if isinstance(decision, RejectedPlanRecord) or not decision.accepted:
+                self._audit[sub_account_id].append(ExecutionEvent(
+                    kind="BARRIER_REJECTED",
+                    sub_account_id=sub_account_id,
+                    ts_event=state.as_of,
+                    reason=decision.reason or "FILL_REJECTED",
+                ))
+            return decision
+
+    def _change_take_profit(
+        self,
+        sub_account_id: str,
+        round_id: str,
+        take_profit: tuple[Decimal, ...],
+        state: AccountState,
+        *,
+        reason: str | None = None,
+    ) -> BarrierReceipt | RejectedPlanRecord:
+        position = state.rounds.get(round_id)
+        if position is None:
+            return RejectedPlanRecord(reason="ROUND_NOT_OPEN")
+        if not take_profit:
+            return RejectedPlanRecord(reason="INVALID_TAKE_PROFIT")
+        instrument = self._market_pack.instrument(position.instrument_id)
+        if instrument is None:
+            return RejectedPlanRecord(reason="UNKNOWN_INSTRUMENT")
+        side = 1 if position.direction == "LONG" else -1
+        for target in take_profit:
+            if target <= 0 or Fraction(target) % Fraction(instrument.tick_size) != 0:
+                return RejectedPlanRecord(reason="ORDER_CONSTRAINT")
+            if side * (target - position.stop) <= 0:
+                return RejectedPlanRecord(reason="INVALID_TAKE_PROFIT")
+
+        exposure = next((item for item in state.positions if item.round_id == round_id), None)
+        if exposure is not None:
+            entry = exposure.position.entry_price
+            if any(side * (target - entry) <= 0 for target in take_profit):
+                return RejectedPlanRecord(reason="INVALID_TAKE_PROFIT")
+
+        current_barriers = self._barriers.get(round_id)
+        current_targets = current_barriers.take_profit if current_barriers is not None else ()
+        if tuple(take_profit) == tuple(current_targets):
+            return BarrierReceipt(accepted=True, reason="NOOP")
+
+        widens = _tp_widens(position.direction, current_targets, take_profit)
+        if widens:
+            if state.trading_state != TradingState.ACTIVE:
+                return RejectedPlanRecord(reason="TRADING_STATE_BLOCKED")
+            if self._drawdown_transition is not None:
+                transition = self._drawdown_transition(state, self._valuation)
+                if transition is not None:
+                    return RejectedPlanRecord(reason="DRAWDOWN_LIMIT")
+
+        updated_barriers = (
+            current_barriers.model_copy(update={"stop": position.stop, "take_profit": take_profit})
+            if current_barriers is not None
+            else ExitBarrierSpec(stop=position.stop, take_profit=take_profit, max_holding_ms=86_400_000)
+        )
+        self._barriers[round_id] = updated_barriers
+        fill_rounds = getattr(self._fill, "_rounds", None)
+        if isinstance(fill_rounds, dict) and round_id in fill_rounds:
+            fill_rounds[round_id].barriers = updated_barriers
+
+        now = max(self._market_as_of, self._last_execution_ts, 0)
+        self._write_event(ExecutionEvent(
+            kind="BARRIER_AMENDED" if widens else "BARRIER_TIGHTENED",
+            sub_account_id=sub_account_id,
+            ts_event=now,
+            position=position,
+            take_profit=take_profit,
+            barriers=updated_barriers,
+            reason=reason or "MODIFY_TAKE_PROFIT",
+        ))
+        return BarrierReceipt(accepted=True)
+
+    def relax_trading_state(
+        self, sub_account_id: str, target: TradingState, reason: str,
+    ) -> BarrierReceipt | RejectedPlanRecord:
+        """按 ADR-0015 / ADR-0025 经风控检查后恢复交易状态（如 REDUCING/HALTED -> ACTIVE）。"""
+        with self._approval_lock(sub_account_id):
+            current = self._states[sub_account_id]
+            if current == target:
+                return BarrierReceipt(accepted=True, reason="NOOP")
+            if target not in (TradingState.ACTIVE, TradingState.REDUCING):
+                return RejectedPlanRecord(reason="INVALID_TRADING_STATE")
+            state = self._account_state(sub_account_id, for_approval=True)
+            if self._drawdown_transition is not None:
+                probe = AccountState(
+                    state.sub_account_id, state.balances, state.rounds, TradingState.ACTIVE,
+                    state.as_of, state.positions, state.reservations, state.barriers,
+                    state.marks, state.funding_rates,
+                )
+                transition = self._drawdown_transition(probe, self._valuation)
+                if transition is not None:
+                    required_state, _ = transition
+                    if required_state == TradingState.HALTED or (
+                        required_state == TradingState.REDUCING and target == TradingState.ACTIVE
+                    ):
+                        return RejectedPlanRecord(reason="DRAWDOWN_LIMIT")
+            self._states[sub_account_id] = target
+            if target == TradingState.ACTIVE:
+                self._state_reasons.pop(sub_account_id, None)
+                resume = getattr(self._fill, "resume_after_stop", None)
+                if callable(resume):
+                    resume(sub_account_id)
+            else:
+                self._state_reasons[sub_account_id] = reason
+                fill_states = getattr(self._fill, "_states", None)
+                if isinstance(fill_states, dict):
+                    fill_states[sub_account_id] = target
+            now = max(self._market_as_of, self._last_execution_ts, 0)
+            self._write_event(ExecutionEvent(
+                kind="TRADING_STATE_CHANGED",
+                sub_account_id=sub_account_id,
+                ts_event=now,
+                reason=f"{reason}:{target.value}",
+            ))
+            return BarrierReceipt(accepted=True)
 
     def intervene_position(
         self, round_id: str, action: Intervention, ratio: Decimal | None, reason: str,

@@ -9,6 +9,8 @@ export const PANEL_LABELS = {
   drawings: "画线",
   annotations: "标注",
   runs: "回测",
+  drafts: "草案",
+  account: "模拟盘",
 } as const;
 
 export type PanelName = keyof typeof PANEL_LABELS;
@@ -22,6 +24,8 @@ const ENGLISH_LABELS: Record<PanelName, string> = {
   drawings: "Drawings",
   annotations: "Annotations",
   runs: "Runs",
+  drafts: "Drafts",
+  account: "Paper",
 };
 
 export function panelLabel(panel: PanelName, locale: Locale = getLocale()): string {

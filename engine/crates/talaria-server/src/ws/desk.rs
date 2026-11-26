@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use talaria_contracts::alerts::AlertTriggerRecord;
-use talaria_contracts::collaboration::ScannerBriefing;
+use talaria_contracts::collaboration::{PaperAccountView, ScannerBriefing};
 use talaria_contracts::error_codes::{INSTRUMENT_NOT_FOUND, VALIDATION_ERROR};
 use crate::error::SUBSCRIPTION_QUOTA;
 use talaria_contracts::feed::FeedEvent;
@@ -253,6 +253,12 @@ impl DeskBroadcast {
     pub fn publish_briefing(&self, briefing: &ScannerBriefing) {
         if let Ok(data) = serde_json::to_string(briefing) {
             self.broadcast(&format!(r#"{{"type":"briefing","data":{data}}}"#));
+        }
+    }
+
+    pub fn broadcast_paper_account(&self, view: &PaperAccountView) {
+        if let Ok(data) = serde_json::to_string(view) {
+            self.broadcast(&format!(r#"{{"type":"paper_account","data":{data}}}"#));
         }
     }
 

@@ -30,6 +30,8 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 - [ADR-0022：常驻服务由 DSH 桌面应用启停](./adr/0022-dsh-desktop-app-owns-service-lifecycle.md)（已被 ADR-0023 取代）
 - [ADR-0023：链路 1 作为一等核心：Rust 纯数据引擎 `talaria-data` 与独立看盘工作台](./adr/0023-standalone-workbench-and-rust-data-engine.md)
 - [ADR-0024：`talaria-data` 对 `run_export` 回测导出投影的只读边界（`summary.json` 原子就绪标记）](./adr/0024-readonly-run-export-projection.md)
+- [ADR-0025：模拟盘账户只读投影、交易意图队列与工作台进程托管边界](./adr/0025-paper-account-projection-and-intent-queues.md)
+- [ADR-0026：图表下单临时手势与活跃屏障拖拽交互边界](./adr/0026-chart-order-gesture-and-barrier-drag.md)
 
 调研证据存档于 `docs/research/`（仅本地）；Phase 0 实证实验存档于 `docs/experiments/chain1-phase0-poc.md`（仅本地）。
 
@@ -69,7 +71,7 @@ flowchart TB
 
   subgraph Acct["Account Process 账户进程（Python 插件宿主）"]
     direction LR
-    Data["数据入口"] --> Strat["策略"] --> Size["定仓"] --> Risk["风控"] --> Fill["成交"] --> Ledger["Ledger 账本"]
+    Data["数据入口"] --> Strat["策略"] --> Size["定仓"] --> Risk["风控"] --> Fill["成交"] --> Ledger["Ledger 账本 + view.json 投影"]
   end
 
   NB["Notebook / 脚本（Python sdk/ + DuckDB）"]
@@ -84,8 +86,8 @@ flowchart TB
   NB -. "Arrow IPC /api/bars.arrow 补尾" .-> Api
   Data -->|"回测：直读 + 虚拟时钟"| Store
   Data -. "实时：WS /ws/strategy" .-> Api
-  Api -. "已确认草案提交" .-> Size
-  Api -. "只读" .-> Ledger
+  Api -. "已确认草案与干预命令队列" .-> Size
+  Api -. "只读 view.json 投影（不读账本）" .-> Ledger
   Orch --> Acct
 ```
 
@@ -96,7 +98,7 @@ flowchart TB
 | `Resident Service`（常驻服务，`talaria-data`） | 行情接入、`decimal128(18, s)` 冷库持续写入、`Evidence Snapshot`、指标与 `Key Level` 计算、`Alert` 与扫描、Arrow IPC / HTTP / 双语义 WS，发布 `runtime/service-descriptor.json` | 冷库、快照库、工作台状态库（`workbench_state.sqlite`）、运行时凭据 | **改造中**（从 Python `workbench_api` 迁入 Rust `engine/`） |
 | 独立看盘工作台（`Tauri v2` + `/desk`） | 一等日常入口（ADR-0023）。`Tauri v2` 管理原生多窗与 `talaria-data` sidecar 启停；`dockview-react` + `@luxalgo/vela` 承载多图联动、画线、`Alert`、扫描与 `Watchlist`；`BroadcastChannel` 跨窗同步标的、周期与十字光标 | 经 `Resident Service` 接口写入 | **改造中**（从 `dsh/packages/` 迁出至 `workbench/`） |
 | DSH 插件（`talaria-dsh-plugin`） | 可选外部 `Co-Pilot Analysis`（人机协同分析）客户端，按 `service-descriptor.json` 连接 `Resident Service` 处理会诊、扫描 `Briefing` 与受控 `AGENT_ANNOTATION` 写入；不再托管工作台主入口与常驻服务启停 | DSH 会话轨迹；标注与草案经服务接口写入 | **改造中**（降级为可选消费方；过渡期保留兼容测试） |
-| `Account Process`（账户进程） | 按 `Trading Scheme`（交易方案）装配 `Plugin Slot`（插槽），运行回测或模拟盘（`Shadow Run`） | 模拟盘：持锁 `Sub-Account` 的 `Ledger`；回放：`runs/<run_id>/` | 规划中 / 适配切流 |
+| `Account Process`（账户进程） | 按 `Trading Scheme`（交易方案）装配 `Plugin Slot`（插槽），运行回测或模拟盘（`Shadow Run`）；桌面形态由 Tauri 工作台托管启停（[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)） | 模拟盘：持锁 `Sub-Account` 的 `Ledger` 与原子投影 `view.json`；回放：`runs/<run_id>/` | 已实现（链路 2 回放与链路 3 模拟盘闭环） |
 | Notebook / 脚本 | 用 Python `sdk/` 直读冷库 + Arrow IPC 补尾 + 内嵌 DuckDB 做研究；直接运行自定义 `Component` | 不写 | 改造中（接入 Arrow IPC 补尾） |
 
 服务的生命周期在独立运行（`talaria-data up`）或开启“关闭窗口保留后台采集”配置时独立于工作台窗口；桌面日常默认随 `Tauri v2` 主窗 via `--exit-with-parent` 启停。服务未运行时，Python `sdk/` 只读本地已有冷库数据，回测不受影响。
@@ -383,7 +385,7 @@ class Strategy(Component, Protocol):
 | `HUMAN_DRAWING` | 交易员绘制；持久化于 `state/workbench_state.sqlite`（过渡期兼容 `collaboration_state.sqlite`） | 自由拖拽（前端乐观重绘、松手落库）、撤销重做、一键挂载 `OVERLAY_CROSS` 预警 |
 | `SYSTEM_LEVEL` | 经 WS 单向投影，不入画线表；来源为 `KeyLevelRegistry` 关键位注册表（§5.4） | 只读不可拖拽；按 `kind` / 强度过滤；一键采纳为 `HUMAN_DRAWING` 或挂载 `LEVEL_EVENT` 预警；采纳 / 忽略记为质量反馈 |
 | `AGENT_ANNOTATION` | agent 调用 `write_agent_overlay`，经硬门控后写入服务端状态库 | ① 校验 `snapshot_id` 与非空 `evidence_refs`（须引用 `level_id` 或具体 K 线时间戳）；② 价格锚点为正、合乎 `tick_size`，且落在 `[min_low - 3*ATR_14, max_high + 3*ATR_14]` 内；③ 单标的未采纳活跃条数 ≤12 |
-| `EXECUTION_BARRIER`（规划中） | 账户进程的草案与活跃回合经服务单向投影 | 拖动草案线触发定仓插件预试算；拖动活跃止损线按收紧/放宽方向路由到成交插槽或风控插槽 |
+| `EXECUTION_BARRIER` + `LAYER_STAGED_DRAFT` | 模拟盘活跃回合屏障经 `accounts/<sub_account_id>/view.json` 单向投影至 `EXECUTION_BARRIER`；未终结草案投影至只读 `LAYER_STAGED_DRAFT`；临时 `'position'` 仓位手势不入 `HUMAN_DRAWING`（[ADR-0026](./adr/0026-chart-order-gesture-and-barrier-drag.md)） | 拖动临时仓位手势触发 Rust 定仓预演（[ADR-0010](./adr/0010-pure-python-indicator-core.md)）；拖动活跃止损/止盈屏障松手弹窗确认后，按收紧/放宽方向生成 `PaperCommand` 路由至成交插槽或风控插槽（[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)、[ADR-0026](./adr/0026-chart-order-gesture-and-barrier-drag.md)） |
 
 **人机共用分析接口**：浏览器、桌面工作台与可选 DSH 插件共用同一套 `Resident Service` 接口，读到的数据、算法与 `cutoff_ts` 一致，`level_id` 共享。DSH 会诊侧仍可经 `talaria-dsh-plugin/bridge.js` 包装为只读/受控 agent 工具。
 
@@ -403,7 +405,7 @@ class Strategy(Component, Protocol):
 
 ## 6. 账户进程与交易方案
 
-**规划中**（ADR-0015）。原 L2–L5 分层的设计在这里作为第一批默认插件保留。
+**已实现模拟盘与回测基础闭环**（[ADR-0015](./adr/0015-account-process-as-plugin-host.md)、[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)）。原 L2–L5 分层的设计在这里作为第一批默认插件保留。
 
 ### 6.1 宿主、插槽与底线
 
@@ -442,9 +444,9 @@ slots:
 
 - 回测与模拟盘是同一个账户进程，只换数据入口。
 - **插槽交接**：策略输出意图（方向、入场、止损、目标），不决定数量；定仓插件输出 `SizingDecision`（数量与计算依据）；风控插件只批准或拒绝这个数量，不重算、不改大。保证金与强平估值是定仓、风控、成交共用的只读契约 `MarginValuation`，由市场包实现（现有 `MarginTrait` 只有保证金币种与杠杆上限，需补）。
-- **草案提交**：图表人工下单和 agent 会诊产出的 `Staged Plan Draft` 保存在服务，可反复编辑。交易员确认后，服务把不可变的已确认版本（草案 ID、版本号、内容哈希、确认人与时刻）提交给对应账户进程；宿主按 `(草案 ID, 版本号)` 幂等接收，重新冻结快照，入场价带已被越过或已触及止损时返回 `DRAFT_STALE`，否则送定仓与风控。草案不经策略插槽，未确认的草案没有进入账户进程的通道。草案生成至确认的时长记为 `deliberation_ms`，不计入 `Decision Latency`。
+- **草案提交与干预命令（[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)）**：图表人工下单和 agent 会诊产出的 `Staged Plan Draft` 保存在常驻服务，可反复编辑或丢弃（`DISCARDED` / `EXPIRED`）。交易员确认后，服务把不可变的已确认版本（草案 ID、版本号、内容哈希、确认人与时刻）放入出站队列供对应账户进程按心跳领取；宿主按 `(草案 ID, 版本号)` 幂等接收，重新冻结快照，入场价带已被越过或已触及止损时返回 `DRAFT_STALE`，否则送定仓与风控。草案不经策略插槽，未确认的草案没有进入账户进程的通道；草案生成至确认的时长记为 `deliberation_ms`，不计入 `Decision Latency`。人工干预命令（`PaperCommand`）同样经服务出站队列投递而不走草案确认，由账户进程按底线 2 分流、按 `command_id` 幂等并按 `based_on_ledger_seq` 判过期。
 - **agent 写的代码**：agent 默认产出交易计划或 JSON 规则，都经过风控插槽。agent 写的 Python 策略可以自由回测；进模拟盘前需要人工批准与代码内容哈希绑定的版本，代码改动即失效；运行在资源受限、无网络、读不到数据目录的子进程中，只能经宿主传入的已截断数据取数。宿主在模拟盘启动时检查批准。
-- 服务只读账本用于展示。
+- **账户投影与进程托管（[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)）**：账户进程每次账本事务提交后原子写出只读投影 `accounts/<sub_account_id>/view.json`（含心跳）；常驻服务只读投影并经 `/ws/desk` 转发，绝不打开 `ledger.sqlite` 也不试探 `owner.lock`。桌面工作台（Tauri v2）托管模拟盘账户进程的启停，常驻服务不拉起账户进程。
 
 ### 6.2 默认策略插件
 
@@ -466,7 +468,7 @@ slots:
    - 加仓以 `AddOnCandidate` 提交并携带 `round_id`，沿用回合屏障；按当前回合止损计算加仓后总风险，不得突破 `max_single_r_pct`。需要不同止损时先改屏障再加仓。
    - **串行审批与风险预留**：账户进程内每个子账户一条串行审批队列，`evaluate_candidate → submit_plan → 登记预留` 在同一临界区完成；预留记录已放行但账本尚未可见的 `R`、保证金与回合，入账或撤销后释放。
 2. **接口**：
-   - 定仓插件：`size(candidate, account_state, valuation) -> SizingDecision`；`preview_sizing(draft, account_state, valuation) -> SizingPreview`（无副作用，支撑前端拖动止损线 `< 5ms` 回显仓位与强平距离）
+   - 定仓插件：`size(candidate, account_state, valuation) -> SizingDecision`；`preview_sizing(draft, account_state, valuation) -> SizingPreview`（无副作用，支撑前端拖动止损线 `< 5ms` 回显仓位与强平距离；Rust 侧实时预演须逐字符通过 Python 黄金向量，见 [ADR-0010](./adr/0010-pure-python-indicator-core.md) 与 [ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)）
    - 风控插件：`evaluate_candidate(candidate, sizing, account_state, valuation) -> ApprovedExecutionPlan | RejectedPlanRecord`
    - 风控插件：`approve_barrier_widening(req, account_state, valuation) -> ApprovedBarrierAmendment | RejectedPlanRecord`
 3. **七步风控**：
@@ -553,7 +555,7 @@ flowchart LR
   WB -->|"sidecar 启停与 --exit-with-parent 监管"| Svc
   WB <-->|"127.0.0.1 Arrow IPC / HTTP / WS /ws/desk"| Svc
   DSH <-. "service-descriptor.json：只读快照 / 简报 / 受控标注" .-> Svc
-  Acct <-->|"WS /ws/strategy、草案、账本只读"| Svc
+  Acct <-->|"WS /ws/strategy、草案/命令队列、view.json 只读投影"| Svc
   NB -. "Arrow IPC /api/bars.arrow 补尾" .-> Svc
   Acct -. "deepseek-harness-sdk" .-> DSHAuto
 ```
@@ -561,7 +563,7 @@ flowchart LR
 - **日常运行（链路 1 一等入口）**。打开独立 `Tauri v2` 桌面工作台时，原生薄壳自动检测 `<data-dir>/runtime/service-descriptor.json` 或以 sidecar 拉起并监管单个 Rust `talaria-data --exit-with-parent`（支持设置关闭窗口后停服或后台常驻）；无桌面壳时也可通过 `talaria-data up` 独立运行，并打开服务同源托管的 `/desk` 浏览器路由。**回放与测试**：`talaria-data replay --pack crypto_perp --data-dir <临时目录> --fixture-dir <fixture> --replay-events <path>`（过渡期同时保留 `talaria up --solo`）；回放模式禁止使用日常数据目录。
 - **本机鉴权与服务发现**。`Resident Service` 仅绑定 `127.0.0.1` 回环地址，就绪时以 `0600` 权限发布 `<data-dir>/runtime/service-descriptor.json`（含 `base_url`、`pid` 与随机 Bearer Token，退出时清理）。工作台与可选 DSH 插件均按此文件发现并鉴权连接；过渡期内兼容 `<data-dir>/runtime/dsh-bridge.json`。
 - **可选 DSH 协同（降级消费方）**。`talaria-dsh-plugin` 不再作为看盘工作台主宿主，也不负责启停 `Resident Service`；交易员在需要 `Co-Pilot Analysis`、扫描 `Briefing` 或 `AGENT_ANNOTATION` 时由 DSH 连接已运行的 `talaria-data`。
-- **其他进程**。`talaria account run <scheme.yaml> [--mode backtest|paper]`（规划中）启动 `Account Process`。`paper` 模式必须取得对应 `Sub-Account` 排他锁。`talaria replay` 和 `talaria optimize --workers N`（规划中）批量启动账户进程。
+- **其他进程**。`talaria account run <scheme.yaml> [--mode backtest|paper]` 启动 `Account Process`（桌面形态由 Tauri 工作台托管启停，浏览器 `/desk` 展示状态与启动命令，[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)）。`paper` 模式必须取得对应 `Sub-Account` 排他锁。`talaria replay` 和 `talaria optimize --workers N`（规划中）批量启动账户进程。
 - 零 Docker / 零 Redis / 零 Kafka。
 
 ### 8.2 按写者拆分的本地存储
@@ -573,8 +575,8 @@ flowchart LR
 | `data/raw/<archive_id>/`、`data/raw_archive/<sha256>.jsonl` | `Resident Service`（`talaria-store`） | 历史回填原始 K 线与冷库批次原始归档 | 改造中（Rust 接管写入） |
 | `data/cold/<venue>/<symbol>/...`（布局见 §4.2）+ `data/data_manifest.sqlite` | `Resident Service`（`talaria-store`） | K 线、逐笔、买一卖一、衍生品分区文件与尾部文件；清单（`decimal128(18, s)` 物理 `INT64`） | 改造中（POC 2 已验证零误差互操作） |
 | `state/runtime_snapshots.sqlite` + `state/hot_snapshots/*.parquet` | `Resident Service` | 证据快照索引与物化数据 | 改造中 |
-| `state/workbench_state.sqlite`（兼容迁自 `state/collaboration_state.sqlite`） | `Resident Service`（专用写通道，ADR-0012） | `Watchlist`、`Chart Overlay` 版本链、`Key Level` 反馈、`Alert` 与触发记录、协同标注/会诊/简报（兼容保留） | 改造中 |
-| `accounts/<sub_account_id>/ledger.sqlite` | 持有该子账户锁的 `Account Process`（模拟盘） | 子账户复式账本、持仓批次、`Trade Journal` | 规划中 |
+| `state/workbench_state.sqlite`（兼容迁自 `state/collaboration_state.sqlite`） | `Resident Service`（专用写通道，ADR-0012） | `Watchlist`、`Chart Overlay` 版本链、`Key Level` 反馈、`Alert` 与触发记录、协同标注/会诊/简报（兼容保留）、模拟盘草案与干预命令队列（[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)） | 改造中 |
+| `accounts/<sub_account_id>/ledger.sqlite`、`accounts/<sub_account_id>/view.json` | 持有该子账户锁的 `Account Process`（模拟盘） | 子账户复式账本、持仓批次、`Trade Journal` 与原子只读状态投影/心跳 `view.json`（服务只读 `view.json`，不打开账本，[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)） | 已实现（链路 3 模拟盘与原子投影） |
 | `runs/<run_id>/`（`ledger.sqlite`、`run_state.sqlite`、`rounds.parquet`、`equity.parquet`、`summary.json`） | 该次回放的 `Account Process` | 回放的账本、规则状态、草案与只读导出投影（`summary.json` 为原子就绪标记，ADR-0024）；回放不写工作台状态库 | 改造中 |
 | `studies/study_registry.sqlite` + `studies/<id>/journal.log` | `study_optimizer` 主进程；每个试验是一次回放，写自己的 `runs/<run_id>/`，Worker 只追加 `journal.log` | 三段切分封存、`n_trials`、晋升审计 | 以后 |
 

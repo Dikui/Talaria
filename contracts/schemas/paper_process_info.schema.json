@@ -1,0 +1,63 @@
+{
+  "$defs": {
+    "PaperProcessState": {
+      "description": "模拟盘账户进程存活状态。",
+      "enum": [
+        "RUNNING",
+        "STOPPED",
+        "OFFLINE"
+      ],
+      "title": "PaperProcessState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "模拟盘账户进程元数据与心跳信号。",
+  "properties": {
+    "heartbeat_ts": {
+      "minimum": 0,
+      "title": "Heartbeat Ts",
+      "type": "integer"
+    },
+    "pid": {
+      "minimum": 1,
+      "title": "Pid",
+      "type": "integer"
+    },
+    "scheme": {
+      "minLength": 1,
+      "title": "Scheme",
+      "type": "string"
+    },
+    "started_ts": {
+      "minimum": 0,
+      "title": "Started Ts",
+      "type": "integer"
+    },
+    "status": {
+      "$ref": "#/$defs/PaperProcessState",
+      "default": "RUNNING"
+    },
+    "stopped_ts": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stopped Ts"
+    }
+  },
+  "required": [
+    "pid",
+    "scheme",
+    "started_ts",
+    "heartbeat_ts"
+  ],
+  "title": "PaperProcessInfo",
+  "type": "object"
+}

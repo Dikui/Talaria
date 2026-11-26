@@ -1487,6 +1487,15 @@ fn all_115_json_schemas_roundtrip_without_drift() {
         &mut covered,
     );
     assert_schema_roundtrip(
+        "draft_discard_request",
+        &DraftDiscardRequest {
+            version: 2,
+            discarded_by: Some("trader".to_owned()),
+            reason: Some("setup invalidated".to_owned()),
+        },
+        &mut covered,
+    );
+    assert_schema_roundtrip(
         "draft_delivery_request",
         &DraftDeliveryRequest {
             instrument_id: "BTC-USDT-PERP".to_owned(),
@@ -1500,6 +1509,7 @@ fn all_115_json_schemas_roundtrip_without_drift() {
         plan_id: Some("pln_1".to_owned()),
         reason: None,
         snapshot_id: Some("snap_1".to_owned()),
+        quantity: Some(Decimal::from_str("0.1").unwrap()),
     };
     assert_schema_roundtrip("draft_receipt", &receipt, &mut covered);
     assert_schema_roundtrip(
@@ -1534,6 +1544,13 @@ fn all_115_json_schemas_roundtrip_without_drift() {
                 distance_pct: Decimal::from_str("0.005").unwrap(),
             }),
         }),
+        entry_low: Some(Decimal::from_str("64500").unwrap()),
+        entry_high: Some(Decimal::from_str("64600").unwrap()),
+        entry_price: Some(Decimal::from_str("64550").unwrap()),
+        mark_price: Some(Decimal::from_str("65000").unwrap()),
+        unrealized_pnl: Some(Decimal::from_str("45").unwrap()),
+        opened_ts: Some(1_700_000_060_000),
+        closed_ts: None,
     };
     assert_schema_roundtrip("paper_round", &round, &mut covered);
     let fill = PaperFill {
@@ -1544,8 +1561,47 @@ fn all_115_json_schemas_roundtrip_without_drift() {
         ts_event: 1_700_000_060_000,
         quantity: Decimal::from_str("0.1").unwrap(),
         price: Decimal::from_str("64550").unwrap(),
+        fee: Some(Decimal::from_str("3.873").unwrap()),
+        realized_pnl: Some(Decimal::ZERO),
+        reason: Some("LIMIT_FILL".to_owned()),
     };
     assert_schema_roundtrip("paper_fill", &fill, &mut covered);
+    let account_state = PaperAccountState {
+        currency: "USDT".to_owned(),
+        equity: Decimal::from_str("10041.127").unwrap(),
+        cash_available: Decimal::from_str("8750.127").unwrap(),
+        margin_used: Decimal::from_str("1291").unwrap(),
+        trading_state: TradingState::Active,
+        trading_state_reason: None,
+        intraday_drawdown_pct: Decimal::from_str("0.005").unwrap(),
+        peak_drawdown_pct: Decimal::from_str("0.01").unwrap(),
+        open_r: Decimal::from_str("0.5").unwrap(),
+        risk_reserved: Decimal::from_str("50").unwrap(),
+        margin_mode: Some(MarginMode::Isolated),
+        leverage: Some(Decimal::from_str("5").unwrap()),
+        r_unit_pct: Some(Decimal::from_str("0.005").unwrap()),
+        max_single_r_pct: Some(Decimal::from_str("0.01").unwrap()),
+        friction_buffer_pct: Some(Decimal::from_str("0.002").unwrap()),
+        liquidation_buffer_pct: Some(Decimal::ZERO),
+        liquidation_buffer_ticks: Some(1),
+    };
+    assert_schema_roundtrip("paper_account_state", &account_state, &mut covered);
+    let feed_status = PaperFeedStatus {
+        healthy: true,
+        reduce_reason: None,
+        service_warning: None,
+        updated_ts: Some(1_700_000_061_000),
+    };
+    assert_schema_roundtrip("paper_feed_status", &feed_status, &mut covered);
+    let process_info = PaperProcessInfo {
+        pid: 4242,
+        scheme: "btc-breakout-paper".to_owned(),
+        started_ts: 1_700_000_000_000,
+        heartbeat_ts: 1_700_000_061_000,
+        status: PaperProcessState::Running,
+        stopped_ts: None,
+    };
+    assert_schema_roundtrip("paper_process_info", &process_info, &mut covered);
     assert_schema_roundtrip(
         "paper_account_view",
         &PaperAccountView {
@@ -1553,6 +1609,80 @@ fn all_115_json_schemas_roundtrip_without_drift() {
             positions: vec![round.clone()],
             rounds: vec![round],
             fills: vec![fill],
+            ledger_seq: 42,
+            account_state: Some(account_state),
+            feed_status: Some(feed_status),
+            process: Some(process_info),
+        },
+        &mut covered,
+    );
+
+    let cmd_payload = PaperCommandPayload {
+        stop: Some(Decimal::from_str("64200").unwrap()),
+        take_profit: Some(vec![Decimal::from_str("66500").unwrap()]),
+        ratio: None,
+        trading_state: None,
+        reason: Some("lock profit".to_owned()),
+    };
+    assert_schema_roundtrip("paper_command_payload", &cmd_payload, &mut covered);
+    let paper_cmd = PaperCommand {
+        command_id: "cmd_1".to_owned(),
+        sub_account_id: "sa-breakout".to_owned(),
+        round_id: Some("rnd_1".to_owned()),
+        kind: PaperCommandKind::TightenStop,
+        payload: cmd_payload,
+        based_on_ledger_seq: 42,
+        issued_by: "trader".to_owned(),
+        issued_ts: 1_700_000_062_000,
+    };
+    assert_schema_roundtrip("paper_command", &paper_cmd, &mut covered);
+    let cmd_receipt = PaperCommandReceipt {
+        command_id: "cmd_1".to_owned(),
+        sub_account_id: Some("sa-breakout".to_owned()),
+        accepted: true,
+        reason: None,
+        ledger_seq: Some(43),
+        processed_ts: Some(1_700_000_063_000),
+    };
+    assert_schema_roundtrip("paper_command_receipt", &cmd_receipt, &mut covered);
+    assert_schema_roundtrip(
+        "paper_command_record",
+        &PaperCommandRecord {
+            command: paper_cmd,
+            claimed: true,
+            receipt: Some(cmd_receipt),
+        },
+        &mut covered,
+    );
+
+    assert_schema_roundtrip(
+        "sizing_preview_request",
+        &SizingPreviewRequest {
+            sub_account_id: "sa-breakout".to_owned(),
+            instrument_id: "BTC-USDT-PERP".to_owned(),
+            direction: Direction::Long,
+            entry_low: Decimal::from_str("64500").unwrap(),
+            entry_high: Decimal::from_str("64600").unwrap(),
+            invalidation_stop: Decimal::from_str("64000").unwrap(),
+            take_profit: vec![Decimal::from_str("66000").unwrap()],
+            round_id: None,
+            override_quantity: Some(Decimal::from_str("0.1").unwrap()),
+        },
+        &mut covered,
+    );
+    assert_schema_roundtrip(
+        "sizing_preview_response",
+        &SizingPreviewResponse {
+            quantity: Some(Decimal::from_str("0.068").unwrap()),
+            basis: Some("risk_budget=50, worst_entry=64600, stop=64000".to_owned()),
+            risk_amount_r: Some(Decimal::from_str("49.5856").unwrap()),
+            risk_pct_of_equity: Some(Decimal::from_str("0.00495856").unwrap()),
+            est_liq_price: Some(Decimal::from_str("51900").unwrap()),
+            est_liq_distance: Some(Decimal::from_str("12100").unwrap()),
+            est_liq_distance_pct: Some(Decimal::from_str("0.1873").unwrap()),
+            rejected_reason: None,
+            from_offline_snapshot: false,
+            based_on_ledger_seq: Some(42),
         },
         &mut covered,
     );
@@ -1727,5 +1857,66 @@ fn all_115_json_schemas_roundtrip_without_drift() {
     assert!(
         missing.is_empty(),
         "uncovered schema files in contracts/schemas/: {missing:?}"
+    );
+}
+
+#[test]
+fn legacy_paper_account_view_deserializes_with_defaulted_fields() {
+    let legacy = json!({
+        "sub_account_id": "sa-one",
+        "positions": [
+            {
+                "round_id": "rnd_1",
+                "sub_account_id": "sa-one",
+                "instrument_id": "BTC-USDT-PERP",
+                "direction": "LONG",
+                "quantity": "0.1",
+                "stop": "64000",
+                "take_profit": ["66000"],
+                "phase": "ACTIVE_PROTECTED"
+            }
+        ],
+        "rounds": [
+            {
+                "round_id": "rnd_1",
+                "sub_account_id": "sa-one",
+                "instrument_id": "BTC-USDT-PERP",
+                "direction": "LONG",
+                "quantity": "0.1",
+                "stop": "64000"
+            }
+        ],
+        "fills": [
+            {
+                "event_id": "evt_1",
+                "round_id": "rnd_1",
+                "instrument_id": "BTC-USDT-PERP",
+                "kind": "ENTRY_FILLED",
+                "ts_event": 1700000060000_i64,
+                "quantity": "0.1",
+                "price": "64550"
+            }
+        ]
+    });
+
+    let view: PaperAccountView = serde_json::from_value(legacy.clone())
+        .expect("legacy PaperAccountView JSON must parse cleanly");
+    assert_eq!(view.sub_account_id, "sa-one");
+    assert_eq!(view.ledger_seq, 0);
+    assert!(view.account_state.is_none());
+    assert!(view.feed_status.is_none());
+    assert!(view.process.is_none());
+    assert_eq!(view.positions.len(), 1);
+    assert!(view.positions[0].entry_low.is_none());
+    assert!(view.positions[0].mark_price.is_none());
+    assert!(view.positions[0].unrealized_pnl.is_none());
+
+    let schema_text = fs::read_to_string(schemas_dir().join("paper_account_view.schema.json"))
+        .expect("read paper_account_view schema");
+    let schema: Value = serde_json::from_str(&schema_text).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(
+        validator.validate(&legacy).is_ok(),
+        "legacy PaperAccountView JSON must satisfy new JSON schema"
     );
 }

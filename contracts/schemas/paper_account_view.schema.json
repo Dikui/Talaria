@@ -49,6 +49,228 @@
       "title": "ExitBarrierSpec",
       "type": "object"
     },
+    "MarginMode": {
+      "description": "子账户保证金模式。",
+      "enum": [
+        "ISOLATED",
+        "CROSS"
+      ],
+      "title": "MarginMode",
+      "type": "string"
+    },
+    "PaperAccountState": {
+      "additionalProperties": false,
+      "description": "子账户资金、风控状态与定仓配置快照。",
+      "properties": {
+        "cash_available": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Cash Available",
+          "type": "string"
+        },
+        "currency": {
+          "default": "USDT",
+          "minLength": 1,
+          "title": "Currency",
+          "type": "string"
+        },
+        "equity": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Equity",
+          "type": "string"
+        },
+        "friction_buffer_pct": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Friction Buffer Pct"
+        },
+        "intraday_drawdown_pct": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Intraday Drawdown Pct",
+          "type": "string"
+        },
+        "leverage": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Leverage"
+        },
+        "liquidation_buffer_pct": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Liquidation Buffer Pct"
+        },
+        "liquidation_buffer_ticks": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Liquidation Buffer Ticks"
+        },
+        "margin_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MarginMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "margin_used": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Margin Used",
+          "type": "string"
+        },
+        "max_single_r_pct": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Single R Pct"
+        },
+        "open_r": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Open R",
+          "type": "string"
+        },
+        "peak_drawdown_pct": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Peak Drawdown Pct",
+          "type": "string"
+        },
+        "r_unit_pct": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "R Unit Pct"
+        },
+        "risk_reserved": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Risk Reserved",
+          "type": "string"
+        },
+        "trading_state": {
+          "$ref": "#/$defs/TradingState"
+        },
+        "trading_state_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trading State Reason"
+        }
+      },
+      "required": [
+        "equity",
+        "cash_available",
+        "margin_used",
+        "trading_state",
+        "intraday_drawdown_pct",
+        "peak_drawdown_pct",
+        "open_r",
+        "risk_reserved"
+      ],
+      "title": "PaperAccountState",
+      "type": "object"
+    },
+    "PaperFeedStatus": {
+      "additionalProperties": false,
+      "description": "模拟盘账户进程的行情订阅与服务连通降级状态。",
+      "properties": {
+        "healthy": {
+          "default": true,
+          "title": "Healthy",
+          "type": "boolean"
+        },
+        "reduce_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reduce Reason"
+        },
+        "service_warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service Warning"
+        },
+        "updated_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated Ts"
+        }
+      },
+      "title": "PaperFeedStatus",
+      "type": "object"
+    },
     "PaperFill": {
       "additionalProperties": false,
       "properties": {
@@ -56,17 +278,25 @@
           "title": "Event Id",
           "type": "string"
         },
+        "fee": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fee"
+        },
         "instrument_id": {
           "title": "Instrument Id",
           "type": "string"
         },
         "kind": {
-          "enum": [
-            "ENTRY_FILLED",
-            "EXIT_FILLED"
-          ],
-          "title": "Kind",
-          "type": "string"
+          "$ref": "#/$defs/PaperFillKind"
         },
         "price": {
           "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
@@ -77,6 +307,31 @@
           "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
           "title": "Quantity",
           "type": "string"
+        },
+        "realized_pnl": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Realized Pnl"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
         },
         "round_id": {
           "title": "Round Id",
@@ -99,6 +354,76 @@
       "title": "PaperFill",
       "type": "object"
     },
+    "PaperFillKind": {
+      "description": "模拟盘成交事件类型。",
+      "enum": [
+        "ENTRY_FILLED",
+        "EXIT_FILLED"
+      ],
+      "title": "PaperFillKind",
+      "type": "string"
+    },
+    "PaperProcessInfo": {
+      "additionalProperties": false,
+      "description": "模拟盘账户进程元数据与心跳信号。",
+      "properties": {
+        "heartbeat_ts": {
+          "minimum": 0,
+          "title": "Heartbeat Ts",
+          "type": "integer"
+        },
+        "pid": {
+          "minimum": 1,
+          "title": "Pid",
+          "type": "integer"
+        },
+        "scheme": {
+          "minLength": 1,
+          "title": "Scheme",
+          "type": "string"
+        },
+        "started_ts": {
+          "minimum": 0,
+          "title": "Started Ts",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/PaperProcessState",
+          "default": "RUNNING"
+        },
+        "stopped_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stopped Ts"
+        }
+      },
+      "required": [
+        "pid",
+        "scheme",
+        "started_ts",
+        "heartbeat_ts"
+      ],
+      "title": "PaperProcessInfo",
+      "type": "object"
+    },
+    "PaperProcessState": {
+      "description": "模拟盘账户进程存活状态。",
+      "enum": [
+        "RUNNING",
+        "STOPPED",
+        "OFFLINE"
+      ],
+      "title": "PaperProcessState",
+      "type": "string"
+    },
     "PaperRound": {
       "additionalProperties": false,
       "properties": {
@@ -113,12 +438,90 @@
           ],
           "default": null
         },
+        "closed_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Closed Ts"
+        },
         "direction": {
           "$ref": "#/$defs/Direction"
+        },
+        "entry_high": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry High"
+        },
+        "entry_low": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry Low"
+        },
+        "entry_price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry Price"
         },
         "instrument_id": {
           "title": "Instrument Id",
           "type": "string"
+        },
+        "mark_price": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mark Price"
+        },
+        "opened_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Opened Ts"
         },
         "phase": {
           "anyOf": [
@@ -159,6 +562,19 @@
           },
           "title": "Take Profit",
           "type": "array"
+        },
+        "unrealized_pnl": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unrealized Pnl"
         }
       },
       "required": [
@@ -171,6 +587,16 @@
       ],
       "title": "PaperRound",
       "type": "object"
+    },
+    "TradingState": {
+      "description": "子账户或全局系统交易状态。",
+      "enum": [
+        "ACTIVE",
+        "REDUCING",
+        "HALTED"
+      ],
+      "title": "TradingState",
+      "type": "string"
     },
     "TrailingStopSpec": {
       "additionalProperties": false,
@@ -196,6 +622,28 @@
   },
   "additionalProperties": false,
   "properties": {
+    "account_state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PaperAccountState"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "feed_status": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PaperFeedStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "fills": {
       "items": {
         "$ref": "#/$defs/PaperFill"
@@ -203,12 +651,29 @@
       "title": "Fills",
       "type": "array"
     },
+    "ledger_seq": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Ledger Seq",
+      "type": "integer"
+    },
     "positions": {
       "items": {
         "$ref": "#/$defs/PaperRound"
       },
       "title": "Positions",
       "type": "array"
+    },
+    "process": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PaperProcessInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "rounds": {
       "items": {

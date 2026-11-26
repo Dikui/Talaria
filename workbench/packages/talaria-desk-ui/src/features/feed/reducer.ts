@@ -118,6 +118,8 @@ function applyMessage(state: FeedState, message: DeskMessage): FeedState {
       return { ...state, alert: message.data };
     case "scanner":
       return { ...state, scanner: message.data };
+    case "paper_account":
+      return state;
     case "health":
       return applyHealth(state, message.data);
     case "error":

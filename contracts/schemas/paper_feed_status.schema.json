@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "description": "模拟盘账户进程的行情订阅与服务连通降级状态。",
+  "properties": {
+    "healthy": {
+      "default": true,
+      "title": "Healthy",
+      "type": "boolean"
+    },
+    "reduce_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reduce Reason"
+    },
+    "service_warning": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Service Warning"
+    },
+    "updated_ts": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated Ts"
+    }
+  },
+  "title": "PaperFeedStatus",
+  "type": "object"
+}

@@ -76,6 +76,18 @@ export type RunBarrierChangeKind = "BARRIER_TIGHTENED" | "BARRIER_AMENDED";
 
 export type RunRoundPhase = "PENDING_ENTRY" | "PARTIALLY_FILLED_PROTECTED" | "ACTIVE_PROTECTED" | "EXITING" | "CLOSED" | "CANCELLED" | "LIQUIDATED";
 
+export type DraftStatus = "STAGED" | "MODIFIED" | "CONFIRMED" | "DISCARDED" | "EXPIRED";
+
+export type TradingState = "ACTIVE" | "REDUCING" | "HALTED";
+
+export type MarginMode = "ISOLATED" | "CROSS";
+
+export type PaperProcessState = "RUNNING" | "STOPPED" | "OFFLINE";
+
+export type PaperFillKind = "ENTRY_FILLED" | "EXIT_FILLED";
+
+export type PaperCommandKind = "TIGHTEN_STOP" | "MOVE_TO_BREAKEVEN" | "WIDEN_STOP" | "MODIFY_TAKE_PROFIT" | "CANCEL_ENTRY" | "CLOSE_ALL" | "REDUCE_RATIO" | "SET_TRADING_STATE";
+
 export interface TemporalStamp {
   ts_event: number;
   ts_published?: number | null;
@@ -135,6 +147,11 @@ export interface DraftConfirmation {
   content_hash: string;
   confirmed_by: string;
 }
+export interface DraftDiscardRequest {
+  version: number;
+  discarded_by?: string | null;
+  reason?: string | null;
+}
 export interface DraftDeliveryRequest {
   instrument_id: string;
 }
@@ -145,30 +162,71 @@ export interface DraftReceipt {
   plan_id?: string | null;
   reason?: string | null;
   snapshot_id?: string | null;
+  quantity?: DecimalString | null;
 }
 export interface DraftRecord {
   draft_id: string;
   version: number;
   content_hash: string;
   content: DraftContent;
-  status: "STAGED" | "MODIFIED" | "CONFIRMED";
+  status: DraftStatus;
   claimed: boolean;
   receipt?: DraftReceipt | null;
+}
+export interface PaperAccountState {
+  currency?: string;
+  equity: DecimalString;
+  cash_available: DecimalString;
+  margin_used: DecimalString;
+  trading_state: TradingState;
+  trading_state_reason?: string | null;
+  intraday_drawdown_pct: DecimalString;
+  peak_drawdown_pct: DecimalString;
+  open_r: DecimalString;
+  risk_reserved: DecimalString;
+  margin_mode?: MarginMode | null;
+  leverage?: DecimalString | null;
+  r_unit_pct?: DecimalString | null;
+  max_single_r_pct?: DecimalString | null;
+  friction_buffer_pct?: DecimalString | null;
+  liquidation_buffer_pct?: DecimalString | null;
+  liquidation_buffer_ticks?: number | null;
+}
+export interface PaperFeedStatus {
+  healthy?: boolean;
+  reduce_reason?: string | null;
+  service_warning?: string | null;
+  updated_ts?: number | null;
+}
+export interface PaperProcessInfo {
+  pid: number;
+  scheme: string;
+  started_ts: number;
+  heartbeat_ts: number;
+  status?: PaperProcessState;
+  stopped_ts?: number | null;
 }
 export interface PaperAccountView {
   sub_account_id: string;
   positions: PaperRound[];
   rounds: PaperRound[];
   fills: PaperFill[];
+  ledger_seq?: number;
+  account_state?: PaperAccountState | null;
+  feed_status?: PaperFeedStatus | null;
+  process?: PaperProcessInfo | null;
 }
 export interface PaperFill {
   event_id: string;
   round_id: string;
   instrument_id: string;
-  kind: "ENTRY_FILLED" | "EXIT_FILLED";
+  kind: PaperFillKind;
   ts_event: number;
   quantity: DecimalString;
   price: DecimalString;
+  fee?: DecimalString | null;
+  realized_pnl?: DecimalString | null;
+  reason?: string | null;
 }
 export interface PaperRound {
   round_id: string;
@@ -180,6 +238,66 @@ export interface PaperRound {
   take_profit?: DecimalString[];
   phase?: string | null;
   barriers?: ExitBarrierSpec | null;
+  entry_low?: DecimalString | null;
+  entry_high?: DecimalString | null;
+  entry_price?: DecimalString | null;
+  mark_price?: DecimalString | null;
+  unrealized_pnl?: DecimalString | null;
+  opened_ts?: number | null;
+  closed_ts?: number | null;
+}
+export interface PaperCommandPayload {
+  stop?: DecimalString | null;
+  take_profit?: DecimalString[] | null;
+  ratio?: DecimalString | null;
+  trading_state?: TradingState | null;
+  reason?: string | null;
+}
+export interface PaperCommand {
+  command_id: string;
+  sub_account_id: string;
+  round_id?: string | null;
+  kind: PaperCommandKind;
+  payload?: PaperCommandPayload;
+  based_on_ledger_seq: number;
+  issued_by: string;
+  issued_ts: number;
+}
+export interface PaperCommandReceipt {
+  command_id: string;
+  sub_account_id?: string | null;
+  accepted: boolean;
+  reason?: string | null;
+  ledger_seq?: number | null;
+  processed_ts?: number | null;
+}
+export interface PaperCommandRecord {
+  command: PaperCommand;
+  claimed?: boolean;
+  receipt?: PaperCommandReceipt | null;
+}
+export interface SizingPreviewRequest {
+  sub_account_id: string;
+  instrument_id: string;
+  direction: "LONG" | "SHORT";
+  entry_low: DecimalString;
+  entry_high: DecimalString;
+  invalidation_stop: DecimalString;
+  take_profit?: DecimalString[];
+  round_id?: string | null;
+  override_quantity?: DecimalString | null;
+}
+export interface SizingPreviewResponse {
+  quantity?: DecimalString | null;
+  basis?: string | null;
+  risk_amount_r?: DecimalString | null;
+  risk_pct_of_equity?: DecimalString | null;
+  est_liq_price?: DecimalString | null;
+  est_liq_distance?: DecimalString | null;
+  est_liq_distance_pct?: DecimalString | null;
+  rejected_reason?: string | null;
+  from_offline_snapshot?: boolean;
+  based_on_ledger_seq?: number | null;
 }
 export interface CompactBar {
   timestamp: number;

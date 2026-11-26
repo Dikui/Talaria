@@ -4,6 +4,7 @@ pub mod alerts;
 pub mod cold_writer;
 pub mod error;
 pub mod key_levels;
+pub mod paper_watcher;
 pub mod routes;
 pub mod rules;
 pub mod scanner;

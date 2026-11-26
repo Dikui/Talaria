@@ -23,6 +23,7 @@ import type {
   DerivativeBundle,
   DraftConfirmation,
   DraftContent,
+  DraftDiscardRequest,
   DraftEdit,
   DraftRecord,
   DrawingClearResponse,
@@ -45,6 +46,8 @@ import type {
   KeyLevelSet,
   OperatorRequest,
   PaperAccountView,
+  PaperCommand,
+  PaperCommandRecord,
   PaperRound,
   RulePreviewRequest,
   RulePreviewResponse,
@@ -56,6 +59,8 @@ import type {
   ScannerFocusResponse,
   ScannerScanResponse,
   ScannerTriggerListResponse,
+  SizingPreviewRequest,
+  SizingPreviewResponse,
   SnapshotMeta,
   TickKind,
   TicksJsonResponse,
@@ -317,6 +322,18 @@ export const api = {
     writeJson<DraftRecord>(`/api/paper/drafts/${encodeURIComponent(id)}`, "PUT", edit),
   confirmPaperDraft: (id: string, confirmation: DraftConfirmation) =>
     postJson<DraftRecord>(`/api/paper/drafts/${encodeURIComponent(id)}/confirm`, confirmation),
+  discardPaperDraft: (id: string, discard: DraftDiscardRequest) =>
+    postJson<DraftRecord>(`/api/paper/drafts/${encodeURIComponent(id)}/discard`, discard),
+  paperCommands: (subAccountId?: string) =>
+    getJson<PaperCommandRecord[]>(
+      subAccountId
+        ? `/api/paper/commands?sub_account_id=${encodeURIComponent(subAccountId)}`
+        : "/api/paper/commands",
+    ),
+  submitPaperCommand: (command: PaperCommand) =>
+    postJson<PaperCommandRecord>("/api/paper/commands", command),
+  previewPaperSizing: (request: SizingPreviewRequest) =>
+    postJson<SizingPreviewResponse>("/api/paper/sizing-preview", request),
 
   health(): Promise<HealthStatus> {
     return getJson<HealthStatus>("/api/health");

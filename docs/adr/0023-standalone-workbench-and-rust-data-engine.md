@@ -25,6 +25,7 @@ status: accepted
 - 修订 [ADR-0001](./0001-dual-plane-dsh-and-python-core.md)（演进为 Rust `Resident Service` + 独立工作台 + Python 研究/策略核 + 可选 DSH 协同）。
 - 修订 [ADR-0005](./0005-fast-path-bypass-and-decoupled-chart-workbench.md)（工作台迁出 `dsh/`，渲染核升级为 `@luxalgo/vela`）。
 - 修订 [ADR-0010](./0010-pure-python-indicator-core.md)（Python `foundation/operators` + `contracts/operator_vectors/` 为跨语言唯一数学权威，Rust `talaria-operators` 须 100% 通过全部黄金向量回归）。
+- 后续扩展见 [ADR-0024](./0024-readonly-run-export-projection.md)（`talaria-data` 对回测 `run_export` 的只读边界）与 [ADR-0025](./0025-paper-account-projection-and-intent-queues.md)（`talaria-data` 持有模拟盘草案与干预命令队列并只读转发 `accounts/*/view.json` 投影，但不执行交易逻辑；桌面工作台托管模拟盘 `Account Process` 启停）。
 
 ## Considered Options
 

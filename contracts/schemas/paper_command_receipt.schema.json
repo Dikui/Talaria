@@ -1,0 +1,73 @@
+{
+  "additionalProperties": false,
+  "description": "模拟盘账户进程处理人工干预命令后的回执。",
+  "properties": {
+    "accepted": {
+      "title": "Accepted",
+      "type": "boolean"
+    },
+    "command_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Command Id",
+      "type": "string"
+    },
+    "ledger_seq": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ledger Seq"
+    },
+    "processed_ts": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Processed Ts"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "sub_account_id": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sub Account Id"
+    }
+  },
+  "required": [
+    "command_id",
+    "accepted"
+  ],
+  "title": "PaperCommandReceipt",
+  "type": "object"
+}

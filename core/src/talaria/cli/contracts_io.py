@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from talaria.components.operators import OPERATORS
 from talaria.components.rule_vectors import render_rule_vectors
+from talaria.cli.sizing_vectors import render_sizing_vectors
 from talaria.foundation.operators import CHANNELS
 from talaria.foundation.alerts import (
     AlertCreate,
@@ -117,8 +118,35 @@ from talaria.foundation.briefings import (
 )
 from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.paper import (
-    ExitBarrierSpec, TrailingStopSpec, ConfirmedDraft, DraftConfirmation, DraftContent, DraftDeliveryRequest, DraftEdit, DraftEvidence,
-    DraftReceipt, DraftRecord, PaperAccountView, PaperFill, PaperRound,
+    ConfirmedDraft,
+    DraftConfirmation,
+    DraftContent,
+    DraftDeliveryRequest,
+    DraftDiscardRequest,
+    DraftEdit,
+    DraftEvidence,
+    DraftReceipt,
+    DraftRecord,
+    DraftStatus,
+    ExitBarrierSpec,
+    MarginMode,
+    PaperAccountState,
+    PaperAccountView,
+    PaperCommand,
+    PaperCommandKind,
+    PaperCommandPayload,
+    PaperCommandReceipt,
+    PaperCommandRecord,
+    PaperFeedStatus,
+    PaperFill,
+    PaperFillKind,
+    PaperProcessInfo,
+    PaperProcessState,
+    PaperRound,
+    SizingPreviewRequest,
+    SizingPreviewResponse,
+    TradingState,
+    TrailingStopSpec,
 )
 from talaria.foundation.runs import (
     ReplayTick,
@@ -232,12 +260,22 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "draft_edit": DraftEdit,
     "draft_evidence": DraftEvidence,
     "draft_confirmation": DraftConfirmation,
+    "draft_discard_request": DraftDiscardRequest,
     "draft_delivery_request": DraftDeliveryRequest,
     "draft_receipt": DraftReceipt,
     "draft_record": DraftRecord,
+    "paper_account_state": PaperAccountState,
+    "paper_feed_status": PaperFeedStatus,
+    "paper_process_info": PaperProcessInfo,
     "paper_account_view": PaperAccountView,
     "paper_fill": PaperFill,
     "paper_round": PaperRound,
+    "paper_command_payload": PaperCommandPayload,
+    "paper_command": PaperCommand,
+    "paper_command_receipt": PaperCommandReceipt,
+    "paper_command_record": PaperCommandRecord,
+    "sizing_preview_request": SizingPreviewRequest,
+    "sizing_preview_response": SizingPreviewResponse,
     "compact_bar": CompactBar,
     "bars_query": BarsQuery,
     "range_bar": RangeBar,
@@ -398,6 +436,12 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     RunFillReason,
     RunBarrierChangeKind,
     RunRoundPhase,
+    DraftStatus,
+    TradingState,
+    MarginMode,
+    PaperProcessState,
+    PaperFillKind,
+    PaperCommandKind,
 )
 
 #: 所有必须是十进制字符串的字段名（用于独立于生成逻辑的检查）。
@@ -456,11 +500,34 @@ DECIMAL_FIELDS: frozenset[str] = frozenset(
         "equity",
         "peak_pnl",
         "drawdown",
+        "entry_low",
+        "entry_high",
+        "invalidation_stop",
+        "unrealized_pnl",
+        "cash_available",
+        "margin_used",
+        "intraday_drawdown_pct",
+        "peak_drawdown_pct",
+        "open_r",
+        "risk_reserved",
+        "leverage",
+        "r_unit_pct",
+        "max_single_r_pct",
+        "friction_buffer_pct",
+        "liquidation_buffer_pct",
+        "ratio",
+        "override_quantity",
+        "risk_amount_r",
+        "risk_pct_of_equity",
+        "est_liq_price",
+        "est_liq_distance",
+        "est_liq_distance_pct",
     }
 )
 
 SCHEMA_DIR = Path("contracts/schemas")
 RULE_VECTOR_DIR = Path("contracts/rule_vectors")
+SIZING_VECTOR_DIR = Path("contracts/sizing_vectors")
 DSH_TOOL_DIR = SCHEMA_DIR / "dsh-tools"
 TS_PATH = Path("dsh/packages/talaria-contracts/src/generated.ts")
 WORKBENCH_TS_PATH = Path("workbench/packages/talaria-contracts/src/generated.ts")
@@ -762,6 +829,8 @@ def render_contracts(root: Path | None = None) -> dict[Path, str]:
     artifacts[plugin_alert_tool] = artifacts[DSH_TOOL_PATHS["create_alert"]]
     for filename, content in render_rule_vectors().items():
         artifacts[RULE_VECTOR_DIR / filename] = content
+    for filename, content in render_sizing_vectors().items():
+        artifacts[SIZING_VECTOR_DIR / filename] = content
     ts_content = _render_ts()
     for ts_path in TS_PATHS:
         artifacts[ts_path] = ts_content
@@ -848,6 +917,15 @@ def check_contracts(root: Path | None = None) -> list[str]:
     expected_rule_vectors = {path.name for path in expected if path.parent == RULE_VECTOR_DIR}
     for extra in sorted(actual_rule_vectors - expected_rule_vectors):
         problems.append(f"未登记的规则黄金向量：{RULE_VECTOR_DIR / extra}")
+
+    actual_sizing_vectors = (
+        {path.name for path in (root / SIZING_VECTOR_DIR).glob("*.json") if path.is_file()}
+        if (root / SIZING_VECTOR_DIR).is_dir()
+        else set()
+    )
+    expected_sizing_vectors = {path.name for path in expected if path.parent == SIZING_VECTOR_DIR}
+    for extra in sorted(actual_sizing_vectors - expected_sizing_vectors):
+        problems.append(f"未登记的定仓黄金向量：{SIZING_VECTOR_DIR / extra}")
 
     ts_text = (root / TS_PATH).read_text(encoding="utf-8") if (root / TS_PATH).is_file() else ""
     if "export type DecimalString = string;" not in ts_text:

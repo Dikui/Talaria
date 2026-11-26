@@ -34,14 +34,21 @@ export function filterReplayDrawings(
 }
 
 const VELA_EXTENSION_PREFIX = "[talaria-vela:v1]";
-const ALERT_ACTION_ID = "talaria.create_price_alert";
+export const ALERT_ACTION_ID = "talaria.create_price_alert";
 const ALERT_ICON_ID = "talaria-alert-bell";
+export const DRAFT_ACTION_ID = "talaria.create_paper_draft";
+const DRAFT_ICON_ID = "talaria-order-draft";
+
+export function isEphemeralOrderDrawing(drawing: Pick<SerializedDrawing, "type">): boolean {
+  return drawing.type === "position";
+}
 
 let actionRegistered = false;
 const activeAlertHandlers = new WeakMap<
   object,
   (payload: { drawingId: string; price: number | null; type: string }) => void
 >();
+const activeDraftHandlers = new WeakMap<object, (drawing: SerializedDrawing) => void>();
 
 export function ensureDrawingAlertActionRegistered(): void {
   if (actionRegistered) return;
@@ -51,6 +58,23 @@ export function ensureDrawingAlertActionRegistered(): void {
     ALERT_ICON_ID,
     '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
   );
+  registerIcon(
+    DRAFT_ICON_ID,
+    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>',
+  );
+
+  registerDrawingAction({
+    id: DRAFT_ACTION_ID,
+    icon: DRAFT_ICON_ID,
+    label: t("生成交易草案", "Create Draft"),
+    order: -1,
+    surfaces: ["toolbar", "settings"],
+    when: (drawing) => drawing.type === "position" && drawing.anchors.length >= 3,
+    run: (ctx, drawing) => {
+      const handler = activeDraftHandlers.get(ctx.chart);
+      handler?.(drawing);
+    },
+  });
 
   registerDrawingAction({
     id: ALERT_ACTION_ID,
@@ -58,7 +82,7 @@ export function ensureDrawingAlertActionRegistered(): void {
     label: t("创建价格预警", "Create price alert"),
     order: 0,
     surfaces: ["toolbar", "settings"],
-    when: (drawing) => drawing.anchors.length > 0,
+    when: (drawing) => drawing.type !== "position" && drawing.anchors.length > 0,
     run: (ctx, drawing) => {
       const handler = activeAlertHandlers.get(ctx.chart);
       const price = drawing.anchors[0]?.price ?? null;
@@ -67,30 +91,67 @@ export function ensureDrawingAlertActionRegistered(): void {
   });
 }
 
-export function bindChartDrawingAlertHandler(
+export interface ChartDrawingActionHandlers {
+  onCreateAlert?: (payload: { drawingId: string; price: number | null; type: string }) => void;
+  onCreateDraft?: (drawing: SerializedDrawing) => void;
+}
+
+/**
+ * Unified `chart.renderer.setDrawingActions` dispatcher hosting both price-alert
+ * actions (on HUMAN_DRAWING) and "Create Draft" actions (on ephemeral `position`).
+ */
+export function bindChartDrawingActions(
   chart: Vela,
-  handler: (payload: { drawingId: string; price: number | null; type: string }) => void,
+  handlers: ChartDrawingActionHandlers,
 ): () => void {
   ensureDrawingAlertActionRegistered();
-  activeAlertHandlers.set(chart, handler);
+  if (handlers.onCreateAlert) {
+    activeAlertHandlers.set(chart, handlers.onCreateAlert);
+  } else {
+    activeAlertHandlers.delete(chart);
+  }
+  if (handlers.onCreateDraft) {
+    activeDraftHandlers.set(chart, handlers.onCreateDraft);
+  } else {
+    activeDraftHandlers.delete(chart);
+  }
 
   chart.renderer.setDrawingActions((drawingId: string) => {
     const drawing = chart.drawings.all().find((item) => item.id === drawingId);
     if (!drawing) return [];
     return drawingActions()
-      .filter((desc) => !desc.when || desc.when(drawing))
+      .filter((desc) => {
+        if (desc.id === DRAFT_ACTION_ID && !handlers.onCreateDraft) return false;
+        if (desc.id === ALERT_ACTION_ID && !handlers.onCreateAlert) return false;
+        return !desc.when || desc.when(drawing);
+      })
       .map((desc) => {
         const surfaces = desc.surfaces ?? ["toolbar", "settings"];
+        const resolvedLabel =
+          desc.id === DRAFT_ACTION_ID
+            ? t("生成交易草案", "Create Draft")
+            : desc.id === ALERT_ACTION_ID
+              ? t("创建价格预警", "Create price alert")
+              : typeof desc.label === "string"
+                ? desc.label
+                : desc.id;
         return {
           id: desc.id,
           icon: desc.icon,
-          label: typeof desc.label === "string" ? desc.label : t("创建价格预警", "Create price alert"),
+          label: resolvedLabel,
           toolbar: surfaces.includes("toolbar"),
           settings: surfaces.includes("settings"),
           run: () => {
-            if (desc.id === ALERT_ACTION_ID) {
-              const price = drawing.anchors[0]?.price ?? null;
-              handler({ drawingId: drawing.id, price, type: drawing.type });
+            const latest = chart.drawings.all().find((item) => item.id === drawingId) ?? drawing;
+            if (desc.id === DRAFT_ACTION_ID) {
+              handlers.onCreateDraft?.(latest);
+            } else if (desc.id === ALERT_ACTION_ID) {
+              const price = latest.anchors[0]?.price ?? null;
+              handlers.onCreateAlert?.({
+                drawingId: latest.id,
+                price,
+                type: latest.type,
+              });
             }
           },
         };
@@ -99,8 +160,16 @@ export function bindChartDrawingAlertHandler(
 
   return () => {
     activeAlertHandlers.delete(chart);
+    activeDraftHandlers.delete(chart);
     chart.renderer.setDrawingActions(null);
   };
+}
+
+export function bindChartDrawingAlertHandler(
+  chart: Vela,
+  handler: (payload: { drawingId: string; price: number | null; type: string }) => void,
+): () => void {
+  return bindChartDrawingActions(chart, { onCreateAlert: handler });
 }
 
 const VELA_TO_CONTRACT_KIND: Partial<Record<DrawingTypeKey, DrawingKind>> = {
@@ -266,6 +335,7 @@ export class VelaDrawingSyncBridge {
   private pricePrecision: number;
   private localToRemoteId = new Map<string, string>();
   private remoteRecords = new Map<string, DrawingRecord>();
+  private ephemeralIds = new Set<string>();
   private debounceTimers = new Map<string, number>();
   private suppressEvents = false;
   private readOnly = false;
@@ -317,25 +387,91 @@ export class VelaDrawingSyncBridge {
     this.unsubscribers.push(
       this.chart.on("drawing:created", ({ id }) => {
         if (this.suppressEvents || this.isEffectiveReadOnly()) return;
+        const drawing = this.chart.drawings.all().find((d) => d.id === id);
+        if (drawing && isEphemeralOrderDrawing(drawing)) {
+          this.ephemeralIds.add(id);
+          return;
+        }
         this.scheduleCreate(id);
       }),
       this.chart.on("drawing:edited", ({ id }) => {
         if (this.suppressEvents || this.isEffectiveReadOnly()) return;
+        if (this.ephemeralIds.has(id)) return;
+        const drawing = this.chart.drawings.all().find((d) => d.id === id);
+        if (drawing && isEphemeralOrderDrawing(drawing)) {
+          this.ephemeralIds.add(id);
+          return;
+        }
         this.scheduleEdit(id);
       }),
       this.chart.on("drawing:removed", ({ id }) => {
+        if (this.ephemeralIds.has(id)) {
+          this.ephemeralIds.delete(id);
+          return;
+        }
         if (this.suppressEvents || this.isEffectiveReadOnly()) return;
         this.scheduleDelete(id);
       }),
       this.chart.on("drawing:history", () => {
         if (this.suppressEvents || this.isEffectiveReadOnly()) return;
+        // Defensive guard: if undo/redo resurrected an ephemeral 'position' drawing, strip it cleanly.
+        const all = this.chart.drawings.all();
+        if (all.some((d) => isEphemeralOrderDrawing(d))) {
+          const humanOnly = all.filter((d) => !isEphemeralOrderDrawing(d));
+          this.suppressEvents = true;
+          try {
+            this.ephemeralIds.clear();
+            this.chart.drawings.fromJSON({ version: 1, drawings: humanOnly });
+          } finally {
+            this.suppressEvents = false;
+          }
+        }
         void this.reconcileFullSnapshot();
       }),
       this.chart.on("drawing:selected", ({ id }) => {
+        if (id) {
+          if (this.ephemeralIds.has(id)) {
+            this.onSelected?.(null);
+            return;
+          }
+          const drawing = this.chart.drawings.all().find((d) => d.id === id);
+          if (drawing && isEphemeralOrderDrawing(drawing)) {
+            this.ephemeralIds.add(id);
+            this.onSelected?.(null);
+            return;
+          }
+        }
         const resolved = id ? (this.localToRemoteId.get(id) ?? id) : null;
         this.onSelected?.(resolved);
       }),
     );
+  }
+
+  /**
+   * Removes all ephemeral `'position'` order gestures AND resets Vela's undo history
+   * via `fromJSON(humanOnly)` so `Ctrl+Z` can never resurrect a cleared order gesture
+   * (Ticket 06 §1.3). All persisted HUMAN_DRAWING items stay intact.
+   */
+  clearEphemeralDrawings(): void {
+    const all = this.chart.drawings.all();
+    const hasEphemeral =
+      this.ephemeralIds.size > 0 || all.some((d) => isEphemeralOrderDrawing(d));
+    this.ephemeralIds.clear();
+    if (!hasEphemeral) return;
+    const humanOnly = all.filter((d) => !isEphemeralOrderDrawing(d));
+    this.suppressEvents = true;
+    try {
+      this.chart.drawings.fromJSON({ version: 1, drawings: humanOnly });
+    } finally {
+      this.suppressEvents = false;
+    }
+  }
+
+  exportHumanDrawingsDocument(): DrawingsDocument {
+    return {
+      version: 1,
+      drawings: this.chart.drawings.all().filter((d) => !isEphemeralOrderDrawing(d)),
+    };
   }
 
   setContext(instrumentId: string, timeframe: string, pricePrecision: number): void {
@@ -489,7 +625,7 @@ export class VelaDrawingSyncBridge {
 
   private async reconcileFullSnapshot(): Promise<void> {
     if (this.isEffectiveReadOnly()) return;
-    const current = this.chart.drawings.all();
+    const current = this.chart.drawings.all().filter((d) => !isEphemeralOrderDrawing(d));
     const presentRemoteIds = new Set(
       current.map((d) => this.localToRemoteId.get(d.id) ?? d.id),
     );

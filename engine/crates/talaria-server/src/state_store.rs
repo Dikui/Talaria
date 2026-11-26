@@ -10,11 +10,16 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use rust_decimal::Decimal;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use talaria_contracts::decimal::{serde_decimal_str, serde_decimal_str_vec};
 use talaria_contracts::{
     AgentAnnotationRecord, AlertRecord, AlertStatus, AlertTriggerRecord,
     AnnotationAdoptionRecord, AnnotationSessionSummary, AnnotationStatus, BriefingContent,
-    BriefingStatus, DrawingKind, DrawingPoint, DrawingRecord, DrawingStyle, EvidenceRef,
-    KeyLevelAdoptionRecord, KeyLevelIgnoreRecord, ScannerBriefing, error_codes,
+    BriefingStatus, ConfirmedDraft, Direction, DraftConfirmation, DraftContent,
+    DraftDiscardRequest, DraftReceipt, DraftRecord, DraftStatus, DrawingKind, DrawingPoint,
+    DrawingRecord, DrawingStyle, EvidenceRef, KeyLevelAdoptionRecord, KeyLevelIgnoreRecord,
+    PaperCommand, PaperCommandReceipt, PaperCommandRecord, ScannerBriefing, error_codes,
 };
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -186,9 +191,51 @@ CREATE TABLE IF NOT EXISTS scanner_briefings (
 );
 CREATE INDEX IF NOT EXISTS scanner_briefings_by_time
     ON scanner_briefings (created_ts DESC, briefing_id DESC);
+CREATE TABLE IF NOT EXISTS paper_drafts (
+    draft_id TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    sub_account_id TEXT NOT NULL,
+    instrument_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    basis_cutoff_ts INTEGER NOT NULL,
+    created_ts INTEGER NOT NULL,
+    confirmation TEXT,
+    claimed INTEGER NOT NULL DEFAULT 0,
+    receipt TEXT,
+    discarded_at INTEGER,
+    discarded_by TEXT,
+    discard_reason TEXT
+);
+CREATE TABLE IF NOT EXISTS paper_submissions (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    UNIQUE (draft_id, version)
+);
+CREATE INDEX IF NOT EXISTS paper_draft_inbox
+    ON paper_drafts (sub_account_id, instrument_id)
+    WHERE confirmation IS NOT NULL AND receipt IS NULL AND discarded_at IS NULL;
+CREATE TABLE IF NOT EXISTS paper_commands (
+    command_id TEXT PRIMARY KEY,
+    sub_account_id TEXT NOT NULL,
+    command TEXT NOT NULL,
+    claimed INTEGER NOT NULL DEFAULT 0,
+    receipt TEXT,
+    created_ts INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS paper_command_submissions (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS paper_command_inbox
+    ON paper_commands (sub_account_id)
+    WHERE receipt IS NULL;
 ";
 
 const MIGRATION_KEY: &str = "migration.from_collaboration_v1";
+const PAPER_DRAFTS_MIGRATION_KEY: &str = "migration.paper_drafts_from_collaboration_v1";
+pub const DRAFT_CONFLICT: &str = "DRAFT_CONFLICT";
+pub const COMMAND_CONFLICT: &str = "COMMAND_CONFLICT";
 
 type WriteTask = Box<dyn FnOnce(&mut Connection, i64) + Send + 'static>;
 
@@ -348,7 +395,9 @@ fn open_writer_connection(
     )
     .map_err(map_sqlite_err)?;
     conn.execute_batch(SCHEMA_SQL).map_err(map_sqlite_err)?;
+    ensure_paper_drafts_columns(&conn)?;
     maybe_migrate_legacy(&mut conn, legacy_path, now)?;
+    maybe_migrate_legacy_paper_drafts(&mut conn, legacy_path, now)?;
     Ok(conn)
 }
 
@@ -615,6 +664,782 @@ fn migrate_legacy_scanner_briefings(conn: &Connection) -> Result<(), ApiError> {
     }
 
     Ok(())
+}
+
+fn ensure_paper_drafts_columns(conn: &Connection) -> Result<(), ApiError> {
+    let cols: HashSet<String> = table_columns(conn, "main", "paper_drafts")?
+        .into_iter()
+        .collect();
+    if !cols.contains("discarded_at") {
+        conn.execute("ALTER TABLE paper_drafts ADD COLUMN discarded_at INTEGER", [])
+            .map_err(map_sqlite_err)?;
+    }
+    if !cols.contains("discarded_by") {
+        conn.execute("ALTER TABLE paper_drafts ADD COLUMN discarded_by TEXT", [])
+            .map_err(map_sqlite_err)?;
+    }
+    if !cols.contains("discard_reason") {
+        conn.execute("ALTER TABLE paper_drafts ADD COLUMN discard_reason TEXT", [])
+            .map_err(map_sqlite_err)?;
+    }
+    conn.execute(
+        "UPDATE paper_drafts SET receipt = NULL
+         WHERE json_extract(receipt, '$.reason') IN ('DRAFT_INTERRUPTED', 'DRAFT_DATA_UNAVAILABLE')",
+        [],
+    )
+    .map_err(map_sqlite_err)?;
+    Ok(())
+}
+
+fn maybe_migrate_legacy_paper_drafts(
+    conn: &mut Connection,
+    legacy_path: &Path,
+    now: i64,
+) -> Result<(), ApiError> {
+    let already: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![PAPER_DRAFTS_MIGRATION_KEY],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(map_sqlite_err)?;
+    if already.is_some() || !legacy_path.is_file() {
+        return Ok(());
+    }
+
+    let legacy_str = legacy_path.to_string_lossy().into_owned();
+    conn.execute("ATTACH DATABASE ?1 AS legacy_paper", params![legacy_str])
+        .map_err(map_sqlite_err)?;
+
+    let migrate_res = (|| -> Result<(), ApiError> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM legacy_paper.sqlite_master WHERE type = 'table'")
+            .map_err(map_sqlite_err)?;
+        let table_rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(map_sqlite_err)?;
+        let mut legacy_tables = HashSet::new();
+        for item in table_rows {
+            legacy_tables.insert(item.map_err(map_sqlite_err)?);
+        }
+        drop(stmt);
+
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_err)?;
+
+        if legacy_tables.contains("paper_drafts") {
+            let legacy_cols: HashSet<String> =
+                table_columns(&tx, "legacy_paper", "paper_drafts")?
+                    .into_iter()
+                    .collect();
+            let has_discarded = legacy_cols.contains("discarded_at");
+            let discard_filter = if has_discarded {
+                "AND discarded_at IS NULL"
+            } else {
+                ""
+            };
+            let insert_sql = format!(
+                "INSERT OR IGNORE INTO main.paper_drafts
+                 (draft_id, version, sub_account_id, instrument_id, content, basis_cutoff_ts, created_ts, confirmation, claimed, receipt)
+                 SELECT draft_id, version, sub_account_id, instrument_id, content, basis_cutoff_ts, created_ts, confirmation, claimed,
+                        CASE
+                            WHEN json_extract(receipt, '$.reason') IN ('DRAFT_INTERRUPTED', 'DRAFT_DATA_UNAVAILABLE') THEN NULL
+                            ELSE receipt
+                        END
+                 FROM legacy_paper.paper_drafts
+                 WHERE (receipt IS NULL OR json_extract(receipt, '$.reason') IN ('DRAFT_INTERRUPTED', 'DRAFT_DATA_UNAVAILABLE'))
+                 {discard_filter}"
+            );
+            tx.execute(&insert_sql, []).map_err(map_sqlite_err)?;
+
+            if legacy_tables.contains("paper_submissions") {
+                tx.execute(
+                    "INSERT OR IGNORE INTO main.paper_submissions(draft_id, version)
+                     SELECT s.draft_id, s.version
+                     FROM legacy_paper.paper_submissions s
+                     JOIN main.paper_drafts d ON d.draft_id = s.draft_id AND d.version = s.version
+                     WHERE d.confirmation IS NOT NULL AND d.receipt IS NULL AND d.discarded_at IS NULL
+                     ORDER BY s.seq ASC",
+                    [],
+                )
+                .map_err(map_sqlite_err)?;
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO main.paper_submissions(draft_id, version)
+                 SELECT draft_id, version FROM main.paper_drafts
+                 WHERE confirmation IS NOT NULL AND receipt IS NULL AND discarded_at IS NULL
+                 ORDER BY json_extract(confirmation, '$.confirmed_ts'), rowid",
+                [],
+            )
+            .map_err(map_sqlite_err)?;
+        }
+
+        tx.execute(
+            "INSERT INTO main.meta (key, value, updated_ts) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_ts = excluded.updated_ts",
+            params![PAPER_DRAFTS_MIGRATION_KEY, "true", now],
+        )
+        .map_err(map_sqlite_err)?;
+        tx.commit().map_err(map_sqlite_err)?;
+        Ok(())
+    })();
+
+    let _ = conn.execute("DETACH DATABASE legacy_paper", []);
+    migrate_res
+}
+
+// ============================================================================
+// Paper Drafts & Outbound Submission Queue Repository (ADR-0025)
+// ============================================================================
+
+/// Canonical digest matching Python `DraftContent.digest()` byte-for-byte.
+/// When `round_id` is `None`, `round_id` and `inherited_barriers` are excluded
+/// so existing open-position drafts keep the exact legacy SHA-256 hash.
+pub fn draft_content_digest(content: &DraftContent) -> Result<String, ApiError> {
+    #[derive(Serialize)]
+    struct LegacyDraftContent<'a> {
+        sub_account_id: &'a str,
+        instrument_id: &'a str,
+        snapshot_id: &'a str,
+        consultation_id: &'a Option<String>,
+        direction: Direction,
+        #[serde(with = "serde_decimal_str")]
+        entry_low: Decimal,
+        #[serde(with = "serde_decimal_str")]
+        entry_high: Decimal,
+        #[serde(with = "serde_decimal_str")]
+        invalidation_stop: Decimal,
+        #[serde(with = "serde_decimal_str_vec")]
+        take_profit: &'a [Decimal],
+        valid_until: Option<i64>,
+    }
+
+    let bytes = if content.round_id.is_none() {
+        let legacy = LegacyDraftContent {
+            sub_account_id: &content.sub_account_id,
+            instrument_id: &content.instrument_id,
+            snapshot_id: &content.snapshot_id,
+            consultation_id: &content.consultation_id,
+            direction: content.direction,
+            entry_low: content.entry_low,
+            entry_high: content.entry_high,
+            invalidation_stop: content.invalidation_stop,
+            take_profit: &content.take_profit,
+            valid_until: content.valid_until,
+        };
+        serde_json::to_vec(&legacy)
+    } else {
+        serde_json::to_vec(content)
+    }
+    .map_err(|e| ApiError::internal(format!("failed to encode draft content for digest: {e}")))?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+fn is_draft_expired(content: &DraftContent, now: i64) -> bool {
+    content.valid_until.is_some_and(|deadline| now > deadline)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_draft_record(
+    draft_id: String,
+    version: u64,
+    content_raw: &str,
+    confirmation_raw: Option<String>,
+    claimed: bool,
+    receipt_raw: Option<String>,
+    discarded_at: Option<i64>,
+    now: i64,
+) -> Result<DraftRecord, ApiError> {
+    let content: DraftContent = serde_json::from_str(content_raw)
+        .map_err(|e| ApiError::internal(format!("corrupt paper_drafts content: {e}")))?;
+    let content_hash = draft_content_digest(&content)?;
+    let receipt: Option<DraftReceipt> = match receipt_raw {
+        Some(raw) => Some(
+            serde_json::from_str(&raw)
+                .map_err(|e| ApiError::internal(format!("corrupt paper_drafts receipt: {e}")))?,
+        ),
+        None => None,
+    };
+    let status = if discarded_at.is_some() {
+        DraftStatus::Discarded
+    } else if receipt.is_some() || claimed {
+        DraftStatus::Confirmed
+    } else if is_draft_expired(&content, now) {
+        DraftStatus::Expired
+    } else if confirmation_raw.is_some() {
+        DraftStatus::Confirmed
+    } else if version == 1 {
+        DraftStatus::Staged
+    } else {
+        DraftStatus::Modified
+    };
+    Ok(DraftRecord {
+        draft_id,
+        version,
+        content_hash,
+        content,
+        status,
+        claimed,
+        receipt,
+    })
+}
+
+pub fn paper_drafts_list(conn: &Connection, now: i64) -> Result<Vec<DraftRecord>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT draft_id, version, content, confirmation, claimed, receipt, discarded_at
+             FROM paper_drafts ORDER BY rowid DESC",
+        )
+        .map_err(map_sqlite_err)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(map_sqlite_err)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (draft_id, version, content_raw, confirmation, claimed, receipt, discarded_at) =
+            row.map_err(map_sqlite_err)?;
+        out.push(build_draft_record(
+            draft_id,
+            version.max(1) as u64,
+            &content_raw,
+            confirmation,
+            claimed != 0,
+            receipt,
+            discarded_at,
+            now,
+        )?);
+    }
+    Ok(out)
+}
+
+pub fn paper_drafts_get(
+    conn: &Connection,
+    draft_id: &str,
+    now: i64,
+) -> Result<DraftRecord, ApiError> {
+    let row = conn
+        .query_row(
+            "SELECT draft_id, version, content, confirmation, claimed, receipt, discarded_at
+             FROM paper_drafts WHERE draft_id = ?1",
+            params![draft_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<i64>>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_err)?;
+    let Some((id, version, content_raw, confirmation, claimed, receipt, discarded_at)) = row else {
+        return Err(ApiError::not_found(error_codes::NOT_FOUND, "找不到交易草案"));
+    };
+    build_draft_record(
+        id,
+        version.max(1) as u64,
+        &content_raw,
+        confirmation,
+        claimed != 0,
+        receipt,
+        discarded_at,
+        now,
+    )
+}
+
+pub fn paper_drafts_save(
+    conn: &mut Connection,
+    content: &DraftContent,
+    basis_cutoff_ts: i64,
+    now: i64,
+) -> Result<DraftRecord, ApiError> {
+    let draft_id = Uuid::new_v4().simple().to_string();
+    let encoded = serde_json::to_string(content).map_err(|e| ApiError::internal(e.to_string()))?;
+    conn.execute(
+        "INSERT INTO paper_drafts
+         (draft_id, version, sub_account_id, instrument_id, content, basis_cutoff_ts, created_ts)
+         VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            draft_id,
+            content.sub_account_id,
+            content.instrument_id,
+            encoded,
+            basis_cutoff_ts,
+            now
+        ],
+    )
+    .map_err(map_sqlite_err)?;
+    paper_drafts_get(conn, &draft_id, now)
+}
+
+pub fn paper_drafts_edit(
+    conn: &mut Connection,
+    draft_id: &str,
+    version: u64,
+    content: &DraftContent,
+    basis_cutoff_ts: i64,
+    now: i64,
+) -> Result<DraftRecord, ApiError> {
+    let record = paper_drafts_get(conn, draft_id, now)?;
+    if record.version != version
+        || record.claimed
+        || record.receipt.is_some()
+        || matches!(record.status, DraftStatus::Discarded | DraftStatus::Expired)
+    {
+        return Err(ApiError::conflict(
+            DRAFT_CONFLICT,
+            "草案已更新、已终结或已送达账户，请重新读取",
+        ));
+    }
+    let encoded = serde_json::to_string(content).map_err(|e| ApiError::internal(e.to_string()))?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_err)?;
+    tx.execute(
+        "UPDATE paper_drafts
+         SET version = version + 1, sub_account_id = ?1, instrument_id = ?2,
+             content = ?3, basis_cutoff_ts = ?4, confirmation = NULL
+         WHERE draft_id = ?5",
+        params![
+            content.sub_account_id,
+            content.instrument_id,
+            encoded,
+            basis_cutoff_ts,
+            draft_id
+        ],
+    )
+    .map_err(map_sqlite_err)?;
+    tx.commit().map_err(map_sqlite_err)?;
+    paper_drafts_get(conn, draft_id, now)
+}
+
+pub fn paper_drafts_confirm(
+    conn: &mut Connection,
+    draft_id: &str,
+    confirmation: &DraftConfirmation,
+    now: i64,
+) -> Result<DraftRecord, ApiError> {
+    let record = paper_drafts_get(conn, draft_id, now)?;
+    if (record.version, record.content_hash.as_str())
+        != (confirmation.version, confirmation.content_hash.as_str())
+    {
+        return Err(ApiError::conflict(
+            DRAFT_CONFLICT,
+            "草案版本已更新，请重新审阅后确认",
+        ));
+    }
+    if matches!(record.status, DraftStatus::Discarded | DraftStatus::Expired) {
+        return Err(ApiError::conflict(
+            DRAFT_CONFLICT,
+            "草案已丢弃或已过期，无法确认",
+        ));
+    }
+    if record.status == DraftStatus::Confirmed {
+        return Ok(record);
+    }
+
+    let (basis_cutoff_ts, created_ts): (i64, i64) = conn
+        .query_row(
+            "SELECT basis_cutoff_ts, created_ts FROM paper_drafts WHERE draft_id = ?1",
+            params![draft_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(map_sqlite_err)?;
+    let confirmed = ConfirmedDraft {
+        version: confirmation.version,
+        content_hash: confirmation.content_hash.clone(),
+        confirmed_by: confirmation.confirmed_by.trim().to_owned(),
+        draft_id: draft_id.to_owned(),
+        content: record.content,
+        basis_cutoff_ts,
+        created_ts,
+        confirmed_ts: created_ts.max(now),
+    };
+    let encoded =
+        serde_json::to_string(&confirmed).map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_err)?;
+    tx.execute(
+        "INSERT INTO paper_submissions(draft_id, version) VALUES (?1, ?2)",
+        params![draft_id, record.version as i64],
+    )
+    .map_err(map_sqlite_err)?;
+    tx.execute(
+        "UPDATE paper_drafts SET confirmation = ?1 WHERE draft_id = ?2",
+        params![encoded, draft_id],
+    )
+    .map_err(map_sqlite_err)?;
+    tx.commit().map_err(map_sqlite_err)?;
+    paper_drafts_get(conn, draft_id, now)
+}
+
+pub fn paper_drafts_discard(
+    conn: &mut Connection,
+    draft_id: &str,
+    discard: &DraftDiscardRequest,
+    now: i64,
+) -> Result<DraftRecord, ApiError> {
+    let record = paper_drafts_get(conn, draft_id, now)?;
+    if record.status == DraftStatus::Discarded && record.version == discard.version {
+        return Ok(record);
+    }
+    if record.version != discard.version
+        || record.claimed
+        || record.receipt.is_some()
+        || record.status == DraftStatus::Expired
+    {
+        return Err(ApiError::conflict(
+            DRAFT_CONFLICT,
+            "草案版本已更新、已过期或已送达账户，无法丢弃",
+        ));
+    }
+    let discarded_by = discard.discarded_by.as_deref().map(str::trim);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_err)?;
+    tx.execute(
+        "DELETE FROM paper_submissions WHERE draft_id = ?1",
+        params![draft_id],
+    )
+    .map_err(map_sqlite_err)?;
+    tx.execute(
+        "UPDATE paper_drafts
+         SET confirmation = NULL, discarded_at = ?1, discarded_by = ?2, discard_reason = ?3
+         WHERE draft_id = ?4",
+        params![now, discarded_by, discard.reason.as_deref(), draft_id],
+    )
+    .map_err(map_sqlite_err)?;
+    tx.commit().map_err(map_sqlite_err)?;
+    paper_drafts_get(conn, draft_id, now)
+}
+
+pub fn paper_drafts_claim(
+    conn: &mut Connection,
+    account: &str,
+    instrument: &str,
+    now: i64,
+) -> Result<Option<ConfirmedDraft>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT d.draft_id, d.confirmation, d.claimed
+             FROM paper_drafts d
+             JOIN paper_submissions s USING (draft_id, version)
+             WHERE d.sub_account_id = ?1
+               AND d.instrument_id = ?2
+               AND d.confirmation IS NOT NULL
+               AND d.receipt IS NULL
+               AND d.discarded_at IS NULL
+             ORDER BY d.claimed DESC, s.seq ASC",
+        )
+        .map_err(map_sqlite_err)?;
+    let candidates: Vec<(String, String, bool)> = stmt
+        .query_map(params![account, instrument], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)? != 0,
+            ))
+        })
+        .map_err(map_sqlite_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_sqlite_err)?;
+    drop(stmt);
+
+    for (draft_id, confirmation_raw, claimed) in candidates {
+        let confirmed: ConfirmedDraft = serde_json::from_str(&confirmation_raw)
+            .map_err(|e| ApiError::internal(format!("corrupt confirmed draft: {e}")))?;
+        if !claimed && is_draft_expired(&confirmed.content, now) {
+            continue;
+        }
+        if !claimed {
+            conn.execute(
+                "UPDATE paper_drafts SET claimed = 1 WHERE draft_id = ?1",
+                params![draft_id],
+            )
+            .map_err(map_sqlite_err)?;
+        }
+        return Ok(Some(confirmed));
+    }
+    Ok(None)
+}
+
+pub fn paper_drafts_acknowledge(
+    conn: &mut Connection,
+    account: &str,
+    receipt: &DraftReceipt,
+    now: i64,
+) -> Result<DraftReceipt, ApiError> {
+    if matches!(
+        receipt.reason.as_deref(),
+        Some("DRAFT_INTERRUPTED" | "DRAFT_DATA_UNAVAILABLE")
+    ) {
+        return Err(ApiError::conflict(
+            DRAFT_CONFLICT,
+            "缺证据或处理中断的草案仍待处理",
+        ));
+    }
+    let record = paper_drafts_get(conn, &receipt.draft_id, now)?;
+    if !record.claimed
+        || record.content.sub_account_id != account
+        || record.version != receipt.version
+    {
+        return Err(ApiError::conflict(
+            DRAFT_CONFLICT,
+            "回执与已送达的草案版本不一致",
+        ));
+    }
+    if let Some(existing) = record.receipt {
+        if existing != *receipt {
+            return Err(ApiError::conflict(DRAFT_CONFLICT, "草案已登记另一份回执"));
+        }
+        return Ok(existing);
+    }
+    let encoded = serde_json::to_string(receipt).map_err(|e| ApiError::internal(e.to_string()))?;
+    conn.execute(
+        "UPDATE paper_drafts SET receipt = ?1 WHERE draft_id = ?2",
+        params![encoded, receipt.draft_id],
+    )
+    .map_err(map_sqlite_err)?;
+    Ok(receipt.clone())
+}
+
+// ============================================================================
+// Paper Intervention Command Queue (ADR-0025 D1/D3)
+// ============================================================================
+
+fn parse_command_record(
+    command_raw: String,
+    claimed_int: i64,
+    receipt_raw: Option<String>,
+) -> Result<PaperCommandRecord, ApiError> {
+    let command: PaperCommand = serde_json::from_str(&command_raw)
+        .map_err(|e| ApiError::internal(format!("corrupt paper_commands payload: {e}")))?;
+    let receipt = match receipt_raw {
+        Some(text) => Some(
+            serde_json::from_str::<PaperCommandReceipt>(&text)
+                .map_err(|e| ApiError::internal(format!("corrupt paper_commands receipt: {e}")))?,
+        ),
+        None => None,
+    };
+    Ok(PaperCommandRecord {
+        command,
+        claimed: claimed_int != 0,
+        receipt,
+    })
+}
+
+pub fn paper_commands_get(
+    conn: &Connection,
+    command_id: &str,
+) -> Result<Option<PaperCommandRecord>, ApiError> {
+    let row = conn
+        .query_row(
+            "SELECT command, claimed, receipt FROM paper_commands WHERE command_id = ?1",
+            params![command_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_err)?;
+    match row {
+        Some((cmd_raw, claimed, receipt_raw)) => {
+            Ok(Some(parse_command_record(cmd_raw, claimed, receipt_raw)?))
+        }
+        None => Ok(None),
+    }
+}
+
+pub fn paper_commands_list(
+    conn: &Connection,
+    sub_account_id: Option<&str>,
+) -> Result<Vec<PaperCommandRecord>, ApiError> {
+    let mut rows = Vec::new();
+    if let Some(account) = sub_account_id {
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.command, c.claimed, c.receipt
+                 FROM paper_commands c
+                 JOIN paper_command_submissions s USING (command_id)
+                 WHERE c.sub_account_id = ?1
+                 ORDER BY s.seq DESC",
+            )
+            .map_err(map_sqlite_err)?;
+        let iter = stmt
+            .query_map(params![account], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(map_sqlite_err)?;
+        for item in iter {
+            let (cmd_raw, claimed, receipt_raw) = item.map_err(map_sqlite_err)?;
+            rows.push(parse_command_record(cmd_raw, claimed, receipt_raw)?);
+        }
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.command, c.claimed, c.receipt
+                 FROM paper_commands c
+                 JOIN paper_command_submissions s USING (command_id)
+                 ORDER BY s.seq DESC",
+            )
+            .map_err(map_sqlite_err)?;
+        let iter = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(map_sqlite_err)?;
+        for item in iter {
+            let (cmd_raw, claimed, receipt_raw) = item.map_err(map_sqlite_err)?;
+            rows.push(parse_command_record(cmd_raw, claimed, receipt_raw)?);
+        }
+    }
+    Ok(rows)
+}
+
+pub fn paper_commands_submit(
+    conn: &mut Connection,
+    command: &PaperCommand,
+    now: i64,
+) -> Result<PaperCommandRecord, ApiError> {
+    if let Some(existing) = paper_commands_get(conn, &command.command_id)? {
+        if existing.command == *command {
+            return Ok(existing);
+        }
+        return Err(ApiError::conflict(
+            COMMAND_CONFLICT,
+            "command_id 已存在且命令内容不一致",
+        ));
+    }
+    let encoded = serde_json::to_string(command).map_err(|e| ApiError::internal(e.to_string()))?;
+    let tx = conn.transaction().map_err(map_sqlite_err)?;
+    tx.execute(
+        "INSERT INTO paper_commands (command_id, sub_account_id, command, claimed, receipt, created_ts)
+         VALUES (?1, ?2, ?3, 0, NULL, ?4)",
+        params![command.command_id, command.sub_account_id, encoded, now],
+    )
+    .map_err(map_sqlite_err)?;
+    tx.execute(
+        "INSERT INTO paper_command_submissions (command_id) VALUES (?1)",
+        params![command.command_id],
+    )
+    .map_err(map_sqlite_err)?;
+    tx.commit().map_err(map_sqlite_err)?;
+    Ok(PaperCommandRecord {
+        command: command.clone(),
+        claimed: false,
+        receipt: None,
+    })
+}
+
+pub fn paper_commands_claim(
+    conn: &mut Connection,
+    account: &str,
+) -> Result<Option<PaperCommand>, ApiError> {
+    let candidate: Option<(String, String, bool)> = conn
+        .query_row(
+            "SELECT c.command_id, c.command, c.claimed
+             FROM paper_commands c
+             JOIN paper_command_submissions s USING (command_id)
+             WHERE c.sub_account_id = ?1 AND c.receipt IS NULL
+             ORDER BY c.claimed DESC, s.seq ASC
+             LIMIT 1",
+            params![account],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_err)?;
+    let Some((command_id, command_raw, claimed)) = candidate else {
+        return Ok(None);
+    };
+    let command: PaperCommand = serde_json::from_str(&command_raw)
+        .map_err(|e| ApiError::internal(format!("corrupt paper command: {e}")))?;
+    if !claimed {
+        conn.execute(
+            "UPDATE paper_commands SET claimed = 1 WHERE command_id = ?1",
+            params![command_id],
+        )
+        .map_err(map_sqlite_err)?;
+    }
+    Ok(Some(command))
+}
+
+pub fn paper_commands_acknowledge(
+    conn: &mut Connection,
+    account: &str,
+    receipt: &PaperCommandReceipt,
+) -> Result<PaperCommandReceipt, ApiError> {
+    let Some(record) = paper_commands_get(conn, &receipt.command_id)? else {
+        return Err(ApiError::not_found(
+            error_codes::NOT_FOUND,
+            format!("干预命令不存在：{}", receipt.command_id),
+        ));
+    };
+    if !record.claimed || record.command.sub_account_id != account {
+        return Err(ApiError::conflict(
+            COMMAND_CONFLICT,
+            "回执与已送达的干预命令子账户不一致",
+        ));
+    }
+    if let Some(existing) = record.receipt {
+        if existing.accepted != receipt.accepted
+            || existing.reason != receipt.reason
+            || existing.ledger_seq != receipt.ledger_seq
+        {
+            return Err(ApiError::conflict(
+                COMMAND_CONFLICT,
+                "干预命令已登记另一份回执",
+            ));
+        }
+        return Ok(existing);
+    }
+    let normalized = PaperCommandReceipt {
+        sub_account_id: Some(account.to_owned()),
+        ..receipt.clone()
+    };
+    let encoded =
+        serde_json::to_string(&normalized).map_err(|e| ApiError::internal(e.to_string()))?;
+    conn.execute(
+        "UPDATE paper_commands SET receipt = ?1 WHERE command_id = ?2",
+        params![encoded, receipt.command_id],
+    )
+    .map_err(map_sqlite_err)?;
+    Ok(normalized)
 }
 
 // ============================================================================

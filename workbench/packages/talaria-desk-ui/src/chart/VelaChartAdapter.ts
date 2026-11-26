@@ -11,6 +11,7 @@ import {
 import type {
   AgentAnnotationRecord,
   CompactBar,
+  DraftRecord,
   DrawingRecord,
   IndicatorSeries,
   KeyLevel,
@@ -22,6 +23,8 @@ import type { Locale } from "../lib/i18n";
 import { describeParams } from "../lib/indicatorData";
 import type { Theme } from "../lib/theme";
 import type {
+  BarrierDragOverlay,
+  BarrierDragProposal,
   ChartMountOptions,
   ChartReplayControl,
   ChartSurfaceAdapter,
@@ -31,9 +34,17 @@ import type {
   ReplayEventName,
 } from "./adapter";
 import {
+  BarrierDragController,
+  type BarrierHoverState,
+} from "./barrierDragController";
+import {
   VelaDrawingSyncBridge,
-  bindChartDrawingAlertHandler,
+  bindChartDrawingActions,
 } from "./drawingBridge";
+import {
+  OrderGestureTracker,
+  extractPositionGeometry,
+} from "./orderGestureTracker";
 import { VelaMarketFeed } from "./VelaMarketFeed";
 import {
   TALARIA_INDICATOR_LANGUAGE,
@@ -50,11 +61,13 @@ import {
 import {
   LAYER_AGENT_ANNOTATION,
   LAYER_EXECUTION_BARRIER,
+  LAYER_STAGED_DRAFT,
   LAYER_SYSTEM_LEVEL,
   clearChartLayerState,
   ensureTalariaLayersRegistered,
   getLatestProjection,
   hitTestAgentAnnotation,
+  hitTestStagedDraft,
   hitTestSystemLevel,
   setChartLayerChannelData,
 } from "./velaLayers";
@@ -81,7 +94,9 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
   private chart: Vela | null = null;
   private feed: VelaMarketFeed | null = null;
   private drawingBridge: VelaDrawingSyncBridge | null = null;
-  private unbindAlertAction: (() => void) | null = null;
+  private orderGestureTracker: OrderGestureTracker | null = null;
+  private barrierDragController: BarrierDragController | null = null;
+  private unbindDrawingActions: (() => void) | null = null;
   private options: ChartMountOptions | null = null;
   private chartId = "";
   private instrumentId = "";
@@ -99,6 +114,10 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
   private agentAnnotations: AgentAnnotationRecord[] = [];
   private agentHighlightId: string | null = null;
   private executionBarriers: ExecutionBarrierItem[] = [];
+  private barrierDragOverlay: BarrierDragOverlay | null = null;
+  private barrierHover: BarrierHoverState | null = null;
+  private stagedDrafts: DraftRecord[] = [];
+  private stagedDraftHighlightId: string | null = null;
 
   private indicatorHandles = new Map<string, { handle: IndicatorHandle; version: number; pane: "main" | "sub" }>();
   private tradeMarkersHandle: IndicatorHandle | null = null;
@@ -188,11 +207,16 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     this.chart = chart;
 
     chart.renderer.set("drawingsInteractive", !this.readOnly);
+    // Suppress Vela's built-in naive Loss/Size label so Talaria's Rust sizing preview is authoritative (ADR-0010 / D4).
+    chart.drawings.setToolDefaults({
+      position: { props: { showLossSize: false } },
+    });
 
     // Mount isolated read-only renderer layer channels (legend: false).
     chart.addNativeIndicator(LAYER_SYSTEM_LEVEL, { inputs: { chartId: this.chartId } });
     chart.addNativeIndicator(LAYER_AGENT_ANNOTATION, { inputs: { chartId: this.chartId } });
     chart.addNativeIndicator(LAYER_EXECUTION_BARRIER, { inputs: { chartId: this.chartId } });
+    chart.addNativeIndicator(LAYER_STAGED_DRAFT, { inputs: { chartId: this.chartId } });
     chart.registerEngine(TALARIA_INDICATOR_LANGUAGE, createAuthoritativeIndicatorEngine());
     chart.registerEngine(TALARIA_TRADE_MARKERS_LANGUAGE, createTradeMarkersEngine());
     this.tradeMarkersVersion = 0;
@@ -215,19 +239,77 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
       onError: options.onDrawingError,
     });
 
-    if (options.onCreateAlertFromDrawing) {
-      this.unbindAlertAction = bindChartDrawingAlertHandler(
-        chart,
-        options.onCreateAlertFromDrawing,
-      );
+    this.orderGestureTracker = new OrderGestureTracker({
+      chart,
+      container,
+      chartId: this.chartId,
+      getPricePrecision: () => this.pricePrecision,
+      onGestureChange: options.onOrderGestureChange,
+    });
+
+    this.barrierDragController = new BarrierDragController({
+      container,
+      getProjection: () => getLatestProjection(this.chartId),
+      getBarriers: () => this.executionBarriers,
+      getPricePrecision: () => this.pricePrecision,
+      isToolActive: () =>
+        chart.drawings.getTool() !== null || chart.drawings.getMode() !== null,
+      isReadOnly: () => this.readOnly,
+      isReplayActive: () => this.replayActive,
+      onOverlayChange: (overlay) => {
+        this.barrierDragOverlay = overlay;
+        this.pushExecutionBarrierLayer();
+        options.onBarrierOverlayChange?.(overlay);
+      },
+      onHoverChange: (hover) => {
+        this.barrierHover = hover;
+        this.pushExecutionBarrierLayer();
+      },
+      onDragEnd: (proposal) => {
+        options.onBarrierDragEnd?.(proposal);
+      },
+      onDisabledAttempt: (ev) => {
+        options.onBarrierDragDisabled?.(ev);
+      },
+      onPendingAckTimeout: (ov) => {
+        options.onBarrierPendingAckTimeout?.(ov);
+      },
+    });
+
+    if (options.onCreateAlertFromDrawing || options.onCreateDraftFromOrderGesture) {
+      this.unbindDrawingActions = bindChartDrawingActions(chart, {
+        onCreateAlert: options.onCreateAlertFromDrawing,
+        onCreateDraft: options.onCreateDraftFromOrderGesture
+          ? (drawing) => {
+              const geom = extractPositionGeometry(drawing, this.pricePrecision, "placed");
+              if (!geom) return;
+              options.onCreateDraftFromOrderGesture?.({
+                drawingId: drawing.id,
+                direction: geom.direction,
+                entry: geom.entryStr,
+                stop: geom.stopStr,
+                target: geom.targetStr,
+                validGeometry: geom.validGeometry,
+              });
+            }
+          : undefined,
+      });
     }
 
     this.unsubscribers.push(
       chart.on("replay:start", () => {
         this.replayActive = true;
+        this.clearOrderGesture();
+        this.barrierDragController?.cancelPendingConfirm();
+        this.setStagedDrafts([]);
+        this.pushExecutionBarrierLayer();
       }),
       chart.on("replay:end", () => {
         this.replayActive = false;
+        this.pushExecutionBarrierLayer();
+      }),
+      chart.on("drawing:tool", ({ type }) => {
+        options.onDrawingToolChange?.(type);
       }),
       chart.renderer.onCrosshairMove((event) => {
         options.onCrosshairMove?.({
@@ -246,6 +328,20 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
         const cursorY = proj.coords.priceToY(event.price, proj.scale, proj.bounds);
         const cursorX =
           event.time !== null ? proj.coords.timeToX(event.time) : proj.coords.width / 2;
+
+        if (!this.replayActive && this.stagedDrafts.length > 0) {
+          const hitDraft = hitTestStagedDraft(
+            this.stagedDrafts,
+            cursorY,
+            proj.coords,
+            proj.scale,
+            proj.bounds,
+          );
+          if (hitDraft) {
+            options.onSelectStagedDraft?.(hitDraft);
+            return;
+          }
+        }
 
         const hitAnnotation = hitTestAgentAnnotation(
           this.agentAnnotations,
@@ -304,6 +400,10 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     snapshotCutoff?: number | null;
   }): Promise<void> {
     if (!this.chart || !this.feed) return;
+    // Clear ephemeral order gesture on BOTH symbol and timeframe switch (Ticket 06 §1.3).
+    this.clearOrderGesture();
+    this.barrierDragController?.cancelPendingConfirm();
+    this.barrierDragController?.resolvePendingAck();
     this.instrumentId = params.instrumentId;
     this.timeframe = params.timeframe;
     this.pricePrecision = params.pricePrecision;
@@ -431,11 +531,48 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     });
   }
 
-  setExecutionBarriers(barriers: ExecutionBarrierItem[]): void {
-    this.executionBarriers = barriers;
+  private pushExecutionBarrierLayer(): void {
+    if (!this.chartId) return;
     setChartLayerChannelData(this.chartId, LAYER_EXECUTION_BARRIER, {
       chartId: this.chartId,
       barriers: this.executionBarriers,
+      dragOverlay: this.barrierDragOverlay,
+      hover: this.barrierHover,
+      readOnly: this.readOnly,
+      replayActive: this.replayActive,
+    });
+  }
+
+  setExecutionBarriers(barriers: ExecutionBarrierItem[]): void {
+    this.executionBarriers = barriers;
+    this.pushExecutionBarrierLayer();
+  }
+
+  cancelBarrierDragConfirm(): void {
+    this.barrierDragController?.cancelPendingConfirm();
+  }
+
+  markBarrierDragPendingAck(commandId: string, proposal: BarrierDragProposal): void {
+    this.barrierDragController?.markPendingAck(commandId, proposal);
+  }
+
+  resolveBarrierDragPendingAck(commandId?: string): void {
+    this.barrierDragController?.resolvePendingAck(commandId);
+  }
+
+  setStagedDrafts(
+    drafts: DraftRecord[],
+    opts?: { precision?: number; highlightId?: string | null },
+  ): void {
+    this.stagedDrafts = drafts;
+    if (opts?.highlightId !== undefined) {
+      this.stagedDraftHighlightId = opts.highlightId;
+    }
+    setChartLayerChannelData(this.chartId, LAYER_STAGED_DRAFT, {
+      chartId: this.chartId,
+      drafts: this.stagedDrafts,
+      precision: opts?.precision ?? this.pricePrecision,
+      highlightId: this.stagedDraftHighlightId,
     });
   }
 
@@ -452,13 +589,27 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     this.chart.drawings.setTool((tool as never) ?? null);
   }
 
+  armOrderGesture(direction: "LONG" | "SHORT" | null): void {
+    if (!this.chart || this.readOnly || this.replayActive) return;
+    this.orderGestureTracker?.armOrderTool(direction);
+  }
+
+  clearOrderGesture(): void {
+    if (this.chart?.drawings.getTool() === "position") {
+      this.chart.drawings.setTool(null);
+    }
+    this.drawingBridge?.clearEphemeralDrawings();
+    this.orderGestureTracker?.clear();
+  }
+
   selectHumanDrawing(drawingId: string | null): void {
     if (!this.chart) return;
     this.chart.drawings.select(drawingId);
   }
 
   exportDrawingsDocument() {
-    return this.chart ? this.chart.drawings.toJSON() : null;
+    if (!this.chart) return null;
+    return this.drawingBridge?.exportHumanDrawingsDocument() ?? this.chart.drawings.toJSON();
   }
 
   setTheme(theme: Theme): void {
@@ -480,6 +631,7 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
   setReadOnly(readOnly: boolean): void {
     this.readOnly = readOnly;
     this.drawingBridge?.setReadOnly(readOnly);
+    this.pushExecutionBarrierLayer();
   }
 
   setBackendMode(backend: RenderBackendMode): void {
@@ -538,8 +690,16 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
     }
     this.replayActive = false;
 
-    this.unbindAlertAction?.();
-    this.unbindAlertAction = null;
+    this.unbindDrawingActions?.();
+    this.unbindDrawingActions = null;
+
+    this.orderGestureTracker?.destroy();
+    this.orderGestureTracker = null;
+
+    this.barrierDragController?.destroy();
+    this.barrierDragController = null;
+    this.barrierDragOverlay = null;
+    this.barrierHover = null;
 
     this.drawingBridge?.destroy();
     this.drawingBridge = null;

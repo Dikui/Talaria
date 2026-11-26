@@ -3,7 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::bars::CompactBar;
-use crate::decimal::{DecimalStr, serde_decimal_str, serde_decimal_str_opt, serde_decimal_str_vec};
+use crate::decimal::{
+    DecimalStr, serde_decimal_str, serde_decimal_str_opt, serde_decimal_str_vec,
+    serde_decimal_str_vec_opt,
+};
 use crate::drawings::{DrawingKind, DrawingPoint};
 use crate::market::Direction;
 
@@ -601,6 +604,16 @@ pub struct ConfirmedDraft {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DraftDiscardRequest {
+    pub version: u64,
+    #[serde(default)]
+    pub discarded_by: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DraftReceipt {
     pub draft_id: String,
     pub version: u64,
@@ -611,6 +624,12 @@ pub struct DraftReceipt {
     pub reason: Option<String>,
     #[serde(default)]
     pub snapshot_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_decimal_str_opt"
+    )]
+    pub quantity: Option<DecimalStr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -619,6 +638,56 @@ pub enum DraftStatus {
     Staged,
     Modified,
     Confirmed,
+    Discarded,
+    Expired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TradingState {
+    Active,
+    Reducing,
+    Halted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MarginMode {
+    Isolated,
+    Cross,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PaperProcessState {
+    Running,
+    Stopped,
+    Offline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PaperCommandKind {
+    TightenStop,
+    MoveToBreakeven,
+    WidenStop,
+    ModifyTakeProfit,
+    CancelEntry,
+    CloseAll,
+    ReduceRatio,
+    SetTradingState,
+}
+
+fn default_currency() -> String {
+    "USDT".to_owned()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_process_state() -> PaperProcessState {
+    PaperProcessState::Running
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -668,6 +737,20 @@ pub struct PaperRound {
     pub phase: Option<String>,
     #[serde(default)]
     pub barriers: Option<ExitBarrierSpec>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub entry_low: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub entry_high: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub entry_price: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub mark_price: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub unrealized_pnl: Option<DecimalStr>,
+    #[serde(default)]
+    pub opened_ts: Option<i64>,
+    #[serde(default)]
+    pub closed_ts: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -689,6 +772,76 @@ pub struct PaperFill {
     pub quantity: DecimalStr,
     #[serde(with = "serde_decimal_str")]
     pub price: DecimalStr,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub fee: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub realized_pnl: Option<DecimalStr>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperAccountState {
+    #[serde(default = "default_currency")]
+    pub currency: String,
+    #[serde(with = "serde_decimal_str")]
+    pub equity: DecimalStr,
+    #[serde(with = "serde_decimal_str")]
+    pub cash_available: DecimalStr,
+    #[serde(with = "serde_decimal_str")]
+    pub margin_used: DecimalStr,
+    pub trading_state: TradingState,
+    #[serde(default)]
+    pub trading_state_reason: Option<String>,
+    #[serde(with = "serde_decimal_str")]
+    pub intraday_drawdown_pct: DecimalStr,
+    #[serde(with = "serde_decimal_str")]
+    pub peak_drawdown_pct: DecimalStr,
+    #[serde(with = "serde_decimal_str")]
+    pub open_r: DecimalStr,
+    #[serde(with = "serde_decimal_str")]
+    pub risk_reserved: DecimalStr,
+    #[serde(default)]
+    pub margin_mode: Option<MarginMode>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub leverage: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub r_unit_pct: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub max_single_r_pct: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub friction_buffer_pct: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub liquidation_buffer_pct: Option<DecimalStr>,
+    #[serde(default)]
+    pub liquidation_buffer_ticks: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperFeedStatus {
+    #[serde(default = "default_true")]
+    pub healthy: bool,
+    #[serde(default)]
+    pub reduce_reason: Option<String>,
+    #[serde(default)]
+    pub service_warning: Option<String>,
+    #[serde(default)]
+    pub updated_ts: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperProcessInfo {
+    pub pid: u64,
+    pub scheme: String,
+    pub started_ts: i64,
+    pub heartbeat_ts: i64,
+    #[serde(default = "default_process_state")]
+    pub status: PaperProcessState,
+    #[serde(default)]
+    pub stopped_ts: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -698,4 +851,112 @@ pub struct PaperAccountView {
     pub positions: Vec<PaperRound>,
     pub rounds: Vec<PaperRound>,
     pub fills: Vec<PaperFill>,
+    #[serde(default)]
+    pub ledger_seq: u64,
+    #[serde(default)]
+    pub account_state: Option<PaperAccountState>,
+    #[serde(default)]
+    pub feed_status: Option<PaperFeedStatus>,
+    #[serde(default)]
+    pub process: Option<PaperProcessInfo>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperCommandPayload {
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub stop: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_vec_opt")]
+    pub take_profit: Option<Vec<DecimalStr>>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub ratio: Option<DecimalStr>,
+    #[serde(default)]
+    pub trading_state: Option<TradingState>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperCommand {
+    pub command_id: String,
+    pub sub_account_id: String,
+    #[serde(default)]
+    pub round_id: Option<String>,
+    pub kind: PaperCommandKind,
+    #[serde(default)]
+    pub payload: PaperCommandPayload,
+    pub based_on_ledger_seq: u64,
+    pub issued_by: String,
+    pub issued_ts: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperCommandReceipt {
+    pub command_id: String,
+    #[serde(default)]
+    pub sub_account_id: Option<String>,
+    pub accepted: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub ledger_seq: Option<u64>,
+    #[serde(default)]
+    pub processed_ts: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaperCommandRecord {
+    pub command: PaperCommand,
+    #[serde(default)]
+    pub claimed: bool,
+    #[serde(default)]
+    pub receipt: Option<PaperCommandReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SizingPreviewRequest {
+    pub sub_account_id: String,
+    pub instrument_id: String,
+    pub direction: Direction,
+    #[serde(with = "serde_decimal_str")]
+    pub entry_low: DecimalStr,
+    #[serde(with = "serde_decimal_str")]
+    pub entry_high: DecimalStr,
+    #[serde(with = "serde_decimal_str")]
+    pub invalidation_stop: DecimalStr,
+    #[serde(default, with = "serde_decimal_str_vec")]
+    pub take_profit: Vec<DecimalStr>,
+    #[serde(default)]
+    pub round_id: Option<String>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub override_quantity: Option<DecimalStr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SizingPreviewResponse {
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub quantity: Option<DecimalStr>,
+    #[serde(default)]
+    pub basis: Option<String>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub risk_amount_r: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub risk_pct_of_equity: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub est_liq_price: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub est_liq_distance: Option<DecimalStr>,
+    #[serde(default, with = "serde_decimal_str_opt")]
+    pub est_liq_distance_pct: Option<DecimalStr>,
+    #[serde(default)]
+    pub rejected_reason: Option<String>,
+    #[serde(default)]
+    pub from_offline_snapshot: bool,
+    #[serde(default)]
+    pub based_on_ledger_seq: Option<u64>,
 }

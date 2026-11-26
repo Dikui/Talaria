@@ -5,7 +5,7 @@
 ## 产品形态与交易方案
 
 **Resident Service（常驻服务）**:
-由 DSH 桌面插件启停的本机后台进程，也可用 `talaria up --solo` 手动运行。它是行情、冷库、快照与协同状态的唯一写者，页面、Notebook 和账户进程都是它的使用方。
+由独立桌面工作台托管启停或手动独立运行的本机后台进程。它是行情、冷库、快照与工作台状态的唯一写者，工作台、Notebook、账户进程与可选协同客户端都是它的使用方。
 _Avoid_: Daemon, backend, server
 
 **Account Process（账户进程）**:
@@ -172,11 +172,19 @@ _Avoid_: Pending cache, soft lock
 控制执行出口放行范围的三态全局或账户级开关，严格区分为正常交易（`ACTIVE`）、仅允许合规减仓（`REDUCING`）与停发新单（`HALTED`）。
 _Avoid_: Kill switch, pause button
 
+**Paper Intervention Command（模拟盘干预命令）**:
+交易员在模拟盘持仓或挂单期间发出的非草案类直接操控指令，按只减风险直达执行层或放宽风险先过风控分流，且具备幂等性与过期校验。
+_Avoid_: Manual override, ad-hoc order, direct ledger edit
+
 ## 账本、延迟与评测
 
 **Ledger（权威资金账本）**:
 以精确十进制记录现金、保证金占用、持仓、成交、手续费与资金费率收支的唯一账户事实源，严格独立于智能体对话历史与经验记忆。
 _Avoid_: Agent memory, portfolio cache
+
+**Paper Account Projection（账户状态投影）**:
+模拟盘账户进程在账本提交后原子写出的只读状态与心跳快照，供常驻服务与工作台展示持仓、权益、屏障与存活状态而不直接读取账本。
+_Avoid_: Ledger cache, account dump, lock probe
 
 **Decision Latency（决策延迟 `Δt`）**:
 从计划提交时冻结的证据快照时刻到执行计划最终抵达执行层之间的真实或模拟耗时，模拟器必须越过该时间偏移后的盘口方可判定成交；人工审阅草案的时长不计入其中。

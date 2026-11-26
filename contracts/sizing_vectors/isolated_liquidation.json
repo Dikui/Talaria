@@ -1,0 +1,134 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "basis": "risk_budget=50, worst_entry=64600, stop=64000, risk_per_unit=729.2",
+        "est_liq_distance": "12060.30150754",
+        "est_liq_distance_pct": "0.18669197",
+        "est_liq_price": "51939.69849246",
+        "quantity": "0.068",
+        "rejected_reason": null,
+        "risk_amount_r": "49.5856",
+        "risk_pct_of_equity": "0.00495856"
+      },
+      "input": {
+        "contract_multiplier": "1",
+        "direction": "LONG",
+        "entry_high": "64600",
+        "entry_low": "64500",
+        "equity": "10000",
+        "existing_round_risk": "0",
+        "existing_round_stop": null,
+        "friction_buffer_pct": "0.002",
+        "invalidation_stop": "64000",
+        "leverage": "5",
+        "maintenance_rate": "0.005",
+        "margin_mode": "ISOLATED",
+        "max_single_r_pct": "0.01",
+        "min_qty": "0.001",
+        "override_quantity": null,
+        "qty_step": "0.001",
+        "r_unit_pct": "0.005"
+      },
+      "name": "isolated_long_5x_safe_stop"
+    },
+    {
+      "expected": {
+        "basis": "risk_budget=100, worst_entry=64500, stop=65500, risk_per_unit=1129",
+        "est_liq_distance": "5097.01492537",
+        "est_liq_distance_pct": "0.07902349",
+        "est_liq_price": "70597.01492537",
+        "quantity": "0.088",
+        "rejected_reason": null,
+        "risk_amount_r": "99.352",
+        "risk_pct_of_equity": "0.0049676"
+      },
+      "input": {
+        "contract_multiplier": "1",
+        "direction": "SHORT",
+        "entry_high": "64600",
+        "entry_low": "64500",
+        "equity": "20000",
+        "existing_round_risk": "0",
+        "existing_round_stop": null,
+        "friction_buffer_pct": "0.002",
+        "invalidation_stop": "65500",
+        "leverage": "10",
+        "maintenance_rate": "0.005",
+        "margin_mode": "ISOLATED",
+        "max_single_r_pct": "0.01",
+        "min_qty": "0.001",
+        "override_quantity": null,
+        "qty_step": "0.001",
+        "r_unit_pct": "0.005"
+      },
+      "name": "isolated_short_10x_safe_stop"
+    },
+    {
+      "expected": {
+        "basis": "risk_budget=500, worst_entry=64600, stop=62000, risk_per_unit=2729.2",
+        "est_liq_distance": "-1626.13065327",
+        "est_liq_distance_pct": "-0.0251723",
+        "est_liq_price": "63626.13065327",
+        "quantity": "0.183",
+        "rejected_reason": null,
+        "risk_amount_r": "499.4436",
+        "risk_pct_of_equity": "0.00499444"
+      },
+      "input": {
+        "contract_multiplier": "1",
+        "direction": "LONG",
+        "entry_high": "64600",
+        "entry_low": "64500",
+        "equity": "100000",
+        "existing_round_risk": "0",
+        "existing_round_stop": null,
+        "friction_buffer_pct": "0.002",
+        "invalidation_stop": "62000",
+        "leverage": "50",
+        "maintenance_rate": "0.005",
+        "margin_mode": "ISOLATED",
+        "max_single_r_pct": "0.01",
+        "min_qty": "0.001",
+        "override_quantity": null,
+        "qty_step": "0.001",
+        "r_unit_pct": "0.005"
+      },
+      "name": "isolated_long_50x_stop_beyond_liquidation_negative_distance"
+    },
+    {
+      "expected": {
+        "basis": "risk_budget=50, worst_entry=64600, stop=64000, risk_per_unit=729.2",
+        "est_liq_distance": null,
+        "est_liq_distance_pct": null,
+        "est_liq_price": null,
+        "quantity": "0.068",
+        "rejected_reason": null,
+        "risk_amount_r": "49.5856",
+        "risk_pct_of_equity": "0.00495856"
+      },
+      "input": {
+        "contract_multiplier": "1",
+        "direction": "LONG",
+        "entry_high": "64600",
+        "entry_low": "64500",
+        "equity": "10000",
+        "existing_round_risk": "0",
+        "existing_round_stop": null,
+        "friction_buffer_pct": "0.002",
+        "invalidation_stop": "64000",
+        "leverage": "5",
+        "maintenance_rate": "0.005",
+        "margin_mode": "CROSS",
+        "max_single_r_pct": "0.01",
+        "min_qty": "0.001",
+        "override_quantity": null,
+        "qty_step": "0.001",
+        "r_unit_pct": "0.005"
+      },
+      "name": "cross_margin_omits_isolated_liquidation"
+    }
+  ],
+  "suite": "isolated_liquidation",
+  "version": 1
+}

@@ -9,6 +9,10 @@ pub mod analysis;
 pub mod arrow;
 pub mod bars;
 pub mod desk_static;
+pub mod paper_accounts;
+pub mod paper_commands;
+pub mod paper_drafts;
+pub mod paper_sizing;
 pub mod runs;
 pub mod state;
 pub mod ticks;
@@ -44,6 +48,10 @@ pub fn api_router(state: std::sync::Arc<AppState>) -> Router<std::sync::Arc<AppS
         .merge(ticks::router())
         .merge(runs::router())
         .merge(state::router())
+        .merge(paper_accounts::router())
+        .merge(paper_commands::router())
+        .merge(paper_drafts::router())
+        .merge(paper_sizing::router())
         .merge(desk_static::router(state))
 }
 

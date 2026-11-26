@@ -1,0 +1,184 @@
+{
+  "$defs": {
+    "MarginMode": {
+      "description": "子账户保证金模式。",
+      "enum": [
+        "ISOLATED",
+        "CROSS"
+      ],
+      "title": "MarginMode",
+      "type": "string"
+    },
+    "TradingState": {
+      "description": "子账户或全局系统交易状态。",
+      "enum": [
+        "ACTIVE",
+        "REDUCING",
+        "HALTED"
+      ],
+      "title": "TradingState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "子账户资金、风控状态与定仓配置快照。",
+  "properties": {
+    "cash_available": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Cash Available",
+      "type": "string"
+    },
+    "currency": {
+      "default": "USDT",
+      "minLength": 1,
+      "title": "Currency",
+      "type": "string"
+    },
+    "equity": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Equity",
+      "type": "string"
+    },
+    "friction_buffer_pct": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Friction Buffer Pct"
+    },
+    "intraday_drawdown_pct": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Intraday Drawdown Pct",
+      "type": "string"
+    },
+    "leverage": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Leverage"
+    },
+    "liquidation_buffer_pct": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Liquidation Buffer Pct"
+    },
+    "liquidation_buffer_ticks": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Liquidation Buffer Ticks"
+    },
+    "margin_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MarginMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "margin_used": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Margin Used",
+      "type": "string"
+    },
+    "max_single_r_pct": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Single R Pct"
+    },
+    "open_r": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Open R",
+      "type": "string"
+    },
+    "peak_drawdown_pct": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Peak Drawdown Pct",
+      "type": "string"
+    },
+    "r_unit_pct": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "R Unit Pct"
+    },
+    "risk_reserved": {
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Risk Reserved",
+      "type": "string"
+    },
+    "trading_state": {
+      "$ref": "#/$defs/TradingState"
+    },
+    "trading_state_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trading State Reason"
+    }
+  },
+  "required": [
+    "equity",
+    "cash_available",
+    "margin_used",
+    "trading_state",
+    "intraday_drawdown_pct",
+    "peak_drawdown_pct",
+    "open_r",
+    "risk_reserved"
+  ],
+  "title": "PaperAccountState",
+  "type": "object"
+}

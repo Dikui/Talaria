@@ -13,7 +13,16 @@ export interface ChartPaneParams {
 }
 
 export interface RightDockParams {
-  panelType: "watchlist" | "alerts" | "levels" | "scanner" | "drawings" | "annotations" | "runs";
+  panelType:
+    | "watchlist"
+    | "alerts"
+    | "levels"
+    | "scanner"
+    | "drawings"
+    | "annotations"
+    | "runs"
+    | "drafts"
+    | "account";
 }
 
 export function applyPresetLayout(api: DockviewApi, preset: LayoutPreset): void {
@@ -114,6 +123,20 @@ export function applyPresetLayout(api: DockviewApi, preset: LayoutPreset): void 
     component: "runs",
     title: t("回测", "Runs"),
     params: { panelType: "runs" },
+    position: { referenceGroup: rightDock.group },
+  });
+  api.addPanel<RightDockParams>({
+    id: "dock-drafts",
+    component: "drafts",
+    title: t("草案", "Drafts"),
+    params: { panelType: "drafts" },
+    position: { referenceGroup: rightDock.group },
+  });
+  api.addPanel<RightDockParams>({
+    id: "dock-account",
+    component: "account",
+    title: t("模拟盘", "Paper"),
+    params: { panelType: "account" },
     position: { referenceGroup: rightDock.group },
   });
 

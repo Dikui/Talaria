@@ -1,29 +1,52 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, RefreshCw, X } from "lucide-react";
 import type {
   AgentAnnotationRecord,
   DerivativeBundle,
+  DraftRecord,
   IndicatorBundle,
   KeyLevel,
+  PaperAccountView,
   PaperRound,
+  SizingPreviewResponse,
   SnapshotMeta,
 } from "@talaria/contracts";
 
 import {
   VELA_ATTRIBUTION,
-  roundsToBarriers,
+  type BarrierDragDisabledEvent,
+  type BarrierDragOverlay,
+  type BarrierDragProposal,
   type ChartStats,
+  type OrderGestureCreateDraftPayload,
+  type OrderGestureGeometry,
   type RenderBackendMode,
 } from "../chart/adapter";
 import { VelaChartAdapter } from "../chart/VelaChartAdapter";
+import { isNonTerminalDraft } from "../chart/velaLayers";
 import { DerivativeSummary } from "../features/derivatives/DerivativeSummary";
 import { FeedAlert, FeedHealthBadge, OrderBookSummary } from "../features/feed/FeedIndicators";
+import { deskSocketHub } from "../features/feed/deskSocketHub";
 import { feedBadgeView } from "../features/feed/health";
 import { useMarketStream } from "../features/feed/useMarketStream";
 import { IndicatorToolbar } from "../features/indicators/IndicatorToolbar";
 import { indicatorRequests } from "../features/indicators/config";
 import { formatLevelPrice, keyLevelKindLabel, visibleKeyLevels } from "../features/key-levels/model";
 import { annotationPriceLabel } from "../features/annotations/model";
+import { BarrierDragConfirmModal } from "../features/paper/BarrierDragConfirmModal";
+import {
+  buildDraggableBarriers,
+  useBarrierDragCommands,
+} from "../features/paper/useBarrierDragCommands";
+import {
+  resolveDefaultSubAccount,
+  useLastSubAccount,
+} from "../features/paper/useLastSubAccount";
+import {
+  activePaperBarriersForInstrument,
+  paperViewsToTradeExecutions,
+} from "../features/paper/usePaperAccounts";
+import "../features/paper/paper.css";
 import { ReplayToolbar } from "../features/replay/ReplayToolbar";
 import { filterReplayAnnotations } from "../features/replay/filters";
 import { useChartReplay } from "../features/replay/useChartReplay";
@@ -84,10 +107,59 @@ export function ChartPane({
   const [indicatorsLoading, setIndicatorsLoading] = useState(false);
   const [indicatorError, setIndicatorError] = useState<string | null>(null);
   const [barriers, setBarriers] = useState<PaperRound[]>([]);
+  const [paperViewsById, setPaperViewsById] = useState<Record<string, PaperAccountView>>({});
+  const [paperAccountIds, setPaperAccountIds] = useState<string[]>([]);
+  const [stagedDrafts, setStagedDrafts] = useState<DraftRecord[]>([]);
+  const [activeOrderTool, setActiveOrderTool] = useState<"LONG" | "SHORT" | null>(null);
+  const [orderGesture, setOrderGesture] = useState<OrderGestureGeometry | null>(null);
+  const [orderPreview, setOrderPreview] = useState<SizingPreviewResponse | null>(null);
+  const [orderPreviewError, setOrderPreviewError] = useState<string | null>(null);
+  const [orderPreviewMs, setOrderPreviewMs] = useState<number | null>(null);
+  const [creatingDraftBusy, setCreatingDraftBusy] = useState(false);
+  const [orderGestureNotice, setOrderGestureNotice] = useState<string | null>(null);
   const [inspectedLevel, setInspectedLevel] = useState<KeyLevel | null>(null);
   const [inspectedAnnotation, setInspectedAnnotation] =
     useState<AgentAnnotationRecord | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  const { lastSubAccount } = useLastSubAccount(paperAccountIds);
+  const effectiveSubAccount = useMemo(
+    () => resolveDefaultSubAccount(paperAccountIds, lastSubAccount),
+    [paperAccountIds, lastSubAccount],
+  );
+  const effectiveSubAccountRef = useRef(effectiveSubAccount);
+  effectiveSubAccountRef.current = effectiveSubAccount;
+  const snapshotRef = useRef<SnapshotMeta | null>(null);
+  snapshotRef.current = snapshot;
+  const createDraftFromGestureRef = useRef<(payload: OrderGestureCreateDraftPayload) => void>(
+    () => undefined,
+  );
+  const barrierDragEndRef = useRef<(proposal: BarrierDragProposal) => void>(() => undefined);
+  const barrierDragDisabledRef = useRef<(ev: BarrierDragDisabledEvent) => void>(() => undefined);
+  const barrierPendingAckTimeoutRef = useRef<(ov: BarrierDragOverlay) => void>(() => undefined);
+
+  const cancelBarrierConfirm = useCallback(() => {
+    adapterRef.current?.cancelBarrierDragConfirm();
+  }, []);
+  const markBarrierPendingAck = useCallback(
+    (commandId: string, proposal: BarrierDragProposal) => {
+      adapterRef.current?.markBarrierDragPendingAck(commandId, proposal);
+    },
+    [],
+  );
+  const resolveBarrierPendingAck = useCallback((commandId?: string) => {
+    adapterRef.current?.resolveBarrierDragPendingAck(commandId);
+  }, []);
+
+  const barrierDrag = useBarrierDragCommands({
+    viewsById: paperViewsById,
+    onCancelPendingConfirm: cancelBarrierConfirm,
+    onMarkPendingAck: markBarrierPendingAck,
+    onResolvePendingAck: resolveBarrierPendingAck,
+  });
+  barrierDragEndRef.current = barrierDrag.handleDragEnd;
+  barrierDragDisabledRef.current = barrierDrag.handleDisabledAttempt;
+  barrierPendingAckTimeoutRef.current = barrierDrag.handlePendingAckTimeout;
 
   const tfMs = timeframeToMs(timeframe);
   const { onPaneReplayActiveChange } = ctx;
@@ -175,6 +247,38 @@ export function ChartPane({
         setInspectedLevel(null);
         setInspectedAnnotation(annotation);
       },
+      onSelectStagedDraft: (draft) => {
+        setInspectedLevel(null);
+        setInspectedAnnotation(null);
+        ctx.onSelectDraft(draft.draft_id);
+        ctx.onOpenRightTab("drafts");
+      },
+      onOrderGestureChange: (gesture) => {
+        setOrderGesture(gesture);
+        setOrderGestureNotice(null);
+        if (!gesture) {
+          setOrderPreview(null);
+          setOrderPreviewError(null);
+          setOrderPreviewMs(null);
+        }
+      },
+      onCreateDraftFromOrderGesture: (payload) => {
+        createDraftFromGestureRef.current(payload);
+      },
+      onDrawingToolChange: (tool) => {
+        if (tool !== "position") {
+          setActiveOrderTool(null);
+        }
+      },
+      onBarrierDragEnd: (proposal) => {
+        barrierDragEndRef.current(proposal);
+      },
+      onBarrierDragDisabled: (ev) => {
+        barrierDragDisabledRef.current(ev);
+      },
+      onBarrierPendingAckTimeout: (ov) => {
+        barrierPendingAckTimeoutRef.current(ov);
+      },
       onCreateAlertFromDrawing: ({ drawingId, price }) => {
         ctx.onSeedAlert({
           drawingId,
@@ -226,6 +330,11 @@ export function ChartPane({
     setLoadError(null);
     setInspectedLevel(null);
     setInspectedAnnotation(null);
+    setActiveOrderTool(null);
+    setOrderGesture(null);
+    setOrderPreview(null);
+    setOrderPreviewError(null);
+    setOrderGestureNotice(null);
     void adapterRef.current?.setMarket({
       instrumentId,
       timeframe,
@@ -312,29 +421,251 @@ export function ChartPane({
       .catch(() => {
         if (!cancelled) setBarriers([]);
       });
+    api
+      .paperAccounts()
+      .then(async (ids) => {
+        if (cancelled || !Array.isArray(ids)) return;
+        setPaperAccountIds(ids);
+        const loaded = await Promise.all(
+          ids.map((id) => api.paperAccount(id).catch(() => null)),
+        );
+        if (cancelled) return;
+        const map: Record<string, PaperAccountView> = {};
+        for (const view of loaded) {
+          if (view) map[view.sub_account_id] = view;
+        }
+        setPaperViewsById(map);
+      })
+      .catch(() => {
+        if (!cancelled) setPaperAccountIds([]);
+      });
     return () => {
       cancelled = true;
     };
   }, [instrumentId]);
 
+  const refreshStagedDrafts = useCallback(() => {
+    api
+      .paperDrafts()
+      .then((list) => {
+        setStagedDrafts(Array.isArray(list) ? list : []);
+      })
+      .catch(() => {
+        setStagedDrafts([]);
+      });
+  }, []);
+
+  useEffect(() => {
+    refreshStagedDrafts();
+  }, [instrumentId, ctx.draftsRevision, refreshStagedDrafts]);
+
+  useEffect(() => {
+    return deskSocketHub.subscribePaperAccounts((view) => {
+      setPaperAccountIds((prev) =>
+        prev.includes(view.sub_account_id) ? prev : [...prev, view.sub_account_id],
+      );
+      setPaperViewsById((prev) => ({ ...prev, [view.sub_account_id]: view }));
+      // Re-pull drafts so confirmed drafts that just executed disappear from LAYER_STAGED_DRAFT.
+      refreshStagedDrafts();
+    });
+  }, [refreshStagedDrafts]);
+
+  const activeBarriers = useMemo(() => {
+    const views = Object.values(paperViewsById);
+    if (views.length > 0) {
+      return activePaperBarriersForInstrument(views, instrumentId);
+    }
+    return barriers;
+  }, [paperViewsById, barriers, instrumentId]);
+
+  // Clear temporary order gesture when entering replay mode.
+  useEffect(() => {
+    if (replay.active) {
+      adapterRef.current?.clearOrderGesture();
+      setActiveOrderTool(null);
+      setOrderGesture(null);
+      setOrderPreview(null);
+      setOrderPreviewError(null);
+      setOrderGestureNotice(null);
+    }
+  }, [replay.active]);
+
+  // Push non-terminal drafts for this instrument onto read-only LAYER_STAGED_DRAFT (hidden during replay).
+  const visibleStagedDrafts = useMemo(() => {
+    if (replay.active || snapshotCutoff !== null) return [];
+    return stagedDrafts.filter(
+      (draft) => draft.content.instrument_id === instrumentId && isNonTerminalDraft(draft),
+    );
+  }, [stagedDrafts, instrumentId, replay.active, snapshotCutoff]);
+
+  useEffect(() => {
+    adapterRef.current?.setStagedDrafts(visibleStagedDrafts, {
+      precision: pricePrecision,
+      highlightId: ctx.selectedDraftId,
+    });
+  }, [visibleStagedDrafts, pricePrecision, ctx.selectedDraftId]);
+
+  // Throttled live sizing preview while placing or dragging temporary 'position' order gesture.
+  useEffect(() => {
+    if (!orderGesture || replay.active || ctx.readOnly) {
+      setOrderPreview(null);
+      setOrderPreviewError(null);
+      setOrderPreviewMs(null);
+      return;
+    }
+    if (!orderGesture.validGeometry || !effectiveSubAccount) {
+      setOrderPreview(null);
+      setOrderPreviewError(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+      void api
+        .previewPaperSizing({
+          sub_account_id: effectiveSubAccount,
+          instrument_id: instrumentId,
+          direction: orderGesture.direction,
+          entry_low: orderGesture.entryStr,
+          entry_high: orderGesture.entryStr,
+          invalidation_stop: orderGesture.stopStr,
+          take_profit: [orderGesture.targetStr],
+        })
+        .then((res) => {
+          if (cancelled) return;
+          const elapsed =
+            (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt;
+          setOrderPreview(res);
+          setOrderPreviewError(null);
+          setOrderPreviewMs(Number(elapsed.toFixed(2)));
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setOrderPreview(null);
+          setOrderPreviewError(
+            err instanceof Error
+              ? err.message
+              : t("定仓预演不可用", "Sizing preview unavailable"),
+          );
+        });
+    }, 30);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    orderGesture?.direction,
+    orderGesture?.entryStr,
+    orderGesture?.stopStr,
+    orderGesture?.targetStr,
+    orderGesture?.validGeometry,
+    effectiveSubAccount,
+    instrumentId,
+    replay.active,
+    ctx.readOnly,
+  ]);
+
+  const handleCreateDraftFromGesture = useCallback(
+    async (payload: OrderGestureCreateDraftPayload) => {
+      if (ctx.readOnly || replay.active || creatingDraftBusy) return;
+      if (!payload.validGeometry) {
+        setOrderGestureNotice(
+          t(
+            "止损与止盈须严格位于入场价两侧后才能生成草案。",
+            "Stop and take profit must stay strictly on opposite sides of entry.",
+          ),
+        );
+        return;
+      }
+      setCreatingDraftBusy(true);
+      setOrderGestureNotice(null);
+      try {
+        const currentMarket = marketRef.current;
+        let snapshotId = snapshotRef.current?.snapshot_id ?? "";
+        if (!snapshotId) {
+          const frozen = await api.createSnapshot(currentMarket.instrumentId, [
+            currentMarket.timeframe,
+          ]);
+          snapshotId = frozen.snapshot_id;
+        }
+        const subAccountId = effectiveSubAccountRef.current || undefined;
+        adapterRef.current?.clearOrderGesture();
+        setActiveOrderTool(null);
+        setOrderGesture(null);
+        setOrderPreview(null);
+        setOrderPreviewError(null);
+        ctx.onSeedDraft({
+          instrument_id: currentMarket.instrumentId,
+          snapshot_id: snapshotId,
+          sub_account_id: subAccountId,
+          direction: payload.direction,
+          entry_low: payload.entry,
+          entry_high: payload.entry,
+          invalidation_stop: payload.stop,
+          take_profit: [payload.target],
+        });
+        ctx.onOpenRightTab("drafts");
+      } catch (err) {
+        setOrderGestureNotice(
+          err instanceof Error
+            ? err.message
+            : t("冻结快照失败，无法生成草案。", "Failed to freeze snapshot for draft."),
+        );
+      } finally {
+        setCreatingDraftBusy(false);
+      }
+    },
+    [ctx, replay.active, creatingDraftBusy],
+  );
+  createDraftFromGestureRef.current = (payload) => {
+    void handleCreateDraftFromGesture(payload);
+  };
+
   useEffect(() => {
     if (ctx.selectedRunRound && ctx.selectedRunRound.instrument_id === instrumentId) {
-      adapterRef.current?.setExecutionBarriers([runRoundToBarrier(ctx.selectedRunRound)]);
+      adapterRef.current?.setExecutionBarriers([
+        {
+          ...runRoundToBarrier(ctx.selectedRunRound),
+          draggable: false,
+          disabled_reason: "READ_ONLY",
+        },
+      ]);
+      return;
+    }
+    if (replay.active || snapshotCutoff !== null) {
+      adapterRef.current?.setExecutionBarriers([]);
       return;
     }
     adapterRef.current?.setExecutionBarriers(
-      snapshotCutoff === null ? roundsToBarriers(barriers) : [],
+      buildDraggableBarriers(activeBarriers, paperViewsById, {
+        readOnly: ctx.readOnly,
+        replayActive: replay.active,
+      }),
     );
-  }, [barriers, snapshotCutoff, ctx.selectedRunRound, instrumentId]);
+  }, [activeBarriers, paperViewsById, snapshotCutoff, replay.active, ctx.readOnly, ctx.selectedRunRound, instrumentId]);
 
   const runTradeMarkers = useMemo(
     () => roundsToTradeExecutions(ctx.runsController.rounds, tfMs, instrumentId),
     [ctx.runsController.rounds, tfMs, instrumentId],
   );
 
+  const paperTradeMarkers = useMemo(
+    () => paperViewsToTradeExecutions(Object.values(paperViewsById), tfMs, instrumentId),
+    [paperViewsById, tfMs, instrumentId],
+  );
+
   useEffect(() => {
-    adapterRef.current?.setTradeMarkers(runTradeMarkers);
-  }, [runTradeMarkers]);
+    if (replay.active) {
+      adapterRef.current?.setTradeMarkers(runTradeMarkers);
+      return;
+    }
+    if (runTradeMarkers.length > 0) {
+      adapterRef.current?.setTradeMarkers(runTradeMarkers);
+      return;
+    }
+    adapterRef.current?.setTradeMarkers(snapshotCutoff === null ? paperTradeMarkers : []);
+  }, [runTradeMarkers, paperTradeMarkers, replay.active, snapshotCutoff]);
 
   useEffect(() => {
     const req = ctx.jumpRequest;
@@ -580,6 +911,42 @@ export function ChartPane({
               </button>
             ))}
           </div>
+
+          {!(ctx.readOnly || replay.active) && (
+            <div
+              className="order-tool-group"
+              role="group"
+              aria-label={t("图表下单工具", "Chart order gesture tools")}
+              data-testid={`order-tools-${paneId}`}
+            >
+              <button
+                type="button"
+                className={`order-tool-btn order-tool-btn--long${activeOrderTool === "LONG" ? " is-active" : ""}`}
+                data-testid={`order-tool-long-${paneId}`}
+                aria-pressed={activeOrderTool === "LONG"}
+                onClick={() => {
+                  const next = activeOrderTool === "LONG" ? null : "LONG";
+                  setActiveOrderTool(next);
+                  adapterRef.current?.armOrderGesture(next);
+                }}
+              >
+                {t("做多仓位", "Long Pos")}
+              </button>
+              <button
+                type="button"
+                className={`order-tool-btn order-tool-btn--short${activeOrderTool === "SHORT" ? " is-active" : ""}`}
+                data-testid={`order-tool-short-${paneId}`}
+                aria-pressed={activeOrderTool === "SHORT"}
+                onClick={() => {
+                  const next = activeOrderTool === "SHORT" ? null : "SHORT";
+                  setActiveOrderTool(next);
+                  adapterRef.current?.armOrderGesture(next);
+                }}
+              >
+                {t("做空仓位", "Short Pos")}
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="chart-pane-meta">
@@ -693,6 +1060,23 @@ export function ChartPane({
       )}
 
       <div className="chart-canvas-stage">
+        {barrierDrag.notice && (
+          <div
+            className={`barrier-drag-notice barrier-drag-notice--${barrierDrag.notice.tone}`}
+            role="status"
+            data-testid="barrier-drag-notice"
+          >
+            <span className="barrier-drag-notice-text">{barrierDrag.notice.text}</span>
+            <button
+              type="button"
+              className="barrier-drag-notice-close"
+              aria-label={t("关闭提示", "Dismiss notice")}
+              onClick={barrierDrag.dismissNotice}
+            >
+              ×
+            </button>
+          </div>
+        )}
         <div
           ref={containerRef}
           className="chart-canvas-host"
@@ -701,6 +1085,161 @@ export function ChartPane({
           data-loaded-bars={stats.loaded}
           data-gap-count={totalGaps}
         />
+
+        {orderGesture && !(ctx.readOnly || replay.active) && (() => {
+          const stageW = containerRef.current?.clientWidth || 800;
+          const stageH = containerRef.current?.clientHeight || 400;
+          const cardW = 248;
+          const cardH = 148;
+          const rawLeft = orderGesture.anchorPx ? orderGesture.anchorPx.rightX + 12 : 16;
+          const rawTop = orderGesture.anchorPx ? orderGesture.anchorPx.topY : 16;
+          const left = Math.max(8, Math.min(rawLeft, Math.max(8, stageW - cardW - 12)));
+          const top = Math.max(8, Math.min(rawTop, Math.max(8, stageH - cardH - 12)));
+          const noAccount = paperAccountIds.length === 0 && !effectiveSubAccount;
+          const formatPctBadge = (raw?: string | null) => {
+            if (!raw) return "";
+            const n = Number(raw);
+            return Number.isFinite(n) ? ` (${(n * 100).toFixed(2)}%)` : "";
+          };
+
+          return (
+            <div
+              className="order-gesture-preview"
+              data-testid="order-gesture-preview"
+              data-phase={orderGesture.phase}
+              data-preview-ms={orderPreviewMs ?? undefined}
+              style={{ left: `${left}px`, top: `${top}px` }}
+              role="region"
+              aria-label={t("临时仓位定仓预演", "Order gesture sizing preview")}
+            >
+              <div className="order-gesture-preview-head">
+                <div className="order-gesture-preview-title">
+                  <span
+                    className={`order-gesture-dir ${orderGesture.direction === "LONG" ? "is-long" : "is-short"}`}
+                  >
+                    {orderGesture.direction === "LONG"
+                      ? t("做多 LONG", "LONG")
+                      : t("做空 SHORT", "SHORT")}
+                  </span>
+                  <span>R:R {orderGesture.rr.toFixed(2)}</span>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={t("清除临时仓位", "Clear order gesture")}
+                  onClick={() => {
+                    adapterRef.current?.clearOrderGesture();
+                    setActiveOrderTool(null);
+                    setOrderGesture(null);
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+
+              <div className="order-gesture-prices">
+                <span>
+                  {t("入", "E")} {orderGesture.entryStr}
+                </span>
+                <span>
+                  {t("损", "SL")} {orderGesture.stopStr}
+                </span>
+                <span>
+                  {t("盈", "TP")} {orderGesture.targetStr}
+                </span>
+              </div>
+
+              {noAccount && (
+                <div className="order-gesture-warn" data-testid="order-gesture-no-account" role="status">
+                  {t(
+                    "未发现运行中的子账户，暂无法实时预演定仓；可点击“生成交易草案”后手动输入子账户 ID。",
+                    "No sub-accounts detected for live sizing preview; click Create Draft to enter a sub-account ID.",
+                  )}
+                </div>
+              )}
+
+              {!orderGesture.validGeometry && (
+                <div className="order-gesture-warn" data-testid="order-gesture-invalid-geometry" role="alert">
+                  {t(
+                    "止损或止盈与入场价重合，请拖动句柄分离后再生成草案。",
+                    "Stop or target coincides with entry; drag handles apart before creating a draft.",
+                  )}
+                </div>
+              )}
+
+              {orderGestureNotice && (
+                <div className="order-gesture-warn" role="alert">
+                  {orderGestureNotice}
+                </div>
+              )}
+
+              {orderPreviewError && (
+                <div className="order-gesture-warn" role="alert">
+                  {orderPreviewError}
+                </div>
+              )}
+
+              {orderPreview?.rejected_reason && (
+                <div className="paper-sizing-rejection" data-testid="order-gesture-rejected" role="alert">
+                  {orderPreview.rejected_reason}
+                </div>
+              )}
+
+              {orderPreview && !noAccount && orderGesture.validGeometry && (
+                <dl className="order-gesture-metrics">
+                  <div>
+                    <dt>{t("数量", "Qty")}</dt>
+                    <dd data-testid="order-gesture-qty">{orderPreview.quantity ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>{t("风险 (R)", "Risk (R)")}</dt>
+                    <dd data-testid="order-gesture-risk">
+                      {orderPreview.risk_amount_r ?? "—"}
+                      {formatPctBadge(orderPreview.risk_pct_of_equity)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t("强平距离", "Liq dist")}</dt>
+                    <dd data-testid="order-gesture-liq">
+                      {orderPreview.est_liq_distance ?? "—"}
+                      {formatPctBadge(orderPreview.est_liq_distance_pct)}
+                    </dd>
+                  </div>
+                </dl>
+              )}
+
+              <div className="order-gesture-actions">
+                <span className="order-gesture-subaccount">
+                  {effectiveSubAccount
+                    ? `${t("子账户", "Acct")}: ${effectiveSubAccount}`
+                    : t("未选子账户", "No sub-account")}
+                </span>
+                {orderGesture.drawingId && (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    data-testid="order-gesture-create-draft"
+                    disabled={!orderGesture.validGeometry || creatingDraftBusy}
+                    onClick={() =>
+                      void handleCreateDraftFromGesture({
+                        drawingId: orderGesture.drawingId!,
+                        direction: orderGesture.direction,
+                        entry: orderGesture.entryStr,
+                        stop: orderGesture.stopStr,
+                        target: orderGesture.targetStr,
+                        validGeometry: orderGesture.validGeometry,
+                      })
+                    }
+                  >
+                    {creatingDraftBusy
+                      ? t("生成中…", "Creating…")
+                      : t("生成交易草案", "Create Draft")}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {inspectedLevel && (
           <div
@@ -806,6 +1345,15 @@ export function ChartPane({
           </div>
         )}
       </div>
+
+      <BarrierDragConfirmModal
+        proposal={barrierDrag.pendingProposal}
+        submitting={barrierDrag.submitting}
+        onCancel={barrierDrag.handleCancelModal}
+        onConfirm={(proposal, reason) => {
+          void barrierDrag.handleConfirmModal(proposal, reason);
+        }}
+      />
 
       <div className="chart-pane-footer">
         <span>

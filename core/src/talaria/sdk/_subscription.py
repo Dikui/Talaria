@@ -45,7 +45,7 @@ async def _range_revisions(
 ) -> list[tuple[str, RangeBar]]:
     result: list[tuple[str, RangeBar]] = []
     end = last_closed_bar_start(now, interval)
-    if end < 0:
+    if end < 0 or end < range_start:
         return result
     params = {
         "instrument": request.instrument, "timeframe": request.timeframe,

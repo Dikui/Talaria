@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use serde_json::Value;
-use talaria_contracts::{KlineEvent, OrderBookEvent, TransportEvent};
+use talaria_contracts::{DerivativeTickEvent, KlineEvent, OrderBookEvent, TransportEvent};
 use talaria_packs::{BoxFuture, FeedTransport, PackError, TransportFrame};
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -26,6 +26,7 @@ pub const DEFAULT_IDLE_HEARTBEAT_MS: u64 = 5_000;
 pub enum ReplayLineKind {
     Kline,
     Book,
+    Derivative,
     Heartbeat,
     Disconnect,
     Reconnect,
@@ -38,6 +39,7 @@ pub struct ReplayLine {
     pub kind: ReplayLineKind,
     pub kline: Option<KlineEvent>,
     pub book: Option<OrderBookEvent>,
+    pub derivative: Option<DerivativeTickEvent>,
     pub reason: String,
 }
 
@@ -65,6 +67,7 @@ fn parse_replay_line(raw: Value, line_number: usize) -> Result<ReplayLine, FeedE
 
     let mut kline = None;
     let mut book = None;
+    let mut derivative = None;
     let kind = match kind_str {
         "kline" => {
             let event_val = obj.get("event").cloned().ok_or_else(|| {
@@ -94,6 +97,20 @@ fn parse_replay_line(raw: Value, line_number: usize) -> Result<ReplayLine, FeedE
             book = Some(parsed);
             ReplayLineKind::Book
         }
+        "derivative" => {
+            let event_val = obj.get("event").cloned().ok_or_else(|| {
+                FeedError::InvalidRequest(format!(
+                    "replay line {line_number} `derivative` is missing `event`"
+                ))
+            })?;
+            let parsed: DerivativeTickEvent = serde_json::from_value(event_val).map_err(|err| {
+                FeedError::InvalidRequest(format!(
+                    "replay line {line_number} invalid DerivativeTickEvent: {err}"
+                ))
+            })?;
+            derivative = Some(parsed);
+            ReplayLineKind::Derivative
+        }
         "heartbeat" => ReplayLineKind::Heartbeat,
         "disconnect" => ReplayLineKind::Disconnect,
         "reconnect" => ReplayLineKind::Reconnect,
@@ -115,6 +132,7 @@ fn parse_replay_line(raw: Value, line_number: usize) -> Result<ReplayLine, FeedE
         kind,
         kline,
         book,
+        derivative,
         reason,
     })
 }
@@ -507,6 +525,15 @@ impl FeedTransport for ReplayTransport {
                             && self.is_book_subscribed(&event.instrument_id)
                         {
                             return Ok(Some(TransportFrame::Event(TransportEvent::OrderBook(
+                                event,
+                            ))));
+                        }
+                    }
+                    ReplayLineKind::Derivative => {
+                        if let Some(event) = line.derivative
+                            && self.is_book_subscribed(&event.instrument_id)
+                        {
+                            return Ok(Some(TransportFrame::Event(TransportEvent::DerivativeTick(
                                 event,
                             ))));
                         }

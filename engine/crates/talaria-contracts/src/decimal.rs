@@ -260,3 +260,52 @@ pub mod serde_decimal_str_opt_map {
         deserializer.deserialize_map(DecimalStrOptMapVisitor)
     }
 }
+
+struct OptionDecimalStrVecVisitor;
+
+impl<'de> Visitor<'de> for OptionDecimalStrVecVisitor {
+    type Value = Option<Vec<Decimal>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("null or an array of DecimalStr strings")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(DecimalStrVecVisitor).map(Some)
+    }
+}
+
+/// Serde adapter for `Option<Vec<Decimal>>` (`DecimalStr[] | null`).
+pub mod serde_decimal_str_vec_opt {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(
+        values: &Option<Vec<Decimal>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match values {
+            Some(items) => {
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for value in items {
+                    seq.serialize_element(&format_decimal_str(*value))?;
+                }
+                seq.end()
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<Decimal>>, D::Error> {
+        deserializer.deserialize_option(OptionDecimalStrVecVisitor)
+    }
+}

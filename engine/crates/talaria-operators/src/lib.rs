@@ -5,6 +5,7 @@ pub mod gda;
 pub mod key_levels;
 pub mod operators;
 pub mod sha256;
+pub mod sizing;
 pub mod tz;
 
 pub use error::OperatorError;
@@ -17,4 +18,7 @@ pub use operators::{
     DerivativeSample, OperatorCursor, OperatorPoint, OperatorSpec, OperatorState,
     compute_indicator_series, compute_series, derivative_samples, latest_session_vwap,
     legacy_alert_points, update_series,
+};
+pub use sizing::{
+    DEFAULT_MAINTENANCE_RATE, SizingPreviewInput, compute_sizing_preview, format_opt_normalized,
 };

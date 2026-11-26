@@ -2,6 +2,7 @@ import type { DrawingsDocument, ReplayState, TradeExecution } from "@luxalgo/vel
 import type {
   AgentAnnotationRecord,
   CompactBar,
+  DraftRecord,
   DrawingRecord,
   IndicatorSeries,
   KeyLevel,
@@ -11,6 +12,7 @@ import type {
 import type { Locale } from "../lib/i18n";
 import type { Theme } from "../lib/theme";
 import type {
+  BarrierDragProposal,
   ChartMountOptions,
   ChartReplayControl,
   ChartSurfaceAdapter,
@@ -85,9 +87,15 @@ export class KLineChartAdapter implements ChartSurfaceAdapter {
   setSystemLevels(_levels: KeyLevel[]): void {}
   setAgentAnnotations(_annotations: AgentAnnotationRecord[]): void {}
   setExecutionBarriers(_barriers: ExecutionBarrierItem[]): void {}
+  cancelBarrierDragConfirm(): void {}
+  markBarrierDragPendingAck(_commandId: string, _proposal: BarrierDragProposal): void {}
+  resolveBarrierDragPendingAck(_commandId?: string): void {}
+  setStagedDrafts(_drafts: DraftRecord[]): void {}
   loadHumanDrawings(_drawings: DrawingRecord[]): void {}
   setReplayDrawingFilter(_filter: ReplayDrawingFilter): void {}
   setDrawingTool(_tool: string | null): void {}
+  armOrderGesture(_direction: "LONG" | "SHORT" | null): void {}
+  clearOrderGesture(): void {}
   selectHumanDrawing(_drawingId: string | null): void {}
   exportDrawingsDocument(): DrawingsDocument | null {
     return null;

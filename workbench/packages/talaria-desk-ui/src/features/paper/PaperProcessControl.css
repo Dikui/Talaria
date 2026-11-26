@@ -1,0 +1,275 @@
+.paper-proc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: clip;
+}
+
+.paper-proc-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.paper-proc-title-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.paper-proc-title-wrap h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.paper-proc-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.paper-proc-badge--online {
+  background: var(--live-soft);
+  color: var(--live);
+  border: 1px solid var(--live);
+}
+
+.paper-proc-badge--starting {
+  background: var(--recovering-soft);
+  color: var(--recovering);
+  border: 1px solid var(--recovering);
+}
+
+.paper-proc-badge--danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.paper-proc-badge--offline {
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+.paper-proc-mode-chip {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.paper-proc-select-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.paper-proc-select-row > span {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.paper-proc-select {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 100%;
+  height: 28px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.paper-proc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.paper-proc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.paper-proc-actions button {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.paper-proc-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.paper-proc-btn--highlight {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.paper-proc-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+  background: var(--surface-muted);
+}
+
+.paper-proc-empty-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.paper-proc-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.paper-proc-path-hint {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.paper-proc-error {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.paper-proc-error-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--danger);
+}
+
+.paper-proc-error-dismiss {
+  padding: 0 5px;
+  line-height: 1;
+  font-size: 14px;
+  color: var(--danger);
+}
+
+.paper-proc-error-body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.paper-proc-keep-alive {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.paper-proc-keep-alive input[type="checkbox"] {
+  margin: 2px 0 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+
+.paper-proc-keep-alive span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.paper-proc-cli-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.paper-proc-cli-code {
+  flex: 1 1 200px;
+  min-width: 0;
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.paper-proc-copy-btn {
+  flex-shrink: 0;
+}

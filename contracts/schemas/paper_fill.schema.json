@@ -1,21 +1,40 @@
 {
+  "$defs": {
+    "PaperFillKind": {
+      "description": "模拟盘成交事件类型。",
+      "enum": [
+        "ENTRY_FILLED",
+        "EXIT_FILLED"
+      ],
+      "title": "PaperFillKind",
+      "type": "string"
+    }
+  },
   "additionalProperties": false,
   "properties": {
     "event_id": {
       "title": "Event Id",
       "type": "string"
     },
+    "fee": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fee"
+    },
     "instrument_id": {
       "title": "Instrument Id",
       "type": "string"
     },
     "kind": {
-      "enum": [
-        "ENTRY_FILLED",
-        "EXIT_FILLED"
-      ],
-      "title": "Kind",
-      "type": "string"
+      "$ref": "#/$defs/PaperFillKind"
     },
     "price": {
       "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
@@ -26,6 +45,31 @@
       "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
       "title": "Quantity",
       "type": "string"
+    },
+    "realized_pnl": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Realized Pnl"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
     },
     "round_id": {
       "title": "Round Id",

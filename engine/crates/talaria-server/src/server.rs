@@ -168,6 +168,7 @@ pub struct RunningServer {
     dir_lock: Mutex<Option<DataDirLock>>,
     shutdown_tx: watch::Sender<bool>,
     serve_handle: Mutex<Option<JoinHandle<()>>>,
+    paper_watcher_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl RunningServer {
@@ -183,6 +184,10 @@ impl RunningServer {
         let _ = self.shutdown_tx.send(true);
         let serve_handle = self.serve_handle.lock().unwrap().take();
         if let Some(handle) = serve_handle {
+            let _ = handle.await;
+        }
+        let watcher_handle = self.paper_watcher_handle.lock().unwrap().take();
+        if let Some(handle) = watcher_handle {
             let _ = handle.await;
         }
         if let Some(sup) = &self.state.supervisor {
@@ -606,6 +611,11 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         .map_err(|e| ApiError::internal(format!("failed to write service descriptor: {e}")))?;
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let paper_watcher_handle = crate::paper_watcher::spawn_paper_watcher(
+        Arc::clone(&state),
+        shutdown_tx.subscribe(),
+        crate::paper_watcher::DEFAULT_PAPER_WATCHER_INTERVAL,
+    );
     let serve_handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
@@ -626,6 +636,7 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         dir_lock: Mutex::new(Some(dir_lock)),
         shutdown_tx,
         serve_handle: Mutex::new(Some(serve_handle)),
+        paper_watcher_handle: Mutex::new(Some(paper_watcher_handle)),
     })
 }
 

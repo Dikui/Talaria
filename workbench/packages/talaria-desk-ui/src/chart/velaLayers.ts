@@ -6,7 +6,7 @@ import {
   type RendererLayerArgs,
   type RendererLayerInstance,
 } from "@luxalgo/vela/plugin";
-import type { AgentAnnotationRecord, KeyLevel } from "@talaria/contracts";
+import type { AgentAnnotationRecord, DraftRecord, KeyLevel } from "@talaria/contracts";
 
 type LayerCoordinateSystem = RendererLayerArgs["coords"];
 type LayerPriceScale = RendererLayerArgs["scale"];
@@ -24,10 +24,16 @@ import {
   levelPrice,
 } from "../features/key-levels/model";
 import type { ExecutionBarrierItem } from "./adapter";
+import {
+  layoutBarrierTargets,
+  type BarrierDragOverlay,
+  type BarrierHoverState,
+} from "./barrierDragController";
 
 export const LAYER_SYSTEM_LEVEL = "SYSTEM_LEVEL";
 export const LAYER_AGENT_ANNOTATION = "AGENT_ANNOTATION";
 export const LAYER_EXECUTION_BARRIER = "EXECUTION_BARRIER";
+export const LAYER_STAGED_DRAFT = "STAGED_DRAFT";
 
 export interface SystemLevelLayerData {
   levels: KeyLevel[];
@@ -43,12 +49,29 @@ export interface AgentAnnotationLayerData {
 
 export interface ExecutionBarrierLayerData {
   barriers: ExecutionBarrierItem[];
+  dragOverlay?: BarrierDragOverlay | null;
+  hover?: BarrierHoverState | null;
+  readOnly?: boolean;
+  replayActive?: boolean;
+}
+
+export interface StagedDraftLayerData {
+  drafts: DraftRecord[];
+  precision: number;
+  highlightId?: string | null;
 }
 
 export interface ProjectedCoordinateContext {
-  coords: Pick<LayerCoordinateSystem, "timeToX" | "priceToY" | "width">;
+  coords: Pick<
+    LayerCoordinateSystem,
+    "timeToX" | "priceToY" | "yToPrice" | "xToLogical" | "logicalToTime" | "width" | "height"
+  >;
   scale: LayerPriceScale;
   bounds: LayerPaneBounds;
+}
+
+export function isNonTerminalDraft(draft: DraftRecord): boolean {
+  return draft.status !== "DISCARDED" && draft.status !== "EXPIRED" && !draft.receipt;
 }
 
 const channelPushers = new Map<string, (payload: unknown) => void>();
@@ -75,7 +98,12 @@ export function getLatestProjection(chartId: string): ProjectedCoordinateContext
 
 export function clearChartLayerState(chartId: string): void {
   latestProjectionByChart.delete(chartId);
-  for (const key of [LAYER_SYSTEM_LEVEL, LAYER_AGENT_ANNOTATION, LAYER_EXECUTION_BARRIER]) {
+  for (const key of [
+    LAYER_SYSTEM_LEVEL,
+    LAYER_AGENT_ANNOTATION,
+    LAYER_EXECUTION_BARRIER,
+    LAYER_STAGED_DRAFT,
+  ]) {
     channelPushers.delete(`${chartId}:${key}`);
     pendingLayerPayloads.delete(`${chartId}:${key}`);
   }
@@ -162,6 +190,50 @@ export function hitTestAgentAnnotation(
     }
   }
   return null;
+}
+
+/**
+ * Pure hit-test against read-only non-terminal STAGED_DRAFT items using Vela's CoordinateSystem.
+ * Checks entry band, invalidation stop, and all 1..4 take-profit lines.
+ */
+export function hitTestStagedDraft(
+  drafts: readonly DraftRecord[],
+  cursorY: number,
+  coords: Pick<LayerCoordinateSystem, "priceToY">,
+  scale: LayerPriceScale,
+  bounds: LayerPaneBounds,
+  tolerancePx = HIT_TOLERANCE_PX,
+): DraftRecord | null {
+  if (cursorY < bounds.top || cursorY > bounds.top + bounds.height) {
+    return null;
+  }
+  let best: { draft: DraftRecord; dist: number } | null = null;
+  for (const draft of drafts) {
+    if (!isNonTerminalDraft(draft)) continue;
+    const { entry_low, entry_high, invalidation_stop, take_profit } = draft.content;
+    const yHigh = coords.priceToY(Number(entry_high), scale, bounds);
+    const yLow = coords.priceToY(Number(entry_low), scale, bounds);
+    if (Number.isFinite(yHigh) && Number.isFinite(yLow)) {
+      const minY = Math.min(yHigh, yLow) - tolerancePx * 0.5;
+      const maxY = Math.max(yHigh, yLow) + tolerancePx * 0.5;
+      if (cursorY >= minY && cursorY <= maxY) {
+        const dist = Math.abs(cursorY - (minY + maxY) / 2);
+        if (!best || dist < best.dist) {
+          best = { draft, dist };
+        }
+      }
+    }
+    const candidatePrices = [invalidation_stop, ...take_profit];
+    for (const rawPrice of candidatePrices) {
+      const y = coords.priceToY(Number(rawPrice), scale, bounds);
+      if (!Number.isFinite(y)) continue;
+      const dist = Math.abs(cursorY - y);
+      if (dist <= tolerancePx && (!best || dist < best.dist)) {
+        best = { draft, dist };
+      }
+    }
+  }
+  return best?.draft ?? null;
 }
 
 function withCanvas2d(
@@ -381,6 +453,18 @@ function createAgentAnnotationLayer(): RendererLayerInstance {
   };
 }
 
+function formatSignedPnl(raw: string): string {
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return raw;
+  const sign = num > 0 ? "+" : "";
+  return `${sign}${num.toFixed(2)}`;
+}
+
+function compactAccountLabel(accountId: string, maxLen = 18): string {
+  if (accountId.length <= maxLen) return accountId;
+  return `${accountId.slice(0, maxLen - 1)}…`;
+}
+
 function createExecutionBarrierLayer(): RendererLayerInstance {
   let canvas: HTMLCanvasElement | null = null;
   return {
@@ -388,52 +472,351 @@ function createExecutionBarrierLayer(): RendererLayerInstance {
       canvas = el;
     },
     render(args) {
-      const payload = args.data as ExecutionBarrierLayerData | undefined;
+      const payload = args.data as (ExecutionBarrierLayerData & { chartId?: string }) | undefined;
+      if (payload?.chartId) {
+        latestProjectionByChart.set(payload.chartId, {
+          coords: args.coords,
+          scale: args.scale,
+          bounds: args.bounds,
+        });
+      }
       withCanvas2d(canvas, args, (ctx) => {
         if (!payload || payload.barriers.length === 0) return;
         for (const item of payload.barriers) {
-          const stopY = args.coords.priceToY(Number(item.stop), args.scale, args.bounds);
-          if (Number.isFinite(stopY)) {
-            ctx.strokeStyle = "#ef4444";
-            ctx.lineWidth = 1.4;
-            ctx.setLineDash([4, 4]);
-            ctx.beginPath();
-            ctx.moveTo(0, stopY);
-            ctx.lineTo(args.coords.width, stopY);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            drawPill(
-              ctx,
-              `${item.sub_account_id} · SL ${item.stop}`,
-              12,
-              stopY,
-              "#7f1d1d",
-              "#fee2e2",
-              args.coords.width,
-            );
+          const acct = compactAccountLabel(item.sub_account_id);
+          // 1. Pending entry band (entry_low - entry_high)
+          if (item.entry_low != null && item.entry_high != null) {
+            const lowNum = Number(item.entry_low);
+            const highNum = Number(item.entry_high);
+            if (Number.isFinite(lowNum) && Number.isFinite(highNum)) {
+              const yHigh = args.coords.priceToY(highNum, args.scale, args.bounds);
+              const yLow = args.coords.priceToY(lowNum, args.scale, args.bounds);
+              if (Number.isFinite(yHigh) && Number.isFinite(yLow)) {
+                const top = Math.min(yHigh, yLow);
+                const height = Math.max(2, Math.abs(yLow - yHigh));
+                const isLong = item.direction === "LONG";
+                ctx.fillStyle = isLong ? "rgba(59, 130, 246, 0.14)" : "rgba(245, 158, 11, 0.14)";
+                ctx.fillRect(0, top, args.coords.width, height);
+                ctx.strokeStyle = isLong ? "#3b82f6" : "#f59e0b";
+                ctx.lineWidth = 1.2;
+                ctx.setLineDash([5, 3]);
+                ctx.beginPath();
+                ctx.moveTo(0, top);
+                ctx.lineTo(args.coords.width, top);
+                ctx.moveTo(0, top + height);
+                ctx.lineTo(args.coords.width, top + height);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                drawPill(
+                  ctx,
+                  `${acct} · ENTRY ${item.entry_low}–${item.entry_high}`,
+                  12,
+                  top + height / 2,
+                  isLong ? "#1e3a8a" : "#78350f",
+                  isLong ? "#dbeafe" : "#fef3c7",
+                  args.coords.width,
+                );
+              }
+            }
           }
-          for (const tp of item.take_profit) {
-            const tpY = args.coords.priceToY(Number(tp), args.scale, args.bounds);
-            if (Number.isFinite(tpY)) {
-              ctx.strokeStyle = "#10b981";
-              ctx.lineWidth = 1.4;
-              ctx.setLineDash([4, 4]);
+
+          // 2. Entry price line + floating PnL badge for open positions
+          const entryNum = item.entry_price != null ? Number(item.entry_price) : Number.NaN;
+          const pnlNum = item.unrealized_pnl != null ? Number(item.unrealized_pnl) : Number.NaN;
+          if (Number.isFinite(entryNum)) {
+            const entryY = args.coords.priceToY(entryNum, args.scale, args.bounds);
+            if (Number.isFinite(entryY)) {
+              ctx.strokeStyle = item.direction === "LONG" ? "#60a5fa" : "#fbbf24";
+              ctx.lineWidth = 1.2;
+              ctx.setLineDash([2, 3]);
               ctx.beginPath();
-              ctx.moveTo(0, tpY);
-              ctx.lineTo(args.coords.width, tpY);
+              ctx.moveTo(0, entryY);
+              ctx.lineTo(args.coords.width, entryY);
               ctx.stroke();
               ctx.setLineDash([]);
+              const hasPnl = Number.isFinite(pnlNum) && item.unrealized_pnl != null;
+              const label = hasPnl
+                ? `${acct} · ${item.direction} @ ${item.entry_price} · PnL ${formatSignedPnl(item.unrealized_pnl!)}`
+                : `${acct} · ${item.direction} @ ${item.entry_price}`;
+              const bg = !hasPnl ? "#1e293b" : pnlNum >= 0 ? "#064e3b" : "#7f1d1d";
+              const fg = !hasPnl ? "#e2e8f0" : pnlNum >= 0 ? "#d1fae5" : "#fee2e2";
+              drawPill(ctx, label, 12, entryY, bg, fg, args.coords.width);
+            }
+          } else if (Number.isFinite(pnlNum) && item.unrealized_pnl != null && item.mark_price != null) {
+            const markY = args.coords.priceToY(Number(item.mark_price), args.scale, args.bounds);
+            if (Number.isFinite(markY)) {
               drawPill(
                 ctx,
-                `${item.sub_account_id} · TP ${tp}`,
+                `${acct} · PnL ${formatSignedPnl(item.unrealized_pnl)}`,
                 12,
-                tpY,
-                "#064e3b",
-                "#d1fae5",
+                markY,
+                pnlNum >= 0 ? "#064e3b" : "#7f1d1d",
+                pnlNum >= 0 ? "#d1fae5" : "#fee2e2",
                 args.coords.width,
               );
             }
           }
+
+          // 3 & 4. Stop loss and take profit barrier lines are laid out via the shared
+          // `layoutBarrierTargets` helper below so multi-sub-account pills stagger horizontally
+          // and stay 100% pixel-aligned with `BarrierDragController` hit-testing.
+        }
+
+        ctx.font = "600 10px system-ui, -apple-system, sans-serif";
+        const targets = layoutBarrierTargets(
+          payload.barriers,
+          (p) => args.coords.priceToY(p, args.scale, args.bounds),
+          args.coords.width,
+          {
+            measureTextWidth: (text) => ctx.measureText(text).width,
+            readOnly: payload.readOnly,
+            replayActive: payload.replayActive,
+          },
+        );
+        const overlay = payload.dragOverlay ?? null;
+        const hover = payload.hover ?? null;
+
+        for (const target of targets) {
+          const isOverlayTarget =
+            overlay !== null &&
+            overlay.roundId === target.barrier.round_id &&
+            overlay.subAccountId === target.barrier.sub_account_id &&
+            overlay.kind === target.kind &&
+            overlay.tpIndex === target.tpIndex;
+          const isHovered =
+            hover !== null &&
+            hover.roundId === target.barrier.round_id &&
+            hover.subAccountId === target.barrier.sub_account_id &&
+            hover.kind === target.kind &&
+            hover.tpIndex === target.tpIndex;
+
+          const baseStroke = target.kind === "STOP" ? "#ef4444" : "#10b981";
+          const pillBg = target.kind === "STOP" ? "#7f1d1d" : "#064e3b";
+          const pillFg = target.kind === "STOP" ? "#fee2e2" : "#d1fae5";
+
+          ctx.save();
+          if (isOverlayTarget) {
+            ctx.globalAlpha = 0.4;
+          } else if (!target.draggable) {
+            ctx.globalAlpha = 0.65;
+          }
+
+          ctx.strokeStyle = baseStroke;
+          ctx.lineWidth = isHovered && target.draggable ? 2.2 : 1.4;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(0, target.lineY);
+          ctx.lineTo(args.coords.width, target.lineY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          const pillLabel = target.draggable
+            ? target.label
+            : `${target.label} [🔒]`;
+          drawPill(
+            ctx,
+            pillLabel,
+            target.pillRect.x,
+            target.lineY,
+            pillBg,
+            pillFg,
+            args.coords.width,
+          );
+
+          if (isHovered && target.draggable && !isOverlayTarget) {
+            ctx.strokeStyle = "#f8fafc";
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            ctx.roundRect(
+              target.pillRect.x - 1,
+              target.pillRect.y - 1,
+              target.pillRect.w + 2,
+              target.pillRect.h + 2,
+              5,
+            );
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+
+        // 5. Active drag / pending_confirm / pending_ack preview overlay
+        if (overlay) {
+          const previewNum = Number(overlay.previewPrice);
+          const previewY = Number.isFinite(previewNum)
+            ? args.coords.priceToY(previewNum, args.scale, args.bounds)
+            : Number.NaN;
+          if (Number.isFinite(previewY)) {
+            let stroke = "#10b981";
+            let bg = "#064e3b";
+            let fg = "#d1fae5";
+            let dash: number[] = [];
+
+            if (overlay.phase === "pending_ack") {
+              stroke = "#f59e0b";
+              bg = "#78350f";
+              fg = "#fef3c7";
+              dash = [6, 4];
+            } else if (!overlay.classification.isValidGeometry) {
+              stroke = "#ef4444";
+              bg = "#7f1d1d";
+              fg = "#fee2e2";
+              dash = [3, 3];
+            } else if (overlay.classification.requiresRiskCheck) {
+              stroke = "#f59e0b";
+              bg = "#78350f";
+              fg = "#fef3c7";
+            } else if (overlay.classification.crossesBreakeven) {
+              stroke = "#38bdf8";
+              bg = "#0c4a6e";
+              fg = "#e0f2fe";
+            }
+
+            ctx.save();
+            ctx.strokeStyle = stroke;
+            ctx.lineWidth = 2;
+            ctx.setLineDash(dash);
+            ctx.beginPath();
+            ctx.moveTo(0, previewY);
+            ctx.lineTo(args.coords.width, previewY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            drawPill(
+              ctx,
+              overlay.badgeText,
+              12,
+              previewY,
+              bg,
+              fg,
+              args.coords.width,
+            );
+            ctx.restore();
+          }
+        }
+      });
+    },
+    destroy() {
+      canvas = null;
+    },
+  };
+}
+
+function createStagedDraftLayer(): RendererLayerInstance {
+  let canvas: HTMLCanvasElement | null = null;
+  return {
+    mount(el) {
+      canvas = el;
+    },
+    render(args) {
+      const payload = args.data as (StagedDraftLayerData & { chartId?: string }) | undefined;
+      if (payload?.chartId) {
+        latestProjectionByChart.set(payload.chartId, {
+          coords: args.coords,
+          scale: args.scale,
+          bounds: args.bounds,
+        });
+      }
+      withCanvas2d(canvas, args, (ctx) => {
+        if (!payload || payload.drafts.length === 0) return;
+        const activeDrafts = payload.drafts.filter(isNonTerminalDraft);
+        if (activeDrafts.length === 0) return;
+        const hovered =
+          args.cursor !== null
+            ? hitTestStagedDraft(
+                activeDrafts,
+                args.cursor.y,
+                args.coords,
+                args.scale,
+                args.bounds,
+              )
+            : null;
+        const width = args.coords.width;
+
+        for (const draft of activeDrafts) {
+          const isHighlight =
+            hovered?.draft_id === draft.draft_id || payload.highlightId === draft.draft_id;
+          const { content } = draft;
+          const isConfirmed = draft.status === "CONFIRMED";
+          const entryColor = content.direction === "LONG" ? "#f59e0b" : "#a855f7";
+          const entryBg = content.direction === "LONG" ? "#78350f" : "#4c1d95";
+          const entryFg = content.direction === "LONG" ? "#fef3c7" : "#f3e8ff";
+
+          const yHigh = args.coords.priceToY(Number(content.entry_high), args.scale, args.bounds);
+          const yLow = args.coords.priceToY(Number(content.entry_low), args.scale, args.bounds);
+          if (Number.isFinite(yHigh) && Number.isFinite(yLow)) {
+            const top = Math.min(yHigh, yLow);
+            const h = Math.max(4, Math.abs(yLow - yHigh));
+            ctx.fillStyle = entryColor;
+            ctx.globalAlpha = isHighlight ? 0.2 : 0.1;
+            ctx.fillRect(0, top, width, h);
+            ctx.globalAlpha = isHighlight ? 0.98 : 0.8;
+            ctx.strokeStyle = entryColor;
+            ctx.lineWidth = isHighlight ? 2 : 1.25;
+            ctx.setLineDash([6, 3]);
+            ctx.strokeRect(0, top, width, h);
+            ctx.setLineDash([]);
+            ctx.globalAlpha = 1;
+            const entryText =
+              content.entry_low === content.entry_high
+                ? content.entry_low
+                : `${content.entry_low}–${content.entry_high}`;
+            const tag = isConfirmed ? "CONFIRMED" : "DRAFT";
+            drawPill(
+              ctx,
+              `${tag} ${content.direction} · ${content.sub_account_id} · ${entryText}`,
+              width,
+              top + h / 2,
+              entryBg,
+              entryFg,
+              width,
+            );
+          }
+
+          const stopY = args.coords.priceToY(
+            Number(content.invalidation_stop),
+            args.scale,
+            args.bounds,
+          );
+          if (Number.isFinite(stopY)) {
+            ctx.strokeStyle = "#fb923c";
+            ctx.lineWidth = isHighlight ? 2 : 1.2;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(0, stopY);
+            ctx.lineTo(width, stopY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            drawPill(
+              ctx,
+              `DRAFT SL · ${content.sub_account_id} ${content.invalidation_stop}`,
+              width,
+              stopY,
+              "#7c2d12",
+              "#ffedd5",
+              width,
+            );
+          }
+
+          content.take_profit.forEach((tp, idx) => {
+            const tpY = args.coords.priceToY(Number(tp), args.scale, args.bounds);
+            if (!Number.isFinite(tpY)) return;
+            ctx.strokeStyle = "#38bdf8";
+            ctx.lineWidth = isHighlight ? 2 : 1.2;
+            ctx.setLineDash([3, 3]);
+            ctx.beginPath();
+            ctx.moveTo(0, tpY);
+            ctx.lineTo(width, tpY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            drawPill(
+              ctx,
+              `DRAFT TP${idx + 1} · ${content.sub_account_id} ${tp}`,
+              width,
+              tpY,
+              "#0c4a6e",
+              "#e0f2fe",
+              width,
+            );
+          });
         }
       });
     },
@@ -527,14 +910,22 @@ export function ensureTalariaLayersRegistered(): void {
   registerRendererLayer({
     id: LAYER_EXECUTION_BARRIER,
     placement: "above-data",
-    repaintOnCursor: false,
+    repaintOnCursor: true,
     create: createExecutionBarrierLayer,
+  });
+
+  registerRendererLayer({
+    id: LAYER_STAGED_DRAFT,
+    placement: "above-data",
+    repaintOnCursor: true,
+    create: createStagedDraftLayer,
   });
 
   for (const layerId of [
     LAYER_SYSTEM_LEVEL,
     LAYER_AGENT_ANNOTATION,
     LAYER_EXECUTION_BARRIER,
+    LAYER_STAGED_DRAFT,
   ]) {
     registerNativeIndicator({
       type: layerId,

@@ -143,6 +143,19 @@
           "default": null,
           "title": "Plan Id"
         },
+        "quantity": {
+          "anyOf": [
+            {
+              "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quantity"
+        },
         "reason": {
           "anyOf": [
             {
@@ -180,6 +193,18 @@
       ],
       "title": "DraftReceipt",
       "type": "object"
+    },
+    "DraftStatus": {
+      "description": "暂存交易草案的生命周期状态。",
+      "enum": [
+        "STAGED",
+        "MODIFIED",
+        "CONFIRMED",
+        "DISCARDED",
+        "EXPIRED"
+      ],
+      "title": "DraftStatus",
+      "type": "string"
     },
     "ExitBarrierSpec": {
       "additionalProperties": false,
@@ -275,13 +300,7 @@
       "default": null
     },
     "status": {
-      "enum": [
-        "STAGED",
-        "MODIFIED",
-        "CONFIRMED"
-      ],
-      "title": "Status",
-      "type": "string"
+      "$ref": "#/$defs/DraftStatus"
     },
     "version": {
       "title": "Version",

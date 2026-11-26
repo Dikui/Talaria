@@ -21,6 +21,19 @@
       "default": null,
       "title": "Plan Id"
     },
+    "quantity": {
+      "anyOf": [
+        {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Quantity"
+    },
     "reason": {
       "anyOf": [
         {

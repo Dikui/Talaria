@@ -8,11 +8,13 @@ from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from functools import cache
 from decimal import Decimal
-from pathlib import Path
 import json
+import os
+from pathlib import Path
 import re
 import sys
 from threading import RLock
+import time
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -21,6 +23,7 @@ from pydantic import Field
 
 from talaria import sdk
 from talaria.account.contracts import (
+    ApprovedExecutionPlan,
     DataEntry,
     DecisionOrigin,
     EntryCandidate,
@@ -35,12 +38,18 @@ from talaria.account.contracts import (
     TradingState,
 )
 from talaria.account.execution import AccountProcessError, ExecutionGate
-from talaria.account.ledger import LedgerWriter, open_ledger
+from talaria.account.ledger import LedgerWriter, RunJournal, open_ledger, read_journal
 from talaria.account.ownership import AccountOwnership, hold_sub_accounts
 from talaria.account.parameters import validate_parameters
-from talaria.account.paper import DraftIntake, PaperInbox
+from talaria.account.paper import CommandIntake, DraftIntake, PaperInbox
 from talaria.account.paper_ledger import PaperLedger, open_paper_ledger
+from talaria.account.paper_projection import (
+    atomic_write_projection,
+    build_paper_account_view,
+    projection_path,
+)
 from talaria.account.run_export import export_run
+from talaria.foundation.paper import PaperFeedStatus, PaperProcessInfo, PaperProcessState
 from talaria.account.plugins.bar_sim_1m import BarSim1m, bar_sim_1m
 from talaria.account.plugins.l1_trade_sim import L1TradeSim, l1_trade_sim
 from talaria.account.plugins.live_ws import LiveWS, PaperMark, PaperPulse, live_ws
@@ -496,6 +505,78 @@ class AccountProcess:
                     "risk": plugins.risk.checkpoint() if isinstance(plugins.risk, SevenStepRisk) else None,
                 })
 
+        process_started_ts = time.time_ns() // 1_000_000
+        process_pid = os.getpid()
+        risk_config = self.scheme.account_risk.get(account) or AccountRiskConfig()
+        market_pack = get_market_pack(DEFAULT_PACK)
+        feed_healthy = True
+        feed_reduce_reason: str | None = None
+        feed_updated_ts: int | None = None
+        cached_journal: tuple[int, RunJournal] | None = None
+
+        def emit_projection(*, stopped: bool = False) -> None:
+            nonlocal cached_journal
+            if not paper or self._data_dir is None:
+                return
+            ledger_file = self._data_dir / "accounts" / account / "ledger.sqlite"
+            writer = ledger._ledgers.get(account) if hasattr(ledger, "_ledgers") else None
+            event_count = getattr(writer, "_event_count", None)
+            if cached_journal is not None and event_count is not None and cached_journal[0] == event_count:
+                journal = cached_journal[1]
+            elif ledger_file.is_file():
+                journal = read_journal(ledger_file)
+                cached_journal = (len(journal.events), journal)
+            else:
+                journal = RunJournal((), ())
+
+            gate_ckpt = gate.checkpoint()
+            pending_plans = tuple(
+                ApprovedExecutionPlan.model_validate(item) for item in gate_ckpt.get("plans", {}).values()
+            )
+            trading_state_reason = gate_ckpt.get("state_reasons", {}).get(account)
+
+            drawdown_bounds: tuple[Decimal, Decimal] | None = None
+            if isinstance(plugins.risk, SevenStepRisk):
+                dd = plugins.risk.checkpoint().get("drawdowns", {}).get(account)
+                if dd is not None:
+                    drawdown_bounds = (Decimal(dd["opening"]), Decimal(dd["peak"]))
+
+            service_warning: str | None = None
+            if inbox is not None:
+                raw_warning = getattr(inbox, "service_warning", None) or getattr(inbox, "last_warning", None)
+                if isinstance(raw_warning, str) and raw_warning:
+                    service_warning = raw_warning
+
+            heartbeat_ts = time.time_ns() // 1_000_000
+            feed_status = PaperFeedStatus(
+                healthy=feed_healthy and feed_reduce_reason is None and service_warning is None,
+                reduce_reason=feed_reduce_reason,
+                service_warning=service_warning,
+                updated_ts=feed_updated_ts,
+            )
+            process_info = PaperProcessInfo(
+                pid=process_pid,
+                scheme=self.scheme.scheme,
+                started_ts=process_started_ts,
+                heartbeat_ts=heartbeat_ts,
+                status=PaperProcessState.STOPPED if stopped else PaperProcessState.RUNNING,
+                stopped_ts=heartbeat_ts if stopped else None,
+            )
+            view = build_paper_account_view(
+                account,
+                journal,
+                gate.account_state(account),
+                risk_config,
+                valuation=valuation,
+                pack=market_pack,
+                pending_plans=pending_plans,
+                trading_state_reason=trading_state_reason,
+                drawdown_bounds=drawdown_bounds,
+                feed_status=feed_status,
+                process=process_info,
+            )
+            atomic_write_projection(projection_path(self._data_dir, account), view)
+
         with ledger.transaction(account) if paper else nullcontext():
             if state is not None:
                 gate.restore_checkpoint(state["gate"])
@@ -507,13 +588,49 @@ class AccountProcess:
                         if reason != "PAPER_STOPPING":
                             gate.set_trading_state(account, TradingState(value), reason)
             checkpoint()
+        emit_projection()
 
         def submit_draft(candidate):
             receipt = gate.submit_candidate(candidate)
             gate.poll_events(candidate.ts_decision)
             return receipt
 
-        intake = DraftIntake(inbox.freeze, submit_draft, gate.record_host_event, previous) if paper and inbox else None
+        def _current_ledger_events():
+            if not paper or self._data_dir is None:
+                return ()
+            ledger_file = self._data_dir / "accounts" / account / "ledger.sqlite"
+            return read_journal(ledger_file).events if ledger_file.is_file() else ()
+
+        def _current_ledger_seq() -> int:
+            writer = ledger._ledgers.get(account) if hasattr(ledger, "_ledgers") else None
+            count = getattr(writer, "_event_count", None)
+            if isinstance(count, int):
+                return count
+            return len(_current_ledger_events())
+
+        intake = (
+            DraftIntake(
+                inbox.freeze,
+                submit_draft,
+                gate.record_host_event,
+                previous,
+                quantity_lookup=gate.plan_quantity,
+            )
+            if paper and inbox
+            else None
+        )
+        command_intake = (
+            CommandIntake(
+                gate,
+                plugins.fill,
+                gate.record_host_event,
+                previous,
+                ledger_events_reader=_current_ledger_events,
+                ledger_seq_reader=_current_ledger_seq,
+            )
+            if paper and inbox and callable(getattr(inbox, "claim_command", None))
+            else None
+        )
 
         def process_market(market, now, signal_close, ctx, decide):
             nonlocal execution_through, signal_through
@@ -563,31 +680,58 @@ class AccountProcess:
                         gate.record_host_event(rejection)
 
         def consume(market, signal_close, ctx, decide):
-            nonlocal now
+            nonlocal now, feed_healthy, feed_reduce_reason, feed_updated_ts
             now = market.as_of
+            if isinstance(market, PaperPulse):
+                feed_updated_ts = now
+                if market.reduce_reason:
+                    feed_healthy = False
+                    feed_reduce_reason = market.reduce_reason
+                elif market.ready:
+                    feed_healthy = True
+                    feed_reduce_reason = None
+                else:
+                    feed_healthy = False
             with ledger.transaction(account) if paper else nullcontext():
                 if isinstance(market, PaperPulse):
                     self._handle_paper_pulse(market, gate, execution_through)
                 elif not (paper and market.bar is not None and market.timeframe == "1m" and signal_close <= execution_through):
                     process_market(market, now, signal_close, ctx, decide)
                 checkpoint()
+            emit_projection()
+            if isinstance(market, PaperPulse) and command_intake is not None:
+                for _ in range(16):
+                    cmd = inbox.claim_command(account)
+                    if cmd is None:
+                        break
+                    with ledger.transaction(account):
+                        cmd_receipt = command_intake.receive(
+                            cmd, now, current_ledger_seq=_current_ledger_seq(),
+                        )
+                        checkpoint()
+                    emit_projection()
+                    inbox.acknowledge_command(account, cmd_receipt)
             if isinstance(market, PaperPulse) and market.ready and intake is not None:
                 draft = inbox.claim(account, market.instrument_id, now)
                 if draft is not None:
                     with ledger.transaction(account):
                         intake.stage(draft, now)
                         checkpoint()
+                    emit_projection()
                     with ledger.transaction(account):
                         receipt = intake.receive(draft, now)
                         checkpoint()
+                    emit_projection()
                     if receipt is not None:
                         inbox.acknowledge(account, receipt)
 
         def finish():
-            if paper and inbox and now:
-                with ledger.transaction(account):
-                    self._reduce_paper(gate, now, "PAPER_STOPPING")
-                    checkpoint()
+            if paper:
+                if inbox and now:
+                    with ledger.transaction(account):
+                        self._reduce_paper(gate, now, "PAPER_STOPPING")
+                        checkpoint()
+                emit_projection(stopped=True)
             if execution_replay and not tick_replay:
                 end = data.end_event()
                 self._clock.advance(end.as_of)
