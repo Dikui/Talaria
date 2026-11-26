@@ -373,6 +373,7 @@ impl HyperliquidStream {
     async fn spawn_socket(
         url: String,
         ping_interval: Option<Duration>,
+        ping_timeout: Duration,
         ack_timeout: Duration,
         parser: Arc<Mutex<HyperliquidWsParser>>,
         events_tx: mpsc::UnboundedSender<EventResult>,
@@ -387,7 +388,11 @@ impl HyperliquidStream {
 
         let worker = tokio::spawn(async move {
             let mut last_rx = Instant::now();
-            let mut ping_ticker = tokio::time::interval(ping_interval.unwrap_or(Duration::from_secs(20)));
+            let mut awaiting_pong_since: Option<Instant> = None;
+            let tick_dur = ping_interval
+                .map(|iv| (iv / 2).min(ping_timeout).max(Duration::from_millis(250)))
+                .unwrap_or(Duration::from_secs(20));
+            let mut ping_ticker = tokio::time::interval(tick_dur);
             ping_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ping_ticker.tick().await;
 
@@ -397,24 +402,73 @@ impl HyperliquidStream {
                     cmd = cmd_rx.recv() => {
                         match cmd {
                             Some(WsCmd::Send { payload, ack_tx }) => {
-                                let res = write.send(Message::Text(payload.into())).await
-                                    .map_err(|err| PackError::FeedTransport(format!("Hyperliquid WS send error: {err}")));
+                                let res = match tokio::time::timeout(
+                                    ack_timeout,
+                                    write.send(Message::Text(payload.into())),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(())) => Ok(()),
+                                    Ok(Err(err)) => Err(PackError::FeedTransport(format!(
+                                        "Hyperliquid WS send error: {err}"
+                                    ))),
+                                    Err(_) => Err(PackError::FeedTransport(
+                                        "Hyperliquid WS send timeout".to_owned(),
+                                    )),
+                                };
+                                let failed = res.is_err();
                                 let _ = ack_tx.send(res);
+                                if failed {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(
+                                        "Hyperliquid WS write failed".to_owned(),
+                                    )));
+                                    break;
+                                }
                             }
                             Some(WsCmd::Close) | None => {
-                                let _ = write.send(Message::Close(None)).await;
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(1),
+                                    write.send(Message::Close(None)),
+                                )
+                                .await;
                                 break;
                             }
                         }
                     }
                     _ = ping_ticker.tick(), if ping_interval.is_some() => {
-                        if let Some(iv) = ping_interval
+                        if let Some(sent_at) = awaiting_pong_since {
+                            if sent_at.elapsed() >= ping_timeout {
+                                warn!("Hyperliquid WS ping timeout after {:?}", sent_at.elapsed());
+                                let _ = events_tx.send(Err(PackError::FeedTransport(
+                                    "Hyperliquid WS ping timeout".to_owned(),
+                                )));
+                                break;
+                            }
+                        } else if let Some(iv) = ping_interval
                             && last_rx.elapsed() >= iv / 2
                         {
                             let ping = json!({"method": "ping"}).to_string();
-                            if let Err(err) = write.send(Message::Text(ping.into())).await {
-                                let _ = events_tx.send(Err(PackError::FeedTransport(format!("Hyperliquid WS ping error: {err}"))));
-                                break;
+                            match tokio::time::timeout(
+                                ping_timeout,
+                                write.send(Message::Text(ping.into())),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {
+                                    awaiting_pong_since = Some(Instant::now());
+                                }
+                                Ok(Err(err)) => {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(format!(
+                                        "Hyperliquid WS ping error: {err}"
+                                    ))));
+                                    break;
+                                }
+                                Err(_) => {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(
+                                        "Hyperliquid WS ping send timeout".to_owned(),
+                                    )));
+                                    break;
+                                }
                             }
                         }
                     }
@@ -422,6 +476,7 @@ impl HyperliquidStream {
                         match incoming {
                             Some(Ok(Message::Text(txt))) => {
                                 last_rx = Instant::now();
+                                awaiting_pong_since = None;
                                 let decoded = {
                                     let mut guard = parser.lock().await;
                                     guard.decode_text(&txt)
@@ -440,14 +495,25 @@ impl HyperliquidStream {
                             }
                             Some(Ok(Message::Ping(p))) => {
                                 last_rx = Instant::now();
-                                let _ = write.send(Message::Pong(p)).await;
+                                awaiting_pong_since = None;
+                                let _ = tokio::time::timeout(
+                                    ping_timeout,
+                                    write.send(Message::Pong(p)),
+                                )
+                                .await;
                             }
-                            Some(Ok(Message::Pong(_))) => { last_rx = Instant::now(); }
+                            Some(Ok(Message::Pong(_))) => {
+                                last_rx = Instant::now();
+                                awaiting_pong_since = None;
+                            }
                             Some(Ok(Message::Close(_))) | None => {
                                 let _ = events_tx.send(Err(PackError::FeedTransport("Hyperliquid WS closed".to_owned())));
                                 break;
                             }
-                            Some(Ok(_)) => { last_rx = Instant::now(); }
+                            Some(Ok(_)) => {
+                                last_rx = Instant::now();
+                                awaiting_pong_since = None;
+                            }
                             Some(Err(err)) => {
                                 warn!("Hyperliquid WS read error: {err}");
                                 let _ = events_tx.send(Err(PackError::FeedTransport(format!("Hyperliquid WS read error: {err}"))));
@@ -487,6 +553,7 @@ impl FeedTransport for HyperliquidStream {
             let conn = Self::spawn_socket(
                 self.ws_url.clone(),
                 self.config.ping_interval,
+                self.config.ping_timeout,
                 self.config.ack_timeout,
                 Arc::clone(&self.parser),
                 self.events_tx.clone(),
@@ -498,8 +565,13 @@ impl FeedTransport for HyperliquidStream {
                 if let Some(spec) = self.instruments.get(&inst_id) {
                     for msg in self.build_subscription_messages(&spec.symbol, &tf, "subscribe")? {
                         let (tx, rx) = oneshot::channel();
-                        let _ = conn.cmd_tx.send(WsCmd::Send { payload: msg, ack_tx: tx });
-                        let _ = rx.await;
+                        conn.cmd_tx
+                            .send(WsCmd::Send { payload: msg, ack_tx: tx })
+                            .map_err(|_| PackError::FeedTransport("Hyperliquid WS disconnected".to_owned()))?;
+                        tokio::time::timeout(self.config.ack_timeout, rx)
+                            .await
+                            .map_err(|_| PackError::FeedTransport("Hyperliquid resubscribe timeout".to_owned()))?
+                            .map_err(|_| PackError::FeedTransport("Hyperliquid resubscribe dropped".to_owned()))??;
                     }
                 }
             }
@@ -530,7 +602,9 @@ impl FeedTransport for HyperliquidStream {
                     conn.cmd_tx
                         .send(WsCmd::Send { payload: msg, ack_tx: tx })
                         .map_err(|_| PackError::FeedTransport("Hyperliquid WS disconnected".to_owned()))?;
-                    rx.await
+                    tokio::time::timeout(self.config.ack_timeout, rx)
+                        .await
+                        .map_err(|_| PackError::FeedTransport("Hyperliquid subscribe timeout".to_owned()))?
                         .map_err(|_| PackError::FeedTransport("Hyperliquid subscribe dropped".to_owned()))??;
                 }
             }

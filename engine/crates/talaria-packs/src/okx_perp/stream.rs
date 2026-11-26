@@ -460,6 +460,7 @@ impl OkxPerpStream {
     async fn spawn_socket(
         url: String,
         ping_interval: Option<Duration>,
+        ping_timeout: Duration,
         ack_timeout: Duration,
         parser: Arc<Mutex<OkxWsParser>>,
         events_tx: mpsc::UnboundedSender<EventResult>,
@@ -474,7 +475,11 @@ impl OkxPerpStream {
 
         let worker = tokio::spawn(async move {
             let mut last_rx = Instant::now();
-            let mut ping_ticker = tokio::time::interval(ping_interval.unwrap_or(Duration::from_secs(20)));
+            let mut awaiting_pong_since: Option<Instant> = None;
+            let tick_dur = ping_interval
+                .map(|iv| (iv / 2).min(ping_timeout).max(Duration::from_millis(250)))
+                .unwrap_or(Duration::from_secs(20));
+            let mut ping_ticker = tokio::time::interval(tick_dur);
             ping_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ping_ticker.tick().await;
 
@@ -484,29 +489,80 @@ impl OkxPerpStream {
                     cmd = cmd_rx.recv() => {
                         match cmd {
                             Some(WsCmd::Send { payload, ack_tx }) => {
-                                let res = write.send(Message::Text(payload.into())).await
-                                    .map_err(|err| PackError::FeedTransport(format!("OKX WS send error: {err}")));
+                                let res = match tokio::time::timeout(
+                                    ack_timeout,
+                                    write.send(Message::Text(payload.into())),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(())) => Ok(()),
+                                    Ok(Err(err)) => Err(PackError::FeedTransport(format!(
+                                        "OKX WS send error: {err}"
+                                    ))),
+                                    Err(_) => Err(PackError::FeedTransport(
+                                        "OKX WS send timeout".to_owned(),
+                                    )),
+                                };
+                                let failed = res.is_err();
                                 let _ = ack_tx.send(res);
+                                if failed {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(
+                                        "OKX WS write failed".to_owned(),
+                                    )));
+                                    break;
+                                }
                             }
                             Some(WsCmd::Close) | None => {
-                                let _ = write.send(Message::Close(None)).await;
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(1),
+                                    write.send(Message::Close(None)),
+                                )
+                                .await;
                                 break;
                             }
                         }
                     }
                     _ = ping_ticker.tick(), if ping_interval.is_some() => {
-                        if let Some(iv) = ping_interval
+                        if let Some(sent_at) = awaiting_pong_since {
+                            if sent_at.elapsed() >= ping_timeout {
+                                warn!("OKX WS ping timeout after {:?}", sent_at.elapsed());
+                                let _ = events_tx.send(Err(PackError::FeedTransport(
+                                    "OKX WS ping timeout".to_owned(),
+                                )));
+                                break;
+                            }
+                        } else if let Some(iv) = ping_interval
                             && last_rx.elapsed() >= iv / 2
-                            && let Err(err) = write.send(Message::Text("ping".into())).await
                         {
-                            let _ = events_tx.send(Err(PackError::FeedTransport(format!("OKX WS ping failed: {err}"))));
-                            break;
+                            match tokio::time::timeout(
+                                ping_timeout,
+                                write.send(Message::Text("ping".into())),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {
+                                    awaiting_pong_since = Some(Instant::now());
+                                }
+                                Ok(Err(err)) => {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(format!(
+                                        "OKX WS ping failed: {err}"
+                                    ))));
+                                    break;
+                                }
+                                Err(_) => {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(
+                                        "OKX WS ping send timeout".to_owned(),
+                                    )));
+                                    break;
+                                }
+                            }
                         }
                     }
                     incoming = read.next() => {
                         match incoming {
                             Some(Ok(Message::Text(txt))) => {
                                 last_rx = Instant::now();
+                                awaiting_pong_since = None;
                                 let decoded = {
                                     let mut guard = parser.lock().await;
                                     guard.decode_text(&txt)
@@ -525,16 +581,25 @@ impl OkxPerpStream {
                             }
                             Some(Ok(Message::Ping(p))) => {
                                 last_rx = Instant::now();
-                                let _ = write.send(Message::Pong(p)).await;
+                                awaiting_pong_since = None;
+                                let _ = tokio::time::timeout(
+                                    ping_timeout,
+                                    write.send(Message::Pong(p)),
+                                )
+                                .await;
                             }
                             Some(Ok(Message::Pong(_))) => {
                                 last_rx = Instant::now();
+                                awaiting_pong_since = None;
                             }
                             Some(Ok(Message::Close(_))) | None => {
                                 let _ = events_tx.send(Err(PackError::FeedTransport("OKX WS closed".to_owned())));
                                 break;
                             }
-                            Some(Ok(_)) => { last_rx = Instant::now(); }
+                            Some(Ok(_)) => {
+                                last_rx = Instant::now();
+                                awaiting_pong_since = None;
+                            }
                             Some(Err(err)) => {
                                 warn!("OKX WS read error: {err}");
                                 let _ = events_tx.send(Err(PackError::FeedTransport(format!("OKX WS read error: {err}"))));
@@ -574,6 +639,7 @@ impl FeedTransport for OkxPerpStream {
             let conn_biz = Self::spawn_socket(
                 self.business_ws_url.clone(),
                 self.config.ping_interval,
+                self.config.ping_timeout,
                 self.config.ack_timeout,
                 Arc::clone(&self.parser),
                 self.events_tx.clone(),
@@ -582,15 +648,24 @@ impl FeedTransport for OkxPerpStream {
             state.connections.push(conn_biz);
 
             if self.public_ws_url != self.business_ws_url {
-                let conn_pub = Self::spawn_socket(
+                match Self::spawn_socket(
                     self.public_ws_url.clone(),
                     self.config.ping_interval,
+                    self.config.ping_timeout,
                     self.config.ack_timeout,
                     Arc::clone(&self.parser),
                     self.events_tx.clone(),
                 )
-                .await?;
-                state.connections.push(conn_pub);
+                .await
+                {
+                    Ok(conn_pub) => state.connections.push(conn_pub),
+                    Err(err) => {
+                        for old in state.connections.drain(..) {
+                            old.worker.abort();
+                        }
+                        return Err(err);
+                    }
+                }
             }
 
             let existing: Vec<_> = state.subscriptions.iter().cloned().collect();
@@ -599,13 +674,23 @@ impl FeedTransport for OkxPerpStream {
                     let (biz_msg, pub_msg) = self.build_subscribe_args(&spec.symbol, &tf, "subscribe")?;
                     if let Some(c0) = state.connections.first() {
                         let (tx, rx) = oneshot::channel();
-                        let _ = c0.cmd_tx.send(WsCmd::Send { payload: biz_msg, ack_tx: tx });
-                        let _ = rx.await;
+                        c0.cmd_tx
+                            .send(WsCmd::Send { payload: biz_msg, ack_tx: tx })
+                            .map_err(|_| PackError::FeedTransport("OKX business WS disconnected".to_owned()))?;
+                        tokio::time::timeout(self.config.ack_timeout, rx)
+                            .await
+                            .map_err(|_| PackError::FeedTransport("OKX business resubscribe timeout".to_owned()))?
+                            .map_err(|_| PackError::FeedTransport("OKX business resubscribe dropped".to_owned()))??;
                     }
                     if let (Some(msg), Some(c1)) = (pub_msg, state.connections.get(1)) {
                         let (tx, rx) = oneshot::channel();
-                        let _ = c1.cmd_tx.send(WsCmd::Send { payload: msg, ack_tx: tx });
-                        let _ = rx.await;
+                        c1.cmd_tx
+                            .send(WsCmd::Send { payload: msg, ack_tx: tx })
+                            .map_err(|_| PackError::FeedTransport("OKX public WS disconnected".to_owned()))?;
+                        tokio::time::timeout(self.config.ack_timeout, rx)
+                            .await
+                            .map_err(|_| PackError::FeedTransport("OKX public resubscribe timeout".to_owned()))?
+                            .map_err(|_| PackError::FeedTransport("OKX public resubscribe dropped".to_owned()))??;
                     }
                 }
             }
@@ -635,7 +720,9 @@ impl FeedTransport for OkxPerpStream {
                 c0.cmd_tx
                     .send(WsCmd::Send { payload: biz_msg, ack_tx: tx })
                     .map_err(|_| PackError::FeedTransport("OKX business WS disconnected".to_owned()))?;
-                rx.await
+                tokio::time::timeout(self.config.ack_timeout, rx)
+                    .await
+                    .map_err(|_| PackError::FeedTransport("OKX subscribe timeout".to_owned()))?
                     .map_err(|_| PackError::FeedTransport("OKX subscribe dropped".to_owned()))??;
             }
             if let (Some(msg), Some(c1)) = (pub_msg, state.connections.get(1)) {
@@ -643,7 +730,9 @@ impl FeedTransport for OkxPerpStream {
                 c1.cmd_tx
                     .send(WsCmd::Send { payload: msg, ack_tx: tx })
                     .map_err(|_| PackError::FeedTransport("OKX public WS disconnected".to_owned()))?;
-                rx.await
+                tokio::time::timeout(self.config.ack_timeout, rx)
+                    .await
+                    .map_err(|_| PackError::FeedTransport("OKX public subscribe timeout".to_owned()))?
                     .map_err(|_| PackError::FeedTransport("OKX public subscribe dropped".to_owned()))??;
             }
             Ok(())

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::DateTime;
 use futures_util::{SinkExt, StreamExt};
@@ -404,6 +404,8 @@ impl CoinbaseSpotStream {
 
     async fn spawn_socket(
         url: String,
+        ping_interval: Option<Duration>,
+        ping_timeout: Duration,
         ack_timeout: Duration,
         parser: Arc<Mutex<CoinbaseWsParser>>,
         events_tx: mpsc::UnboundedSender<EventResult>,
@@ -417,25 +419,95 @@ impl CoinbaseSpotStream {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<WsCmd>();
 
         let worker = tokio::spawn(async move {
+            let mut last_rx = Instant::now();
+            let mut awaiting_pong_since: Option<Instant> = None;
+            let tick_dur = ping_interval
+                .map(|iv| (iv / 2).min(ping_timeout).max(Duration::from_millis(250)))
+                .unwrap_or(Duration::from_secs(20));
+            let mut ping_ticker = tokio::time::interval(tick_dur);
+            ping_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ping_ticker.tick().await;
+
             loop {
                 tokio::select! {
                     biased;
                     cmd = cmd_rx.recv() => {
                         match cmd {
                             Some(WsCmd::Send { payload, ack_tx }) => {
-                                let res = write.send(Message::Text(payload.into())).await
-                                    .map_err(|err| PackError::FeedTransport(format!("Coinbase WS send error: {err}")));
+                                let res = match tokio::time::timeout(
+                                    ack_timeout,
+                                    write.send(Message::Text(payload.into())),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(())) => Ok(()),
+                                    Ok(Err(err)) => Err(PackError::FeedTransport(format!(
+                                        "Coinbase WS send error: {err}"
+                                    ))),
+                                    Err(_) => Err(PackError::FeedTransport(
+                                        "Coinbase WS send timeout".to_owned(),
+                                    )),
+                                };
+                                let failed = res.is_err();
                                 let _ = ack_tx.send(res);
+                                if failed {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(
+                                        "Coinbase WS write failed".to_owned(),
+                                    )));
+                                    break;
+                                }
                             }
                             Some(WsCmd::Close) | None => {
-                                let _ = write.send(Message::Close(None)).await;
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(1),
+                                    write.send(Message::Close(None)),
+                                )
+                                .await;
                                 break;
+                            }
+                        }
+                    }
+                    _ = ping_ticker.tick(), if ping_interval.is_some() => {
+                        if let Some(sent_at) = awaiting_pong_since {
+                            if sent_at.elapsed() >= ping_timeout {
+                                warn!("Coinbase WS ping timeout after {:?}", sent_at.elapsed());
+                                let _ = events_tx.send(Err(PackError::FeedTransport(
+                                    "Coinbase WS ping timeout".to_owned(),
+                                )));
+                                break;
+                            }
+                        } else if let Some(iv) = ping_interval
+                            && last_rx.elapsed() >= iv / 2
+                        {
+                            match tokio::time::timeout(
+                                ping_timeout,
+                                write.send(Message::Ping(Vec::new().into())),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {
+                                    awaiting_pong_since = Some(Instant::now());
+                                }
+                                Ok(Err(err)) => {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(format!(
+                                        "Coinbase WS ping failed: {err}"
+                                    ))));
+                                    break;
+                                }
+                                Err(_) => {
+                                    let _ = events_tx.send(Err(PackError::FeedTransport(
+                                        "Coinbase WS ping send timeout".to_owned(),
+                                    )));
+                                    break;
+                                }
                             }
                         }
                     }
                     incoming = read.next() => {
                         match incoming {
                             Some(Ok(Message::Text(txt))) => {
+                                last_rx = Instant::now();
+                                awaiting_pong_since = None;
                                 let decoded = {
                                     let mut guard = parser.lock().await;
                                     guard.decode_text(&txt)
@@ -453,13 +525,26 @@ impl CoinbaseSpotStream {
                                 }
                             }
                             Some(Ok(Message::Ping(p))) => {
-                                let _ = write.send(Message::Pong(p)).await;
+                                last_rx = Instant::now();
+                                awaiting_pong_since = None;
+                                let _ = tokio::time::timeout(
+                                    ping_timeout,
+                                    write.send(Message::Pong(p)),
+                                )
+                                .await;
+                            }
+                            Some(Ok(Message::Pong(_))) => {
+                                last_rx = Instant::now();
+                                awaiting_pong_since = None;
                             }
                             Some(Ok(Message::Close(_))) | None => {
                                 let _ = events_tx.send(Err(PackError::FeedTransport("Coinbase WS closed".to_owned())));
                                 break;
                             }
-                            Some(Ok(_)) => {}
+                            Some(Ok(_)) => {
+                                last_rx = Instant::now();
+                                awaiting_pong_since = None;
+                            }
                             Some(Err(err)) => {
                                 warn!("Coinbase WS read error: {err}");
                                 let _ = events_tx.send(Err(PackError::FeedTransport(format!("Coinbase WS read error: {err}"))));
@@ -498,6 +583,8 @@ impl FeedTransport for CoinbaseSpotStream {
 
             let conn = Self::spawn_socket(
                 self.ws_url.clone(),
+                self.config.ping_interval,
+                self.config.ping_timeout,
                 self.config.ack_timeout,
                 Arc::clone(&self.parser),
                 self.events_tx.clone(),
@@ -513,8 +600,13 @@ impl FeedTransport for CoinbaseSpotStream {
             for product in products {
                 let payload = self.subscribe_payload(&product, "subscribe");
                 let (tx, rx) = oneshot::channel();
-                let _ = conn.cmd_tx.send(WsCmd::Send { payload, ack_tx: tx });
-                let _ = rx.await;
+                conn.cmd_tx
+                    .send(WsCmd::Send { payload, ack_tx: tx })
+                    .map_err(|_| PackError::FeedTransport("Coinbase WS disconnected".to_owned()))?;
+                tokio::time::timeout(self.config.ack_timeout, rx)
+                    .await
+                    .map_err(|_| PackError::FeedTransport("Coinbase resubscribe timeout".to_owned()))?
+                    .map_err(|_| PackError::FeedTransport("Coinbase resubscribe dropped".to_owned()))??;
             }
             state.connection = Some(conn);
             Ok(())
@@ -543,7 +635,9 @@ impl FeedTransport for CoinbaseSpotStream {
                 conn.cmd_tx
                     .send(WsCmd::Send { payload, ack_tx: tx })
                     .map_err(|_| PackError::FeedTransport("Coinbase WS disconnected".to_owned()))?;
-                rx.await
+                tokio::time::timeout(self.config.ack_timeout, rx)
+                    .await
+                    .map_err(|_| PackError::FeedTransport("Coinbase subscribe timeout".to_owned()))?
                     .map_err(|_| PackError::FeedTransport("Coinbase subscribe dropped".to_owned()))??;
             }
             Ok(())

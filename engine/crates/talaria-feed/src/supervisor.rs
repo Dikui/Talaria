@@ -100,6 +100,7 @@ impl ChannelState {
 enum SubscriptionOp {
     Subscribe(String, String),
     Unsubscribe(String, String),
+    ForceReconnect,
 }
 
 enum PostNotice {
@@ -400,7 +401,7 @@ impl SupervisorCore {
         notices
     }
 
-    fn tick(&mut self, now: i64) -> Vec<PostNotice> {
+    fn tick(&mut self, now: i64) -> (Vec<PostNotice>, bool) {
         let mut notices = Vec::new();
         for key in &self.channel_order {
             let Some(channel) = self.channels.get_mut(key) else {
@@ -416,7 +417,19 @@ impl SupervisorCore {
                 notices.push(PostNotice::Event(FeedEvent::Health(channel.health_event(now))));
             }
         }
-        notices
+        // Trigger an automatic transport reconnect if every subscribed channel has remained STALE
+        // for an additional `stale_after_ms` beyond the initial staleness threshold (i.e. 2x total
+        // silence) while no outage reconnect is already underway.
+        let reconnect_threshold = self.stale_after_ms.saturating_mul(2);
+        let should_force_reconnect = self.outage_lost_at.is_none()
+            && !self.channels.is_empty()
+            && self.channels.values().all(|ch| {
+                ch.status == FeedHealthStatus::Stale
+                    && ch
+                        .stale_since
+                        .is_some_and(|since| now.saturating_sub(since) >= reconnect_threshold)
+            });
+        (notices, should_force_reconnect)
     }
 
     fn health(&self, feed_mode: &str, now: i64) -> FeedHealthReport {
@@ -952,8 +965,11 @@ impl FeedSupervisor {
     /// Check all `LIVE` channels against `stale_after_ms` and transition silent channels to `STALE`.
     pub fn tick(&self, now: Option<i64>) {
         let now = now.unwrap_or_else(|| self.clock.now_ms());
-        let notices = self.core.lock().expect("supervisor lock").tick(now);
+        let (notices, should_force_reconnect) = self.core.lock().expect("supervisor lock").tick(now);
         self.dispatch(notices);
+        if should_force_reconnect {
+            let _ = self.ops_tx.send(SubscriptionOp::ForceReconnect);
+        }
     }
 
     /// Aggregate health across all currently subscribed channels.
@@ -1199,18 +1215,26 @@ impl FeedSupervisor {
                         let Some(op) = maybe_op else {
                             break;
                         };
-                        let res = match op {
+                        match op {
+                            SubscriptionOp::ForceReconnect => {
+                                warn!("all subscribed channels remained STALE; forcing transport reconnect");
+                                self.transport_lost(None);
+                                break;
+                            }
                             SubscriptionOp::Subscribe(inst, tf) => {
-                                self.transport.subscribe(&inst, &tf).await
+                                if let Err(err) = self.transport.subscribe(&inst, &tf).await {
+                                    warn!("subscription operation failed: {err}");
+                                    self.transport_lost(None);
+                                    break;
+                                }
                             }
                             SubscriptionOp::Unsubscribe(inst, tf) => {
-                                self.transport.unsubscribe(&inst, &tf).await
+                                if let Err(err) = self.transport.unsubscribe(&inst, &tf).await {
+                                    warn!("subscription operation failed: {err}");
+                                    self.transport_lost(None);
+                                    break;
+                                }
                             }
-                        };
-                        if let Err(err) = res {
-                            warn!("subscription operation failed: {err}");
-                            self.transport_lost(None);
-                            break;
                         }
                     }
                     recv_res = self.transport.recv() => {

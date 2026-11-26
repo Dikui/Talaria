@@ -579,3 +579,45 @@ async fn binance_archive_fetch_bars_stops_early_on_prelisting_404s() {
     let logged = seen_paths.lock().unwrap();
     assert!(logged.iter().all(|p| p.contains("/monthly/") && !p.contains("/daily/")));
 }
+
+#[tokio::test]
+async fn okx_ws_ping_timeout_emits_transport_error() {
+    use futures_util::StreamExt;
+    use talaria_packs::okx_perp::stream::OkxPerpStream;
+    use talaria_packs::{FeedTransport, RealtimeStreamConfig};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Mock WS server: accept handshake and silently read frames without ever replying "pong".
+    let server = tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await
+            && let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await
+        {
+            while let Some(Ok(_)) = ws.next().await {}
+        }
+    });
+
+    let pack = get_market_pack("okx_perp").unwrap();
+    let cfg = RealtimeStreamConfig {
+        ws_url: Some(format!("ws://{addr}")),
+        ping_interval: Some(Duration::from_millis(300)),
+        ping_timeout: Duration::from_millis(300),
+        ack_timeout: Duration::from_secs(2),
+        ..RealtimeStreamConfig::default()
+    };
+    let stream = OkxPerpStream::new(pack.instruments(), cfg);
+    stream.connect().await.expect("connect to mock WS");
+
+    let err = tokio::time::timeout(Duration::from_secs(3), stream.recv())
+        .await
+        .expect("ping timeout should trigger within 3s")
+        .expect_err("silent peer must return FeedTransport error");
+    assert!(
+        err.to_string().contains("ping timeout"),
+        "unexpected error: {err}"
+    );
+
+    let _ = stream.close().await;
+    server.abort();
+}

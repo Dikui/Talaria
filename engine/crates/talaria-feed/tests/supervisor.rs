@@ -908,3 +908,76 @@ fn subscribing_during_active_outage_starts_stale_and_recovers_on_restore() {
         ]
     );
 }
+
+#[tokio::test]
+async fn stale_watchdog_forces_transport_reconnect_and_recovery() {
+    let clock = Arc::new(ManualClock::new(BASE));
+    let transport = Arc::new(SequenceMockTransport::new(0, Vec::new(), Arc::clone(&clock)));
+    let sink = Arc::new(RecordingSink::default());
+    let pack = get_market_pack("crypto_perp").unwrap();
+    let sup = Arc::new(
+        FeedSupervisor::new(
+            transport.clone(),
+            None,
+            pack.instruments().to_vec(),
+            clock.clone(),
+            sink.clone(),
+            FeedSupervisorConfig {
+                stale_after_ms: 12_000,
+                tick_interval: Some(Duration::from_millis(4_000)),
+                backoff_initial: Duration::from_millis(200),
+                backoff_max: Duration::from_millis(5_000),
+                ..FeedSupervisorConfig::default()
+            },
+        )
+        .unwrap(),
+    );
+    let mut rx = sup.subscribe_events();
+    sup.subscribe(INSTRUMENT, "1m").unwrap();
+    sup.start().await.unwrap();
+
+    // Advance 12s -> channel becomes STALE without triggering reconnect yet.
+    for _ in 0..3 {
+        tokio::task::yield_now().await;
+        clock.advance_ms(4_000);
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(FeedEvent::Health(h)) = rx.recv().await
+                && h.status == FeedHealthStatus::Stale
+            {
+                assert_eq!(h.reconnect_count, 0);
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    // Advance another 12s (24s total silence = 2 * stale_after_ms) -> watchdog forces reconnect.
+    for _ in 0..3 {
+        tokio::task::yield_now().await;
+        clock.advance_ms(4_000);
+    }
+    // Advance past initial backoff (200ms) so reconnect completes.
+    tokio::task::yield_now().await;
+    clock.advance_ms(200);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(FeedEvent::Health(h)) = rx.recv().await
+                && h.status == FeedHealthStatus::Live
+                && h.reconnect_count >= 1
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    sup.stop().await;
+    let final_health = sup.channel_health(INSTRUMENT, "1m").unwrap();
+    assert_eq!(final_health.status, FeedHealthStatus::Live);
+    assert!(final_health.reconnect_count >= 1);
+}
