@@ -1,7 +1,7 @@
 //! Thread-safe in-memory sliding window buffer for live/unarchived kline revisions (`HotStreamBuffer`).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use talaria_contracts::{
@@ -103,7 +103,7 @@ struct BufferState {
 
 /// Thread-safe in-memory sliding window buffer retaining recent kline revisions per series.
 pub struct HotStreamBuffer {
-    symbols: HashMap<String, String>,
+    symbols: RwLock<HashMap<String, String>>,
     now_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
     max_bars: usize,
     epoch: String,
@@ -130,7 +130,7 @@ impl HotStreamBuffer {
         let epoch_seed = now_ms();
         let epoch = format!("{:016x}{:08x}", epoch_seed as u64, std::process::id());
         Ok(Self {
-            symbols,
+            symbols: RwLock::new(symbols),
             now_ms,
             max_bars: max_bars_per_series,
             epoch,
@@ -149,6 +149,13 @@ impl HotStreamBuffer {
         now_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
     ) -> Result<Self> {
         Self::new(instruments, now_ms, DEFAULT_MAX_BARS_PER_SERIES)
+    }
+
+    /// Dynamically register a newly added instrument so live klines can be buffered immediately.
+    pub fn register_instrument(&self, spec: &InstrumentSpec) {
+        if let Ok(mut guard) = self.symbols.write() {
+            guard.insert(spec.instrument_id.clone(), spec.symbol.clone());
+        }
     }
 
     /// Ingest a transport-layer `ReceivedKlineEvent` directly.
@@ -234,7 +241,12 @@ impl HotStreamBuffer {
         ) else {
             return None;
         };
-        let symbol = self.symbols.get(&kline.instrument_id)?.clone();
+        let symbol = self
+            .symbols
+            .read()
+            .ok()?
+            .get(&kline.instrument_id)?
+            .clone();
         let raw = RawBar {
             symbol,
             timeframe: kline.timeframe.clone(),

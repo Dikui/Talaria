@@ -75,7 +75,7 @@ struct BookTracker {
 
 /// Stateful Binance USD-M Futures WS frame parser (shared by live WS and offline JSONL replay).
 pub struct BinanceWsParser {
-    instrument_by_symbol: BTreeMap<String, String>,
+    instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     subscriptions: BTreeSet<(String, String)>,
@@ -94,7 +94,7 @@ impl BinanceWsParser {
             instrument_by_symbol.insert(spec.symbol.clone(), spec.instrument_id.clone());
         }
         Self {
-            instrument_by_symbol,
+            instrument_by_symbol: Arc::new(std::sync::RwLock::new(instrument_by_symbol)),
             now_ms,
             persist_public_trades,
             subscriptions: BTreeSet::new(),
@@ -188,7 +188,12 @@ impl BinanceWsParser {
             .and_then(Value::as_str)?;
         let interval = k.get("i").and_then(Value::as_str)?;
         let timeframe = rest_interval_for(interval).ok()?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?;
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         if !self
             .subscriptions
             .contains(&(instrument_id.clone(), timeframe.to_owned()))
@@ -258,7 +263,12 @@ impl BinanceWsParser {
         received_ts: i64,
     ) -> Option<ReceivedOrderBookEvent> {
         let symbol = data.get("s").and_then(Value::as_str)?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?.clone();
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         if !self.subscriptions.iter().any(|(i, _)| i == &instrument_id) {
             return None;
         }
@@ -329,7 +339,12 @@ impl BinanceWsParser {
         received_ts: i64,
     ) -> Option<DerivativeTickEvent> {
         let symbol = data.get("s").and_then(Value::as_str)?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?.clone();
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         if !self.subscriptions.iter().any(|(i, _)| i == &instrument_id) {
             return None;
         }
@@ -378,8 +393,13 @@ impl BinanceWsParser {
         received_ts: i64,
     ) -> Option<TransportFrame> {
         let symbol = data.get("s").and_then(Value::as_str)?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?;
-        if !self.subscriptions.iter().any(|(i, _)| i == instrument_id) {
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
+        if !self.subscriptions.iter().any(|(i, _)| i == &instrument_id) {
             return None;
         }
 
@@ -413,7 +433,7 @@ impl BinanceWsParser {
             };
             let trade_uuid = deterministic_trade_uuid("binance", symbol, agg_id, ts_event);
             let event = parse_trade_event(
-                instrument_id,
+                &instrument_id,
                 &trade_uuid,
                 side,
                 price_str,
@@ -488,8 +508,9 @@ fn parse_opt_decimal(val: Option<&Value>, key: &str) -> Result<Option<Decimal>, 
 /// Public Binance USD-M Futures WebSocket [`FeedTransport`] implementation.
 pub struct BinanceFuturesStream {
     ws_url: String,
-    instruments: Vec<InstrumentSpec>,
-    symbol_by_instrument: BTreeMap<String, String>,
+    instruments: std::sync::RwLock<Vec<InstrumentSpec>>,
+    symbol_by_instrument: std::sync::RwLock<BTreeMap<String, String>>,
+    instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     ack_timeout: Duration,
@@ -503,16 +524,19 @@ impl BinanceFuturesStream {
     /// Construct a Binance USD-M Futures WebSocket stream.
     pub fn new(instruments: &[InstrumentSpec], config: RealtimeStreamConfig) -> Self {
         let mut symbol_by_instrument = BTreeMap::new();
+        let mut instrument_by_symbol = BTreeMap::new();
         for spec in instruments {
             symbol_by_instrument.insert(spec.instrument_id.clone(), spec.symbol.clone());
+            instrument_by_symbol.insert(spec.symbol.clone(), spec.instrument_id.clone());
         }
         let (_tx, rx) = mpsc::unbounded_channel();
         Self {
             ws_url: config
                 .ws_url
                 .unwrap_or_else(|| DEFAULT_WS_URL.to_owned()),
-            instruments: instruments.to_vec(),
-            symbol_by_instrument,
+            instruments: std::sync::RwLock::new(instruments.to_vec()),
+            symbol_by_instrument: std::sync::RwLock::new(symbol_by_instrument),
+            instrument_by_symbol: Arc::new(std::sync::RwLock::new(instrument_by_symbol)),
             now_ms: config.now_ms,
             persist_public_trades: config.persist_public_trades,
             ack_timeout: config.ack_timeout,
@@ -637,11 +661,12 @@ impl FeedTransport for BinanceFuturesStream {
             }
 
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-            let parser = BinanceWsParser::new(
-                &self.instruments,
+            let mut parser = BinanceWsParser::new(
+                &self.instruments.read().unwrap(),
                 Arc::clone(&self.now_ms),
                 self.persist_public_trades,
             );
+            parser.instrument_by_symbol = Arc::clone(&self.instrument_by_symbol);
             let worker = tokio::spawn(run_ws_worker(
                 ws_stream,
                 cmd_rx,
@@ -673,11 +698,12 @@ impl FeedTransport for BinanceFuturesStream {
         Box::pin(async move {
             let symbol = self
                 .symbol_by_instrument
-                .get(instrument_id)
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
                 .ok_or_else(|| {
                     PackError::FeedTransport(format!("unknown instrument: {instrument_id}"))
-                })?
-                .clone();
+                })?;
             let interval = rest_interval_for(timeframe)
                 .map_err(|_| PackError::FeedTransport(format!("unsupported timeframe: {timeframe}")))?;
 
@@ -735,7 +761,12 @@ impl FeedTransport for BinanceFuturesStream {
         timeframe: &'a str,
     ) -> BoxFuture<'a, Result<(), PackError>> {
         Box::pin(async move {
-            let Some(symbol) = self.symbol_by_instrument.get(instrument_id).cloned() else {
+            let Some(symbol) = self
+                .symbol_by_instrument
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
+            else {
                 return Ok(());
             };
             let Ok(interval) = rest_interval_for(timeframe) else {
@@ -796,6 +827,20 @@ impl FeedTransport for BinanceFuturesStream {
             Self::teardown_connection(&mut state).await;
             Ok(())
         })
+    }
+
+    fn register_instrument(&self, spec: &InstrumentSpec) {
+        if let Ok(mut guard) = self.instruments.write()
+            && !guard.iter().any(|s| s.instrument_id == spec.instrument_id)
+        {
+            guard.push(spec.clone());
+        }
+        if let Ok(mut guard) = self.symbol_by_instrument.write() {
+            guard.insert(spec.instrument_id.clone(), spec.symbol.clone());
+        }
+        if let Ok(mut guard) = self.instrument_by_symbol.write() {
+            guard.insert(spec.symbol.clone(), spec.instrument_id.clone());
+        }
     }
 }
 

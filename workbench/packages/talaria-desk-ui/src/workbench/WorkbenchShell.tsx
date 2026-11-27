@@ -14,6 +14,7 @@ import {
   PanelRight,
   Plus,
   RotateCcw,
+  Search,
   Sun,
 } from "lucide-react";
 import type {
@@ -46,6 +47,7 @@ import {
   type IndicatorSetting,
   type IndicatorSettings,
 } from "../features/indicators/config";
+import { InstrumentSearchModal } from "../features/instruments/InstrumentSearchModal";
 import { KeyLevelPanel } from "../features/key-levels/KeyLevelPanel";
 import {
   visibleKeyLevels,
@@ -94,6 +96,7 @@ import {
   type ActiveChartTelemetry,
   type ChartJumpRequest,
   type ReplayTriggerRequest,
+  type SymbolSearchOptions,
   type WorkbenchContextValue,
 } from "./WorkbenchContext";
 
@@ -122,6 +125,7 @@ function DockWatchlistPanel() {
       instruments={ctx.instruments}
       selectedInstrumentId={ctx.activeInstrumentId}
       onSelect={ctx.onSelectInstrument}
+      onOpenSymbolSearch={ctx.onOpenSymbolSearch}
     />
   );
 }
@@ -332,6 +336,10 @@ export function WorkbenchShell({
   }, []);
 
   const [instruments, setInstruments] = useState<InstrumentSpec[]>([]);
+  const [symbolSearch, setSymbolSearch] = useState<{
+    open: boolean;
+    options?: SymbolSearchOptions;
+  }>({ open: false });
   const [feedMode, setFeedMode] = useState<string | null>(null);
   const [activePaneId, setActivePaneId] = useState<string>(
     popoutConfig?.paneId ?? "chart-1m",
@@ -424,6 +432,21 @@ export function WorkbenchShell({
     const onResize = () => setViewportWidth(window.innerWidth);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const onOpenSymbolSearch = useCallback((options?: SymbolSearchOptions) => {
+    setSymbolSearch({ open: true, options });
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSymbolSearch((prev) => (prev.open ? { open: false } : { open: true }));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   useEffect(() => {
@@ -669,6 +692,8 @@ export function WorkbenchShell({
       locale,
       readOnly,
       instruments,
+      onInstrumentsChanged: setInstruments,
+      onOpenSymbolSearch,
       feedMode,
       primaryLink,
       activeInstrumentId: telemetry.instrumentId || primarySnap.instrumentId,
@@ -730,6 +755,7 @@ export function WorkbenchShell({
       locale,
       readOnly,
       instruments,
+      onOpenSymbolSearch,
       feedMode,
       primaryLink,
       telemetry,
@@ -872,6 +898,15 @@ export function WorkbenchShell({
           </div>
 
           <div className="wb-toolbar">
+            <button
+              type="button"
+              className="ghost-button"
+              data-testid="header-symbol-search"
+              title={t("检索并添加标的 (⌘K)", "Search & add symbols (⌘K)")}
+              onClick={() => onOpenSymbolSearch()}
+            >
+              <Search size={13} /> {t("检索标的", "Symbols")}
+            </button>
             {!popoutConfig && !isMobile && (
               <>
                 <div className="wb-btn-group" role="group" aria-label={t("布局预设", "Layout presets")}>
@@ -1096,6 +1131,21 @@ export function WorkbenchShell({
             <span className="wb-attribution-url">({VELA_ATTRIBUTION.url})</span>
           </div>
         </footer>
+        <InstrumentSearchModal
+          open={symbolSearch.open}
+          title={symbolSearch.options?.title}
+          actionLabel={symbolSearch.options?.actionLabel}
+          existingInstruments={instruments}
+          onClose={() => setSymbolSearch({ open: false })}
+          onInstrumentsChanged={setInstruments}
+          onPicked={async (spec) => {
+            if (symbolSearch.options?.onPicked) {
+              await symbolSearch.options.onPicked(spec);
+            } else {
+              onSelectInstrument(spec.instrument_id);
+            }
+          }}
+        />
       </div>
     </WorkbenchProvider>
   );

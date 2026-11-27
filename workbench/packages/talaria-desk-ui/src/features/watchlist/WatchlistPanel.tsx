@@ -15,6 +15,7 @@ import {
   venueDisplayName,
   venueShortLabel,
 } from "../../workbench/venues";
+import type { SymbolSearchOptions } from "../../workbench/WorkbenchContext";
 import { isEmptyWatchlist, isInstrumentSelected, moveId, quoteView } from "./model";
 
 const POLL_MS = 8_000;
@@ -23,6 +24,7 @@ export interface WatchlistPanelProps {
   instruments: InstrumentSpec[];
   selectedInstrumentId: string;
   onSelect: (instrumentId: string) => void;
+  onOpenSymbolSearch?: (options?: SymbolSearchOptions) => void;
 }
 
 function errorMessage(error: unknown): string {
@@ -135,6 +137,7 @@ export function WatchlistPanel({
   instruments,
   selectedInstrumentId,
   onSelect,
+  onOpenSymbolSearch,
 }: WatchlistPanelProps) {
   const locale = useLocale();
   const [data, setData] = useState<Watchlist | null>(null);
@@ -311,6 +314,35 @@ export function WatchlistPanel({
                       >
                         {t("加入", "Add")}
                       </button>
+                      {onOpenSymbolSearch && (
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          data-testid="watchlist-search-new-symbol"
+                          disabled={busy}
+                          onClick={() =>
+                            onOpenSymbolSearch({
+                              title: t(
+                                `检索并加入「${group.name}」`,
+                                `Search & add to "${group.name}"`,
+                              ),
+                              actionLabel: t("加入自选", "Add to list"),
+                              onPicked: async (spec) => {
+                                await mutate(async () => {
+                                  const next = await api.addWatchlistItem(
+                                    group.group_id,
+                                    spec.instrument_id,
+                                  );
+                                  setAddingTo(null);
+                                  return next;
+                                });
+                              },
+                            })
+                          }
+                        >
+                          {t("检索新标的", "Search…")}
+                        </button>
+                      )}
                     </div>
                   )}
                   <ul className="watchlist-list">

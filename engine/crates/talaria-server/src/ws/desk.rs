@@ -372,12 +372,6 @@ async fn handle_desk_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    let valid_instruments: HashSet<String> = state
-        .instruments
-        .iter()
-        .map(|s| s.instrument_id.clone())
-        .collect();
-
     loop {
         tokio::select! {
             _ = &mut send_task => {
@@ -397,7 +391,6 @@ async fn handle_desk_socket(socket: WebSocket, state: Arc<AppState>) {
                             &state.scheduler,
                             state.supervisor.as_ref(),
                             &state.key_levels,
-                            &valid_instruments,
                             &state,
                         );
                     }
@@ -422,13 +415,12 @@ fn handle_desk_command(
     scheduler: &SubscriptionScheduler,
     supervisor: Option<&Arc<FeedSupervisor>>,
     key_levels: &KeyLevelRegistry,
-    valid_instruments: &HashSet<String>,
     state: &AppState,
 ) {
     let key = (cmd.instrument_id.clone(), cmd.timeframe.clone());
     match cmd.op.as_str() {
         "subscribe" => {
-            if !valid_instruments.contains(&cmd.instrument_id) {
+            if !state.has_instrument(&cmd.instrument_id) {
                 let msg = format!("未知标的：{}", cmd.instrument_id);
                 push_error(queue, INSTRUMENT_NOT_FOUND, &msg, None, None, None);
                 return;

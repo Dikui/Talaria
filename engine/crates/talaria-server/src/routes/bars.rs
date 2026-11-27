@@ -9,6 +9,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use chrono::NaiveDate;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use talaria_contracts::bars::{BarsQuery, MAX_RANGE_BARS, RangeBar};
 use talaria_contracts::derivatives::DerivativeKind;
@@ -17,7 +18,10 @@ use talaria_contracts::error_codes::{
 };
 use talaria_contracts::market::InstrumentSpec;
 use talaria_contracts::{SUPPORTED_TIMEFRAMES, last_closed_bar_start};
-use talaria_packs::{BackfillWindow, backfill_bars, backfill_derivatives};
+use talaria_packs::{
+    BackfillWindow, CatalogInstrument, DEFAULT_SEARCH_LIMIT, HistoryConnectorConfig,
+    backfill_bars, backfill_derivatives,
+};
 use talaria_store::{partition_day, range_visible_bars, revision_window};
 
 use crate::error::{ApiError, ApiJson, ApiQuery};
@@ -30,6 +34,7 @@ use crate::security::{
     NOW_MS_HEADER,
 };
 use crate::server::AppState;
+use crate::state_store::custom_instruments_upsert;
 use crate::ws::strategy::raw_to_range_bar;
 
 const RANGE_LIMIT_MESSAGE: &str = "一次最多查询 10,000 根 K 线，请分段查询";
@@ -38,7 +43,8 @@ pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/feed/health", get(feed_health))
-        .route("/api/instruments", get(instruments))
+        .route("/api/instruments", get(instruments).post(add_instrument))
+        .route("/api/instruments/search", get(search_instruments))
         .route("/api/bars", get(get_range_bars))
         .route("/api/derivatives/backfill", get(backfill_derivatives_handler))
         .route("/api/trades/backfill", post(backfill_trades_handler))
@@ -82,7 +88,128 @@ async fn feed_health(State(state): State<Arc<AppState>>) -> Result<ApiJson<talar
 }
 
 async fn instruments(State(state): State<Arc<AppState>>) -> ApiJson<Vec<InstrumentSpec>> {
-    ApiJson(state.instruments.clone())
+    ApiJson(state.instruments_snapshot())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchInstrumentsQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    venue: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct SearchInstrumentsResponse {
+    pack: String,
+    query: String,
+    results: Vec<CatalogInstrument>,
+}
+
+async fn search_instruments(
+    State(state): State<Arc<AppState>>,
+    ApiQuery(query): ApiQuery<SearchInstrumentsQuery>,
+) -> Result<ApiJson<SearchInstrumentsResponse>, ApiError> {
+    let limit = query.limit.unwrap_or(DEFAULT_SEARCH_LIMIT).clamp(1, 200);
+    let venue = query
+        .venue
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let hcfg = HistoryConnectorConfig {
+        base_url: state.history_base_url.clone(),
+        fixture_dir: state.fixture_dir.clone(),
+        ..HistoryConnectorConfig::default()
+    };
+    let mut results = state
+        .pack
+        .search_catalog(&query.q, venue, limit, &hcfg)
+        .await
+        .map_err(|e| {
+            ApiError::service_unavailable(FEED_UNAVAILABLE, format!("在线检索标的失败：{e}"))
+        })?;
+    for item in &mut results {
+        item.registered = state.has_instrument(&item.spec.instrument_id);
+    }
+    Ok(ApiJson(SearchInstrumentsResponse {
+        pack: state.pack_name.clone(),
+        query: query.q,
+        results,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AddInstrumentRequest {
+    Wrapped { spec: InstrumentSpec },
+    Direct(InstrumentSpec),
+}
+
+#[derive(Serialize)]
+struct AddInstrumentResponse {
+    created: bool,
+    instrument: InstrumentSpec,
+    instruments: Vec<InstrumentSpec>,
+}
+
+fn validate_instrument_spec(spec: &InstrumentSpec) -> Result<(), ApiError> {
+    if spec.instrument_id.trim().is_empty()
+        || spec.venue.trim().is_empty()
+        || spec.symbol.trim().is_empty()
+        || spec.asset_class.trim().is_empty()
+    {
+        return Err(ApiError::validation(
+            "标的规格字段 instrument_id、venue、symbol、asset_class 不能为空",
+        ));
+    }
+    if spec.tick_size <= Decimal::ZERO
+        || spec.qty_step <= Decimal::ZERO
+        || spec.min_qty <= Decimal::ZERO
+    {
+        return Err(ApiError::validation(
+            "tick_size、qty_step、min_qty 必须大于 0",
+        ));
+    }
+    if !(0..=8).contains(&spec.price_precision) || !(0..=8).contains(&spec.qty_precision) {
+        return Err(ApiError::validation(
+            "price_precision 与 qty_precision 必须在 0..=8 之间",
+        ));
+    }
+    Ok(())
+}
+
+async fn add_instrument(
+    State(state): State<Arc<AppState>>,
+    ApiJson(req): ApiJson<AddInstrumentRequest>,
+) -> Result<ApiJson<AddInstrumentResponse>, ApiError> {
+    let spec = match req {
+        AddInstrumentRequest::Wrapped { spec } => spec,
+        AddInstrumentRequest::Direct(spec) => spec,
+    };
+    validate_instrument_spec(&spec)?;
+
+    let already_exists = state.has_instrument(&spec.instrument_id);
+    if !already_exists {
+        state.register_instrument_in_memory(spec.clone())?;
+        let pack_name = state.pack_name.clone();
+        let spec_c = spec.clone();
+        state
+            .state_store
+            .write(move |conn, now| custom_instruments_upsert(conn, &pack_name, &spec_c, now))
+            .await?;
+    }
+
+    let current = state
+        .find_instrument(&spec.instrument_id)
+        .unwrap_or(spec);
+    Ok(ApiJson(AddInstrumentResponse {
+        created: !already_exists,
+        instrument: current,
+        instruments: state.instruments_snapshot(),
+    }))
 }
 
 #[derive(Serialize)]

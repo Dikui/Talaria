@@ -1,6 +1,7 @@
 //! Market pack abstractions, exchange connectors, offline fixture connector, and WS transports.
 
 pub mod binance_perp;
+pub mod catalog;
 pub mod coinbase_spot;
 pub mod composite;
 pub mod crypto_perp;
@@ -16,6 +17,7 @@ mod uuid_util;
 use std::sync::Arc;
 
 pub use binance_perp::{BinancePerpPack, binance_perp_pack};
+pub use catalog::{CatalogInstrument, DEFAULT_SEARCH_LIMIT, clear_catalog_cache};
 pub use coinbase_spot::{CoinbaseSpotPack, coinbase_spot_pack};
 pub use composite::{CompositeMarketPack, crypto_suite_pack};
 pub use crypto_perp::{CryptoPerpPack, crypto_perp_pack};
@@ -51,16 +53,17 @@ pub fn available_pack_names() -> Vec<&'static str> {
     ]
 }
 
-/// Look up a registered [`MarketPack`] by name.
+/// Look up a registered [`MarketPack`] by name (returns a fresh instance so runtime
+/// dynamic instrument registrations remain isolated per server instance).
 pub fn get_market_pack(name: &str) -> Result<Arc<dyn MarketPack>, PackError> {
     match name {
-        "crypto_perp" => Ok(crypto_perp_pack()),
-        "binance_perp" => Ok(binance_perp_pack()),
-        "us_equity" => Ok(us_equity_pack()),
-        "okx_perp" => Ok(okx_perp_pack()),
-        "hyperliquid_perp" => Ok(hyperliquid_perp_pack()),
-        "coinbase_spot" => Ok(coinbase_spot_pack()),
-        "crypto_suite" => Ok(crypto_suite_pack()),
+        "crypto_perp" => Ok(Arc::new(CryptoPerpPack::new())),
+        "binance_perp" => Ok(Arc::new(BinancePerpPack::new())),
+        "us_equity" => Ok(Arc::new(UsEquityPack::new(AlpacaDataFeed::Iex))),
+        "okx_perp" => Ok(Arc::new(OkxPerpPack::new())),
+        "hyperliquid_perp" => Ok(Arc::new(HyperliquidPerpPack::new())),
+        "coinbase_spot" => Ok(Arc::new(CoinbaseSpotPack::new())),
+        "crypto_suite" => Ok(Arc::new(CompositeMarketPack::new())),
         other => Err(PackError::InvalidRequest(format!(
             "unknown market pack `{other}`; available: {}",
             available_pack_names().join(", ")

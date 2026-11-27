@@ -47,11 +47,19 @@ export interface ActiveChartTelemetry {
   cutoffTs: number | null;
 }
 
+export interface SymbolSearchOptions {
+  title?: string;
+  actionLabel?: string;
+  onPicked?: (spec: InstrumentSpec) => void | Promise<void>;
+}
+
 export interface WorkbenchContextValue {
   theme: Theme;
   locale: Locale;
   readOnly: boolean;
   instruments: InstrumentSpec[];
+  onInstrumentsChanged: (next: InstrumentSpec[]) => void;
+  onOpenSymbolSearch: (options?: SymbolSearchOptions) => void;
   feedMode: string | null;
   primaryLink: PanelLink;
   activeInstrumentId: string;

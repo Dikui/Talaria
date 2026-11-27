@@ -7,7 +7,7 @@
 //! - `KeyLevelRegistry`, `AlertEngine`, and `ScannerEngine`
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use talaria_contracts::bars::{BarStatus, CompactBar, RawBar};
@@ -48,7 +48,7 @@ enum ColdCmd {
 
 pub struct ColdWriter {
     now_ms: NowFn,
-    instruments: HashMap<String, InstrumentSpec>,
+    instruments: Arc<RwLock<HashMap<String, InstrumentSpec>>>,
     cold_store: Option<Arc<ColdStore>>,
     hot_buffer: Arc<HotStreamBuffer>,
     desk: Arc<DeskBroadcast>,
@@ -79,6 +79,7 @@ impl ColdWriter {
         for spec in instruments {
             inst_map.insert(spec.instrument_id.clone(), spec.clone());
         }
+        let shared_instruments = Arc::new(RwLock::new(inst_map));
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let w_store = cold_store.clone();
@@ -86,7 +87,7 @@ impl ColdWriter {
         let w_strategy = strategy_stream.clone();
         let w_levels = Arc::clone(&key_levels);
         let w_now = Arc::clone(&now_ms);
-        let w_instruments = inst_map.clone();
+        let w_instruments = Arc::clone(&shared_instruments);
 
         let handle = tokio::spawn(async move {
             let mut pending_bars: PendingBarsMap = HashMap::new();
@@ -166,7 +167,10 @@ impl ColdWriter {
                                     &mut pending_trades,
                                 ).await;
                                 if let Some(store) = &w_store {
-                                    let all_specs: Vec<InstrumentSpec> = w_instruments.values().cloned().collect();
+                                    let all_specs: Vec<InstrumentSpec> = w_instruments
+                                        .read()
+                                        .map(|m| m.values().cloned().collect())
+                                        .unwrap_or_default();
                                     let store_c = Arc::clone(store);
                                     let _ = tokio::task::spawn_blocking(move || {
                                         let _ = store_c.compact(&all_specs, None);
@@ -190,7 +194,10 @@ impl ColdWriter {
                                     &mut pending_trades,
                                 ).await;
                                 if let Some(store) = &w_store {
-                                    let all_specs: Vec<InstrumentSpec> = w_instruments.values().cloned().collect();
+                                    let all_specs: Vec<InstrumentSpec> = w_instruments
+                                        .read()
+                                        .map(|m| m.values().cloned().collect())
+                                        .unwrap_or_default();
                                     let store_c = Arc::clone(store);
                                     let _ = tokio::task::spawn_blocking(move || {
                                         let _ = store_c.compact(&all_specs, None);
@@ -208,7 +215,7 @@ impl ColdWriter {
 
         Arc::new(Self {
             now_ms,
-            instruments: inst_map,
+            instruments: shared_instruments,
             cold_store,
             hot_buffer,
             desk,
@@ -241,6 +248,12 @@ impl ColdWriter {
 
     pub fn cold_store(&self) -> Option<&Arc<ColdStore>> {
         self.cold_store.as_ref()
+    }
+
+    pub fn register_instrument(&self, spec: InstrumentSpec) {
+        if let Ok(mut guard) = self.instruments.write() {
+            guard.insert(spec.instrument_id.clone(), spec);
+        }
     }
 }
 
@@ -335,7 +348,11 @@ impl BarPublishSink for ColdWriter {
 
         if let FeedEvent::DerivativeTick(d) = event
             && self.cold_store.is_some()
-            && let Some(spec) = self.instruments.get(&d.instrument_id)
+            && let Some(spec) = self
+                .instruments
+                .read()
+                .ok()
+                .and_then(|m| m.get(&d.instrument_id).cloned())
         {
             let now = (self.now_ms)().max(d.ts_ingested);
             let ts_avail = d.ts_event.max(d.ts_ingested);
@@ -404,7 +421,11 @@ impl BarPublishSink for ColdWriter {
             return;
         }
         if let TransportFrame::ReceivedTrade(rt) = frame
-            && let Some(spec) = self.instruments.get(&rt.event.instrument_id)
+            && let Some(spec) = self
+                .instruments
+                .read()
+                .ok()
+                .and_then(|m| m.get(&rt.event.instrument_id).cloned())
             && let Ok(trade) = rt.to_trade((self.now_ms)())
         {
             let _ = self.tx.send(ColdCmd::Trade(spec.clone(), trade));

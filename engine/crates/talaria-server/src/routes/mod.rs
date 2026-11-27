@@ -76,14 +76,9 @@ pub fn manifest_range_fingerprint(
 }
 
 pub fn find_instrument(state: &AppState, instrument_id: &str) -> Result<InstrumentSpec, ApiError> {
-    state
-        .instruments
-        .iter()
-        .find(|s| s.instrument_id == instrument_id)
-        .cloned()
-        .ok_or_else(|| {
-            ApiError::not_found(INSTRUMENT_NOT_FOUND, format!("未知标的：{instrument_id}"))
-        })
+    state.find_instrument(instrument_id).ok_or_else(|| {
+        ApiError::not_found(INSTRUMENT_NOT_FOUND, format!("未知标的：{instrument_id}"))
+    })
 }
 
 pub fn validate_timeframe(timeframe: &str) -> Result<i64, ApiError> {

@@ -6,7 +6,7 @@ pub mod stream;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use rust_decimal::Decimal;
 use talaria_contracts::{
@@ -15,14 +15,18 @@ use talaria_contracts::{
     TradingSession, TraitBundle,
 };
 
+use crate::catalog::{
+    CatalogInstrument, catalog_from_specs, fetch_hyperliquid_catalog, filter_and_rank_catalog,
+    try_load_fixture_catalog,
+};
 use crate::error::PackError;
 use crate::hyperliquid_perp::connector::{
     DEFAULT_BASE_URL, HyperliquidConnector, HyperliquidFixtureConnector,
 };
 use crate::hyperliquid_perp::stream::HyperliquidStream;
 use crate::traits::{
-    FeedTransport, HistoryConnector, HistoryConnectorConfig, MarginValuation, MarketPack,
-    RealtimeStreamConfig,
+    BoxFuture, FeedTransport, HistoryConnector, HistoryConnectorConfig, MarginValuation,
+    MarketPack, RealtimeStreamConfig,
 };
 
 pub const MARKET_PACK_SKILL: &str = "\
@@ -219,17 +223,22 @@ impl MarginValuation for HyperliquidMarginValuation {
 #[derive(Debug, Clone)]
 pub struct HyperliquidPerpPack {
     instruments: Vec<InstrumentSpec>,
+    dynamic_instruments: Arc<RwLock<Vec<InstrumentSpec>>>,
 }
 
 impl HyperliquidPerpPack {
     pub fn new() -> Self {
         Self {
             instruments: default_instruments(),
+            dynamic_instruments: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
     pub fn with_instruments(instruments: Vec<InstrumentSpec>) -> Self {
-        Self { instruments }
+        Self {
+            instruments,
+            dynamic_instruments: Arc::new(RwLock::new(Vec::new())),
+        }
     }
 }
 
@@ -260,8 +269,72 @@ impl MarketPack for HyperliquidPerpPack {
         &self.instruments
     }
 
+    fn instruments_snapshot(&self) -> Vec<InstrumentSpec> {
+        let mut out = self.instruments.clone();
+        if let Ok(extra) = self.dynamic_instruments.read() {
+            for spec in extra.iter() {
+                if !out.iter().any(|s| s.instrument_id == spec.instrument_id) {
+                    out.push(spec.clone());
+                }
+            }
+        }
+        out
+    }
+
+    fn register_instrument(&self, spec: InstrumentSpec) -> Result<(), PackError> {
+        if spec.venue != "hyperliquid" {
+            return Err(PackError::InvalidRequest(format!(
+                "hyperliquid_perp pack only accepts venue `hyperliquid`, got `{}`",
+                spec.venue
+            )));
+        }
+        if self.instruments.iter().any(|s| s.instrument_id == spec.instrument_id) {
+            return Ok(());
+        }
+        let mut extra = self.dynamic_instruments.write().unwrap();
+        if !extra.iter().any(|s| s.instrument_id == spec.instrument_id) {
+            extra.push(spec);
+        }
+        Ok(())
+    }
+
+    fn search_catalog<'a>(
+        &'a self,
+        query: &'a str,
+        venue: Option<&'a str>,
+        limit: usize,
+        config: &'a HistoryConnectorConfig,
+    ) -> BoxFuture<'a, Result<Vec<CatalogInstrument>, PackError>> {
+        let venue_ok = venue.is_none_or(|v| v.eq_ignore_ascii_case("hyperliquid"));
+        let snapshot = self.instruments_snapshot();
+        let fixture = try_load_fixture_catalog(config);
+        let has_fixture_dir = config.fixture_dir.is_some();
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
+        let timeout = config.timeout;
+        Box::pin(async move {
+            if !venue_ok {
+                return Ok(Vec::new());
+            }
+            let items = if let Some(f) = fixture {
+                f
+            } else if has_fixture_dir {
+                catalog_from_specs(&snapshot)
+            } else {
+                fetch_hyperliquid_catalog(&base_url, timeout).await?
+            };
+            Ok(filter_and_rank_catalog(items, query, limit))
+        })
+    }
+
     fn traits(&self, instrument_id: &str) -> Result<TraitBundle, PackError> {
-        if self.instrument(instrument_id).is_none() {
+        if !self
+            .instruments_snapshot()
+            .iter()
+            .any(|s| s.instrument_id == instrument_id)
+        {
             return Err(PackError::InstrumentNotFound(instrument_id.to_owned()));
         }
         Ok(traits_for_instrument(instrument_id))
@@ -287,7 +360,10 @@ impl MarketPack for HyperliquidPerpPack {
         &self,
         config: RealtimeStreamConfig,
     ) -> Result<Arc<dyn FeedTransport>, PackError> {
-        Ok(Arc::new(HyperliquidStream::new(&self.instruments, config)))
+        Ok(Arc::new(HyperliquidStream::new(
+            &self.instruments_snapshot(),
+            config,
+        )))
     }
 
     fn margin_valuation(&self) -> Option<Arc<dyn MarginValuation>> {

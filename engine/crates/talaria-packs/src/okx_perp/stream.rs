@@ -54,7 +54,7 @@ struct BookTracker {
 
 /// Stateful OKX V5 WS parser shared between live connections and unit/offline replay tests.
 pub struct OkxWsParser {
-    instrument_by_symbol: BTreeMap<String, String>,
+    instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     subscriptions: BTreeSet<(String, String)>,
@@ -68,7 +68,7 @@ impl OkxWsParser {
             instrument_by_symbol.insert(spec.symbol.clone(), spec.instrument_id.clone());
         }
         Self {
-            instrument_by_symbol,
+            instrument_by_symbol: Arc::new(std::sync::RwLock::new(instrument_by_symbol)),
             now_ms,
             persist_public_trades,
             subscriptions: BTreeSet::new(),
@@ -120,7 +120,12 @@ impl OkxWsParser {
         };
         let channel = arg.get("channel").and_then(Value::as_str).unwrap_or("");
         let symbol = arg.get("instId").and_then(Value::as_str).unwrap_or("");
-        let Some(instrument_id) = self.instrument_by_symbol.get(symbol).cloned() else {
+        let Some(instrument_id) = self
+            .instrument_by_symbol
+            .read()
+            .ok()
+            .and_then(|m| m.get(symbol).cloned())
+        else {
             return Ok(Vec::new());
         };
         let Some(data) = obj.get("data").and_then(Value::as_array) else {
@@ -372,7 +377,8 @@ impl Drop for LifecycleState {
 
 /// Real-time OKX V5 WebSocket transport (`FeedTransport`).
 pub struct OkxPerpStream {
-    instruments: BTreeMap<String, InstrumentSpec>,
+    instruments: std::sync::RwLock<BTreeMap<String, InstrumentSpec>>,
+    instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     config: RealtimeStreamConfig,
     public_ws_url: String,
     business_ws_url: String,
@@ -399,15 +405,14 @@ impl OkxPerpStream {
             .unwrap_or_else(|| DEFAULT_PUBLIC_WS_URL.to_owned());
 
         let now_fn = Arc::clone(&config.now_ms);
-        let parser = Arc::new(Mutex::new(OkxWsParser::new(
-            instruments,
-            now_fn,
-            config.persist_public_trades,
-        )));
+        let ws_parser = OkxWsParser::new(instruments, now_fn, config.persist_public_trades);
+        let instrument_by_symbol = Arc::clone(&ws_parser.instrument_by_symbol);
+        let parser = Arc::new(Mutex::new(ws_parser));
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
         Self {
-            instruments: by_id,
+            instruments: std::sync::RwLock::new(by_id),
+            instrument_by_symbol,
             config,
             public_ws_url,
             business_ws_url,
@@ -670,7 +675,7 @@ impl FeedTransport for OkxPerpStream {
 
             let existing: Vec<_> = state.subscriptions.iter().cloned().collect();
             for (inst_id, tf) in existing {
-                if let Some(spec) = self.instruments.get(&inst_id) {
+                if let Some(spec) = self.instruments.read().ok().and_then(|m| m.get(&inst_id).cloned()) {
                     let (biz_msg, pub_msg) = self.build_subscribe_args(&spec.symbol, &tf, "subscribe")?;
                     if let Some(c0) = state.connections.first() {
                         let (tx, rx) = oneshot::channel();
@@ -706,7 +711,9 @@ impl FeedTransport for OkxPerpStream {
         Box::pin(async move {
             let spec = self
                 .instruments
-                .get(instrument_id)
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
                 .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
             let (biz_msg, pub_msg) = self.build_subscribe_args(&spec.symbol, timeframe, "subscribe")?;
             let mut state = self.lifecycle.lock().await;
@@ -745,7 +752,12 @@ impl FeedTransport for OkxPerpStream {
         timeframe: &'a str,
     ) -> BoxFuture<'a, Result<(), PackError>> {
         Box::pin(async move {
-            let Some(spec) = self.instruments.get(instrument_id) else {
+            let Some(spec) = self
+                .instruments
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
+            else {
                 return Ok(());
             };
             let (biz_msg, pub_msg) =
@@ -797,5 +809,14 @@ impl FeedTransport for OkxPerpStream {
             }
             Ok(())
         })
+    }
+
+    fn register_instrument(&self, spec: &InstrumentSpec) {
+        if let Ok(mut guard) = self.instruments.write() {
+            guard.insert(spec.instrument_id.clone(), spec.clone());
+        }
+        if let Ok(mut guard) = self.instrument_by_symbol.write() {
+            guard.insert(spec.symbol.clone(), spec.instrument_id.clone());
+        }
     }
 }

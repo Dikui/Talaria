@@ -986,9 +986,9 @@ async fn scan_now(
             out
         }
         None => state
-            .instruments
-            .iter()
-            .map(|s| s.instrument_id.clone())
+            .instruments_snapshot()
+            .into_iter()
+            .map(|s| s.instrument_id)
             .collect(),
     };
 

@@ -50,7 +50,7 @@ struct CandleAccum {
 
 /// Stateful Coinbase Exchange WS parser (`ticker` quotes + `matches` OHLCV trade aggregation).
 pub struct CoinbaseWsParser {
-    instrument_by_product: BTreeMap<String, InstrumentSpec>,
+    instrument_by_product: Arc<std::sync::RwLock<BTreeMap<String, InstrumentSpec>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     subscriptions: BTreeSet<(String, String)>,
@@ -65,7 +65,7 @@ impl CoinbaseWsParser {
             instrument_by_product.insert(spec.symbol.clone(), spec.clone());
         }
         Self {
-            instrument_by_product,
+            instrument_by_product: Arc::new(std::sync::RwLock::new(instrument_by_product)),
             now_ms,
             persist_public_trades,
             subscriptions: BTreeSet::new(),
@@ -119,7 +119,12 @@ impl CoinbaseWsParser {
         }
 
         let product_id = obj.get("product_id").and_then(Value::as_str).unwrap_or("");
-        let Some(spec) = self.instrument_by_product.get(product_id).cloned() else {
+        let Some(spec) = self
+            .instrument_by_product
+            .read()
+            .ok()
+            .and_then(|m| m.get(product_id).cloned())
+        else {
             return Ok(Vec::new());
         };
         let instrument_id = spec.instrument_id.clone();
@@ -350,7 +355,8 @@ impl Drop for LifecycleState {
 
 /// Real-time Coinbase Exchange WebSocket transport (`FeedTransport`).
 pub struct CoinbaseSpotStream {
-    instruments: BTreeMap<String, InstrumentSpec>,
+    instruments: std::sync::RwLock<BTreeMap<String, InstrumentSpec>>,
+    instrument_by_product: Arc<std::sync::RwLock<BTreeMap<String, InstrumentSpec>>>,
     config: RealtimeStreamConfig,
     ws_url: String,
     parser: Arc<Mutex<CoinbaseWsParser>>,
@@ -370,15 +376,18 @@ impl CoinbaseSpotStream {
             .ws_url
             .clone()
             .unwrap_or_else(|| DEFAULT_WS_URL.to_owned());
-        let parser = Arc::new(Mutex::new(CoinbaseWsParser::new(
+        let ws_parser = CoinbaseWsParser::new(
             instruments,
             Arc::clone(&config.now_ms),
             config.persist_public_trades,
-        )));
+        );
+        let instrument_by_product = Arc::clone(&ws_parser.instrument_by_product);
+        let parser = Arc::new(Mutex::new(ws_parser));
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
         Self {
-            instruments: by_id,
+            instruments: std::sync::RwLock::new(by_id),
+            instrument_by_product,
             config,
             ws_url,
             parser,
@@ -593,7 +602,7 @@ impl FeedTransport for CoinbaseSpotStream {
 
             let mut products = BTreeSet::new();
             for (inst_id, _) in &state.subscriptions {
-                if let Some(spec) = self.instruments.get(inst_id) {
+                if let Some(spec) = self.instruments.read().ok().and_then(|m| m.get(inst_id).cloned()) {
                     products.insert(spec.symbol.clone());
                 }
             }
@@ -621,7 +630,9 @@ impl FeedTransport for CoinbaseSpotStream {
         Box::pin(async move {
             let spec = self
                 .instruments
-                .get(instrument_id)
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
                 .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
             let payload = self.subscribe_payload(&spec.symbol, "subscribe");
             let mut state = self.lifecycle.lock().await;
@@ -650,7 +661,12 @@ impl FeedTransport for CoinbaseSpotStream {
         timeframe: &'a str,
     ) -> BoxFuture<'a, Result<(), PackError>> {
         Box::pin(async move {
-            let Some(spec) = self.instruments.get(instrument_id) else {
+            let Some(spec) = self
+                .instruments
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
+            else {
                 return Ok(());
             };
             let mut state = self.lifecycle.lock().await;
@@ -697,5 +713,14 @@ impl FeedTransport for CoinbaseSpotStream {
             }
             Ok(())
         })
+    }
+
+    fn register_instrument(&self, spec: &InstrumentSpec) {
+        if let Ok(mut guard) = self.instruments.write() {
+            guard.insert(spec.instrument_id.clone(), spec.clone());
+        }
+        if let Ok(mut guard) = self.instrument_by_product.write() {
+            guard.insert(spec.symbol.clone(), spec.clone());
+        }
     }
 }

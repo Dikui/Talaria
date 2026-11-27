@@ -972,6 +972,19 @@ impl FeedSupervisor {
         }
     }
 
+    /// Dynamically register a newly added instrument across supervisor state, transport, and backfill connector.
+    pub fn register_instrument(&self, spec: InstrumentSpec) {
+        self.transport.register_instrument(&spec);
+        if let Some(connector) = &self.connector {
+            connector.register_instrument(&spec);
+        }
+        self.core
+            .lock()
+            .expect("supervisor lock")
+            .instruments
+            .insert(spec.instrument_id.clone(), spec);
+    }
+
     /// Aggregate health across all currently subscribed channels.
     pub fn health(&self) -> FeedHealthReport {
         let now = self.clock.now_ms();

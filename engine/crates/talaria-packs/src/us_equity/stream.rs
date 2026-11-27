@@ -101,7 +101,7 @@ struct BookTracker {
 /// Stateful Alpaca WS v2 parser supporting both live streams and offline `ws_frames.jsonl` replay.
 pub struct AlpacaWsParser {
     feed: AlpacaDataFeed,
-    instrument_by_symbol: BTreeMap<String, String>,
+    instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     subscriptions: BTreeSet<(String, String)>,
@@ -123,7 +123,7 @@ impl AlpacaWsParser {
         }
         Self {
             feed,
-            instrument_by_symbol,
+            instrument_by_symbol: Arc::new(std::sync::RwLock::new(instrument_by_symbol)),
             now_ms,
             persist_public_trades,
             subscriptions: BTreeSet::new(),
@@ -233,7 +233,12 @@ impl AlpacaWsParser {
 
     fn parse_bar(&self, data: &Map<String, Value>, received_ts: i64) -> Option<ReceivedKlineEvent> {
         let symbol = data.get("S").and_then(Value::as_str)?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?;
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         let timeframe = data
             .get("tf")
             .and_then(Value::as_str)
@@ -308,7 +313,12 @@ impl AlpacaWsParser {
         received_ts: i64,
     ) -> Option<ReceivedOrderBookEvent> {
         let symbol = data.get("S").and_then(Value::as_str)?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?.clone();
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         if !self.subscriptions.iter().any(|(i, _)| i == &instrument_id) {
             return None;
         }
@@ -366,7 +376,12 @@ impl AlpacaWsParser {
         received_ts: i64,
     ) -> Option<TransportFrame> {
         let symbol = data.get("S").and_then(Value::as_str)?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?.clone();
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         if !self.subscriptions.iter().any(|(i, _)| i == &instrument_id) {
             return None;
         }
@@ -469,8 +484,9 @@ pub struct AlpacaStream {
     ws_url: String,
     api_key: String,
     api_secret: String,
-    instruments: Vec<InstrumentSpec>,
-    symbol_by_instrument: BTreeMap<String, String>,
+    instruments: std::sync::RwLock<Vec<InstrumentSpec>>,
+    symbol_by_instrument: std::sync::RwLock<BTreeMap<String, String>>,
+    instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     ack_timeout: Duration,
@@ -493,8 +509,10 @@ impl AlpacaStream {
         validate_ws_url_for_feed(&ws_url, feed)?;
 
         let mut symbol_by_instrument = BTreeMap::new();
+        let mut instrument_by_symbol = BTreeMap::new();
         for spec in instruments {
             symbol_by_instrument.insert(spec.instrument_id.clone(), spec.symbol.clone());
+            instrument_by_symbol.insert(spec.symbol.clone(), spec.instrument_id.clone());
         }
         let (_tx, rx) = mpsc::unbounded_channel();
         Ok(Self {
@@ -502,8 +520,9 @@ impl AlpacaStream {
             ws_url,
             api_key: std::env::var("APCA_API_KEY_ID").unwrap_or_else(|_| "talaria-local".to_owned()),
             api_secret: std::env::var("APCA_API_SECRET_KEY").unwrap_or_else(|_| "talaria-local".to_owned()),
-            instruments: instruments.to_vec(),
-            symbol_by_instrument,
+            instruments: std::sync::RwLock::new(instruments.to_vec()),
+            symbol_by_instrument: std::sync::RwLock::new(symbol_by_instrument),
+            instrument_by_symbol: Arc::new(std::sync::RwLock::new(instrument_by_symbol)),
             now_ms: config.now_ms,
             persist_public_trades: config.persist_public_trades,
             ack_timeout: config.ack_timeout,
@@ -670,12 +689,13 @@ impl FeedTransport for AlpacaStream {
             }
 
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-            let parser = AlpacaWsParser::new(
-                &self.instruments,
+            let mut parser = AlpacaWsParser::new(
+                &self.instruments.read().unwrap(),
                 self.feed,
                 Arc::clone(&self.now_ms),
                 self.persist_public_trades,
             );
+            parser.instrument_by_symbol = Arc::clone(&self.instrument_by_symbol);
             let worker = tokio::spawn(run_ws_worker(
                 ws_stream,
                 cmd_rx,
@@ -707,11 +727,12 @@ impl FeedTransport for AlpacaStream {
         Box::pin(async move {
             let symbol = self
                 .symbol_by_instrument
-                .get(instrument_id)
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
                 .ok_or_else(|| {
                     PackError::FeedTransport(format!("unknown instrument: {instrument_id}"))
-                })?
-                .clone();
+                })?;
             let _ = alpaca_timeframe_for(timeframe)
                 .map_err(|_| PackError::FeedTransport(format!("unsupported timeframe: {timeframe}")))?;
 
@@ -766,7 +787,12 @@ impl FeedTransport for AlpacaStream {
         timeframe: &'a str,
     ) -> BoxFuture<'a, Result<(), PackError>> {
         Box::pin(async move {
-            let Some(symbol) = self.symbol_by_instrument.get(instrument_id).cloned() else {
+            let Some(symbol) = self
+                .symbol_by_instrument
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
+            else {
                 return Ok(());
             };
             let (cmd_tx, payload) = {
@@ -828,6 +854,20 @@ impl FeedTransport for AlpacaStream {
             Self::teardown_connection(&mut state).await;
             Ok(())
         })
+    }
+
+    fn register_instrument(&self, spec: &InstrumentSpec) {
+        if let Ok(mut guard) = self.instruments.write()
+            && !guard.iter().any(|s| s.instrument_id == spec.instrument_id)
+        {
+            guard.push(spec.clone());
+        }
+        if let Ok(mut guard) = self.symbol_by_instrument.write() {
+            guard.insert(spec.instrument_id.clone(), spec.symbol.clone());
+        }
+        if let Ok(mut guard) = self.instrument_by_symbol.write() {
+            guard.insert(spec.symbol.clone(), spec.instrument_id.clone());
+        }
     }
 }
 

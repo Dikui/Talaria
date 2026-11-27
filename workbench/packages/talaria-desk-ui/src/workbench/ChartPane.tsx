@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, RefreshCw, X } from "lucide-react";
+import { ExternalLink, RefreshCw, Search, X } from "lucide-react";
 import type {
   AgentAnnotationRecord,
   DerivativeBundle,
@@ -903,6 +903,23 @@ export function ChartPane({
               </option>
             ))}
           </select>
+
+          <button
+            type="button"
+            className="ghost-button icon-only"
+            data-testid={`open-symbol-search-${paneId}`}
+            title={t("检索并添加新标的", "Search & add symbol")}
+            aria-label={t("检索并添加新标的", "Search & add symbol")}
+            onClick={() =>
+              ctx.onOpenSymbolSearch({
+                onPicked: (spec) => {
+                  link.setSymbol(spec.instrument_id, timeframe);
+                },
+              })
+            }
+          >
+            <Search size={13} />
+          </button>
 
           <div className="tf-pills" role="group" aria-label={t("周期", "Timeframe")}>
             {TIMEFRAMES.map((tf) => (

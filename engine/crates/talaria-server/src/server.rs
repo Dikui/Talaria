@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::Router;
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -39,7 +39,7 @@ use crate::security::{
     resolve_data_dir, security_middleware, validate_loopback_host, write_service_descriptor,
 };
 use crate::snapshot_store::SnapshotStore;
-use crate::state_store::{WorkbenchStateStore, alerts_append_trigger, alerts_list, alerts_write, drawings_get, watchlist_list};
+use crate::state_store::{WorkbenchStateStore, alerts_append_trigger, alerts_list, alerts_write, custom_instruments_list, drawings_get, watchlist_list};
 use crate::subscriptions::{SubscriptionScheduler, WATCHLIST_TIMEFRAME};
 use crate::ws::desk::{DeskBroadcast, ws_desk_handler};
 use crate::ws::strategy::{StrategyStream, ws_strategy_handler};
@@ -91,10 +91,11 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub pack_name: String,
     pub pack: Arc<dyn MarketPack>,
-    pub instruments: Vec<InstrumentSpec>,
+    pub instruments: Arc<RwLock<Vec<InstrumentSpec>>>,
     pub desk_dist: Option<PathBuf>,
     pub replay_path: Option<PathBuf>,
     pub fixture_dir: Option<PathBuf>,
+    pub history_base_url: Option<String>,
     pub features: FeatureToggles,
     pub security: SecurityContext,
     pub state_store: Arc<WorkbenchStateStore>,
@@ -127,6 +128,51 @@ impl AppState {
 
     pub fn feed_mode_str(&self) -> &str {
         &self.feed_mode_label
+    }
+
+    pub fn instruments_snapshot(&self) -> Vec<InstrumentSpec> {
+        self.instruments
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn has_instrument(&self, instrument_id: &str) -> bool {
+        self.instruments
+            .read()
+            .map(|guard| guard.iter().any(|s| s.instrument_id == instrument_id))
+            .unwrap_or(false)
+    }
+
+    pub fn find_instrument(&self, instrument_id: &str) -> Option<InstrumentSpec> {
+        self.instruments
+            .read()
+            .ok()
+            .and_then(|guard| guard.iter().find(|s| s.instrument_id == instrument_id).cloned())
+    }
+
+    pub fn register_instrument_in_memory(&self, spec: InstrumentSpec) -> Result<(), ApiError> {
+        self.pack.register_instrument(spec.clone())?;
+        {
+            let mut guard = self.instruments.write().unwrap();
+            if !guard.iter().any(|s| s.instrument_id == spec.instrument_id) {
+                guard.push(spec.clone());
+            }
+        }
+        self.hot_buffer.register_instrument(&spec);
+        if let Some(connector) = &self.history_connector {
+            connector.register_instrument(&spec);
+        }
+        if let Some(writer) = &self.cold_writer {
+            writer.register_instrument(spec.clone());
+        }
+        if let Some(stream) = &self.strategy_stream {
+            stream.register_instrument(spec.clone());
+        }
+        if let Some(sup) = &self.supervisor {
+            sup.register_instrument(spec);
+        }
+        Ok(())
     }
 
     pub fn is_realtime_instrument(&self, instrument_id: &str) -> bool {
@@ -259,9 +305,17 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         .unwrap_or_else(|| Arc::new(|| chrono::Utc::now().timestamp_millis()));
 
     let pack = get_market_pack(&config.pack)?;
-    let instruments = pack.instruments().to_vec();
-
     let state_store = Arc::new(WorkbenchStateStore::open(&data_dir, Arc::clone(&now_fn))?);
+    {
+        let pack_name_c = config.pack.clone();
+        if let Ok(saved) = state_store.read_sync(move |conn| custom_instruments_list(conn, &pack_name_c)) {
+            for spec in saved {
+                let _ = pack.register_instrument(spec);
+            }
+        }
+    }
+    let instruments = pack.instruments_snapshot();
+    let shared_instruments = Arc::new(RwLock::new(instruments.clone()));
     let snapshots = Arc::new(SnapshotStore::open(&data_dir)?);
     let cold_store = if features.cold_store {
         Some(Arc::new(ColdStore::open(&data_dir)?))
@@ -289,15 +343,16 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
     let scanner_hot = Arc::clone(&hot_buffer);
     let scanner_pack = Arc::clone(&pack);
     let scanner_kl = Arc::clone(&key_levels);
-    let scanner_insts = instruments.clone();
+    let scanner_insts = Arc::clone(&shared_instruments);
     let scanner_now = Arc::clone(&now_fn);
 
     let scanner = Arc::new(ScannerEngine::new(
         Arc::clone(&now_fn),
         ScannerConfig::default(),
         Arc::new(move |inst_id, tf, as_of| {
+            let insts_l = scanner_insts.read().map(|g| g.clone()).unwrap_or_default();
             freeze_ephemeral_snapshot(
-                &scanner_insts,
+                &insts_l,
                 &scanner_pack,
                 &scanner_reader,
                 &scanner_hot,
@@ -346,7 +401,6 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
     // Wire AlertEngine callbacks after all components exist
     {
         let a_store = Arc::clone(&state_store);
-        let a_insts = instruments.clone();
         let a_reader = Arc::clone(&reader);
         let a_hot = Arc::clone(&hot_buffer);
         let a_kl = Arc::clone(&key_levels);
@@ -358,14 +412,18 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         let history_provider = Arc::new({
             let reader_c = Arc::clone(&a_reader);
             let hot_c = Arc::clone(&a_hot);
-            let insts_c = a_insts.clone();
+            let insts_c = Arc::clone(&shared_instruments);
             let now_c = Arc::clone(&a_now);
             move |inst_id: &str, tf: &str| {
-                let Some(spec) = insts_c.iter().find(|s| s.instrument_id == inst_id) else {
+                let Some(spec) = insts_c
+                    .read()
+                    .ok()
+                    .and_then(|g| g.iter().find(|s| s.instrument_id == inst_id).cloned())
+                else {
                     return Vec::new();
                 };
                 let cutoff = now_c();
-                let cold = reader_c.read_revisions(spec, tf, None, Some(cutoff)).unwrap_or_default();
+                let cold = reader_c.read_revisions(&spec, tf, None, Some(cutoff)).unwrap_or_default();
                 let hot = hot_c.revisions(inst_id, tf, 0, Some(cutoff));
                 let visible = talaria_store::range_visible_bars(&cold, &hot, Some(cutoff), false);
                 crate::routes::raw_bars_to_compact(&visible, false)
@@ -381,13 +439,17 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         });
         let deriv_archive = Arc::new({
             let reader_c = Arc::clone(&a_reader);
-            let insts_c = a_insts.clone();
+            let insts_c = Arc::clone(&shared_instruments);
             move |inst_id: &str, kind, cutoff: i64| {
-                let Some(spec) = insts_c.iter().find(|s| s.instrument_id == inst_id) else {
+                let Some(spec) = insts_c
+                    .read()
+                    .ok()
+                    .and_then(|g| g.iter().find(|s| s.instrument_id == inst_id).cloned())
+                else {
                     return Vec::new();
                 };
                 reader_c
-                    .read_derivatives(spec, kind, None, Some(cutoff), Some(cutoff), false)
+                    .read_derivatives(&spec, kind, None, Some(cutoff), Some(cutoff), false)
                     .unwrap_or_default()
             }
         });
@@ -544,10 +606,11 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         data_dir: data_dir.clone(),
         pack_name: config.pack.clone(),
         pack,
-        instruments,
+        instruments: shared_instruments,
         desk_dist,
         replay_path: config.replay_file.clone(),
         fixture_dir: config.fixture_dir.clone(),
+        history_base_url: config.history_base_url.clone(),
         features,
         security: security.clone(),
         state_store,
@@ -649,7 +712,7 @@ fn scanner_snapshots_ref(snaps: &Arc<SnapshotStore>) -> Arc<SnapshotStore> {
 }
 
 fn instruments_from_pack(pack: &Arc<dyn MarketPack>) -> Vec<InstrumentSpec> {
-    pack.instruments().to_vec()
+    pack.instruments_snapshot()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -726,11 +789,11 @@ fn warm_initial_key_levels(state: &Arc<AppState>) {
     let state_c = Arc::clone(state);
     tokio::task::spawn_blocking(move || {
         let now = state_c.now_ms();
-        for spec in &state_c.instruments {
+        for spec in state_c.instruments_snapshot() {
             if let Ok(bars) = load_confirmed_series(&state_c, &spec.instrument_id, "1m", now, 600)
                 && !bars.is_empty()
             {
-                let (funding, oi, mark) = load_derivative_points(&state_c, spec, now);
+                let (funding, oi, mark) = load_derivative_points(&state_c, &spec, now);
                 let mut derivs = Vec::with_capacity(funding.len() + oi.len() + mark.len());
                 derivs.extend(funding);
                 derivs.extend(oi);

@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, RwLock};
 
 use rust_decimal::Decimal;
 use talaria_contracts::{
@@ -19,11 +19,12 @@ use tokio::task::JoinHandle;
 
 use crate::binance_perp::archive::{BinanceVisionArchiveConnector, DEFAULT_ARCHIVE_BASE_URL};
 use crate::binance_perp::connector::BinanceFixtureConnector;
-use crate::binance_perp::{BinancePerpPack, binance_perp_pack};
-use crate::coinbase_spot::{CoinbaseSpotPack, coinbase_spot_pack};
+use crate::binance_perp::BinancePerpPack;
+use crate::catalog::{CatalogInstrument, filter_and_rank_catalog};
+use crate::coinbase_spot::CoinbaseSpotPack;
 use crate::error::PackError;
-use crate::hyperliquid_perp::{HyperliquidPerpPack, hyperliquid_perp_pack};
-use crate::okx_perp::{OkxPerpPack, okx_perp_pack};
+use crate::hyperliquid_perp::HyperliquidPerpPack;
+use crate::okx_perp::OkxPerpPack;
 use crate::traits::{
     BoxFuture, FeedTransport, HistoryConnector, HistoryConnectorConfig, MarginValuation,
     MarketPack, RealtimeStreamConfig, TransportFrame,
@@ -139,7 +140,7 @@ fn binance_spot_archive_traits() -> TraitBundle {
 
 /// Composite `HistoryConnector` routing `symbol` lookups to the owning venue connector.
 pub struct CompositeHistoryConnector {
-    slot_by_symbol: BTreeMap<String, VenueSlot>,
+    slot_by_symbol: Arc<RwLock<BTreeMap<String, VenueSlot>>>,
     okx: Arc<dyn HistoryConnector>,
     hyperliquid: Arc<dyn HistoryConnector>,
     coinbase: Arc<dyn HistoryConnector>,
@@ -149,7 +150,7 @@ pub struct CompositeHistoryConnector {
 
 impl CompositeHistoryConnector {
     fn connector_for(&self, symbol: &str) -> Result<&Arc<dyn HistoryConnector>, PackError> {
-        match self.slot_by_symbol.get(symbol).copied() {
+        match self.slot_by_symbol.read().unwrap().get(symbol).copied() {
             Some(VenueSlot::Okx) => Ok(&self.okx),
             Some(VenueSlot::Hyperliquid) => Ok(&self.hyperliquid),
             Some(VenueSlot::Coinbase) => Ok(&self.coinbase),
@@ -221,6 +222,20 @@ impl HistoryConnector for CompositeHistoryConnector {
                 .await
         })
     }
+
+    fn register_instrument(&self, spec: &InstrumentSpec) {
+        let slot = if spec.venue == "binance" && spec.asset_class == "crypto_spot" {
+            Some(VenueSlot::BinanceSpotArchive)
+        } else {
+            VenueSlot::from_venue(&spec.venue).ok()
+        };
+        if let Some(s) = slot {
+            self.slot_by_symbol
+                .write()
+                .unwrap()
+                .insert(spec.symbol.clone(), s);
+        }
+    }
 }
 
 struct ChildSlot {
@@ -248,7 +263,7 @@ impl Drop for CompositeState {
 
 /// Composite `FeedTransport` multiplexing subscribed channels across OKX, Hyperliquid & Coinbase WS.
 pub struct CompositeFeedTransport {
-    slot_by_instrument: BTreeMap<String, VenueSlot>,
+    slot_by_instrument: Arc<RwLock<BTreeMap<String, VenueSlot>>>,
     state: Mutex<CompositeState>,
     events_tx: mpsc::UnboundedSender<Result<Option<TransportFrame>, PackError>>,
     events_rx: Mutex<mpsc::UnboundedReceiver<Result<Option<TransportFrame>, PackError>>>,
@@ -347,6 +362,8 @@ impl FeedTransport for CompositeFeedTransport {
         Box::pin(async move {
             let slot = self
                 .slot_by_instrument
+                .read()
+                .unwrap()
                 .get(instrument_id)
                 .copied()
                 .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
@@ -377,7 +394,13 @@ impl FeedTransport for CompositeFeedTransport {
         timeframe: &'a str,
     ) -> BoxFuture<'a, Result<(), PackError>> {
         Box::pin(async move {
-            let Some(slot) = self.slot_by_instrument.get(instrument_id).copied() else {
+            let Some(slot) = self
+                .slot_by_instrument
+                .read()
+                .unwrap()
+                .get(instrument_id)
+                .copied()
+            else {
                 return Ok(());
             };
             if matches!(
@@ -423,6 +446,25 @@ impl FeedTransport for CompositeFeedTransport {
             }
             Ok(())
         })
+    }
+
+    fn register_instrument(&self, spec: &InstrumentSpec) {
+        let slot = if spec.venue == "binance" && spec.asset_class == "crypto_spot" {
+            Some(VenueSlot::BinanceSpotArchive)
+        } else {
+            VenueSlot::from_venue(&spec.venue).ok()
+        };
+        if let Some(s) = slot {
+            self.slot_by_instrument
+                .write()
+                .unwrap()
+                .insert(spec.instrument_id.clone(), s);
+            if matches!(s, VenueSlot::Okx | VenueSlot::Hyperliquid | VenueSlot::Coinbase)
+                && let Ok(guard) = self.state.try_lock()
+            {
+                guard.slots[s as usize].transport.register_instrument(spec);
+            }
+        }
     }
 }
 
@@ -521,17 +563,18 @@ pub struct CompositeMarketPack {
     hyperliquid: Arc<HyperliquidPerpPack>,
     coinbase: Arc<CoinbaseSpotPack>,
     instruments: Vec<InstrumentSpec>,
-    slot_by_instrument: BTreeMap<String, VenueSlot>,
-    slot_by_symbol: BTreeMap<String, VenueSlot>,
+    dynamic_instruments: Arc<RwLock<Vec<InstrumentSpec>>>,
+    slot_by_instrument: Arc<RwLock<BTreeMap<String, VenueSlot>>>,
+    slot_by_symbol: Arc<RwLock<BTreeMap<String, VenueSlot>>>,
     fixture_override: Arc<StdMutex<Option<String>>>,
 }
 
 impl CompositeMarketPack {
     pub fn new() -> Self {
-        let okx = okx_perp_pack();
-        let binance = binance_perp_pack();
-        let hyperliquid = hyperliquid_perp_pack();
-        let coinbase = coinbase_spot_pack();
+        let okx = Arc::new(OkxPerpPack::new());
+        let binance = Arc::new(BinancePerpPack::new());
+        let hyperliquid = Arc::new(HyperliquidPerpPack::new());
+        let coinbase = Arc::new(CoinbaseSpotPack::new());
 
         let mut instruments = Vec::new();
         let mut slot_by_instrument = BTreeMap::new();
@@ -583,8 +626,9 @@ impl CompositeMarketPack {
             hyperliquid,
             coinbase,
             instruments,
-            slot_by_instrument,
-            slot_by_symbol,
+            dynamic_instruments: Arc::new(RwLock::new(Vec::new())),
+            slot_by_instrument: Arc::new(RwLock::new(slot_by_instrument)),
+            slot_by_symbol: Arc::new(RwLock::new(slot_by_symbol)),
             fixture_override: Arc::new(StdMutex::new(None)),
         }
     }
@@ -627,9 +671,125 @@ impl MarketPack for CompositeMarketPack {
         &self.instruments
     }
 
+    fn instruments_snapshot(&self) -> Vec<InstrumentSpec> {
+        let mut out = self.instruments.clone();
+        if let Ok(extra) = self.dynamic_instruments.read() {
+            for spec in extra.iter() {
+                if !out.iter().any(|s| s.instrument_id == spec.instrument_id) {
+                    out.push(spec.clone());
+                }
+            }
+        }
+        out
+    }
+
+    fn register_instrument(&self, spec: InstrumentSpec) -> Result<(), PackError> {
+        let slot = if spec.venue == "binance" && spec.asset_class == "crypto_spot" {
+            VenueSlot::BinanceSpotArchive
+        } else {
+            VenueSlot::from_venue(&spec.venue)?
+        };
+        match slot {
+            VenueSlot::Okx => self.okx.register_instrument(spec.clone())?,
+            VenueSlot::Hyperliquid => self.hyperliquid.register_instrument(spec.clone())?,
+            VenueSlot::Coinbase => self.coinbase.register_instrument(spec.clone())?,
+            VenueSlot::BinanceArchive => {
+                let mut bn_spec = spec.clone();
+                bn_spec.instrument_id = binance_id_from_suite(&spec.instrument_id);
+                self.binance.register_instrument(bn_spec)?;
+            }
+            VenueSlot::BinanceSpotArchive => {}
+        }
+        self.slot_by_instrument
+            .write()
+            .unwrap()
+            .insert(spec.instrument_id.clone(), slot);
+        self.slot_by_symbol
+            .write()
+            .unwrap()
+            .insert(spec.symbol.clone(), slot);
+        if !self.instruments.iter().any(|s| s.instrument_id == spec.instrument_id) {
+            let mut extra = self.dynamic_instruments.write().unwrap();
+            if !extra.iter().any(|s| s.instrument_id == spec.instrument_id) {
+                extra.push(spec);
+            }
+        }
+        Ok(())
+    }
+
+    fn search_catalog<'a>(
+        &'a self,
+        query: &'a str,
+        venue: Option<&'a str>,
+        limit: usize,
+        config: &'a HistoryConnectorConfig,
+    ) -> BoxFuture<'a, Result<Vec<CatalogInstrument>, PackError>> {
+        let okx = Arc::clone(&self.okx);
+        let hl = Arc::clone(&self.hyperliquid);
+        let cb = Arc::clone(&self.coinbase);
+        let bn = Arc::clone(&self.binance);
+        let q = query.to_owned();
+        let venue_filter = venue.map(str::to_owned);
+        let cfg = config.clone();
+        Box::pin(async move {
+            let okx_cfg = HistoryConnectorConfig {
+                fixture_dir: cfg.fixture_dir.as_ref().map(|d| d.join("okx")),
+                ..cfg.clone()
+            };
+            let hl_cfg = HistoryConnectorConfig {
+                fixture_dir: cfg.fixture_dir.as_ref().map(|d| d.join("hyperliquid")),
+                ..cfg.clone()
+            };
+            let cb_cfg = HistoryConnectorConfig {
+                fixture_dir: cfg.fixture_dir.as_ref().map(|d| d.join("coinbase")),
+                ..cfg.clone()
+            };
+            let bn_cfg = HistoryConnectorConfig {
+                fixture_dir: cfg.fixture_dir.as_ref().map(|d| d.join("binance")),
+                ..cfg.clone()
+            };
+
+            let v = venue_filter.as_deref();
+            let (r_okx, r_hl, r_cb, r_bn) = tokio::join!(
+                okx.search_catalog(&q, v, limit, &okx_cfg),
+                hl.search_catalog(&q, v, limit, &hl_cfg),
+                cb.search_catalog(&q, v, limit, &cb_cfg),
+                bn.search_catalog(&q, v, limit, &bn_cfg),
+            );
+
+            let mut merged = Vec::new();
+            let mut last_err: Option<PackError> = None;
+            for res in [r_okx, r_hl, r_cb] {
+                match res {
+                    Ok(items) => merged.extend(items),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            match r_bn {
+                Ok(items) => {
+                    for mut item in items {
+                        if let Some(base) = item.spec.instrument_id.strip_suffix("-PERP") {
+                            item.spec.instrument_id = format!("{base}-BN-PERP");
+                        }
+                        merged.push(item);
+                    }
+                }
+                Err(e) => last_err = Some(e),
+            }
+            if merged.is_empty()
+                && let Some(err) = last_err
+            {
+                return Err(err);
+            }
+            Ok(filter_and_rank_catalog(merged, &q, limit))
+        })
+    }
+
     fn traits(&self, instrument_id: &str) -> Result<TraitBundle, PackError> {
         let slot = self
             .slot_by_instrument
+            .read()
+            .unwrap()
             .get(instrument_id)
             .copied()
             .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
@@ -699,7 +859,7 @@ impl MarketPack for CompositeMarketPack {
         };
 
         Ok(Arc::new(CompositeHistoryConnector {
-            slot_by_symbol: self.slot_by_symbol.clone(),
+            slot_by_symbol: Arc::clone(&self.slot_by_symbol),
             okx: self.okx.create_history_connector(okx_cfg)?,
             hyperliquid: self.hyperliquid.create_history_connector(hl_cfg)?,
             coinbase: self.coinbase.create_history_connector(cb_cfg)?,
@@ -718,7 +878,7 @@ impl MarketPack for CompositeMarketPack {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
         Ok(Arc::new(CompositeFeedTransport {
-            slot_by_instrument: self.slot_by_instrument.clone(),
+            slot_by_instrument: Arc::clone(&self.slot_by_instrument),
             state: Mutex::new(CompositeState {
                 closed: false,
                 started: false,
@@ -748,7 +908,7 @@ impl MarketPack for CompositeMarketPack {
 
     fn margin_valuation(&self) -> Option<Arc<dyn MarginValuation>> {
         Some(Arc::new(CompositeMarginValuation {
-            slot_by_instrument: self.slot_by_instrument.clone(),
+            slot_by_instrument: self.slot_by_instrument.read().unwrap().clone(),
             okx: self.okx.margin_valuation(),
             hyperliquid: self.hyperliquid.margin_valuation(),
             binance: self.binance.margin_valuation(),

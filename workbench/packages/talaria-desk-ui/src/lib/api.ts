@@ -78,6 +78,27 @@ export interface HealthStatus {
   feed_mode: string;
 }
 
+export interface CatalogInstrument {
+  spec: InstrumentSpec;
+  display_name?: string | null;
+  base_asset?: string | null;
+  quote_asset?: string | null;
+  status?: string | null;
+  registered: boolean;
+}
+
+export interface SearchInstrumentsResponse {
+  pack: string;
+  query: string;
+  results: CatalogInstrument[];
+}
+
+export interface AddInstrumentResponse {
+  created: boolean;
+  instrument: InstrumentSpec;
+  instruments: InstrumentSpec[];
+}
+
 export interface CollaborationStatus {
   mode: "solo" | "dual";
   host: "disabled" | "starting" | "online" | "offline" | "stopped" | string;
@@ -349,6 +370,30 @@ export const api = {
 
   instruments(): Promise<InstrumentSpec[]> {
     return getJson<InstrumentSpec[]>("/api/instruments");
+  },
+
+  searchInstruments(
+    query: string,
+    options?: { venue?: string; limit?: number },
+  ): Promise<SearchInstrumentsResponse> {
+    const params = new URLSearchParams();
+    if (query.trim()) {
+      params.set("q", query.trim());
+    }
+    if (options?.venue && options.venue.trim()) {
+      params.set("venue", options.venue.trim());
+    }
+    if (options?.limit) {
+      params.set("limit", String(options.limit));
+    }
+    const qs = params.toString();
+    return getJson<SearchInstrumentsResponse>(
+      qs ? `/api/instruments/search?${qs}` : "/api/instruments/search",
+    );
+  },
+
+  addInstrument(spec: InstrumentSpec): Promise<AddInstrumentResponse> {
+    return postJson<AddInstrumentResponse>("/api/instruments", { spec });
   },
 
   createSnapshot(

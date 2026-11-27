@@ -79,7 +79,7 @@ struct BookTracker {
 }
 
 struct ParserState {
-    instrument_by_symbol: BTreeMap<String, String>,
+    instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     subscriptions: BTreeSet<(String, String)>,
@@ -89,7 +89,7 @@ struct ParserState {
 
 impl ParserState {
     fn new(
-        instrument_by_symbol: BTreeMap<String, String>,
+        instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
         now_ms: ClockFn,
         persist_public_trades: bool,
     ) -> Self {
@@ -186,7 +186,12 @@ impl ParserState {
         let interval = data.get("interval").and_then(Value::as_str)?;
         let (_, symbol) = topic.rsplit_once('.')?;
         let timeframe = timeframe_from_bybit_interval(interval)?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?;
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         if !self
             .subscriptions
             .contains(&(instrument_id.clone(), timeframe.to_owned()))
@@ -257,7 +262,12 @@ impl ParserState {
         received_ts: i64,
     ) -> Option<talaria_contracts::ReceivedOrderBookEvent> {
         let symbol = data.get("s").and_then(Value::as_str)?;
-        let instrument_id = self.instrument_by_symbol.get(symbol)?.clone();
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         if !self.subscriptions.iter().any(|(i, _)| i == &instrument_id) {
             return None;
         }
@@ -344,7 +354,12 @@ impl ParserState {
         envelope: &Map<String, Value>,
     ) -> Option<DerivativeTickEvent> {
         const FIELDS: [&str; 4] = ["markPrice", "fundingRate", "openInterest", "nextFundingTime"];
-        let instrument_id = self.instrument_by_symbol.get(symbol)?.clone();
+        let instrument_id = self
+            .instrument_by_symbol
+            .read()
+            .ok()?
+            .get(symbol)?
+            .clone();
         if !self.subscriptions.iter().any(|(i, _)| i == &instrument_id) {
             return None;
         }
@@ -440,10 +455,15 @@ impl ParserState {
         envelope: &Map<String, Value>,
         received_ts: i64,
     ) -> Vec<TransportFrame> {
-        let Some(instrument_id) = self.instrument_by_symbol.get(symbol) else {
+        let Some(instrument_id) = self
+            .instrument_by_symbol
+            .read()
+            .ok()
+            .and_then(|m| m.get(symbol).cloned())
+        else {
             return Vec::new();
         };
-        if !self.subscriptions.iter().any(|(i, _)| i == instrument_id) {
+        if !self.subscriptions.iter().any(|(i, _)| i == &instrument_id) {
             return Vec::new();
         }
         let items: Vec<&Map<String, Value>> = match data {
@@ -487,7 +507,7 @@ impl ParserState {
                     "T",
                 )?;
                 let event = parse_trade_event(
-                    instrument_id,
+                    &instrument_id,
                     &trade_id_str,
                     side,
                     price_str,
@@ -596,8 +616,8 @@ fn first_nonzero_i64(candidates: &[Option<&Value>]) -> Result<Option<i64>, PackE
 /// Public Bybit V5 Linear WebSocket [`FeedTransport`] implementation.
 pub struct BybitPublicStream {
     ws_url: String,
-    symbol_by_instrument: BTreeMap<String, String>,
-    instrument_by_symbol: BTreeMap<String, String>,
+    symbol_by_instrument: std::sync::RwLock<BTreeMap<String, String>>,
+    instrument_by_symbol: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     ack_timeout: Duration,
@@ -621,8 +641,8 @@ impl BybitPublicStream {
             ws_url: config
                 .ws_url
                 .unwrap_or_else(|| DEFAULT_WS_URL.to_owned()),
-            symbol_by_instrument,
-            instrument_by_symbol,
+            symbol_by_instrument: std::sync::RwLock::new(symbol_by_instrument),
+            instrument_by_symbol: Arc::new(std::sync::RwLock::new(instrument_by_symbol)),
             now_ms: config.now_ms,
             persist_public_trades: config.persist_public_trades,
             ack_timeout: config.ack_timeout,
@@ -743,7 +763,7 @@ impl FeedTransport for BybitPublicStream {
 
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
             let parser = ParserState::new(
-                self.instrument_by_symbol.clone(),
+                Arc::clone(&self.instrument_by_symbol),
                 Arc::clone(&self.now_ms),
                 self.persist_public_trades,
             );
@@ -780,9 +800,10 @@ impl FeedTransport for BybitPublicStream {
         Box::pin(async move {
             let symbol = self
                 .symbol_by_instrument
-                .get(instrument_id)
-                .ok_or_else(|| PackError::FeedTransport(format!("unknown instrument: {instrument_id}")))?
-                .clone();
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
+                .ok_or_else(|| PackError::FeedTransport(format!("unknown instrument: {instrument_id}")))?;
             let interval = rest_interval_for(timeframe)
                 .map_err(|_| PackError::FeedTransport(format!("unsupported timeframe: {timeframe}")))?;
 
@@ -832,7 +853,12 @@ impl FeedTransport for BybitPublicStream {
         timeframe: &'a str,
     ) -> BoxFuture<'a, Result<(), PackError>> {
         Box::pin(async move {
-            let Some(symbol) = self.symbol_by_instrument.get(instrument_id).cloned() else {
+            let Some(symbol) = self
+                .symbol_by_instrument
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
+            else {
                 return Ok(());
             };
             let Ok(interval) = rest_interval_for(timeframe) else {
@@ -885,6 +911,15 @@ impl FeedTransport for BybitPublicStream {
             Self::teardown_connection(&mut state).await;
             Ok(())
         })
+    }
+
+    fn register_instrument(&self, spec: &InstrumentSpec) {
+        if let Ok(mut guard) = self.symbol_by_instrument.write() {
+            guard.insert(spec.instrument_id.clone(), spec.symbol.clone());
+        }
+        if let Ok(mut guard) = self.instrument_by_symbol.write() {
+            guard.insert(spec.symbol.clone(), spec.instrument_id.clone());
+        }
     }
 }
 

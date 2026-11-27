@@ -37,7 +37,7 @@ struct BookTracker {
 
 /// Stateful Hyperliquid WS JSON parser shared between live transport and offline tests.
 pub struct HyperliquidWsParser {
-    instrument_by_coin: BTreeMap<String, String>,
+    instrument_by_coin: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     now_ms: ClockFn,
     persist_public_trades: bool,
     subscriptions: BTreeSet<(String, String)>,
@@ -52,7 +52,7 @@ impl HyperliquidWsParser {
             instrument_by_coin.insert(spec.symbol.clone(), spec.instrument_id.clone());
         }
         Self {
-            instrument_by_coin,
+            instrument_by_coin: Arc::new(std::sync::RwLock::new(instrument_by_coin)),
             now_ms,
             persist_public_trades,
             subscriptions: BTreeSet::new(),
@@ -110,7 +110,7 @@ impl HyperliquidWsParser {
                 };
                 let coin = row.get("s").and_then(Value::as_str).unwrap_or("");
                 let tf = row.get("i").and_then(Value::as_str).unwrap_or("");
-                let Some(instrument_id) = self.instrument_by_coin.get(coin).cloned() else {
+                let Some(instrument_id) = self.instrument_by_coin.read().ok().and_then(|m| m.get(coin).cloned()) else {
                     return Ok(Vec::new());
                 };
                 let interval = talaria_contracts::timeframe_ms(tf)?;
@@ -150,7 +150,7 @@ impl HyperliquidWsParser {
                     return Ok(Vec::new());
                 };
                 let coin = row.get("coin").and_then(Value::as_str).unwrap_or("");
-                let Some(instrument_id) = self.instrument_by_coin.get(coin).cloned() else {
+                let Some(instrument_id) = self.instrument_by_coin.read().ok().and_then(|m| m.get(coin).cloned()) else {
                     return Ok(Vec::new());
                 };
                 let Some(levels) = row.get("bbo").and_then(Value::as_array) else {
@@ -194,7 +194,7 @@ impl HyperliquidWsParser {
                     return Ok(Vec::new());
                 };
                 let coin = row.get("coin").and_then(Value::as_str).unwrap_or("");
-                let Some(instrument_id) = self.instrument_by_coin.get(coin).cloned() else {
+                let Some(instrument_id) = self.instrument_by_coin.read().ok().and_then(|m| m.get(coin).cloned()) else {
                     return Ok(Vec::new());
                 };
                 let Some(ctx) = row.get("ctx").and_then(Value::as_object) else {
@@ -241,7 +241,7 @@ impl HyperliquidWsParser {
                 for row in rows {
                     let Some(item) = row.as_object() else { continue };
                     let coin = item.get("coin").and_then(Value::as_str).unwrap_or("");
-                    let Some(instrument_id) = self.instrument_by_coin.get(coin).cloned() else {
+                    let Some(instrument_id) = self.instrument_by_coin.read().ok().and_then(|m| m.get(coin).cloned()) else {
                         continue;
                     };
                     let px = item.get("px").and_then(Value::as_str).unwrap_or("0");
@@ -309,7 +309,8 @@ impl Drop for LifecycleState {
 
 /// Real-time Hyperliquid WebSocket transport (`FeedTransport`).
 pub struct HyperliquidStream {
-    instruments: BTreeMap<String, InstrumentSpec>,
+    instruments: std::sync::RwLock<BTreeMap<String, InstrumentSpec>>,
+    instrument_by_coin: Arc<std::sync::RwLock<BTreeMap<String, String>>>,
     config: RealtimeStreamConfig,
     ws_url: String,
     parser: Arc<Mutex<HyperliquidWsParser>>,
@@ -329,15 +330,18 @@ impl HyperliquidStream {
             .ws_url
             .clone()
             .unwrap_or_else(|| DEFAULT_WS_URL.to_owned());
-        let parser = Arc::new(Mutex::new(HyperliquidWsParser::new(
+        let ws_parser = HyperliquidWsParser::new(
             instruments,
             Arc::clone(&config.now_ms),
             config.persist_public_trades,
-        )));
+        );
+        let instrument_by_coin = Arc::clone(&ws_parser.instrument_by_coin);
+        let parser = Arc::new(Mutex::new(ws_parser));
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
         Self {
-            instruments: by_id,
+            instruments: std::sync::RwLock::new(by_id),
+            instrument_by_coin,
             config,
             ws_url,
             parser,
@@ -562,7 +566,7 @@ impl FeedTransport for HyperliquidStream {
 
             let existing: Vec<_> = state.subscriptions.iter().cloned().collect();
             for (inst_id, tf) in existing {
-                if let Some(spec) = self.instruments.get(&inst_id) {
+                if let Some(spec) = self.instruments.read().ok().and_then(|m| m.get(&inst_id).cloned()) {
                     for msg in self.build_subscription_messages(&spec.symbol, &tf, "subscribe")? {
                         let (tx, rx) = oneshot::channel();
                         conn.cmd_tx
@@ -588,7 +592,9 @@ impl FeedTransport for HyperliquidStream {
         Box::pin(async move {
             let spec = self
                 .instruments
-                .get(instrument_id)
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
                 .ok_or_else(|| PackError::InstrumentNotFound(instrument_id.to_owned()))?;
             let msgs = self.build_subscription_messages(&spec.symbol, timeframe, "subscribe")?;
             let mut state = self.lifecycle.lock().await;
@@ -618,7 +624,12 @@ impl FeedTransport for HyperliquidStream {
         timeframe: &'a str,
     ) -> BoxFuture<'a, Result<(), PackError>> {
         Box::pin(async move {
-            let Some(spec) = self.instruments.get(instrument_id) else {
+            let Some(spec) = self
+                .instruments
+                .read()
+                .ok()
+                .and_then(|m| m.get(instrument_id).cloned())
+            else {
                 return Ok(());
             };
             let msgs = self.build_subscription_messages(&spec.symbol, timeframe, "unsubscribe")?;
@@ -666,5 +677,14 @@ impl FeedTransport for HyperliquidStream {
             }
             Ok(())
         })
+    }
+
+    fn register_instrument(&self, spec: &InstrumentSpec) {
+        if let Ok(mut guard) = self.instruments.write() {
+            guard.insert(spec.instrument_id.clone(), spec.clone());
+        }
+        if let Ok(mut guard) = self.instrument_by_coin.write() {
+            guard.insert(spec.symbol.clone(), spec.instrument_id.clone());
+        }
     }
 }

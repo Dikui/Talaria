@@ -220,7 +220,7 @@ pub struct StrategyStream {
     scheduler: Arc<SubscriptionScheduler>,
     hot_buffer: Arc<HotStreamBuffer>,
     reader: Arc<ColdReader>,
-    instruments: HashMap<String, InstrumentSpec>,
+    instruments: std::sync::RwLock<HashMap<String, InstrumentSpec>>,
     now_ms: NowFn,
     inner: Mutex<Inner>,
 }
@@ -241,13 +241,19 @@ impl StrategyStream {
             scheduler,
             hot_buffer,
             reader,
-            instruments: inst_map,
+            instruments: std::sync::RwLock::new(inst_map),
             now_ms,
             inner: Mutex::new(Inner {
                 next_session_id: 1,
                 leases: HashMap::new(),
                 journals: HashMap::new(),
             }),
+        }
+    }
+
+    pub fn register_instrument(&self, spec: InstrumentSpec) {
+        if let Ok(mut guard) = self.instruments.write() {
+            guard.insert(spec.instrument_id.clone(), spec);
         }
     }
 
@@ -373,7 +379,11 @@ impl StrategyStream {
     ) -> Result<(), ApiError> {
         let now = (self.now_ms)();
         let key_clone = key.clone();
-        let spec = self.instruments.get(key.instrument_id()).cloned();
+        let spec = self
+            .instruments
+            .read()
+            .ok()
+            .and_then(|m| m.get(key.instrument_id()).cloned());
         let reader = Arc::clone(&self.reader);
         let hot = Arc::clone(&self.hot_buffer);
 
@@ -1000,12 +1010,7 @@ async fn handle_strategy_socket(socket: WebSocket, state: Arc<AppState>, query: 
     let Some(req) = req else {
         return;
     };
-    let valid_instruments: HashSet<String> = state
-        .instruments
-        .iter()
-        .map(|s| s.instrument_id.clone())
-        .collect();
-    if !valid_instruments.contains(&req.instrument) {
+    if !state.has_instrument(&req.instrument) {
         reject_ws(
             &mut sink,
             INSTRUMENT_NOT_FOUND,

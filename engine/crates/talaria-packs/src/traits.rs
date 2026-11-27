@@ -14,6 +14,7 @@ use talaria_contracts::{
     TraitBundle, TransportEvent,
 };
 
+use crate::catalog::{CatalogInstrument, catalog_from_specs, filter_and_rank_catalog};
 use crate::error::PackError;
 use crate::uuid_util::trade_to_contract;
 
@@ -256,6 +257,9 @@ pub trait HistoryConnector: Send + Sync {
             ))
         })
     }
+
+    /// Optional runtime registration of a dynamically added instrument.
+    fn register_instrument(&self, _spec: &InstrumentSpec) {}
 }
 
 /// Real-time or replay feed transport consumed by `FeedSupervisor`.
@@ -288,6 +292,9 @@ pub trait FeedTransport: Send + Sync {
 
     /// Close the transport; idempotent.
     fn close(&self) -> BoxFuture<'_, Result<(), PackError>>;
+
+    /// Optional runtime registration of a dynamically added instrument for live WS mapping.
+    fn register_instrument(&self, _spec: &InstrumentSpec) {}
 }
 
 /// Read-only margin valuation capability exposed by packs supporting derivatives/leverage.
@@ -339,6 +346,31 @@ pub trait MarketPack: Send + Sync {
 
     /// All static instruments provided by this pack.
     fn instruments(&self) -> &[InstrumentSpec];
+
+    /// Snapshot of all instruments (static + dynamically registered) currently active in this pack.
+    fn instruments_snapshot(&self) -> Vec<InstrumentSpec> {
+        self.instruments().to_vec()
+    }
+
+    /// Dynamically register a new instrument into this pack at runtime.
+    fn register_instrument(&self, _spec: InstrumentSpec) -> Result<(), PackError> {
+        Err(PackError::InvalidRequest(format!(
+            "market pack `{}` does not support dynamic instrument registration",
+            self.name()
+        )))
+    }
+
+    /// Search online exchange catalog (or offline fixture/static fallback) for instruments matching `query`.
+    fn search_catalog<'a>(
+        &'a self,
+        query: &'a str,
+        _venue: Option<&'a str>,
+        limit: usize,
+        _config: &'a HistoryConnectorConfig,
+    ) -> BoxFuture<'a, Result<Vec<CatalogInstrument>, PackError>> {
+        let items = filter_and_rank_catalog(catalog_from_specs(&self.instruments_snapshot()), query, limit);
+        Box::pin(async move { Ok(items) })
+    }
 
     /// Look up one instrument by `instrument_id`.
     fn instrument(&self, instrument_id: &str) -> Option<&InstrumentSpec> {

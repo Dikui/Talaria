@@ -230,6 +230,13 @@ CREATE TABLE IF NOT EXISTS paper_command_submissions (
 CREATE INDEX IF NOT EXISTS paper_command_inbox
     ON paper_commands (sub_account_id)
     WHERE receipt IS NULL;
+CREATE TABLE IF NOT EXISTS custom_instruments (
+    pack_name TEXT NOT NULL,
+    instrument_id TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    created_ts INTEGER NOT NULL,
+    PRIMARY KEY (pack_name, instrument_id)
+);
 ";
 
 const MIGRATION_KEY: &str = "migration.from_collaboration_v1";
@@ -2896,6 +2903,47 @@ pub fn briefings_mark_read(
         .map_err(map_sqlite_err)?;
     }
     Ok(briefing)
+}
+
+pub fn custom_instruments_list(
+    conn: &Connection,
+    pack_name: &str,
+) -> Result<Vec<talaria_contracts::InstrumentSpec>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT spec_json FROM custom_instruments WHERE pack_name = ?1 ORDER BY created_ts ASC, instrument_id ASC",
+        )
+        .map_err(map_sqlite_err)?;
+    let rows = stmt
+        .query_map(params![pack_name], |r| r.get::<_, String>(0))
+        .map_err(map_sqlite_err)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let raw = row.map_err(map_sqlite_err)?;
+        if let Ok(spec) = serde_json::from_str::<talaria_contracts::InstrumentSpec>(&raw) {
+            out.push(spec);
+        }
+    }
+    Ok(out)
+}
+
+pub fn custom_instruments_upsert(
+    conn: &mut Connection,
+    pack_name: &str,
+    spec: &talaria_contracts::InstrumentSpec,
+    now: i64,
+) -> Result<(), ApiError> {
+    let payload =
+        serde_json::to_string(spec).map_err(|e| ApiError::internal(e.to_string()))?;
+    conn.execute(
+        "INSERT INTO custom_instruments (pack_name, instrument_id, spec_json, created_ts)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(pack_name, instrument_id) DO UPDATE SET
+            spec_json = excluded.spec_json",
+        params![pack_name, &spec.instrument_id, payload, now],
+    )
+    .map_err(map_sqlite_err)?;
+    Ok(())
 }
 
 /// Indicator defaults key matching Python `indicator_defaults.py`.
