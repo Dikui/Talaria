@@ -21,10 +21,11 @@ use talaria_contracts::rules::{
     RulePreviewIndicator, RulePreviewResponse, RulePreviewSignal, RuleTiming,
 };
 use talaria_contracts::snapshot::SnapshotMeta;
+use talaria_contracts::structures::{StructureFamily, StructureFeature, StructureStatus};
 use talaria_contracts::timeframe_ms;
 use talaria_operators::{
-    DerivativeSample, GdaDecimal, OperatorSpec, compute_indicator_series, compute_series,
-    derivative_samples, legacy_alert_points,
+    DerivativeSample, GdaDecimal, GeometryBounds, OperatorSpec, compute_indicator_series,
+    compute_series, derivative_samples, geometry_bounds_at, legacy_alert_points,
 };
 
 use crate::error::ApiError;
@@ -60,6 +61,15 @@ fn time_span(points: &[DrawingPoint]) -> (i64, i64) {
         high = high.max(p.ts);
     }
     (low, high)
+}
+
+/// Deterministic geometric bounds for a `StructureFeature` at timestamp `ts`.
+pub fn structure_bounds_at(feature: &StructureFeature, ts: i64) -> Option<OverlayBounds> {
+    let bounds: GeometryBounds = geometry_bounds_at(&feature.geometry, ts).ok().flatten()?;
+    Some(OverlayBounds {
+        lower: bounds.lower,
+        upper: bounds.upper,
+    })
 }
 
 /// Deterministic geometric bounds for a human drawing at timestamp `ts`.
@@ -205,7 +215,8 @@ pub fn validate_rule_complexity(rule: &Rule) -> Result<(), ApiError> {
             }
             RuleExpression::Compare { .. }
             | RuleExpression::Overlay { .. }
-            | RuleExpression::LevelEvent { .. } => {}
+            | RuleExpression::LevelEvent { .. }
+            | RuleExpression::StructureEvent { .. } => {}
         }
         Ok(())
     }
@@ -275,6 +286,7 @@ pub struct RuleObservation {
     pub threshold: Option<Decimal>,
     pub drawing_kind: Option<DrawingKind>,
     pub level: Option<KeyLevel>,
+    pub structure: Option<StructureFeature>,
     pub level_event: Option<AlertLevelEvent>,
     pub level_direction: Option<LevelSide>,
     pub crossed_at: Option<i64>,
@@ -289,6 +301,7 @@ pub struct EvalContext<'a> {
     pub open_interest: &'a [DerivativePoint],
     pub mark_price: &'a [DerivativePoint],
     pub levels: &'a HashMap<String, KeyLevel>,
+    pub structures: &'a HashMap<String, StructureFeature>,
     pub drawing_lookup: &'a dyn Fn(&str) -> Option<DrawingRecord>,
     pub event: Option<FeedEventRef<'a>>,
     pub bar_ts_override: Option<i64>,
@@ -505,6 +518,7 @@ pub fn prior_root_false(rule: &Rule, ctx: &mut EvalContext<'_>) -> Result<bool, 
         open_interest: ctx.open_interest,
         mark_price: ctx.mark_price,
         levels: ctx.levels,
+        structures: ctx.structures,
         drawing_lookup: ctx.drawing_lookup,
         event: None,
         bar_ts_override: Some(prior.timestamp),
@@ -591,6 +605,7 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
                     threshold: r.threshold,
                     drawing_kind: None,
                     level: None,
+                    structure: None,
                     level_event: None,
                     level_direction: None,
                     crossed_at: None,
@@ -632,6 +647,21 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
                 }
                 Ok(res)
             }
+            RuleExpression::StructureEvent {
+                structure_id,
+                event,
+                structure_family,
+            } => {
+                let Some(bar) = self.current_bar().cloned() else {
+                    return Ok(None);
+                };
+                let res =
+                    self.eval_structure_event(path, structure_id, *event, *structure_family, &bar);
+                if res.is_some() {
+                    self.state.known_inputs.insert(path.to_owned());
+                }
+                Ok(res)
+            }
         }
     }
 
@@ -659,6 +689,7 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
                     threshold: Some(rhs),
                     drawing_kind: None,
                     level: None,
+                    structure: None,
                     level_event: None,
                     level_direction: None,
                     crossed_at: None,
@@ -683,6 +714,7 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
                 threshold: Some(rhs),
                 drawing_kind: None,
                 level: None,
+                structure: None,
                 level_event: None,
                 level_direction: None,
                 crossed_at: matched.then_some(cur_ts),
@@ -694,6 +726,7 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
             threshold: Some(rhs),
             drawing_kind: None,
             level: None,
+            structure: None,
             level_event: None,
             level_direction: None,
             crossed_at: None,
@@ -756,6 +789,37 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
                 Ok(Some(match edge {
                     RuleEdge::Upper => high,
                     RuleEdge::Lower => low,
+                }))
+            }
+            RuleOperand::StructurePrice {
+                structure_id,
+                structure_family,
+                edge,
+            } => {
+                let Some(st) = self.visible_structure(structure_id, *structure_family) else {
+                    return Ok(None);
+                };
+                let ts = if previous {
+                    self.previous_bar().map(|b| b.timestamp)
+                } else {
+                    self.current_bar()
+                        .map(|b| b.timestamp)
+                        .or(match &self.ctx.event {
+                            Some(FeedEventRef::Book(b)) => Some(b.ts_event),
+                            Some(FeedEventRef::Derivative(d)) => Some(d.ts_event),
+                            Some(FeedEventRef::Kline(k)) => Some(k.bar.timestamp),
+                            None => None,
+                        })
+                };
+                let Some(ts) = ts else {
+                    return Ok(None);
+                };
+                let Some(bounds) = structure_bounds_at(&st, ts) else {
+                    return Ok(None);
+                };
+                Ok(Some(match edge {
+                    RuleEdge::Upper => bounds.upper,
+                    RuleEdge::Lower => bounds.lower,
                 }))
             }
             RuleOperand::DrawingPrice {
@@ -898,8 +962,145 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
             threshold: Some(threshold),
             drawing_kind: Some(drawing.kind),
             level: None,
+            structure: None,
             level_event: None,
             level_direction: None,
+            crossed_at: None,
+        })
+    }
+
+    fn visible_structure(
+        &self,
+        structure_id: &str,
+        structure_family: Option<StructureFamily>,
+    ) -> Option<StructureFeature> {
+        let st = self.ctx.structures.get(structure_id)?;
+        if st.instrument_id != self.ctx.instrument_id || st.ts_available > self.ctx.now_ms {
+            return None;
+        }
+        if let Some(expected_family) = structure_family
+            && st.family != expected_family
+        {
+            return None;
+        }
+        Some(st.clone())
+    }
+
+    fn eval_structure_event(
+        &mut self,
+        path: &str,
+        structure_id: &str,
+        event: AlertLevelEvent,
+        structure_family: Option<StructureFamily>,
+        bar: &CompactBar,
+    ) -> Option<RuleObservation> {
+        let st = self.visible_structure(structure_id, structure_family)?;
+        let bounds = structure_bounds_at(&st, bar.timestamp)?;
+        let (lower, upper) = (bounds.lower, bounds.upper);
+        let close = bar.close?;
+        let high = bar.high?;
+        let low = bar.low?;
+
+        if event == AlertLevelEvent::Touch {
+            let matched = low <= upper && high >= lower;
+            let threshold = if close >= upper { upper } else { lower };
+            return Some(RuleObservation {
+                matched,
+                observed: Some(close),
+                threshold: Some(threshold),
+                drawing_kind: None,
+                level: None,
+                structure: Some(st),
+                level_event: Some(event),
+                level_direction: None,
+                crossed_at: None,
+            });
+        }
+
+        let side = if close > upper {
+            Some(LevelSide::Up)
+        } else if close < lower {
+            Some(LevelSide::Down)
+        } else {
+            None
+        };
+
+        let mut crossed = false;
+        if let Some(s) = side
+            && st.status == StructureStatus::Active
+        {
+            let prev = self.previous_bar()?;
+            let prev_close = prev.close?;
+            let prev_bounds = structure_bounds_at(&st, prev.timestamp)?;
+            crossed = match s {
+                LevelSide::Up => prev_close <= prev_bounds.upper,
+                LevelSide::Down => prev_close >= prev_bounds.lower,
+            };
+        }
+
+        let broke = side.is_some() && (st.status != StructureStatus::Active || crossed);
+        if event == AlertLevelEvent::Break {
+            let threshold = if side == Some(LevelSide::Up) || (side.is_none() && close >= upper) {
+                upper
+            } else {
+                lower
+            };
+            return Some(RuleObservation {
+                matched: broke,
+                observed: Some(close),
+                threshold: Some(threshold),
+                drawing_kind: None,
+                level: None,
+                structure: Some(st),
+                level_event: Some(event),
+                level_direction: if broke { side } else { None },
+                crossed_at: None,
+            });
+        }
+
+        let key = path.to_owned();
+        if self.state.consumed_sides.get(&key).copied() != side {
+            self.state.consumed_sides.remove(&key);
+        }
+        let mut current_break = self.state.breakouts.get(&key).copied();
+        if broke
+            && let Some(s) = side
+        {
+            let already_dir = current_break.map(|b| b.0);
+            if already_dir != Some(s) && !self.state.consumed_sides.contains_key(&key) {
+                let entry = (s, bar.timestamp);
+                self.state.breakouts.insert(key.clone(), entry);
+                current_break = Some(entry);
+            }
+        }
+        let direction = current_break.map(|b| b.0);
+        let threshold = if direction == Some(LevelSide::Up) || (direction.is_none() && close >= upper)
+        {
+            upper
+        } else {
+            lower
+        };
+        let mut matched = false;
+        if let Some((dir, breakout_ts)) = current_break
+            && bar.timestamp > breakout_ts
+        {
+            matched = match dir {
+                LevelSide::Up => low <= upper && upper < close,
+                LevelSide::Down => close < lower && lower <= high,
+            };
+            if matched {
+                self.state.matched_retests.push(key);
+            }
+        }
+        Some(RuleObservation {
+            matched,
+            observed: Some(close),
+            threshold: Some(threshold),
+            drawing_kind: None,
+            level: None,
+            structure: Some(st),
+            level_event: Some(event),
+            level_direction: direction,
             crossed_at: None,
         })
     }
@@ -944,6 +1145,7 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
                 threshold: Some(threshold),
                 drawing_kind: None,
                 level: Some(lv),
+                structure: None,
                 level_event: Some(event),
                 level_direction: None,
                 crossed_at: None,
@@ -972,6 +1174,7 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
                 threshold: Some(threshold),
                 drawing_kind: None,
                 level: Some(lv),
+                structure: None,
                 level_event: Some(event),
                 level_direction: side,
                 crossed_at: None,
@@ -1017,6 +1220,7 @@ impl<'a, 'b> RuleEvaluator<'a, 'b> {
             threshold: Some(threshold),
             drawing_kind: None,
             level: Some(lv),
+            structure: None,
             level_event: Some(event),
             level_direction: direction,
             crossed_at: None,
@@ -1057,6 +1261,7 @@ pub fn preview_rule(
     open_interest: &[DerivativePoint],
     mark_price: &[DerivativePoint],
     levels_by_cutoff: &dyn Fn(i64) -> HashMap<String, KeyLevel>,
+    structures_by_cutoff: &dyn Fn(i64) -> HashMap<String, StructureFeature>,
     drawing_lookup: &dyn Fn(&str) -> Option<DrawingRecord>,
     limit: usize,
 ) -> Result<RulePreviewResponse, ApiError> {
@@ -1078,6 +1283,7 @@ pub fn preview_rule(
         }
         let observed_at = bar.ts_available.max(bar.timestamp + tf_ms);
         let lvl_map = levels_by_cutoff(observed_at);
+        let st_map = structures_by_cutoff(observed_at);
         let mut ctx = EvalContext {
             instrument_id,
             timeframe,
@@ -1087,6 +1293,7 @@ pub fn preview_rule(
             open_interest,
             mark_price,
             levels: &lvl_map,
+            structures: &st_map,
             drawing_lookup,
             event: None,
             bar_ts_override: Some(bar.timestamp),
@@ -1183,7 +1390,9 @@ fn collect_indicator_operands(node: &RuleExpression, f: &mut dyn FnMut(&RuleOper
                 collect_indicator_operands(child, f);
             }
         }
-        RuleExpression::Overlay { .. } | RuleExpression::LevelEvent { .. } => {}
+        RuleExpression::Overlay { .. }
+        | RuleExpression::LevelEvent { .. }
+        | RuleExpression::StructureEvent { .. } => {}
     }
 }
 
@@ -1232,6 +1441,12 @@ pub fn evaluate_annotation_gate(
     let timestamps: Vec<i64> = bars.iter().map(|b| b.timestamp).collect();
     let mut unresolved = Vec::new();
     for ev in &ann.evidence_refs {
+        if let Some(structure_id) = &ev.structure_id {
+            if !valid_level_ids.contains(structure_id) {
+                unresolved.push(format!("structure_id={structure_id}"));
+            }
+            continue;
+        }
         if let Some(level_id) = &ev.level_id {
             if !valid_level_ids.contains(level_id) {
                 unresolved.push(format!("level_id={level_id}"));
@@ -1348,4 +1563,150 @@ fn atr_envelope(bars: &[CompactBar]) -> Result<Option<(Decimal, Decimal)>, ApiEr
     };
     let band = Decimal::from(3u32) * atr;
     Ok(Some((min_low - band, max_high + band)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use talaria_contracts::bars::{BarStatus, CompactBar};
+    use talaria_contracts::key_levels::EvidenceClass;
+    use talaria_contracts::rules::{
+        RuleBarField, RuleComparisonTest, RuleEdge, RuleOperand, RuleTiming, RuleVersion,
+    };
+    use talaria_contracts::structures::{
+        AnalysisWindow, PriceScaleMode, STRUCTURE_METHOD_VERSION, StructureAnchor,
+        StructureCategory, StructureFamily, StructureFeature, StructureGeometry, StructureStatus,
+    };
+    use talaria_contracts::types::PrecisionTier;
+
+    fn dec(v: i64) -> Decimal {
+        Decimal::from(v)
+    }
+
+    #[test]
+    fn structure_trendline_break_and_price_eval() {
+        let bars = vec![
+            CompactBar {
+                timestamp: 1_767_225_600_000,
+                ts_available: 1_767_225_660_000,
+                status: BarStatus::Normal,
+                precision: PrecisionTier::SecondVerified,
+                open: Some(dec(102)),
+                high: Some(dec(105)),
+                low: Some(dec(101)),
+                close: Some(dec(103)),
+                volume: Some(dec(10)),
+                turnover: Some(dec(1000)),
+            },
+            CompactBar {
+                timestamp: 1_767_225_660_000,
+                ts_available: 1_767_225_720_000,
+                status: BarStatus::Normal,
+                precision: PrecisionTier::SecondVerified,
+                open: Some(dec(103)),
+                high: Some(dec(115)),
+                low: Some(dec(103)),
+                close: Some(dec(114)),
+                volume: Some(dec(15)),
+                turnover: Some(dec(1600)),
+            },
+        ];
+        // Slope rises from 105 at bar[0] to 110 at bar[1]
+        let st = StructureFeature {
+            structure_id: "st_trend_1".to_owned(),
+            instrument_id: "BTC-USDT-PERP".to_owned(),
+            detector_id: "pivot_trendline@1".to_owned(),
+            family: StructureFamily::Trendline,
+            category: StructureCategory::Trend,
+            kind: "TRENDLINE_RESISTANCE".to_owned(),
+            evidence_class: EvidenceClass::Observed,
+            timeframe: "1m".to_owned(),
+            source_timeframe: Some("1m".to_owned()),
+            geometry: StructureGeometry::SlopeLine {
+                anchor_start: StructureAnchor {
+                    ts: bars[0].timestamp,
+                    price: dec(105),
+                },
+                anchor_end: StructureAnchor {
+                    ts: bars[1].timestamp,
+                    price: dec(110),
+                },
+                scale: PriceScaleMode::Linear,
+                extend_right: true,
+            },
+            strength: 0.9,
+            status: StructureStatus::Active,
+            ts_available: bars[0].ts_available,
+            formed_ts: bars[0].timestamp,
+            analysis_window: AnalysisWindow {
+                from_ts: bars[0].timestamp,
+                to_ts: bars[1].timestamp,
+            },
+            touch_count: 2,
+            touch_timestamps: vec![bars[0].timestamp, bars[1].timestamp],
+            last_touch_ts: Some(bars[1].timestamp),
+            volume_weight: dec(0),
+            constituent_ids: Vec::new(),
+            method_version: STRUCTURE_METHOD_VERSION.to_owned(),
+            parameters: BTreeMap::new(),
+        };
+        let mut structures = HashMap::new();
+        structures.insert(st.structure_id.clone(), st);
+        let levels = HashMap::new();
+        let drawing_lookup = |_id: &str| None;
+
+        let rule_break = Rule {
+            version: RuleVersion::V1,
+            timing: RuleTiming::BarClose,
+            expression: RuleExpression::StructureEvent {
+                structure_id: "st_trend_1".to_owned(),
+                event: AlertLevelEvent::Break,
+                structure_family: Some(StructureFamily::Trendline),
+            },
+        };
+        let mut ctx = EvalContext {
+            instrument_id: "BTC-USDT-PERP",
+            timeframe: "1m",
+            now_ms: bars[1].ts_available,
+            bars: &bars,
+            funding: &[],
+            open_interest: &[],
+            mark_price: &[],
+            levels: &levels,
+            structures: &structures,
+            drawing_lookup: &drawing_lookup,
+            event: None,
+            bar_ts_override: Some(bars[1].timestamp),
+            indicator_cache: BTreeMap::new(),
+        };
+        let mut state = RuleState::default();
+        let obs = observe_rule(&rule_break, &mut ctx, &mut state, true)
+            .unwrap()
+            .expect("expected observation");
+        assert!(obs.matched);
+        assert_eq!(obs.threshold, Some(dec(110)));
+        assert_eq!(obs.level_direction, Some(LevelSide::Up));
+
+        // Check RuleStructurePrice > threshold
+        let rule_price = Rule {
+            version: RuleVersion::V1,
+            timing: RuleTiming::BarClose,
+            expression: RuleExpression::Compare {
+                test: RuleComparisonTest::Gt,
+                left: Box::new(RuleOperand::Bar {
+                    field: RuleBarField::Close,
+                }),
+                right: Box::new(RuleOperand::StructurePrice {
+                    structure_id: "st_trend_1".to_owned(),
+                    structure_family: Some(StructureFamily::Trendline),
+                    edge: RuleEdge::Upper,
+                }),
+            },
+        };
+        let obs_price = observe_rule(&rule_price, &mut ctx, &mut state, true)
+            .unwrap()
+            .expect("expected price obs");
+        assert!(obs_price.matched);
+        assert_eq!(obs_price.threshold, Some(dec(110)));
+    }
 }

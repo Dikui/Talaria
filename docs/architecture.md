@@ -32,6 +32,7 @@ Talaria 是本机单用户的交易研究平台，覆盖加密永续合约与美
 - [ADR-0024：`talaria-data` 对 `run_export` 回测导出投影的只读边界（`summary.json` 原子就绪标记）](./adr/0024-readonly-run-export-projection.md)
 - [ADR-0025：模拟盘账户只读投影、交易意图队列与工作台进程托管边界](./adr/0025-paper-account-projection-and-intent-queues.md)
 - [ADR-0026：图表下单临时手势与活跃屏障拖拽交互边界](./adr/0026-chart-order-gesture-and-barrier-drag.md)
+- [ADR-0027：统一市场结构引擎（几何原语固定、检测器可插拔）](./adr/0027-unified-market-structure-engine.md)
 
 调研证据存档于 `docs/research/`（仅本地）；Phase 0 实证实验存档于 `docs/experiments/chain1-phase0-poc.md`（仅本地）。
 
@@ -172,9 +173,10 @@ Talaria/
 │   │   └── talaria-desk-ui/            # React 19 + dockview-react + ChartSurfaceAdapter（@luxalgo/vela 核心，不含 pinets）
 │   └── src-tauri/                      # Tauri v2 原生多窗桌面薄壳 + talaria-data sidecar 启停监管
 ├── core/src/talaria/                   # Python 确定性底座（改造中：收敛为研究与策略核，热链路逐步切向 Rust）
-│   ├── foundation/                     # L0：Decimal、时点、能力特征、契约、算子与关键位黄金向量唯一导出源
+│   ├── foundation/                     # L0：Decimal、时点、能力特征、契约、算子与市场结构黄金向量唯一导出源
 │   │   ├── operators/
-│   │   └── key_levels/
+│   │   ├── structures/                 # 统一市场结构引擎（ADR-0027）：4 种几何原语与可插拔检测器
+│   │   └── key_levels/                 # 过渡期保留；新能力统一归口至 structures/
 │   ├── packs/                          # 市场包：crypto_perp（Bybit V5 Linear）；us_equity 规划中
 │   ├── feed/                           # 过渡期保留；目标由 Rust talaria-feed 接管
 │   ├── replay/                         # 过渡期保留；目标由 Rust talaria-feed 接管
@@ -225,7 +227,7 @@ Talaria/
    - **横截面网格表（`GridAlignedTable`，规划中）**：保留正常休市（`SESSION_CLOSED`）、停牌（`HALTED`）、时段内无成交（`NO_TRADES`）与异常断流（`FEED_GAP`）显式状态，服务多品种横截面对齐。
    - **单标的紧凑交易序列（`SessionCompactBars`）**：剔除正常休市空槽，保留 `FEED_GAP` 供算子重置状态。技术与衍生品算子（EMA、SMA、RSI、ATR、BOLL、VWAP、资金费率分位数、OI 背离度、净赔率几何验算）的批量输出与输入等长同序，预热期输出前导 `null`。遇到 `NO_TRADES` 时技术指标按平盘零量柱递推，衍生品算子沿用上一结果；遇到 `FEED_GAP` 时输出 `null` 并重新预热。前端跳过 `FEED_GAP` 柱，按时间戳对齐渲染（`@luxalgo/vela` 原生支持 `FEED_GAP` 跳过与 `null` 间隙断开）。
    - **Python 黄金向量为唯一数学权威，Rust 与 Python 定点实现对齐**（ADR-0010、ADR-0023）：`foundation/operators` 与 `contracts/operator_vectors/` 的 11 份黄金向量是唯一权威；Rust `talaria-operators` 基于 `rust_decimal` 实现全部算子，必须逐字符通过全部黄金向量回归。`TA-Lib==0.8.3` 与 `talipp==2.7.0` 保留为固定版本候选依赖，运行时不使用。组件模型的算子注册表（§5.1）以此为准。
-4. **关键位纯函数算法（`foundation/key_levels` 与 `talaria-operators`）**：摆动高低点（按 ATR 阈值的分形 / ZigZag，多周期）、触及价位聚类、成交量分布（`POC / VAH / VAL`）、锚定 VWAP 与 `±σ` 带、时段参考位、跳空缺口与整数关口均为无 I/O 纯函数。**摆动类算法不得使用确认点之后的数据**：枢轴须经 `confirm_bars` 根后续 K 线确认后才产出，可见时刻记为确认 K 线收盘时刻。
+4. **统一市场结构纯函数引擎（`foundation/structures` 与 `talaria-operators::structures`）**：[ADR-0027](./adr/0027-unified-market-structure-engine.md) 将水平关键位、无前视 SMC（`fvg@1`、`equal_levels@1`）、趋势线（`pivot_trendline@1`、`convex_envelope@1`）与多维共振带（`confluence@1`）统一为 4 种正交几何原语（`HORIZONTAL_LINE | HORIZONTAL_ZONE | SLOPE_LINE | CHANNEL`）及确定性投影 `geometry_bounds_at(geometry, ts)`。旧 `foundation/key_levels` 保留为过渡期兼容层。**摆动与趋势类算法不得使用确认点之后的数据**：枢轴须经 `confirm_bars` 根后续 K 线确认后才产出，可见时刻记为确认 K 线收盘时刻，且每条特征携带采样窗口 `analysis_window`。
 
 ---
 
@@ -363,37 +365,33 @@ class Strategy(Component, Protocol):
 - `Trigger Routing Policy` 决定触发只做本地提醒还是进入协同简报（ADR-0004）。
 - 改造：预警条件改为 JSON 规则（收盘求值或事件驱动）；预警按自己的周期订阅行情（当前固定 `1m`，非 `1m` 的指标预警收不到 K 线）；预警与扫描作为常驻服务的可开关功能。
 
-### 5.4 确定性关键位引擎
+### 5.4 确定性统一市场结构引擎（ADR-0027）
 
-**已实现**（关键位发布方式改造中）。
+**已实现（Python `foundation/structures` + Rust `talaria-operators::structures` / `talaria-server::StructureRegistry` + `workbench/` 已切流）。**
 
-- 服务调用 `foundation/key_levels`，按冻结快照的 `cutoff_ts` 产出绑定 `snapshot_id` 的不可变 `KeyLevelSet`。
-- **改造**：当前关键位只在 `POST /api/snapshots` 路由里写入广播器缓存，没有前端创建快照时关键位预警拿不到数据。改为服务内的关键位注册表：
-  - 任何来源的快照冻结都写入一个带 `cutoff_ts` 的 `KeyLevelSet` 版本；
-  - 服务启动时为有活跃关键位预警或实时订阅的 `(instrument, timeframe)` 按当前时刻从冷库算一版预热，不依赖扫描或前端；
-  - 预警按事件时刻读 `cutoff_ts <= 事件时刻` 的最新版本，不把之后才形成的 `BROKEN / FLIPPED` 状态用到更早的事件上；图表读最新版本。
-- 初版价位类别：① 结构位（确认后的摆动高低点、多次触及聚成的支撑阻力区间）；② 时段参考位（前日高 / 低 / 收、周与月开盘价、开盘区间、加密亚洲 / 伦敦 / 纽约时段高低点；美股盘前高低点规划中）；③ 成交量位（`POC / VAH / VAL`、锚定 VWAP 及 `±σ` 带）；④ 未回补跳空缺口与整数关口；⑤ 基于 OI 变化与杠杆假设推算的清算密集区（`evidence_class` 为 `ESTIMATED`，与观测类价位分开展示）。
-- 契约 `KeyLevel`：`level_id`（跨快照稳定）、`instrument_id`、`kind`、`price` 或 `[low, high]` 区间、`timeframe`、`strength` 及其构成、`status`（`ACTIVE | BROKEN | FLIPPED`）、`ts_available`、`method_version` 与参数。
-- 质量评估：离线统计各 `kind` 被触及后 `X` 倍 ATR 内出现反应的比例并与随机价位对照；人工的采纳 / 忽略记入协同状态库。
+- 服务调用 `talaria-operators::structures`，按冻结快照的 `cutoff_ts` 产出绑定 `snapshot_id` 的不可变 `StructureSet`，写入 `StructureRegistry`，并通过 `/ws/desk` 推送 `{"type":"structures","data":...}`。
+- 支持同一 `cutoff_ts` 下的多周期（MTFA `htf`）只读聚合，杜绝大周期未收盘前视；支持 `LINEAR` / `LOG` 坐标系趋势线插值与跨快照质量追踪（`adopt` 经 `geometry_to_drawing` 映射为 `HORIZONTAL_LINE` / `RECTANGLE` / `RAY` / `PARALLEL_CHANNEL`，`ignored` 与 `feedback` 持久化于 `workbench_state.sqlite`）。
+- 检测器分类：① 17 种迁移水平关键位与 VWAP / 清算估算带（`evidence_class=ESTIMATED` 与观测类区分展示）；② 无前视 SMC（`fvg@1`、`equal_levels@1`）；③ 双趋势线检测器（看盘 `pivot_trendline@1` 与策略滚动凸包 `convex_envelope@1`）；④ 多维核密度共振带（`confluence@1`）；⑤ 基于 `geometry_bounds_at` 的 `RuleStructurePrice` / `RuleStructureEvent`（`TOUCH / BREAK / RETEST`）统一规则与预警求值。
+- 质量评估：离线评估覆盖水平位反应与趋势线突破/触及胜率（`evaluation/structures.py`）；人工采纳/忽略记入状态库。
 
 ### 5.5 图表图层与人机共用接口
 
-**改造中（见 [ADR-0005](./adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)、[ADR-0023](./adr/0023-standalone-workbench-and-rust-data-engine.md)）。** 独立看盘工作台（`workbench/`）通过窄接口 `ChartSurfaceAdapter` 隔离底层图表核，主选实现为 `@luxalgo/vela@0.10.17`（仅核心与 `plugin` SDK，Apache-2.0；严禁引入 AGPL-3.0 的 `@luxalgo/vela-pinets`）：外部计算指标通过 `registerNativeIndicator` 直接发射渲染；`HUMAN_DRAWING` 接入 `chart.drawings`；`SYSTEM_LEVEL` / `AGENT_ANNOTATION` / `EXECUTION_BARRIER` 通过 `registerRendererLayer` 在原生渲染周期绘制并消除原 `requestAnimationFrame` SVG 轮询。过渡期内 `dsh/packages/talaria-desk-ui` 保留 `klinecharts 10.1.1` 作为参考与回退边界。
+**已切流（见 [ADR-0005](./adr/0005-fast-path-bypass-and-decoupled-chart-workbench.md)、[ADR-0023](./adr/0023-standalone-workbench-and-rust-data-engine.md)、[ADR-0027](./adr/0027-unified-market-structure-engine.md)）。** 独立看盘工作台（`workbench/`）通过窄接口 `ChartSurfaceAdapter` 隔离底层图表核，主选实现为 `@luxalgo/vela@0.10.17`（仅核心与 `plugin` SDK，Apache-2.0；严禁引入 AGPL-3.0 的 `@luxalgo/vela-pinets`）：外部计算指标通过 `registerNativeIndicator` 直接发射渲染；`HUMAN_DRAWING` 接入 `chart.drawings`；`SYSTEM_STRUCTURE` / `SYSTEM_LEVEL` / `AGENT_ANNOTATION` / `EXECUTION_BARRIER` 通过 `registerRendererLayer` 在原生渲染周期绘制并消除原 `requestAnimationFrame` SVG 轮询。过渡期内 `dsh/packages/talaria-desk-ui` 已冻结，仅保留作参考与回退边界。
 
 | 图层（`groupId`） | 写入主体与存储 | 交互与校验 |
 |---|---|---|
 | `HUMAN_DRAWING` | 交易员绘制；持久化于 `state/workbench_state.sqlite`（过渡期兼容 `collaboration_state.sqlite`） | 自由拖拽（前端乐观重绘、松手落库）、撤销重做、一键挂载 `OVERLAY_CROSS` 预警 |
-| `SYSTEM_LEVEL` | 经 WS 单向投影，不入画线表；来源为 `KeyLevelRegistry` 关键位注册表（§5.4） | 只读不可拖拽；按 `kind` / 强度过滤；一键采纳为 `HUMAN_DRAWING` 或挂载 `LEVEL_EVENT` 预警；采纳 / 忽略记为质量反馈 |
-| `AGENT_ANNOTATION` | agent 调用 `write_agent_overlay`，经硬门控后写入服务端状态库 | ① 校验 `snapshot_id` 与非空 `evidence_refs`（须引用 `level_id` 或具体 K 线时间戳）；② 价格锚点为正、合乎 `tick_size`，且落在 `[min_low - 3*ATR_14, max_high + 3*ATR_14]` 内；③ 单标的未采纳活跃条数 ≤12 |
+| `SYSTEM_STRUCTURE` | 经 WS（`structures`）单向投影与 `/api/structures` 查询；来源为 `StructureRegistry`（§5.4） | 只读不可拖拽；支持简洁/专家模式、线性/对数、`htf` 多周期切换、悬停展示 `analysis_window` 与 `detector_id`；一键采纳为 `HUMAN_DRAWING` |
+| `AGENT_ANNOTATION` | agent 调用 `write_agent_overlay`，经硬门控后写入服务端状态库 | ① 校验 `snapshot_id` 与非空 `evidence_refs`（须引用 `structure_id` / `level_id` 或具体 K 线时间戳）；② 价格锚点为正、合乎 `tick_size`，且落在 `[min_low - 3*ATR_14, max_high + 3*ATR_14]` 内；③ 单标的未采纳活跃条数 ≤12 |
 | `EXECUTION_BARRIER` + `LAYER_STAGED_DRAFT` | 模拟盘活跃回合屏障经 `accounts/<sub_account_id>/view.json` 单向投影至 `EXECUTION_BARRIER`；未终结草案投影至只读 `LAYER_STAGED_DRAFT`；临时 `'position'` 仓位手势不入 `HUMAN_DRAWING`（[ADR-0026](./adr/0026-chart-order-gesture-and-barrier-drag.md)） | 拖动临时仓位手势触发 Rust 定仓预演（[ADR-0010](./adr/0010-pure-python-indicator-core.md)）；拖动活跃止损/止盈屏障松手弹窗确认后，按收紧/放宽方向生成 `PaperCommand` 路由至成交插槽或风控插槽（[ADR-0025](./adr/0025-paper-account-projection-and-intent-queues.md)、[ADR-0026](./adr/0026-chart-order-gesture-and-barrier-drag.md)） |
 
-**人机共用分析接口**：浏览器、桌面工作台与可选 DSH 插件共用同一套 `Resident Service` 接口，读到的数据、算法与 `cutoff_ts` 一致，`level_id` 共享。DSH 会诊侧仍可经 `talaria-dsh-plugin/bridge.js` 包装为只读/受控 agent 工具。
+**人机共用分析接口**：浏览器、桌面工作台与可选 DSH 插件共用同一套 `Resident Service` 接口，读到的数据、算法与 `cutoff_ts` 一致，`structure_id` 共享。DSH 会诊侧仍可经 `talaria-dsh-plugin/bridge.js` 包装为只读/受控 agent 工具。
 
 | 接口 / 工具 | 作用 | 权限 |
 |---|---|---|
 | `get_snapshot` | 冻结截止时刻，返回 `snapshot_id`，后续调用绑定该快照 | 只读 |
 | `get_indicators(snapshot_id, timeframe, names, limit)` | 快照内的指标序列与摘要 | 只读 |
-| `get_key_levels(snapshot_id, timeframe, categories, limit, min_strength)` | 按强度排序的 `KeyLevel` 及强度构成 | 只读 |
+| `get_structures(snapshot_id, timeframe, families, htf, scale, ...)` | 读取统一 `StructureSet`（水平位、SMC、趋势线与共振热力带） | 只读 |
 | `compute_operator(snapshot_id, timeframe, operator, ...)` | 以非默认参数临时调用算子 | 只读 |
 | `get_chart_view` | 当前标的、周期、视窗与可见 `HUMAN_DRAWING` | 只读 |
 | `write_agent_overlay` | 写入 agent 标注（经上表硬门控） | 受控写 |

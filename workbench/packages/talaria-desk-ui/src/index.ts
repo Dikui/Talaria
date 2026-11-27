@@ -22,8 +22,10 @@ export {
   LAYER_AGENT_ANNOTATION,
   LAYER_EXECUTION_BARRIER,
   LAYER_SYSTEM_LEVEL,
+  LAYER_SYSTEM_STRUCTURE,
   hitTestAgentAnnotation,
   hitTestSystemLevel,
+  hitTestSystemStructure,
 } from "./chart/velaLayers";
 export {
   VelaDrawingSyncBridge,

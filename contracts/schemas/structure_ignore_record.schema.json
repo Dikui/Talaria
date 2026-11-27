@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "ignored": {
+      "title": "Ignored",
+      "type": "boolean"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "structure_id": {
+      "title": "Structure Id",
+      "type": "string"
+    },
+    "updated_ts": {
+      "title": "Updated Ts",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "structure_id",
+    "ignored",
+    "updated_ts"
+  ],
+  "title": "StructureIgnoreRecord",
+  "type": "object"
+}

@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "忽略/恢复单条系统市场结构；只写工作台状态库，不改冻结快照。",
+  "properties": {
+    "ignored": {
+      "default": true,
+      "title": "Ignored",
+      "type": "boolean"
+    },
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "structure_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Structure Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "structure_id"
+  ],
+  "title": "StructureIgnoreRequest",
+  "type": "object"
+}

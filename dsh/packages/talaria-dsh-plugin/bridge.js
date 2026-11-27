@@ -273,6 +273,30 @@ export function createBridge(config = {}) {
     return body
   }
 
+  async function getStructures(args, signal) {
+    const meta = await getSnapshot(args.snapshot_id, signal)
+    assertBound(meta, args)
+    const path = `/api/snapshots/${encodeURIComponent(args.snapshot_id)}/structures${query({
+      timeframe: args.timeframe,
+      families: args.families,
+      categories: args.categories,
+      detector_ids: args.detector_ids,
+      htf: args.htf,
+      scale: args.scale,
+      evidence_class: args.evidence_class,
+      limit: args.limit,
+      min_strength: args.min_strength,
+      order: args.order,
+    })}`
+    const body = await requestJson('GET', path, { signal })
+    if (body?.snapshot_id !== args.snapshot_id) {
+      throw new BridgeError('市场结构结果没有绑定请求的 snapshot_id，已拒绝。', {
+        code: 'TALARIA_BRIDGE_PROTOCOL',
+      })
+    }
+    return body
+  }
+
   async function computeOperator(args, signal) {
     const meta = await getSnapshot(args.snapshot_id, signal)
     assertBound(meta, args)
@@ -375,6 +399,7 @@ export function createBridge(config = {}) {
     getSnapshot,
     getIndicators,
     getKeyLevels,
+    getStructures,
     computeOperator,
     getChartView,
     writeAgentOverlay,
@@ -435,6 +460,18 @@ export const KEY_LEVEL_SET_OUTPUT_SCHEMA = {
   },
 }
 
+export const STRUCTURE_SET_OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['snapshot_id', 'instrument_id', 'timeframe', 'structures'],
+  properties: {
+    snapshot_id: { type: 'string' },
+    instrument_id: { type: 'string' },
+    timeframe: { type: 'string' },
+    structures: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+}
+
 export const OPERATOR_OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -491,6 +528,30 @@ export function renderKeyLevels(_args, value) {
   return [{
     type: 'text',
     text: `快照 ${value.snapshot_id} · ${value.instrument_id} ${value.timeframe} 关键位（${lines.length} 条，只读）：\n${lines.join('\n') || '无'}`,
+  }]
+}
+
+function structureGeomSummary(geometry) {
+  if (!geometry) return '-'
+  if (geometry.kind === 'HORIZONTAL_LINE') return `${geometry.price}`
+  if (geometry.kind === 'HORIZONTAL_ZONE') return `${geometry.price_low}–${geometry.price_high}`
+  if (geometry.kind === 'SLOPE_LINE') {
+    return `${geometry.anchor_start?.price}@${geometry.anchor_start?.ts} → ${geometry.anchor_end?.price}@${geometry.anchor_end?.ts} (${geometry.scale ?? 'LINEAR'})`
+  }
+  if (geometry.kind === 'CHANNEL') {
+    return `通道[${geometry.lower?.anchor_end?.price ?? '?'}–${geometry.upper?.anchor_end?.price ?? '?'}]`
+  }
+  return geometry.kind ?? '-'
+}
+
+export function renderStructures(_args, value) {
+  const lines = (value.structures ?? []).map((st) => {
+    const tfTag = st.source_timeframe && st.source_timeframe !== st.timeframe ? `[${st.source_timeframe}] ` : ''
+    return `${st.structure_id} · ${tfTag}${st.family}:${st.kind} (${st.detector_id}) · ${structureGeomSummary(st.geometry)} · 强度 ${Number(st.strength).toFixed(2)} · ${st.status} · ${st.evidence_class}`
+  })
+  return [{
+    type: 'text',
+    text: `快照 ${value.snapshot_id} · ${value.instrument_id} ${value.timeframe} 市场结构（${lines.length} 条，只读）：\n${lines.join('\n') || '无'}`,
   }]
 }
 

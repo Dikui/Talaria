@@ -622,6 +622,7 @@ fn evaluate_rule_hit(
     };
 
     let mut state = RuleState::default();
+    let empty_structures = HashMap::new();
     let mut ctx = EvalContext {
         instrument_id,
         timeframe,
@@ -631,6 +632,7 @@ fn evaluate_rule_hit(
         open_interest,
         mark_price,
         levels: &levels,
+        structures: &empty_structures,
         drawing_lookup,
         event: None,
         bar_ts_override: Some(current.timestamp),
@@ -661,10 +663,15 @@ fn evaluate_rule_hit(
 
 fn rule_has_level_refs(expr: &RuleExpression) -> bool {
     match expr {
-        RuleExpression::LevelEvent { .. } => true,
+        RuleExpression::LevelEvent { .. } | RuleExpression::StructureEvent { .. } => true,
         RuleExpression::Compare { left, right, .. } => {
-            matches!(left.as_ref(), RuleOperand::LevelPrice { .. })
-                || matches!(right.as_ref(), RuleOperand::LevelPrice { .. })
+            matches!(
+                left.as_ref(),
+                RuleOperand::LevelPrice { .. } | RuleOperand::StructurePrice { .. }
+            ) || matches!(
+                right.as_ref(),
+                RuleOperand::LevelPrice { .. } | RuleOperand::StructurePrice { .. }
+            )
         }
         RuleExpression::All { args }
         | RuleExpression::Any { args }

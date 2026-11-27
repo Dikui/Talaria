@@ -8,11 +8,13 @@ use serde::Deserialize;
 use serde_json::Value;
 use talaria_contracts::{
     BarStatus, CompactBar, DerivativeKind, DerivativePoint, IndicatorName, KeyLevel, KeyLevelKind,
-    KeyLevelStatus, PrecisionTier, VwapAnchorMode, format_decimal_str,
+    KeyLevelStatus, PrecisionTier, StructureFeature, StructureGeometry, VwapAnchorMode,
+    format_decimal_str,
 };
 use talaria_operators::{
-    DerivativeSample, KeyLevelParams, OperatorCursor, OperatorPoint, OperatorSpec,
-    compute_key_levels, compute_key_levels_with_notes, compute_series, update_series,
+    DerivativeSample, KeyLevelParams, OperatorCursor, OperatorPoint, OperatorSpec, StructureParams,
+    compute_key_levels, compute_key_levels_with_notes, compute_series, compute_structure_set,
+    update_series,
 };
 
 const VECTOR_EPOCH_MS: i64 = 1_700_000_000_000;
@@ -542,6 +544,137 @@ fn key_levels_volume_golden_vector_matches_bit_for_bit() {
     assert_eq!(first_ids, second_ids);
 }
 
+#[derive(Deserialize)]
+struct StructureVectorFile {
+    operator: String,
+    method_version: String,
+    instrument_id: String,
+    timeframe: String,
+    cases: Vec<StructureVectorCase>,
+}
+
+#[derive(Deserialize)]
+struct StructureVectorCase {
+    name: String,
+    cutoff_ts: i64,
+    detector_ids: Vec<String>,
+    #[serde(default)]
+    params: StructureParams,
+    bars: Vec<CompactBar>,
+    expected: Vec<StructureFeature>,
+}
+
+fn assert_approx_dec(actual: Decimal, expected: Decimal, tol: Decimal, label: &str) {
+    let diff = (actual - expected).abs();
+    assert!(diff <= tol, "{label}: actual={actual} expected={expected} diff={diff}");
+}
+
+fn assert_geometry_matches(actual: &StructureGeometry, expected: &StructureGeometry, label: &str) {
+    let tol = Decimal::new(1, 5);
+    match (actual, expected) {
+        (
+            StructureGeometry::HorizontalLine { price: a },
+            StructureGeometry::HorizontalLine { price: e },
+        ) => assert_eq!(a, e, "{label}"),
+        (
+            StructureGeometry::HorizontalZone {
+                price_low: al,
+                price_high: ah,
+                start_ts: as_,
+                end_ts: ae,
+            },
+            StructureGeometry::HorizontalZone {
+                price_low: el,
+                price_high: eh,
+                start_ts: es,
+                end_ts: ee,
+            },
+        ) => {
+            assert_approx_dec(*al, *el, tol, &format!("{label}.price_low"));
+            assert_approx_dec(*ah, *eh, tol, &format!("{label}.price_high"));
+            assert_eq!(as_, es, "{label}.start_ts");
+            assert_eq!(ae, ee, "{label}.end_ts");
+        }
+        (
+            StructureGeometry::SlopeLine {
+                anchor_start: a1,
+                anchor_end: a2,
+                scale: asc,
+                extend_right: aext,
+            },
+            StructureGeometry::SlopeLine {
+                anchor_start: e1,
+                anchor_end: e2,
+                scale: esc,
+                extend_right: eext,
+            },
+        ) => {
+            assert_eq!(a1.ts, e1.ts, "{label}.start.ts");
+            assert_eq!(a2.ts, e2.ts, "{label}.end.ts");
+            assert_approx_dec(a1.price, e1.price, tol, &format!("{label}.start.price"));
+            assert_approx_dec(a2.price, e2.price, tol, &format!("{label}.end.price"));
+            assert_eq!(asc, esc, "{label}.scale");
+            assert_eq!(aext, eext, "{label}.extend_right");
+        }
+        _ => assert_eq!(actual, expected, "{label}"),
+    }
+}
+
+#[test]
+fn structures_golden_vector_matches_python_authority() {
+    let path = vector_dir().join("structures.json");
+    let raw = fs::read_to_string(&path).expect("read structures.json");
+    let payload: StructureVectorFile = serde_json::from_str(&raw).expect("parse structures.json");
+    assert_eq!(payload.operator, "structures");
+    assert_eq!(payload.method_version, "structures@1");
+    assert!(!payload.cases.is_empty());
+
+    for case in &payload.cases {
+        let actual_set = compute_structure_set(
+            "vec_snap",
+            &payload.instrument_id,
+            &payload.timeframe,
+            &case.bars,
+            case.cutoff_ts,
+            None,
+            None,
+            Some(&case.params),
+            &[],
+            Some(&case.detector_ids),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("case {} failed: {e}", case.name));
+
+        assert_eq!(
+            actual_set.structures.len(),
+            case.expected.len(),
+            "case {} count mismatch",
+            case.name
+        );
+        for (idx, (a, e)) in actual_set
+            .structures
+            .iter()
+            .zip(case.expected.iter())
+            .enumerate()
+        {
+            let lbl = format!("{}.{}", case.name, idx);
+            assert_eq!(a.detector_id, e.detector_id, "{lbl}.detector_id");
+            assert_eq!(a.family, e.family, "{lbl}.family");
+            assert_eq!(a.category, e.category, "{lbl}.category");
+            assert_eq!(a.kind, e.kind, "{lbl}.kind");
+            assert_eq!(a.status, e.status, "{lbl}.status");
+            assert_eq!(a.ts_available, e.ts_available, "{lbl}.ts_available");
+            assert_eq!(a.formed_ts, e.formed_ts, "{lbl}.formed_ts");
+            assert_eq!(a.touch_count, e.touch_count, "{lbl}.touch_count");
+            assert!((a.strength - e.strength).abs() <= 0.002, "{lbl}.strength");
+            assert_geometry_matches(&a.geometry, &e.geometry, &format!("{lbl}.geometry"));
+            if a.kind != "CONFLUENCE_ZONE" {
+                assert_eq!(a.structure_id, e.structure_id, "{lbl}.structure_id");
+            }
+        }
+    }
+}
+
 #[test]
 fn verifies_every_json_file_in_operator_vectors_dir_is_covered() {
     let dir = vector_dir();
@@ -564,6 +697,7 @@ fn verifies_every_json_file_in_operator_vectors_dir_is_covered() {
             "oi_divergence.json",
             "rsi.json",
             "sma.json",
+            "structures.json",
             "vwap.json",
         ]
     );

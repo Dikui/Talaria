@@ -17,6 +17,7 @@ import type {
   KlineEvent,
   PaperRound,
   SnapshotMeta,
+  StructureFeature,
 } from "@talaria/contracts";
 
 import type { Locale } from "../lib/i18n";
@@ -112,6 +113,7 @@ export interface ChartMountOptions {
   onViewportLeftEdge?: (oldestLoadedTs: number) => void;
   onBackendChange?: (backend: RenderBackendMode) => void;
   onSelectKeyLevel?: (level: KeyLevel) => void;
+  onSelectStructure?: (structure: StructureFeature) => void;
   onSelectAnnotation?: (annotation: AgentAnnotationRecord) => void;
   onSelectStagedDraft?: (draft: DraftRecord) => void;
   onCreateAlertFromDrawing?: (payload: {
@@ -183,6 +185,10 @@ export interface ChartSurfaceAdapter {
   setTradeMarkers(trades: TradeExecution[]): void;
   setSystemLevels(
     levels: KeyLevel[],
+    opts?: { precision?: number; highlightId?: string | null },
+  ): void;
+  setSystemStructures(
+    structures: StructureFeature[],
     opts?: { precision?: number; highlightId?: string | null },
   ): void;
   setAgentAnnotations(

@@ -31,6 +31,7 @@ from talaria.foundation.operators.inputs import derivative_samples
 from talaria.foundation.operators.spec import IndicatorSpec
 from talaria.foundation.revisions import latest_visible_revisions
 from talaria.foundation.rules import RuleIndicator
+from talaria.foundation.structures import StructureFeature
 from talaria.foundation.timeframes import last_closed_bar_start, timeframe_ms
 from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdReader
@@ -488,6 +489,7 @@ class Ctx:
     event: FeedEvent | None = field(default=None, kw_only=True)
     drawing: Callable[[str], DrawingRecord | None] | None = field(default=None, kw_only=True)
     levels: Mapping[str, KeyLevel] = field(default_factory=dict, kw_only=True)
+    structures: Mapping[str, StructureFeature] = field(default_factory=dict, kw_only=True)
     rule_state: RuleState = field(default_factory=RuleState, kw_only=True, compare=False)
     _data_dir: str | Path | None = field(default=None, repr=False, compare=False, kw_only=True)
     _bar_ts: int | None = field(default=None, repr=False, compare=False, kw_only=True)

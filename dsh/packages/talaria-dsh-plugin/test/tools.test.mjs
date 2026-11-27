@@ -22,7 +22,7 @@ test('exports preset-scoped plugin metadata', () => {
   assert.deepEqual(TOOL_NAMES, [
     'get_snapshot',
     'get_indicators',
-    'get_key_levels',
+    'get_structures',
     'compute_operator',
     'get_chart_view',
     'write_agent_overlay',
@@ -55,8 +55,8 @@ test('registers the seven Talaria tools in preset scope and disposes on teardown
       'create_alert',
       'get_chart_view',
       'get_indicators',
-      'get_key_levels',
       'get_snapshot',
+      'get_structures',
       'write_agent_overlay',
     ],
   )
@@ -69,7 +69,7 @@ test('registers the seven Talaria tools in preset scope and disposes on teardown
   }
   const byName = Object.fromEntries(registered.map((tool) => [tool.name, tool]))
   assert.match(byName.get_snapshot.description, /只读；返回的 snapshot_id 必须用于后续所有读取。$/)
-  for (const readOnlyName of ['get_indicators', 'get_key_levels', 'compute_operator', 'get_chart_view']) {
+  for (const readOnlyName of ['get_indicators', 'get_structures', 'compute_operator', 'get_chart_view']) {
     assert.match(byName[readOnlyName].description, /只读；snapshot_id 必须来自 get_snapshot。$/)
   }
   for (const writeName of ['write_agent_overlay', 'create_alert']) {

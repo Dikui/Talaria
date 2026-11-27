@@ -16,6 +16,7 @@ import type {
   IndicatorSeries,
   KeyLevel,
   KlineEvent,
+  StructureFeature,
 } from "@talaria/contracts";
 
 import { compactBarToOHLCV, compactBarsToVelaSeries, timeframeToMs } from "../lib/chartData";
@@ -63,12 +64,14 @@ import {
   LAYER_EXECUTION_BARRIER,
   LAYER_STAGED_DRAFT,
   LAYER_SYSTEM_LEVEL,
+  LAYER_SYSTEM_STRUCTURE,
   clearChartLayerState,
   ensureTalariaLayersRegistered,
   getLatestProjection,
   hitTestAgentAnnotation,
   hitTestStagedDraft,
   hitTestSystemLevel,
+  hitTestSystemStructure,
   setChartLayerChannelData,
 } from "./velaLayers";
 import { webglBudgetManager } from "./webglBudget";
@@ -111,6 +114,8 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
 
   private systemLevels: KeyLevel[] = [];
   private systemHighlightId: string | null = null;
+  private systemStructures: StructureFeature[] = [];
+  private systemStructureHighlightId: string | null = null;
   private agentAnnotations: AgentAnnotationRecord[] = [];
   private agentHighlightId: string | null = null;
   private executionBarriers: ExecutionBarrierItem[] = [];
@@ -214,6 +219,7 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
 
     // Mount isolated read-only renderer layer channels (legend: false).
     chart.addNativeIndicator(LAYER_SYSTEM_LEVEL, { inputs: { chartId: this.chartId } });
+    chart.addNativeIndicator(LAYER_SYSTEM_STRUCTURE, { inputs: { chartId: this.chartId } });
     chart.addNativeIndicator(LAYER_AGENT_ANNOTATION, { inputs: { chartId: this.chartId } });
     chart.addNativeIndicator(LAYER_EXECUTION_BARRIER, { inputs: { chartId: this.chartId } });
     chart.addNativeIndicator(LAYER_STAGED_DRAFT, { inputs: { chartId: this.chartId } });
@@ -354,6 +360,19 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
         );
         if (hitAnnotation) {
           options.onSelectAnnotation?.(hitAnnotation);
+          return;
+        }
+
+        const hitStructure = hitTestSystemStructure(
+          this.systemStructures,
+          cursorX,
+          cursorY,
+          proj.coords,
+          proj.scale,
+          proj.bounds,
+        );
+        if (hitStructure) {
+          options.onSelectStructure?.(hitStructure);
           return;
         }
 
@@ -512,6 +531,22 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
       levels,
       precision: opts?.precision ?? this.pricePrecision,
       highlightId: this.systemHighlightId,
+    });
+  }
+
+  setSystemStructures(
+    structures: StructureFeature[],
+    opts?: { precision?: number; highlightId?: string | null },
+  ): void {
+    this.systemStructures = structures;
+    if (opts?.highlightId !== undefined) {
+      this.systemStructureHighlightId = opts.highlightId;
+    }
+    setChartLayerChannelData(this.chartId, LAYER_SYSTEM_STRUCTURE, {
+      chartId: this.chartId,
+      structures,
+      precision: opts?.precision ?? this.pricePrecision,
+      highlightId: this.systemStructureHighlightId,
     });
   }
 

@@ -51,6 +51,9 @@ pub enum OperatorError {
     #[error("invalid key level parameter: {0}")]
     InvalidKeyLevelParam(String),
 
+    #[error("invalid structure parameter: {0}")]
+    InvalidStructureParam(String),
+
     #[error("{0} does not support legacy alert seeding")]
     UnsupportedLegacyOperator(String),
 }

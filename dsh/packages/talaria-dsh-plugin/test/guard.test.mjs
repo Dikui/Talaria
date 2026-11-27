@@ -30,7 +30,7 @@ test('allowlisted read-only tools pass', () => {
   const guard = createDeskGuard({ getSession: () => history })
   assert.equal(guard({ name: 'get_snapshot', arguments: {} }), undefined)
   assert.equal(guard({ name: 'read', arguments: { path: 'a' } }), undefined)
-  for (const name of ['get_indicators', 'get_key_levels', 'compute_operator', 'get_chart_view']) {
+  for (const name of ['get_indicators', 'get_structures', 'compute_operator', 'get_chart_view']) {
     assert.equal(guard({ name, arguments: { snapshot_id: 'snap-abc' } }), undefined)
   }
 })

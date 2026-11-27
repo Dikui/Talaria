@@ -6,6 +6,7 @@ pub mod key_levels;
 pub mod operators;
 pub mod sha256;
 pub mod sizing;
+pub mod structures;
 pub mod tz;
 
 pub use error::OperatorError;
@@ -13,6 +14,11 @@ pub use gda::GdaDecimal;
 pub use key_levels::{
     KeyLevelComputation, KeyLevelParams, compute_key_level_set, compute_key_levels,
     compute_key_levels_with_notes,
+};
+pub use structures::{
+    DetectionContext, DetectorRegistry, GeometryBounds, PostProcessor, StructureDetector,
+    StructureParams, compute_structure_set, default_structure_registry, geometry_bounds_at,
+    geometry_distance, geometry_to_drawing, interpolate_slope_price,
 };
 pub use operators::{
     DerivativeSample, OperatorCursor, OperatorPoint, OperatorSpec, OperatorState,

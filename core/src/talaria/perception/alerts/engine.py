@@ -32,7 +32,8 @@ from talaria.foundation.operators import MAX_PERIOD, spec_from_params
 from talaria.perception.confirmed_history import ConfirmedHistory
 from talaria.foundation.rules import (
     AlertDirection, AlertLevelEvent, AlertMetric, AlertOverlayMode,
-    RuleComparison, RuleConstant, RuleDrawingPrice, RuleEvent, RuleIndicator, RuleLevelEvent, RuleLevelPrice, RuleOverlay,
+    RuleComparison, RuleConstant, RuleDrawingPrice, RuleEvent, RuleIndicator,
+    RuleLevelEvent, RuleLevelPrice, RuleOverlay, RuleStructureEvent, RuleStructurePrice,
 )
 from talaria.foundation.timeframes import TIMEFRAME_MS
 
@@ -544,6 +545,8 @@ class AlertEngine:
         node = alert.condition.expression
         if isinstance(node, RuleLevelEvent):
             return _level_message(observation)
+        if isinstance(node, RuleStructureEvent):
+            return _structure_message(observation)
         if isinstance(node, RuleComparison) and node.test in {"gte", "lte"}:
             direction = "上穿" if node.test == "gte" else "下穿"
             if isinstance(node.left, RuleEvent) and isinstance(node.right, RuleConstant):
@@ -574,7 +577,7 @@ def _trigger_kind(alert: AlertRecord) -> AlertTriggerKind:
     node = alert.condition.expression
     if isinstance(node, RuleOverlay):
         return AlertTriggerKind.OVERLAY_CROSS
-    if isinstance(node, RuleLevelEvent):
+    if isinstance(node, (RuleLevelEvent, RuleStructureEvent)):
         return AlertTriggerKind.LEVEL_EVENT
     if isinstance(node, RuleComparison) and node.test in {"gte", "lte"}:
         if isinstance(node.left, RuleEvent) and isinstance(node.right, RuleConstant):
@@ -588,6 +591,22 @@ def _indicator_label(node: RuleIndicator) -> str:
     name = node.indicator_name
     period = spec_from_params(name, node.params.model_dump(exclude_none=True)).period
     return f"{name.value}({period})"
+
+
+def _structure_message(observation: RuleObservation) -> str:
+    structure = observation.structure
+    label = structure.kind if structure is not None and structure.kind else (
+        structure.detector_id if structure is not None else "-"
+    )
+    family = structure.family.value if structure is not None else "-"
+    status = structure.status.value if structure is not None else "-"
+    if observation.level_event is AlertLevelEvent.TOUCH:
+        return f"价格触及结构 {label}（{family}）"
+    if observation.level_event is AlertLevelEvent.BREAK:
+        direction = "上穿" if observation.level_direction == "UP" else "下穿"
+        return f"收盘{direction}结构 {label}（{family}·{status}）"
+    side = "上方" if observation.level_direction == "UP" else "下方"
+    return f"价格回踩结构 {label} 并收盘回到{side}（{family}·{status}）"
 
 
 def _level_message(observation: RuleObservation) -> str:

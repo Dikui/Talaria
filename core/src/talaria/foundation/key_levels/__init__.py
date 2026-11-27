@@ -1,4 +1,4 @@
-"""关键位引擎与契约的公共出口。"""
+"""关键位引擎与契约的公共出口（过渡期兼容层：新功能请使用 `talaria.foundation.structures`，见 ADR-0027）。"""
 
 from __future__ import annotations
 

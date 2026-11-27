@@ -19,6 +19,7 @@ use talaria_contracts::rules::{
     AlertDirection, AlertLevelEvent, AlertMetric, AlertOverlayMode, RuleComparisonTest,
     RuleExpression, RuleIndicatorName, RuleOperand, RuleTiming,
 };
+use talaria_contracts::structures::StructureFeature;
 use talaria_contracts::timeframe_ms;
 use uuid::Uuid;
 
@@ -33,6 +34,8 @@ type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
 type HistoryProvider = Arc<dyn Fn(&str, &str) -> Vec<CompactBar> + Send + Sync>;
 type DrawingProvider = Arc<dyn Fn(&str) -> Option<DrawingRecord> + Send + Sync>;
 type LevelProvider = Arc<dyn Fn(&str, &str, i64) -> HashMap<String, KeyLevel> + Send + Sync>;
+type StructureProvider =
+    Arc<dyn Fn(&str, &str, i64) -> HashMap<String, StructureFeature> + Send + Sync>;
 type DerivativeArchiveProvider =
     Arc<dyn Fn(&str, DerivativeKind, i64) -> Vec<DerivativePoint> + Send + Sync>;
 type FreezeSnapshotFn = Arc<dyn Fn(&AlertRecord, i64) -> String + Send + Sync>;
@@ -199,6 +202,7 @@ pub struct AlertEngine {
     history_provider: Mutex<Option<HistoryProvider>>,
     drawing_provider: Mutex<Option<DrawingProvider>>,
     level_provider: Mutex<Option<LevelProvider>>,
+    structure_provider: Mutex<Option<StructureProvider>>,
     derivative_archive: Mutex<Option<DerivativeArchiveProvider>>,
     freeze_snapshot: Mutex<Option<FreezeSnapshotFn>>,
     on_trigger: Mutex<Option<OnTriggerFn>>,
@@ -213,6 +217,7 @@ impl AlertEngine {
             history_provider: Mutex::new(None),
             drawing_provider: Mutex::new(None),
             level_provider: Mutex::new(None),
+            structure_provider: Mutex::new(None),
             derivative_archive: Mutex::new(None),
             freeze_snapshot: Mutex::new(None),
             on_trigger: Mutex::new(None),
@@ -244,6 +249,10 @@ impl AlertEngine {
         *self.derivative_archive.lock().unwrap() = derivative_archive;
         *self.freeze_snapshot.lock().unwrap() = freeze_snapshot;
         *self.on_trigger.lock().unwrap() = on_trigger;
+    }
+
+    pub fn set_structure_provider(&self, provider: Option<StructureProvider>) {
+        *self.structure_provider.lock().unwrap() = provider;
     }
 
     pub fn load(&self, alerts: Vec<AlertRecord>) {
@@ -431,6 +440,7 @@ impl AlertEngine {
         }
 
         let level_provider = self.level_provider.lock().unwrap().clone();
+        let structure_provider = self.structure_provider.lock().unwrap().clone();
         let drawing_provider = self.drawing_provider.lock().unwrap().clone();
         let derivative_archive = self.derivative_archive.lock().unwrap().clone();
         let freeze_snapshot = self.freeze_snapshot.lock().unwrap().clone();
@@ -573,6 +583,10 @@ impl AlertEngine {
                     .as_ref()
                     .map(|lp| lp(&alert.instrument_id, &alert.timeframe, eval_cutoff))
                     .unwrap_or_default();
+                let structures = structure_provider
+                    .as_ref()
+                    .map(|sp| sp(&alert.instrument_id, &alert.timeframe, eval_cutoff))
+                    .unwrap_or_default();
 
                 let drawings_snapshot = guard.drawings.clone();
                 let drawing_lookup = |id: &str| -> Option<DrawingRecord> {
@@ -598,6 +612,7 @@ impl AlertEngine {
                     open_interest: &open_interest,
                     mark_price: &mark_price,
                     levels: &levels,
+                    structures: &structures,
                     drawing_lookup: &drawing_lookup,
                     event: if alert.condition.timing == RuleTiming::Event {
                         Some(ev_ref.clone())
@@ -783,14 +798,16 @@ fn collect_drawing_ids(node: &RuleExpression, out: &mut Vec<String>) {
                 collect_drawing_ids(child, out);
             }
         }
-        RuleExpression::LevelEvent { .. } => {}
+        RuleExpression::LevelEvent { .. } | RuleExpression::StructureEvent { .. } => {}
     }
 }
 
 fn trigger_kind(alert: &AlertRecord) -> AlertTriggerKind {
     match &alert.condition.expression {
         RuleExpression::Overlay { .. } => AlertTriggerKind::OverlayCross,
-        RuleExpression::LevelEvent { .. } => AlertTriggerKind::LevelEvent,
+        RuleExpression::LevelEvent { .. } | RuleExpression::StructureEvent { .. } => {
+            AlertTriggerKind::LevelEvent
+        }
         RuleExpression::Compare {
             test: RuleComparisonTest::Gte | RuleComparisonTest::Lte,
             left,
@@ -828,6 +845,7 @@ fn trigger_threshold(alert: &AlertRecord, obs: &RuleObservation) -> Option<Decim
 fn format_trigger_message(alert: &AlertRecord, obs: &RuleObservation) -> String {
     match &alert.condition.expression {
         RuleExpression::LevelEvent { .. } => format_level_message(obs),
+        RuleExpression::StructureEvent { .. } => format_structure_message(obs),
         RuleExpression::Compare {
             test: test @ (RuleComparisonTest::Gte | RuleComparisonTest::Lte),
             left,
@@ -906,6 +924,49 @@ fn format_trigger_message(alert: &AlertRecord, obs: &RuleObservation) -> String 
             format!("价格{action}{label}{edge} {}", decimal_text(obs.threshold))
         }
         _ => "规则触发".to_owned(),
+    }
+}
+
+fn format_structure_message(obs: &RuleObservation) -> String {
+    let label = obs
+        .structure
+        .as_ref()
+        .map(|s| {
+            if s.kind.is_empty() {
+                s.detector_id.as_str()
+            } else {
+                s.kind.as_str()
+            }
+        })
+        .unwrap_or("-");
+    let family = obs
+        .structure
+        .as_ref()
+        .map(|s| serde_json::to_string(&s.family).unwrap_or_default().replace('"', ""))
+        .unwrap_or_else(|| "-".to_owned());
+    let status = obs
+        .structure
+        .as_ref()
+        .map(|s| serde_json::to_string(&s.status).unwrap_or_default().replace('"', ""))
+        .unwrap_or_else(|| "-".to_owned());
+    match obs.level_event {
+        Some(AlertLevelEvent::Touch) => format!("价格触及结构 {label}（{family}）"),
+        Some(AlertLevelEvent::Break) => {
+            let dir = if obs.level_direction == Some(LevelSide::Up) {
+                "上穿"
+            } else {
+                "下穿"
+            };
+            format!("收盘{dir}结构 {label}（{family}·{status}）")
+        }
+        _ => {
+            let side = if obs.level_direction == Some(LevelSide::Up) {
+                "上方"
+            } else {
+                "下方"
+            };
+            format!("价格回踩结构 {label} 并收盘回到{side}（{family}·{status}）")
+        }
     }
 }
 

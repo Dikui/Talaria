@@ -32,6 +32,7 @@ from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.rules import (
     Rule, RuleComparison, RuleIndicator,
     RuleDrawingPrice, RuleLevelEvent, RuleLevelPrice, RuleOverlay,
+    RuleStructureEvent, RuleStructurePrice,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES
 from talaria.perception.alerts import AlertEngine
@@ -49,7 +50,10 @@ _ALERT_PARAMS_V1_KEY = "alerts.explicit_params.v1"
 
 
 def _has_level_rule(record: AlertRecord) -> bool:
-    return any(isinstance(node, (RuleLevelPrice, RuleLevelEvent)) for node in record.condition.references())
+    return any(
+        isinstance(node, (RuleLevelPrice, RuleLevelEvent, RuleStructurePrice, RuleStructureEvent))
+        for node in record.condition.references()
+    )
 
 
 class AlertService:
@@ -398,6 +402,9 @@ class AlertService:
                 level = levels.get(node.level_id)
                 if level is None or (node.level_kind is not None and node.level_kind != level.kind):
                     raise InvalidRequestError("关键位在当前版本中不存在或类型不匹配")
+            elif isinstance(node, (RuleStructureEvent, RuleStructurePrice)):
+                # Structure rule refs resolve dynamically at evaluation time
+                continue
             else:
                 await self._validate_overlay(node, instrument_id)
         for node in result.nodes():

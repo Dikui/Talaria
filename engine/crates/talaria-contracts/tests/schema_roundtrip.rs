@@ -852,6 +852,220 @@ fn all_115_json_schemas_roundtrip_without_drift() {
         &mut covered,
     );
 
+    let analysis_window = AnalysisWindow {
+        from_ts: 1_700_000_000_000,
+        to_ts: 1_700_000_600_000,
+    };
+    let sf_line = StructureFeature {
+        structure_id: "st_line_1".to_owned(),
+        instrument_id: "BTC-USDT-PERP".to_owned(),
+        detector_id: "swing_levels@1".to_owned(),
+        family: StructureFamily::Level,
+        category: StructureCategory::Structure,
+        kind: "SWING_HIGH".to_owned(),
+        evidence_class: EvidenceClass::Observed,
+        timeframe: "1m".to_owned(),
+        source_timeframe: Some("1m".to_owned()),
+        geometry: StructureGeometry::HorizontalLine {
+            price: Decimal::from_str("65500.0").unwrap(),
+        },
+        strength: 0.85,
+        status: StructureStatus::Active,
+        ts_available: 1_700_000_120_000,
+        formed_ts: 1_700_000_000_000,
+        analysis_window: analysis_window.clone(),
+        touch_count: 2,
+        touch_timestamps: vec![1_700_000_000_000, 1_700_000_060_000],
+        last_touch_ts: Some(1_700_000_060_000),
+        volume_weight: Decimal::from_str("120.5").unwrap(),
+        constituent_ids: vec![],
+        method_version: STRUCTURE_METHOD_VERSION.to_owned(),
+        parameters: BTreeMap::from([("swing_span".to_owned(), "2".to_owned())]),
+    };
+    let sf_zone = StructureFeature {
+        structure_id: "st_zone_1".to_owned(),
+        instrument_id: "BTC-USDT-PERP".to_owned(),
+        detector_id: "confluence@1".to_owned(),
+        family: StructureFamily::Confluence,
+        category: StructureCategory::Confluence,
+        kind: "CONFLUENCE_ZONE".to_owned(),
+        evidence_class: EvidenceClass::Observed,
+        timeframe: "1m".to_owned(),
+        source_timeframe: Some("1m".to_owned()),
+        geometry: StructureGeometry::HorizontalZone {
+            price_low: Decimal::from_str("64950.0").unwrap(),
+            price_high: Decimal::from_str("65050.0").unwrap(),
+            start_ts: Some(1_700_000_000_000),
+            end_ts: None,
+        },
+        strength: 0.9,
+        status: StructureStatus::Active,
+        ts_available: 1_700_000_180_000,
+        formed_ts: 1_700_000_000_000,
+        analysis_window: analysis_window.clone(),
+        touch_count: 3,
+        touch_timestamps: vec![1_700_000_060_000],
+        last_touch_ts: Some(1_700_000_060_000),
+        volume_weight: Decimal::ZERO,
+        constituent_ids: vec!["st_line_1".to_owned()],
+        method_version: STRUCTURE_METHOD_VERSION.to_owned(),
+        parameters: BTreeMap::new(),
+    };
+    let slope_upper = SlopeLineGeometry {
+        kind: SlopeLineKind::SlopeLine,
+        anchor_start: StructureAnchor {
+            ts: 1_700_000_000_000,
+            price: Decimal::from_str("65600.0").unwrap(),
+        },
+        anchor_end: StructureAnchor {
+            ts: 1_700_000_300_000,
+            price: Decimal::from_str("65400.0").unwrap(),
+        },
+        scale: PriceScaleMode::Log,
+        extend_right: true,
+    };
+    let slope_lower = SlopeLineGeometry {
+        kind: SlopeLineKind::SlopeLine,
+        anchor_start: StructureAnchor {
+            ts: 1_700_000_000_000,
+            price: Decimal::from_str("64800.0").unwrap(),
+        },
+        anchor_end: StructureAnchor {
+            ts: 1_700_000_300_000,
+            price: Decimal::from_str("65000.0").unwrap(),
+        },
+        scale: PriceScaleMode::Log,
+        extend_right: true,
+    };
+    let sf_slope = StructureFeature {
+        structure_id: "st_trend_1".to_owned(),
+        instrument_id: "BTC-USDT-PERP".to_owned(),
+        detector_id: "pivot_trendline@1".to_owned(),
+        family: StructureFamily::Trendline,
+        category: StructureCategory::Trend,
+        kind: "STRUCTURAL_SUPPORT".to_owned(),
+        evidence_class: EvidenceClass::Observed,
+        timeframe: "1m".to_owned(),
+        source_timeframe: Some("1m".to_owned()),
+        geometry: StructureGeometry::SlopeLine {
+            anchor_start: slope_lower.anchor_start.clone(),
+            anchor_end: slope_lower.anchor_end.clone(),
+            scale: PriceScaleMode::Log,
+            extend_right: true,
+        },
+        strength: 0.78,
+        status: StructureStatus::Active,
+        ts_available: 1_700_000_420_000,
+        formed_ts: 1_700_000_000_000,
+        analysis_window: analysis_window.clone(),
+        touch_count: 2,
+        touch_timestamps: vec![1_700_000_000_000, 1_700_000_300_000],
+        last_touch_ts: Some(1_700_000_300_000),
+        volume_weight: Decimal::ZERO,
+        constituent_ids: vec![],
+        method_version: STRUCTURE_METHOD_VERSION.to_owned(),
+        parameters: BTreeMap::new(),
+    };
+    let sf_channel = StructureFeature {
+        structure_id: "st_chan_1".to_owned(),
+        instrument_id: "BTC-USDT-PERP".to_owned(),
+        detector_id: "channel@1".to_owned(),
+        family: StructureFamily::Channel,
+        category: StructureCategory::Trend,
+        kind: "PARALLEL_CHANNEL".to_owned(),
+        evidence_class: EvidenceClass::Observed,
+        timeframe: "1m".to_owned(),
+        source_timeframe: Some("4h".to_owned()),
+        geometry: StructureGeometry::Channel {
+            upper: slope_upper,
+            lower: slope_lower,
+        },
+        strength: 0.82,
+        status: StructureStatus::Active,
+        ts_available: 1_700_000_420_000,
+        formed_ts: 1_700_000_000_000,
+        analysis_window,
+        touch_count: 4,
+        touch_timestamps: vec![1_700_000_000_000, 1_700_000_300_000],
+        last_touch_ts: Some(1_700_000_300_000),
+        volume_weight: Decimal::ZERO,
+        constituent_ids: vec![],
+        method_version: STRUCTURE_METHOD_VERSION.to_owned(),
+        parameters: BTreeMap::new(),
+    };
+    assert_schema_roundtrip("structure_feature", &sf_line, &mut covered);
+    assert_schema_roundtrip("structure_feature", &sf_zone, &mut covered);
+    assert_schema_roundtrip("structure_feature", &sf_slope, &mut covered);
+    assert_schema_roundtrip("structure_feature", &sf_channel, &mut covered);
+
+    let st_set = StructureSet {
+        snapshot_id: "snap_1".to_owned(),
+        instrument_id: "BTC-USDT-PERP".to_owned(),
+        timeframe: "1m".to_owned(),
+        cutoff_ts: 1_700_000_600_000,
+        as_of_ts: 1_700_000_600_000,
+        method_version: STRUCTURE_METHOD_VERSION.to_owned(),
+        detector_ids: vec!["swing_levels@1".to_owned(), "pivot_trendline@1".to_owned()],
+        parameters: BTreeMap::new(),
+        notes: vec![],
+        structures: vec![sf_line, sf_zone, sf_slope, sf_channel],
+    };
+    assert_schema_roundtrip("structure_set", &st_set, &mut covered);
+
+    assert_schema_roundtrip(
+        "structure_ignore_request",
+        &StructureIgnoreRequest {
+            instrument_id: "BTC-USDT-PERP".to_owned(),
+            structure_id: "st_line_1".to_owned(),
+            ignored: true,
+        },
+        &mut covered,
+    );
+    let st_ign_rec = StructureIgnoreRecord {
+        instrument_id: "BTC-USDT-PERP".to_owned(),
+        structure_id: "st_line_1".to_owned(),
+        ignored: true,
+        updated_ts: 1_700_000_600_000,
+    };
+    assert_schema_roundtrip("structure_ignore_record", &st_ign_rec, &mut covered);
+    assert_schema_roundtrip(
+        "structure_ignore_list",
+        &StructureIgnoreList {
+            instrument_id: "BTC-USDT-PERP".to_owned(),
+            entries: vec![st_ign_rec],
+        },
+        &mut covered,
+    );
+    assert_schema_roundtrip(
+        "structure_adoption_request",
+        &StructureAdoptionRequest {
+            snapshot_id: "snap_1".to_owned(),
+            timeframe: "1m".to_owned(),
+        },
+        &mut covered,
+    );
+    assert_schema_roundtrip(
+        "structure_adoption_record",
+        &StructureAdoptionRecord {
+            instrument_id: "BTC-USDT-PERP".to_owned(),
+            structure_id: "st_trend_1".to_owned(),
+            snapshot_id: "snap_1".to_owned(),
+            drawing_id: "drw_2".to_owned(),
+            adopted_ts: 1_700_000_600_000,
+            timeframe: "1m".to_owned(),
+        },
+        &mut covered,
+    );
+    assert_schema_roundtrip(
+        "structure_feedback_summary",
+        &StructureFeedbackSummary {
+            instrument_id: "BTC-USDT-PERP".to_owned(),
+            adopted_structure_ids: vec!["st_trend_1".to_owned()],
+            ignored_structure_ids: vec![],
+        },
+        &mut covered,
+    );
+
     assert_schema_roundtrip(
         "watchlist_group_create",
         &WatchlistGroupCreate {
@@ -1339,7 +1553,8 @@ fn all_115_json_schemas_roundtrip_without_drift() {
     );
 
     let ann_ev = AnnotationEvidence {
-        level_id: Some("kl_1".to_owned()),
+        structure_id: Some("st_1".to_owned()),
+        level_id: None,
         kline_ts: None,
         note: "confirmed".to_owned(),
     };

@@ -24,7 +24,9 @@ from talaria.components import CompiledRule, Ctx, RuleState, compile_rule
 from talaria.components.rules import event_visible_at
 from talaria.foundation.drawings import DrawingRecord
 from talaria.foundation.operators import MAX_PERIOD
-from talaria.foundation.rules import AlertLevelEvent, Rule, RuleLevelEvent, RuleLevelPrice
+from talaria.foundation.rules import (
+    AlertLevelEvent, Rule, RuleLevelEvent, RuleLevelPrice, RuleStructureEvent, RuleStructurePrice,
+)
 from talaria.foundation.bars import BarStatus, CompactBar
 from talaria.foundation.derivatives import (
     OI_TIMEFRAME_BY_TIMEFRAME,
@@ -483,7 +485,7 @@ class ScannerEngine:
         history = self._history(instrument_id, timeframe)
 
         level_nodes = [node for node in rule.rule.references() if isinstance(node, (RuleLevelEvent, RuleLevelPrice))]
-        retest = any(isinstance(node, RuleLevelEvent) and node.event is AlertLevelEvent.RETEST for node in level_nodes)
+        retest = any(isinstance(node, (RuleLevelEvent, RuleStructureEvent)) and node.event is AlertLevelEvent.RETEST for node in rule.rule.references())
         state = RuleState()
 
         def evaluate_at(slot: int, cutoff: int):

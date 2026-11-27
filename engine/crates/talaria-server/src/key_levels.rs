@@ -1,4 +1,7 @@
 //! In-process lookahead-free Key Level Registry (`KeyLevelRegistry`).
+//!
+//! **Deprecated transitional module (ADR-0027):** Prefer `crate::structures::StructureRegistry`
+//! and `/api/structures*` for unified market structures, trendlines, and MTFA aggregation.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

@@ -1,0 +1,411 @@
+{
+  "$defs": {
+    "AnalysisWindow": {
+      "additionalProperties": false,
+      "description": "计算该结构时实际观测的 K 线起止区间（Truth in Analysis）。",
+      "properties": {
+        "from_ts": {
+          "minimum": 0,
+          "title": "From Ts",
+          "type": "integer"
+        },
+        "to_ts": {
+          "minimum": 0,
+          "title": "To Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from_ts",
+        "to_ts"
+      ],
+      "title": "AnalysisWindow",
+      "type": "object"
+    },
+    "ChannelGeometry": {
+      "additionalProperties": false,
+      "description": "平行或收敛双边通道原语。",
+      "properties": {
+        "kind": {
+          "const": "CHANNEL",
+          "default": "CHANNEL",
+          "title": "Kind",
+          "type": "string"
+        },
+        "lower": {
+          "$ref": "#/$defs/SlopeLineGeometry"
+        },
+        "upper": {
+          "$ref": "#/$defs/SlopeLineGeometry"
+        }
+      },
+      "required": [
+        "upper",
+        "lower"
+      ],
+      "title": "ChannelGeometry",
+      "type": "object"
+    },
+    "EvidenceClass": {
+      "description": "证据等级：直接观测得到，或由假设推算。",
+      "enum": [
+        "OBSERVED",
+        "ESTIMATED"
+      ],
+      "title": "EvidenceClass",
+      "type": "string"
+    },
+    "HorizontalLineGeometry": {
+      "additionalProperties": false,
+      "description": "水平单价原语。",
+      "properties": {
+        "kind": {
+          "const": "HORIZONTAL_LINE",
+          "default": "HORIZONTAL_LINE",
+          "title": "Kind",
+          "type": "string"
+        },
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        }
+      },
+      "required": [
+        "price"
+      ],
+      "title": "HorizontalLineGeometry",
+      "type": "object"
+    },
+    "HorizontalZoneGeometry": {
+      "additionalProperties": false,
+      "description": "水平区间带原语；可选起止时间戳（如 FVG / 时段区间）。",
+      "properties": {
+        "end_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Ts"
+        },
+        "kind": {
+          "const": "HORIZONTAL_ZONE",
+          "default": "HORIZONTAL_ZONE",
+          "title": "Kind",
+          "type": "string"
+        },
+        "price_high": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price High",
+          "type": "string"
+        },
+        "price_low": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price Low",
+          "type": "string"
+        },
+        "start_ts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Ts"
+        }
+      },
+      "required": [
+        "price_low",
+        "price_high"
+      ],
+      "title": "HorizontalZoneGeometry",
+      "type": "object"
+    },
+    "PriceScaleMode": {
+      "description": "斜向趋势线插值坐标系。",
+      "enum": [
+        "LINEAR",
+        "LOG"
+      ],
+      "title": "PriceScaleMode",
+      "type": "string"
+    },
+    "SlopeLineGeometry": {
+      "additionalProperties": false,
+      "description": "斜向线段或射线原语，支持线性与对数坐标插值。",
+      "properties": {
+        "anchor_end": {
+          "$ref": "#/$defs/StructureAnchor"
+        },
+        "anchor_start": {
+          "$ref": "#/$defs/StructureAnchor"
+        },
+        "extend_right": {
+          "default": true,
+          "title": "Extend Right",
+          "type": "boolean"
+        },
+        "kind": {
+          "const": "SLOPE_LINE",
+          "default": "SLOPE_LINE",
+          "title": "Kind",
+          "type": "string"
+        },
+        "scale": {
+          "$ref": "#/$defs/PriceScaleMode",
+          "default": "LINEAR"
+        }
+      },
+      "required": [
+        "anchor_start",
+        "anchor_end"
+      ],
+      "title": "SlopeLineGeometry",
+      "type": "object"
+    },
+    "StructureAnchor": {
+      "additionalProperties": false,
+      "description": "时间-价格坐标锚点。",
+      "properties": {
+        "price": {
+          "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+          "title": "Price",
+          "type": "string"
+        },
+        "ts": {
+          "minimum": 0,
+          "title": "Ts",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ts",
+        "price"
+      ],
+      "title": "StructureAnchor",
+      "type": "object"
+    },
+    "StructureCategory": {
+      "description": "面向工作台与接口过滤的稳定结构大类。",
+      "enum": [
+        "STRUCTURE",
+        "SESSION",
+        "GAP",
+        "ROUND_NUMBER",
+        "VOLUME",
+        "LIQUIDATION",
+        "TREND",
+        "CONFLUENCE"
+      ],
+      "title": "StructureCategory",
+      "type": "string"
+    },
+    "StructureFamily": {
+      "description": "市场结构上位家族，对应几何形态与业务语义。",
+      "enum": [
+        "LEVEL",
+        "ZONE",
+        "TRENDLINE",
+        "CHANNEL",
+        "CONFLUENCE"
+      ],
+      "title": "StructureFamily",
+      "type": "string"
+    },
+    "StructureStatus": {
+      "description": "市场结构生命周期状态。",
+      "enum": [
+        "ACTIVE",
+        "BROKEN",
+        "FLIPPED",
+        "EXPIRED"
+      ],
+      "title": "StructureStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一条已确认、无前视的市场结构特征。",
+  "properties": {
+    "analysis_window": {
+      "$ref": "#/$defs/AnalysisWindow"
+    },
+    "category": {
+      "$ref": "#/$defs/StructureCategory"
+    },
+    "constituent_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Constituent Ids",
+      "type": "array"
+    },
+    "detector_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Detector Id",
+      "type": "string"
+    },
+    "evidence_class": {
+      "$ref": "#/$defs/EvidenceClass",
+      "default": "OBSERVED"
+    },
+    "family": {
+      "$ref": "#/$defs/StructureFamily"
+    },
+    "formed_ts": {
+      "minimum": 0,
+      "title": "Formed Ts",
+      "type": "integer"
+    },
+    "geometry": {
+      "discriminator": {
+        "mapping": {
+          "CHANNEL": "#/$defs/ChannelGeometry",
+          "HORIZONTAL_LINE": "#/$defs/HorizontalLineGeometry",
+          "HORIZONTAL_ZONE": "#/$defs/HorizontalZoneGeometry",
+          "SLOPE_LINE": "#/$defs/SlopeLineGeometry"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HorizontalLineGeometry"
+        },
+        {
+          "$ref": "#/$defs/HorizontalZoneGeometry"
+        },
+        {
+          "$ref": "#/$defs/SlopeLineGeometry"
+        },
+        {
+          "$ref": "#/$defs/ChannelGeometry"
+        }
+      ],
+      "title": "Geometry"
+    },
+    "instrument_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "kind": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Kind",
+      "type": "string"
+    },
+    "last_touch_ts": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Touch Ts"
+    },
+    "method_version": {
+      "default": "structures@1",
+      "title": "Method Version",
+      "type": "string"
+    },
+    "parameters": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Parameters",
+      "type": "object"
+    },
+    "source_timeframe": {
+      "anyOf": [
+        {
+          "maxLength": 16,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Timeframe"
+    },
+    "status": {
+      "$ref": "#/$defs/StructureStatus"
+    },
+    "strength": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Strength",
+      "type": "number"
+    },
+    "structure_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Structure Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "maxLength": 16,
+      "minLength": 1,
+      "title": "Timeframe",
+      "type": "string"
+    },
+    "touch_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Touch Count",
+      "type": "integer"
+    },
+    "touch_timestamps": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Touch Timestamps",
+      "type": "array"
+    },
+    "ts_available": {
+      "minimum": 0,
+      "title": "Ts Available",
+      "type": "integer"
+    },
+    "volume_weight": {
+      "default": "0",
+      "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
+      "title": "Volume Weight",
+      "type": "string"
+    }
+  },
+  "required": [
+    "structure_id",
+    "instrument_id",
+    "detector_id",
+    "family",
+    "category",
+    "kind",
+    "timeframe",
+    "geometry",
+    "strength",
+    "status",
+    "ts_available",
+    "formed_ts",
+    "analysis_window"
+  ],
+  "title": "StructureFeature",
+  "type": "object"
+}

@@ -80,9 +80,21 @@ _Avoid_: News stream, cron schedule
 附着在特定交易标的时间-价格坐标系上的结构化几何图元（如支撑阻力线、趋势通道、区间标注），严格区分人工手绘标注与经价格范围校验的智能体建议标注。
 _Avoid_: Canvas shape, raw drawing JSON
 
+**Market Structure（市场结构）**:
+由确定性结构检测器仅基于截止时刻前已可见数据识别出的结构化时间-价格几何对象（涵盖水平关键位、斜向趋势线、通道与多源共振带），以统一几何原语与稳定 `structure_id` 供看盘、预警、策略与智能体同源引用。
+_Avoid_: AI structure, guessed pattern, canvas shape
+
 **Key Level（关键位）**:
-由确定性算法仅基于截止时刻前已可见数据识别出的重要价格或价格区间（如确认后的摆动高低点、时段参考位、成交量分布价位、缺口与整数关口），具有跨快照稳定的身份、强度评分与有效状态，人与智能体共享引用。
+`Market Structure` 中由确定性算法仅基于截止时刻前已可见数据识别出的水平重要价格或水平价格区间（如确认后的摆动高低点、时段参考位、成交量分布价位、缺口与整数关口、多源共振带），具有跨快照稳定的身份、强度评分与有效状态，人与智能体共享引用。
 _Avoid_: AI level, guessed support, drawn line
+
+**Trendline（趋势线）**:
+`Market Structure` 中由确定性算法在严格无前视纪律下生成的斜向支撑/阻力射线或线段（支持线性与对数坐标），具有稳定身份、锚点、斜率投影与触及/突破状态，人与智能体共享引用。
+_Avoid_: AI trendline, guessed line, repainted ray
+
+**Structure Detector（结构检测器）**:
+L0 中无 I/O、无状态的纯函数检测插件，按统一检测上下文与注册表协议产出带 `ts_available` 的 `Market Structure`。
+_Avoid_: ad-hoc indicator, stateful scanner
 
 **Mark Price（标记价格）**:
 衍生品场所综合现货指数与基差计算的公允参考价格，专门用于核算未实现盈亏与判定维持保证金强平，防止单所异常插针误触发强平。

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { BridgeError, createBridge, renderSnapshot, SNAPSHOT_OUTPUT_SCHEMA } from '../bridge.js'
+import { BridgeError, createBridge, renderSnapshot, renderStructures, SNAPSHOT_OUTPUT_SCHEMA } from '../bridge.js'
 
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)))
@@ -232,12 +232,29 @@ test('read-only tools bind the frozen snapshot and keep decimal strings', async 
         }))
         return
       }
-      if (req.url.startsWith('/api/snapshots/snap-abc/key-levels')) {
+      if (req.url.startsWith('/api/snapshots/snap-abc/structures')) {
         res.end(JSON.stringify({
           snapshot_id: 'snap-abc',
           instrument_id: 'BTC-USDT-PERP',
           timeframe: '1m',
-          levels: [{ level_id: 'kl-1', kind: 'SWING_HIGH', price: '60100.25' }],
+          structures: [{
+            structure_id: 'st_trend_1',
+            detector_id: 'pivot_trendline@1',
+            family: 'TRENDLINE',
+            kind: 'TRENDLINE_SUPPORT',
+            timeframe: '1m',
+            source_timeframe: '15m',
+            geometry: {
+              kind: 'SLOPE_LINE',
+              anchor_start: { ts: 1700000000000, price: '60000' },
+              anchor_end: { ts: 1700000600000, price: '60100.25' },
+              scale: 'LOG',
+              extend_right: true,
+            },
+            strength: 0.85,
+            status: 'ACTIVE',
+            evidence_class: 'OBSERVED',
+          }],
         }))
         return
       }
@@ -271,15 +288,21 @@ test('read-only tools bind the frozen snapshot and keep decimal strings', async 
     assert.equal(indicators.snapshot_id, 'snap-abc')
     assert.equal(indicators.series[0].points[0].values.EMA_20, '60000.5')
 
-    const levels = await bridge.getKeyLevels({
+    const structures = await bridge.getStructures({
       snapshot_id: 'snap-abc',
       instrument_id: 'BTC-USDT-PERP',
       timeframe: '1m',
-      categories: ['STRUCTURE', 'VOLUME'],
+      families: ['TRENDLINE', 'CONFLUENCE'],
+      htf: ['15m'],
+      scale: 'LOG',
       limit: 20,
       min_strength: '0.5',
     })
-    assert.equal(levels.levels[0].price, '60100.25')
+    assert.equal(structures.structures[0].structure_id, 'st_trend_1')
+    const rendered = renderStructures({}, structures)
+    assert.match(rendered[0].text, /pivot_trendline@1/)
+    assert.match(rendered[0].text, /\[15m\]/)
+    assert.match(rendered[0].text, /LOG/)
 
     const operator = await bridge.computeOperator({
       snapshot_id: 'snap-abc',
@@ -309,9 +332,11 @@ test('read-only tools bind the frozen snapshot and keep decimal strings', async 
     assert.match(indicatorRequest.url, /timeframe=1m/)
     assert.match(indicatorRequest.url, /names=EMA_20%2CMACD/)
     assert.match(indicatorRequest.url, /limit=120/)
-    const levelRequest = requests.find((item) => item.url.includes('/key-levels'))
-    assert.match(levelRequest.url, /categories=STRUCTURE%2CVOLUME/)
-    assert.match(levelRequest.url, /min_strength=0.5/)
+    const structureRequest = requests.find((item) => item.url.includes('/structures'))
+    assert.match(structureRequest.url, /families=TRENDLINE%2CCONFLUENCE/)
+    assert.match(structureRequest.url, /htf=15m/)
+    assert.match(structureRequest.url, /scale=LOG/)
+    assert.match(structureRequest.url, /min_strength=0.5/)
     const operatorRequest = requests.find((item) => item.url === '/api/operators/compute')
     assert.equal(operatorRequest.method, 'POST')
     assert.deepEqual(JSON.parse(operatorRequest.body), {
@@ -346,11 +371,11 @@ test('read-only tools reject instrument or timeframe mismatch before reading', a
       (error) => error.code === 'TALARIA_BRIDGE_SNAPSHOT',
     )
     await assert.rejects(
-      () => bridge.getKeyLevels({
+      () => bridge.getStructures({
         snapshot_id: 'snap-abc',
         instrument_id: 'BTC-USDT-PERP',
         timeframe: '5m',
-        categories: [],
+        families: [],
       }),
       (error) => error.code === 'TALARIA_BRIDGE_SNAPSHOT',
     )

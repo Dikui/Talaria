@@ -213,6 +213,7 @@ fn assert_rule_vector_suite(filename: &str) {
                 None => default_levels.clone(),
             };
 
+            let empty_structures = HashMap::new();
             let drawing_lookup = |id: &str| drawings.get(id).cloned();
             let mut ctx = EvalContext {
                 instrument_id: &suite.instrument_id,
@@ -223,6 +224,7 @@ fn assert_rule_vector_suite(filename: &str) {
                 open_interest: &open_interest,
                 mark_price: &mark_price,
                 levels: &step_levels,
+                structures: &empty_structures,
                 drawing_lookup: &drawing_lookup,
                 event: event_ref,
                 bar_ts_override: step.bar_ts,

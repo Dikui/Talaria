@@ -1,0 +1,73 @@
+{
+  "description": "在已冻结快照上读取统一市场结构（含水平关键位、趋势线与共振带）；只读，返回十进制字符串。",
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "categories": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Categories",
+        "type": "array"
+      },
+      "detector_ids": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Detector Ids",
+        "type": "array"
+      },
+      "families": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Families",
+        "type": "array"
+      },
+      "htf_timeframes": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Htf Timeframes",
+        "type": "array"
+      },
+      "limit": {
+        "default": 40,
+        "title": "Limit",
+        "type": "integer"
+      },
+      "min_strength": {
+        "default": 0.0,
+        "title": "Min Strength",
+        "type": "number"
+      },
+      "scale": {
+        "default": null,
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Scale"
+      },
+      "snapshot_id": {
+        "title": "Snapshot Id",
+        "type": "string"
+      },
+      "timeframe": {
+        "title": "Timeframe",
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshot_id",
+      "timeframe"
+    ],
+    "title": "GetStructuresInput",
+    "type": "object"
+  },
+  "name": "get_structures"
+}

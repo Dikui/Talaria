@@ -17,6 +17,7 @@ from talaria.foundation.drawings import DrawingKind, DrawingRecord
 from talaria.foundation.feed import DerivativeTickEvent, FeedEvent, FeedHealthEvent, KlineEvent, OrderBookEvent
 from talaria.foundation.key_levels import KeyLevel, KeyLevelStatus
 from talaria.foundation.operators import CHANNELS
+from talaria.foundation.structures import StructureFeature, StructureStatus, geometry_bounds_at
 from talaria.foundation.rules import (
     AlertDirection,
     AlertLevelEvent,
@@ -36,6 +37,8 @@ from talaria.foundation.rules import (
     RuleLevelEvent,
     RuleOperand,
     RuleOverlay,
+    RuleStructureEvent,
+    RuleStructurePrice,
 )
 from talaria.foundation.timeframes import timeframe_ms
 
@@ -55,6 +58,7 @@ class RuleObservation:
     threshold: Decimal | None = None
     drawing_kind: DrawingKind | None = None
     level: KeyLevel | None = None
+    structure: StructureFeature | None = None
     level_event: AlertLevelEvent | None = None
     level_direction: str | None = None
     crossed_at: int | None = None
@@ -68,6 +72,7 @@ class _Evaluation:
     drawing: Callable[[str], DrawingRecord | None] | None
     levels: Mapping[str, KeyLevel]
     state: RuleState
+    structures: Mapping[str, StructureFeature] = ()  # type: ignore[assignment]
 
     def operand(self, operand: RuleOperand, *, previous: bool = False) -> Decimal | None:
         ctx = self.ctx
@@ -100,6 +105,18 @@ class _Evaluation:
             if bounds is None:
                 return None
             return bounds[1] if operand.edge == "upper" else bounds[0]
+        if isinstance(operand, RuleStructurePrice):
+            structure = self._visible_structure(operand)
+            if structure is None:
+                return None
+            bar = self._previous_bar() if previous else self.bar
+            timestamp = bar.timestamp if bar is not None else getattr(self.event, "ts_event", None)
+            if timestamp is None:
+                return None
+            bounds = geometry_bounds_at(structure.geometry, timestamp)
+            if bounds is None:
+                return None
+            return bounds.upper if operand.edge == "upper" else bounds.lower
         if isinstance(operand, RuleDrawingPrice):
             bar = self._previous_bar() if previous else self.bar
             timestamp = bar.timestamp if bar is not None else getattr(self.event, "ts_event", None)
@@ -152,6 +169,8 @@ class _Evaluation:
             return None
         elif isinstance(node, RuleOverlay):
             result = self._overlay(node, self.bar)
+        elif isinstance(node, RuleStructureEvent):
+            result = self._structure(node, self.bar)
         else:
             result = self._level(node, self.bar)
         if result is not None:
@@ -211,6 +230,79 @@ class _Evaluation:
         if ref.level_kind is not None and level.kind is not ref.level_kind:
             return None
         return level
+
+    def _visible_structure(self, ref: RuleStructurePrice | RuleStructureEvent) -> StructureFeature | None:
+        structure = self.structures.get(ref.structure_id)
+        if (
+            structure is None
+            or structure.instrument_id != self.ctx.instrument
+            or structure.ts_available > self.ctx.now
+        ):
+            return None
+        if ref.structure_family is not None and structure.family is not ref.structure_family:
+            return None
+        return structure
+
+    def _structure(self, node: RuleStructureEvent, bar: CompactBar) -> RuleObservation | None:
+        structure = self._visible_structure(node)
+        if structure is None or bar.close is None or bar.high is None or bar.low is None:
+            return None
+        bounds = geometry_bounds_at(structure.geometry, bar.timestamp)
+        if bounds is None:
+            return None
+        lower, upper = bounds.lower, bounds.upper
+        close = bar.close
+        if node.event is AlertLevelEvent.TOUCH:
+            return RuleObservation(
+                bar.low <= upper and bar.high >= lower,
+                close,
+                upper if close >= upper else lower,
+                structure=structure,
+                level_event=node.event,
+            )
+
+        side = "UP" if close > upper else "DOWN" if close < lower else None
+        crossed = False
+        if side is not None and structure.status is StructureStatus.ACTIVE:
+            prev = self._previous_bar()
+            if prev is None or prev.close is None:
+                return None
+            prev_bounds = geometry_bounds_at(structure.geometry, prev.timestamp)
+            if prev_bounds is None:
+                return None
+            crossed = prev.close <= prev_bounds.upper if side == "UP" else prev.close >= prev_bounds.lower
+
+        broke = side is not None and (structure.status is not StructureStatus.ACTIVE or crossed)
+        if node.event is AlertLevelEvent.BREAK:
+            return RuleObservation(
+                broke,
+                close,
+                upper if (side == "UP" or (side is None and close >= upper)) else lower,
+                structure=structure,
+                level_event=node.event,
+                level_direction=side if broke else None,
+            )
+
+        key = id(node)
+        direction, breakout_ts = self.state.breakouts.get(key, (None, None))
+        if self.state.consumed_sides.get(key) != side:
+            self.state.consumed_sides.pop(key, None)
+        if broke and direction != side and key not in self.state.consumed_sides:
+            direction, breakout_ts = self.state.breakouts[key] = (side, bar.timestamp)
+        threshold = upper if (direction == "UP" or direction is None and close >= upper) else lower
+        matched = False
+        if breakout_ts is not None and bar.timestamp > breakout_ts:
+            matched = bar.low <= upper < close if direction == "UP" else close < lower <= bar.high
+            if matched:
+                self.state.matched_retests.append(key)
+        return RuleObservation(
+            matched,
+            close,
+            threshold,
+            structure=structure,
+            level_event=node.event,
+            level_direction=direction,
+        )
 
     def _level(self, node: RuleLevelEvent, bar: CompactBar) -> RuleObservation | None:
         level = self._visible_level(node)
@@ -293,6 +385,7 @@ class CompiledRule:
         self, ctx: Ctx, *, event: FeedEvent | None = None,
         drawing: Callable[[str], DrawingRecord | None] | None = None,
         levels: Mapping[str, KeyLevel] | None = None,
+        structures: Mapping[str, StructureFeature] | None = None,
         state: RuleState | None = None,
         consume_retests: bool = True,
     ) -> RuleObservation | None:
@@ -301,6 +394,7 @@ class CompiledRule:
         state = ctx.rule_state if state is None else state
         drawing = ctx.drawing if drawing is None else drawing
         levels = ctx.levels if levels is None else levels
+        structures = ctx.structures if structures is None else structures
         state.known_inputs.clear()
         if event is not None and (event.instrument_id != ctx.instrument or event_visible_at(event) > ctx.now):
             return None
@@ -326,7 +420,7 @@ class CompiledRule:
             bar = bars[-1]
             if ctx._bar_ts is not None and bar.timestamp != ctx._bar_ts:
                 return None
-        evaluation = _Evaluation(ctx, bar, event, drawing, levels, state)
+        evaluation = _Evaluation(ctx, bar, event, drawing, levels, state, structures)
         evaluation.state.matched_retests.clear()
         result = evaluation.evaluate(self.rule.expression)
         if consume_retests and result is not None and result.matched:

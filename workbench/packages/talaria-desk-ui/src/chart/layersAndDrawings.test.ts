@@ -4,6 +4,7 @@ import type {
   DrawingRecord,
   IndicatorSeries,
   KeyLevel,
+  StructureFeature,
 } from "@talaria/contracts";
 import { drawingActions } from "@luxalgo/vela/plugin";
 
@@ -13,7 +14,11 @@ import {
   ensureDrawingAlertActionRegistered,
   serializedDrawingToCreate,
 } from "./drawingBridge";
-import { hitTestAgentAnnotation, hitTestSystemLevel } from "./velaLayers";
+import {
+  hitTestAgentAnnotation,
+  hitTestSystemLevel,
+  hitTestSystemStructure,
+} from "./velaLayers";
 import { alignIndicatorChannelPoints } from "../lib/indicatorData";
 
 describe("4-layer isolation, authoritative indicators, and drawing persistence", () => {
@@ -68,6 +73,108 @@ describe("4-layer isolation, authoritative indicators, and drawing persistence",
     expect(hitTestSystemLevel(levels, coords.priceToY(68000), coords, scale, bounds)).toBeNull();
     // Level objects remain unmodified (read-only).
     expect(levels[0].price).toBe("68500.0");
+  });
+
+  it("hit-tests read-only SYSTEM_STRUCTURE across all 4 geometry primitives (linear & log)", () => {
+    const t0 = 1_700_000_000_000;
+    const t1 = t0 + 100_000;
+    const structures: StructureFeature[] = [
+      {
+        structure_id: "st_line",
+        instrument_id: "BTC-USDT-PERP",
+        detector_id: "swing@1",
+        family: "LEVEL",
+        category: "STRUCTURE",
+        kind: "SWING_HIGH",
+        timeframe: "1m",
+        geometry: { kind: "HORIZONTAL_LINE", price: "68800" },
+        strength: 0.9,
+        status: "ACTIVE",
+        ts_available: t0,
+        formed_ts: t0,
+        analysis_window: { from_ts: t0, to_ts: t1 },
+      },
+      {
+        structure_id: "st_zone",
+        instrument_id: "BTC-USDT-PERP",
+        detector_id: "fvg@1",
+        family: "ZONE",
+        category: "GAP",
+        kind: "FVG_BULL",
+        timeframe: "1m",
+        geometry: {
+          kind: "HORIZONTAL_ZONE",
+          price_low: "67300",
+          price_high: "67500",
+          start_ts: t0,
+          end_ts: t1,
+        },
+        strength: 0.8,
+        status: "ACTIVE",
+        ts_available: t0,
+        formed_ts: t0,
+        analysis_window: { from_ts: t0, to_ts: t1 },
+      },
+      {
+        structure_id: "st_slope_lin",
+        instrument_id: "BTC-USDT-PERP",
+        detector_id: "pivot_trendline@1",
+        family: "TRENDLINE",
+        category: "TREND",
+        kind: "TRENDLINE_SUPPORT",
+        timeframe: "1m",
+        geometry: {
+          kind: "SLOPE_LINE",
+          anchor_start: { ts: t0, price: "67800" },
+          anchor_end: { ts: t1, price: "68200" },
+          scale: "LINEAR",
+          extend_right: true,
+        },
+        strength: 0.85,
+        status: "ACTIVE",
+        ts_available: t1,
+        formed_ts: t0,
+        analysis_window: { from_ts: t0, to_ts: t1 },
+      },
+      {
+        structure_id: "st_chan",
+        instrument_id: "BTC-USDT-PERP",
+        detector_id: "channel@1",
+        family: "CHANNEL",
+        category: "TREND",
+        kind: "CHANNEL_UP",
+        timeframe: "1m",
+        geometry: {
+          kind: "CHANNEL",
+          upper: {
+            kind: "SLOPE_LINE",
+            anchor_start: { ts: t0, price: "68450" },
+            anchor_end: { ts: t1, price: "68650" },
+            scale: "LOG",
+            extend_right: false,
+          },
+          lower: {
+            kind: "SLOPE_LINE",
+            anchor_start: { ts: t0, price: "68250" },
+            anchor_end: { ts: t1, price: "68450" },
+            scale: "LOG",
+            extend_right: false,
+          },
+        },
+        strength: 0.75,
+        status: "ACTIVE",
+        ts_available: t1,
+        formed_ts: t0,
+        analysis_window: { from_ts: t0, to_ts: t1 },
+      },
+    ];
+
+    expect(hitTestSystemStructure(structures, 50, coords.priceToY(68800) + 2, coords, scale, bounds)?.structure_id).toBe("st_line");
+    expect(hitTestSystemStructure(structures, coords.timeToX(t0 + 50_000), coords.priceToY(67400), coords, scale, bounds)?.structure_id).toBe("st_zone");
+    // Slope line extended right at t = t0 + 150_000 -> price = 68400
+    expect(hitTestSystemStructure(structures, coords.timeToX(t0 + 150_000), coords.priceToY(68400) + 1, coords, scale, bounds)?.structure_id).toBe("st_slope_lin");
+    // Channel interior mid at t0 + 50_000 -> approx 68450
+    expect(hitTestSystemStructure(structures, coords.timeToX(t0 + 50_000), coords.priceToY(68450), coords, scale, bounds)?.structure_id).toBe("st_chan");
   });
 
   it("hit-tests read-only AGENT_ANNOTATION levels and zones", () => {

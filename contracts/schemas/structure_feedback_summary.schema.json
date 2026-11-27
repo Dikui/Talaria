@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "单标的的市场结构人工反馈汇总。",
+  "properties": {
+    "adopted_structure_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Adopted Structure Ids",
+      "type": "array"
+    },
+    "ignored_structure_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Ignored Structure Ids",
+      "type": "array"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id"
+  ],
+  "title": "StructureFeedbackSummary",
+  "type": "object"
+}

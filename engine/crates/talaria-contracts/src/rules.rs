@@ -6,6 +6,7 @@ use crate::decimal::{DecimalStr, serde_decimal_str, serde_decimal_str_opt};
 use crate::derivatives::DerivativeKind;
 use crate::indicators::{IndicatorPoint, VwapAnchorMode};
 use crate::key_levels::KeyLevelKind;
+use crate::structures::StructureFamily;
 
 pub const MAX_RULE_DEPTH: usize = 5;
 pub const MAX_RULE_NODES: usize = 64;
@@ -184,6 +185,14 @@ pub enum RuleOperand {
         #[serde(default)]
         edge: RuleEdge,
     },
+    #[serde(rename = "structure_price")]
+    StructurePrice {
+        structure_id: String,
+        #[serde(default)]
+        structure_family: Option<StructureFamily>,
+        #[serde(default)]
+        edge: RuleEdge,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +218,13 @@ pub enum RuleExpression {
         event: AlertLevelEvent,
         #[serde(default)]
         level_kind: Option<KeyLevelKind>,
+    },
+    #[serde(rename = "structure_event")]
+    StructureEvent {
+        structure_id: String,
+        event: AlertLevelEvent,
+        #[serde(default)]
+        structure_family: Option<StructureFamily>,
     },
     #[serde(rename = "all")]
     All { args: Vec<RuleExpression> },

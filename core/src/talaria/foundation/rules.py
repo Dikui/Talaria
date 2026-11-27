@@ -14,6 +14,7 @@ from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.indicators import IndicatorPoint
 from talaria.foundation.key_levels.contracts import KeyLevelKind
 from talaria.foundation.operators import CHANNELS, MAX_PERIOD, IndicatorName, spec_from_params
+from talaria.foundation.structures.contracts import StructureFamily
 from talaria.foundation.types import DECIMAL_PATTERN, ContractModel, DecimalStr
 
 MAX_RULE_DEPTH = 5
@@ -120,8 +121,15 @@ class RuleLevelPrice(ContractModel):
     edge: Literal["lower", "upper"] = "upper"
 
 
+class RuleStructurePrice(ContractModel):
+    source: Literal["structure_price"]
+    structure_id: str = Field(min_length=1, max_length=120)
+    structure_family: StructureFamily | None = None
+    edge: Literal["lower", "upper"] = "upper"
+
+
 RuleOperand = Annotated[
-    RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice,
+    RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice | RuleStructurePrice,
     Field(discriminator="source"),
 ]
 
@@ -148,13 +156,20 @@ class RuleLevelEvent(ContractModel):
     level_kind: KeyLevelKind | None = None
 
 
+class RuleStructureEvent(ContractModel):
+    op: Literal["structure_event"]
+    structure_id: str = Field(min_length=1, max_length=120)
+    event: AlertLevelEvent
+    structure_family: StructureFamily | None = None
+
+
 class RuleGroup(ContractModel):
     op: Literal["all", "any", "not"]
     args: list[RuleExpression] = Field(min_length=1, max_length=MAX_RULE_NODES)
 
 
 RuleExpression = Annotated[
-    RuleComparison | RuleOverlay | RuleLevelEvent | RuleGroup,
+    RuleComparison | RuleOverlay | RuleLevelEvent | RuleStructureEvent | RuleGroup,
     Field(discriminator="op"),
 ]
 RuleGroup.model_rebuild()
@@ -191,13 +206,13 @@ class Rule(ContractModel):
     def indicator_snapshot_id(self) -> str | None:
         return next((operand.snapshot_id for operand in self.indicators() if operand.snapshot_id), None)
 
-    def references(self) -> Iterator[RuleOverlay | RuleDrawingPrice | RuleLevelEvent | RuleLevelPrice]:
+    def references(self) -> Iterator[RuleOverlay | RuleDrawingPrice | RuleLevelEvent | RuleLevelPrice | RuleStructureEvent | RuleStructurePrice]:
         for node in self.nodes():
-            if isinstance(node, (RuleOverlay, RuleLevelEvent)):
+            if isinstance(node, (RuleOverlay, RuleLevelEvent, RuleStructureEvent)):
                 yield node
             elif isinstance(node, RuleComparison):
                 for operand in (node.left, node.right):
-                    if isinstance(operand, (RuleDrawingPrice, RuleLevelPrice)):
+                    if isinstance(operand, (RuleDrawingPrice, RuleLevelPrice, RuleStructurePrice)):
                         yield operand
 
     @model_validator(mode="after")
@@ -222,9 +237,9 @@ class Rule(ContractModel):
                     raise ValueError("事件驱动比较只允许当前行情、常量、画线、关键位与已收盘的组件输出")
             if event_driven and (
                 isinstance(node, RuleOverlay) and node.mode is AlertOverlayMode.CLOSE_BREAK
-                or isinstance(node, RuleLevelEvent) and node.event is not AlertLevelEvent.TOUCH
+                or isinstance(node, (RuleLevelEvent, RuleStructureEvent)) and node.event is not AlertLevelEvent.TOUCH
             ):
-                raise ValueError("画线突破和关键位突破/回踩需要收盘求值")
+                raise ValueError("画线突破和关键位/结构突破/回踩需要收盘求值")
         return self
 
 

@@ -72,7 +72,7 @@ def test_generated_tool_has_no_schema_or_defs_and_zero_drift() -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["get_indicators", "get_key_levels", "compute_operator", "get_chart_view"],
+    ["get_indicators", "get_structures", "compute_operator", "get_chart_view"],
 )
 def test_read_only_tools_bind_snapshot_and_decimal_strings(name: str) -> None:
     tool = json.loads(DSH_TOOL_PATHS[name].read_text(encoding="utf-8"))

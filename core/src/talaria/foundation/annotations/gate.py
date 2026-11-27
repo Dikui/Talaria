@@ -79,15 +79,21 @@ def _check_evidence(
     *,
     bars: Sequence[CompactBar],
     valid_level_ids: set[str],
+    valid_structure_ids: set[str] | None = None,
 ) -> None:
     if not annotation.evidence_refs:
         _reject(EVIDENCE_EMPTY, "智能体标注必须至少引用一条快照证据")
     timestamps = [bar.timestamp for bar in bars]
     tolerance = KLINE_EVIDENCE_TOLERANCE_BARS * timeframe_ms(annotation.timeframe)
+    combined_ids = valid_level_ids | (valid_structure_ids or set())
     unresolved: list[str] = []
     for evidence in annotation.evidence_refs:
+        if evidence.structure_id is not None:
+            if evidence.structure_id not in combined_ids:
+                unresolved.append(f"structure_id={evidence.structure_id}")
+            continue
         if evidence.level_id is not None:
-            if evidence.level_id not in valid_level_ids:
+            if evidence.level_id not in combined_ids:
                 unresolved.append(f"level_id={evidence.level_id}")
             continue
         assert evidence.kline_ts is not None
@@ -190,6 +196,7 @@ def evaluate_annotation(
     snapshot_meta: SnapshotMeta,
     bars: Sequence[CompactBar],
     valid_level_ids: set[str],
+    valid_structure_ids: set[str] | None = None,
 ) -> None:
     """执行全部门控；通过则返回 ``None``，失败抛结构化错误。"""
 
@@ -198,6 +205,7 @@ def evaluate_annotation(
         annotation,
         bars=bars,
         valid_level_ids=valid_level_ids,
+        valid_structure_ids=valid_structure_ids,
     )
     _check_prices(annotation, instrument=instrument, bars=bars)
     _check_time(annotation, bars=bars)

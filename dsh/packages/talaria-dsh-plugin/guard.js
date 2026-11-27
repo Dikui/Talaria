@@ -19,7 +19,7 @@ export const AGENT_WRITE_TOOLS = Object.freeze(new Set([
 export const READ_ONLY_TOOLS = Object.freeze(new Set([
   'get_snapshot',
   'get_indicators',
-  'get_key_levels',
+  'get_structures',
   'compute_operator',
   'get_chart_view',
   'read',

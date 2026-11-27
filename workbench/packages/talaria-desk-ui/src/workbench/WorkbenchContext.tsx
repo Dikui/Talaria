@@ -6,6 +6,8 @@ import type {
   InstrumentSpec,
   KeyLevel,
   RunRoundRecord,
+  StructureFeature,
+  StructureSet,
 } from "@talaria/contracts";
 
 import type { ChartStats, RenderBackendMode } from "../chart/adapter";
@@ -15,6 +17,8 @@ import type { AnnotationsController } from "../features/annotations/useAnnotatio
 import type { IndicatorDefaults, IndicatorSetting, IndicatorSettings } from "../features/indicators/config";
 import type { KeyLevelFilter } from "../features/key-levels/model";
 import type { KeyLevelsController } from "../features/key-levels/useKeyLevels";
+import type { StructureFilter } from "../features/structures/model";
+import type { StructuresController } from "../features/structures/useStructures";
 import type { DraftSeed } from "../features/paper/DraftForm";
 import type { RunsController } from "../features/runs/useRuns";
 import type { ScannerController } from "../features/scanner/useScanner";
@@ -85,6 +89,13 @@ export interface WorkbenchContextValue {
   onHoverLevelId: (levelId: string | null) => void;
   keyLevelsController: KeyLevelsController;
 
+  structureFilter: StructureFilter;
+  onStructureFilterChange: (next: StructureFilter) => void;
+  highlightedStructureId: string | null;
+  onHoverStructureId: (structureId: string | null) => void;
+  structuresController: StructuresController;
+  onStreamStructures: (structures: StructureSet) => void;
+
   drawings: DrawingRecord[];
   selectedDrawingId: string | null;
   onDrawingsUpdated: (drawings: DrawingRecord[]) => void;
@@ -142,6 +153,7 @@ export interface WorkbenchContextValue {
       | "account",
   ) => void;
   onAdoptKeyLevel: (level: KeyLevel) => Promise<void>;
+  onAdoptStructure: (structure: StructureFeature) => Promise<void>;
   onAdoptAnnotation: (annotation: AgentAnnotationRecord) => Promise<void>;
 }
 

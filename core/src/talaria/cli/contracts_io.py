@@ -199,6 +199,8 @@ from talaria.foundation.rules import (
     RulePreviewRequest,
     RulePreviewResponse,
     RulePreviewSignal,
+    RuleStructureEvent,
+    RuleStructurePrice,
 )
 from talaria.foundation.snapshot import (
     ChartPage,
@@ -206,6 +208,22 @@ from talaria.foundation.snapshot import (
     SnapshotMeta,
     SnapshotMode,
     SnapshotRequest,
+)
+from talaria.foundation.structures import (
+    STRUCTURE_GEOMETRY_MODELS,
+    AnchorSource,
+    PriceScaleMode,
+    StructureAdoptionRecord,
+    StructureAdoptionRequest,
+    StructureCategory,
+    StructureFamily,
+    StructureFeature,
+    StructureFeedbackSummary,
+    StructureIgnoreList,
+    StructureIgnoreRecord,
+    StructureIgnoreRequest,
+    StructureSet,
+    StructureStatus,
 )
 from talaria.foundation.collaboration.contracts import (
     Abstain,
@@ -235,6 +253,7 @@ from talaria.foundation.collaboration.tools import (
     GetChartViewInput,
     GetIndicatorsInput,
     GetKeyLevelsInput,
+    GetStructuresInput,
 )
 from talaria.foundation.types import DECIMAL_PATTERN, PrecisionTier, TemporalStamp
 from talaria.foundation.watchlist import (
@@ -319,6 +338,14 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
     "key_level_adoption_request": KeyLevelAdoptionRequest,
     "key_level_adoption_record": KeyLevelAdoptionRecord,
     "key_level_feedback_summary": KeyLevelFeedbackSummary,
+    "structure_feature": StructureFeature,
+    "structure_set": StructureSet,
+    "structure_ignore_request": StructureIgnoreRequest,
+    "structure_ignore_record": StructureIgnoreRecord,
+    "structure_ignore_list": StructureIgnoreList,
+    "structure_adoption_request": StructureAdoptionRequest,
+    "structure_adoption_record": StructureAdoptionRecord,
+    "structure_feedback_summary": StructureFeedbackSummary,
     "watchlist_group_create": WatchlistGroupCreate,
     "watchlist_group_update": WatchlistGroupUpdate,
     "watchlist_item_create": WatchlistItemCreate,
@@ -393,7 +420,8 @@ SCHEMA_MODELS: dict[str, type[BaseModel]] = {
 
 RULE_NODE_TYPES = (
     RuleGroup, RuleComparison, RuleConstant, RuleBar, RuleDerivative,
-    RuleEvent, RuleIndicator, RuleIndicatorParams, RuleLevelEvent, RuleOverlay, RuleDrawingPrice, RuleLevelPrice,
+    RuleEvent, RuleIndicator, RuleIndicatorParams, RuleLevelEvent, RuleStructureEvent,
+    RuleOverlay, RuleDrawingPrice, RuleLevelPrice, RuleStructurePrice,
     RulePreviewIndicator, RulePreviewSignal,
 )
 
@@ -411,6 +439,11 @@ ENUM_TYPES: tuple[type[StrEnum], ...] = (
     KeyLevelCategory,
     KeyLevelStatus,
     EvidenceClass,
+    StructureFamily,
+    StructureCategory,
+    StructureStatus,
+    PriceScaleMode,
+    AnchorSource,
     WatchlistGroupKind,
     QuoteSource,
     DegradationReason,
@@ -541,9 +574,9 @@ DSH_TOOL_SPECS: dict[str, tuple[type[BaseModel], str]] = {
         GetIndicatorsInput,
         "在已冻结快照上由 Python 计算指标；只读，返回十进制字符串。",
     ),
-    "get_key_levels": (
-        GetKeyLevelsInput,
-        "在已冻结快照上由 Python 计算关键位；只读，返回十进制字符串。",
+    "get_structures": (
+        GetStructuresInput,
+        "在已冻结快照上读取统一市场结构（含水平关键位、趋势线与共振带）；只读，返回十进制字符串。",
     ),
     "compute_operator": (
         ComputeOperatorInput,
@@ -794,7 +827,13 @@ def _render_ts() -> str:
     for enum_type in ENUM_TYPES:
         members = " | ".join(json.dumps(member.value, ensure_ascii=False) for member in enum_type)
         lines.append(f"export type {enum_type.__name__} = {members};\n\n")
-    for model in (*SCHEMA_MODELS.values(), ExitBarrierSpec, TrailingStopSpec, *RULE_NODE_TYPES):
+    for model in (
+        *SCHEMA_MODELS.values(),
+        ExitBarrierSpec,
+        TrailingStopSpec,
+        *RULE_NODE_TYPES,
+        *STRUCTURE_GEOMETRY_MODELS,
+    ):
         schema = _schema_for(model)
         if "$ref" in schema:
             schema = schema["$defs"][model.__name__]
@@ -806,6 +845,9 @@ def _render_ts() -> str:
             optional = "" if field.is_required() else "?"
             lines.append(f"  {name}{optional}: {ts_type};\n")
         lines.append("}\n")
+    lines.append(
+        "export type StructureGeometry = HorizontalLineGeometry | HorizontalZoneGeometry | SlopeLineGeometry | ChannelGeometry;\n"
+    )
     lines.append(f"\nexport const RULE_EDITOR_SCHEMA = {_dump_json(_rule_editor_schema()).rstrip()} as const;\n")
     return "".join(lines).rstrip() + "\n"
 
@@ -827,6 +869,8 @@ def render_contracts(root: Path | None = None) -> dict[Path, str]:
         artifacts[DSH_TOOL_PATHS[name]] = _dump_json(tool_payload)
     plugin_alert_tool = Path("dsh/packages/talaria-dsh-plugin/create_alert.tool.json")
     artifacts[plugin_alert_tool] = artifacts[DSH_TOOL_PATHS["create_alert"]]
+    plugin_structures_tool = Path("dsh/packages/talaria-dsh-plugin/get_structures.tool.json")
+    artifacts[plugin_structures_tool] = artifacts[DSH_TOOL_PATHS["get_structures"]]
     for filename, content in render_rule_vectors().items():
         artifacts[RULE_VECTOR_DIR / filename] = content
     for filename, content in render_sizing_vectors().items():

@@ -169,7 +169,7 @@
     },
     "AnnotationEvidence": {
       "additionalProperties": false,
-      "description": "一条可核验证据：引用快照内关键位，或引用窗口内的具体 K 线。\n\n``level_id`` 与 ``kline_ts`` 必须恰好提供一个。K 线时间戳允许与真实\nbar 相差一根周期以内（由服务端按 ``timeframe`` 显式判定）。",
+      "description": "一条可核验证据：引用快照内市场结构 / 关键位，或引用窗口内的具体 K 线。\n\n``structure_id``、``level_id`` 与 ``kline_ts`` 必须恰好提供一个。K 线时间戳允许与真实\nbar 相差一根周期以内（由服务端按 ``timeframe`` 显式判定）。",
       "properties": {
         "kline_ts": {
           "anyOf": [
@@ -203,6 +203,20 @@
           "maxLength": 200,
           "title": "Note",
           "type": "string"
+        },
+        "structure_id": {
+          "anyOf": [
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Structure Id"
         }
       },
       "title": "AnnotationEvidence",

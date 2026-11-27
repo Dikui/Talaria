@@ -18,6 +18,7 @@ pub mod runs;
 pub mod scanner;
 pub mod snapshot;
 pub mod strategy_subscription;
+pub mod structures;
 pub mod ticks;
 pub mod timeframes;
 pub mod types;
@@ -94,6 +95,13 @@ pub use scanner::{
     ScannerTriggerListResponse, ScannerTriggerRoute,
 };
 pub use snapshot::{ChartPage, ErrorResponse, SnapshotMeta, SnapshotMode, SnapshotRequest};
+pub use structures::{
+    AnalysisWindow, AnchorSource, PriceScaleMode, STRUCTURE_METHOD_VERSION, SlopeLineGeometry,
+    SlopeLineKind, StructureAdoptionRecord, StructureAdoptionRequest, StructureAnchor,
+    StructureCategory, StructureFamily, StructureFeature, StructureFeedbackSummary,
+    StructureGeometry, StructureIgnoreList, StructureIgnoreRecord, StructureIgnoreRequest,
+    StructureSet, StructureStatus,
+};
 pub use strategy_subscription::{
     StrategyBarEvent, StrategyDerivativeEvent, SubscriptionCursor, SubscriptionReady,
     SubscriptionReadyType, SubscriptionRequest,

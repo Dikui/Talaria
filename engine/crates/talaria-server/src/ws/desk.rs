@@ -19,12 +19,14 @@ use crate::error::SUBSCRIPTION_QUOTA;
 use talaria_contracts::feed::FeedEvent;
 use talaria_contracts::key_levels::KeyLevelSet;
 use talaria_contracts::scanner::ScannerTrigger;
+use talaria_contracts::structures::StructureSet;
 use talaria_contracts::{SUPPORTED_TIMEFRAMES};
 use talaria_feed::FeedSupervisor;
 use tokio::sync::Notify;
 
 use crate::key_levels::KeyLevelRegistry;
 use crate::server::AppState;
+use crate::structures::StructureRegistry;
 use crate::subscriptions::{Owner, OwnerKind, SubscriptionKey, SubscriptionScheduler};
 
 pub const WS_QUEUE_MAX: usize = 256;
@@ -201,6 +203,23 @@ impl DeskBroadcast {
         };
         let payload = format!(r#"{{"type":"levels","data":{data}}}"#);
         let key = (level_set.instrument_id.clone(), level_set.timeframe.clone());
+        let guard = self.inner.lock().expect("desk hub poisoned");
+        for slot in guard.clients.values() {
+            if slot.filters.contains(&key) {
+                slot.queue.push_drop_oldest(payload.clone());
+            }
+        }
+    }
+
+    pub fn project_structures(&self, structure_set: &StructureSet) {
+        let Ok(data) = serde_json::to_string(structure_set) else {
+            return;
+        };
+        let payload = format!(r#"{{"type":"structures","data":{data}}}"#);
+        let key = (
+            structure_set.instrument_id.clone(),
+            structure_set.timeframe.clone(),
+        );
         let guard = self.inner.lock().expect("desk hub poisoned");
         for slot in guard.clients.values() {
             if slot.filters.contains(&key) {
@@ -391,6 +410,7 @@ async fn handle_desk_socket(socket: WebSocket, state: Arc<AppState>) {
                             &state.scheduler,
                             state.supervisor.as_ref(),
                             &state.key_levels,
+                            &state.structures,
                             &state,
                         );
                     }
@@ -415,6 +435,7 @@ fn handle_desk_command(
     scheduler: &SubscriptionScheduler,
     supervisor: Option<&Arc<FeedSupervisor>>,
     key_levels: &KeyLevelRegistry,
+    structures: &StructureRegistry,
     state: &AppState,
 ) {
     let key = (cmd.instrument_id.clone(), cmd.timeframe.clone());
@@ -471,6 +492,11 @@ fn handle_desk_command(
                 && let Ok(data) = serde_json::to_string(&latest)
             {
                 queue.push_drop_oldest(format!(r#"{{"type":"levels","data":{data}}}"#));
+            }
+            if let Some(latest_st) = structures.latest(&cmd.instrument_id, &cmd.timeframe)
+                && let Ok(data) = serde_json::to_string(&latest_st)
+            {
+                queue.push_drop_oldest(format!(r#"{{"type":"structures","data":{data}}}"#));
             }
         }
         "unsubscribe" => {

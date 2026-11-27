@@ -23,6 +23,8 @@ import type {
   InstrumentSpec,
   KeyLevel,
   RunRoundRecord,
+  StructureFeature,
+  StructureSet,
 } from "@talaria/contracts";
 
 import { VELA_ATTRIBUTION } from "../chart/adapter";
@@ -53,6 +55,13 @@ import {
   type KeyLevelFilter,
 } from "../features/key-levels/model";
 import { useKeyLevels } from "../features/key-levels/useKeyLevels";
+import { StructurePanel } from "../features/structures/StructurePanel";
+import {
+  structureMidPrice,
+  visibleStructures,
+  type StructureFilter,
+} from "../features/structures/model";
+import { useStructures } from "../features/structures/useStructures";
 import { AccountPanel } from "../features/paper/AccountPanel";
 import { DraftPanel } from "../features/paper/DraftPanel";
 import type { DraftSeed } from "../features/paper/DraftForm";
@@ -73,9 +82,11 @@ import { applyTheme, THEME_STORAGE_KEY, type Theme } from "../lib/theme";
 import {
   loadIndicatorSettings,
   loadKeyLevelFilter,
+  loadStructureFilter,
   mergeIndicatorDefaults,
   saveIndicatorSettings,
   saveKeyLevelFilter,
+  saveStructureFilter,
 } from "./chartPreferences";
 import { ChartPane } from "./ChartPane";
 import {
@@ -149,42 +160,42 @@ function DockKeyLevelsPanel() {
   const precision =
     ctx.instruments.find((item) => item.instrument_id === ctx.activeInstrumentId)
       ?.price_precision ?? 2;
-  const allLevels = ctx.keyLevelsController.levels.filter(
-    (lvl) => !ctx.keyLevelsController.ignoredIds.has(lvl.level_id),
+  const allStructures = ctx.structuresController.structures.filter(
+    (item) => !ctx.structuresController.ignoredIds.has(item.structure_id),
   );
-  const filtered = visibleKeyLevels(
-    ctx.keyLevelsController.levels,
-    ctx.keyLevelFilter,
-    ctx.keyLevelsController.ignoredIds,
+  const filtered = visibleStructures(
+    ctx.structuresController.structures,
+    ctx.structureFilter,
+    ctx.structuresController.ignoredIds,
   );
   return (
-    <KeyLevelPanel
-      levels={filtered}
-      allLevels={allLevels}
-      filter={ctx.keyLevelFilter}
-      onFilterChange={ctx.onKeyLevelFilterChange}
+    <StructurePanel
+      structures={filtered}
+      allStructures={allStructures}
+      activeTimeframe={ctx.activeTimeframe}
+      filter={ctx.structureFilter}
+      onFilterChange={ctx.onStructureFilterChange}
       precision={precision}
-      ignoredCount={ctx.keyLevelsController.ignoredIds.size}
-      onIgnore={ctx.keyLevelsController.ignore}
-      ignoringId={ctx.keyLevelsController.ignoringId}
-      onAdopt={(level) => void ctx.onAdoptKeyLevel(level)}
-      adoptingId={ctx.keyLevelsController.adoptingId}
-      adoptedIds={ctx.keyLevelsController.adoptedIds}
-      onAttachAlert={(level) => {
+      ignoredCount={ctx.structuresController.ignoredIds.size}
+      onIgnore={ctx.structuresController.ignore}
+      ignoringId={ctx.structuresController.ignoringId}
+      onAdopt={(feature) => void ctx.onAdoptStructure(feature)}
+      adoptingId={ctx.structuresController.adoptingId}
+      adoptedIds={ctx.structuresController.adoptedIds}
+      onAttachAlert={(feature) => {
         ctx.onSeedAlert({
-          levelId: level.level_id,
-          levelKind: level.kind,
+          price: structureMidPrice(feature),
           instrumentId: ctx.activeInstrumentId,
           timeframe: ctx.activeTimeframe,
         });
         ctx.onOpenRightTab("alerts");
       }}
-      loading={ctx.keyLevelsController.loading}
-      error={ctx.keyLevelsController.error}
+      loading={ctx.structuresController.loading}
+      error={ctx.structuresController.error}
       readOnly={ctx.readOnly}
-      notes={ctx.keyLevelsController.notes}
-      highlightedId={ctx.highlightedLevelId}
-      onHover={ctx.onHoverLevelId}
+      notes={ctx.structuresController.notes}
+      highlightedId={ctx.highlightedStructureId}
+      onHover={ctx.onHoverStructureId}
     />
   );
 }
@@ -366,6 +377,11 @@ export function WorkbenchShell({
     loadKeyLevelFilter(),
   );
   const [highlightedLevelId, setHighlightedLevelId] = useState<string | null>(null);
+  const [structureFilter, setStructureFilter] = useState<StructureFilter>(() =>
+    loadStructureFilter(),
+  );
+  const [highlightedStructureId, setHighlightedStructureId] = useState<string | null>(null);
+  const [streamedStructures, setStreamedStructures] = useState<StructureSet | null>(null);
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
   const [alertSeed, setAlertSeed] = useState<AlertFormSeed | null>(null);
@@ -395,6 +411,14 @@ export function WorkbenchShell({
     instrumentId: telemetry.instrumentId || primarySnap.instrumentId,
     timeframe: telemetry.timeframe || primarySnap.timeframe,
     streamed: null,
+  });
+  const structuresController = useStructures({
+    snapshotId: telemetry.snapshotId,
+    instrumentId: telemetry.instrumentId || primarySnap.instrumentId,
+    timeframe: telemetry.timeframe || primarySnap.timeframe,
+    scale: structureFilter.scale,
+    htfTimeframes: structureFilter.htfTimeframes,
+    streamed: streamedStructures,
   });
 
   const [replayPanes, setReplayPanes] = useState<Record<string, boolean>>({});
@@ -514,6 +538,11 @@ export function WorkbenchShell({
   const onKeyLevelFilterChange = useCallback((next: KeyLevelFilter) => {
     setKeyLevelFilter(next);
     saveKeyLevelFilter(next);
+  }, []);
+
+  const onStructureFilterChange = useCallback((next: StructureFilter) => {
+    setStructureFilter(next);
+    saveStructureFilter(next);
   }, []);
 
   const onSaveIndicatorDefault = useCallback(
@@ -662,6 +691,16 @@ export function WorkbenchShell({
     [keyLevelsController, primaryLink],
   );
 
+  const onAdoptStructure = useCallback(
+    async (feature: StructureFeature) => {
+      const drawing = await structuresController.adopt(feature);
+      if (drawing) {
+        primaryLink.notifyDrawingsChanged(feature.instrument_id);
+      }
+    },
+    [structuresController, primaryLink],
+  );
+
   const onAdoptAnnotation = useCallback(
     async (annotation: AgentAnnotationRecord) => {
       await annotationsController.adopt(annotation.annotation_id);
@@ -714,6 +753,12 @@ export function WorkbenchShell({
       highlightedLevelId,
       onHoverLevelId: setHighlightedLevelId,
       keyLevelsController,
+      structureFilter,
+      onStructureFilterChange,
+      highlightedStructureId,
+      onHoverStructureId: setHighlightedStructureId,
+      structuresController,
+      onStreamStructures: setStreamedStructures,
       drawings,
       selectedDrawingId,
       onDrawingsUpdated: setDrawings,
@@ -747,6 +792,7 @@ export function WorkbenchShell({
       onPopoutChart,
       onOpenRightTab,
       onAdoptKeyLevel,
+      onAdoptStructure,
       onAdoptAnnotation,
     }),
     [
@@ -771,6 +817,10 @@ export function WorkbenchShell({
       onKeyLevelFilterChange,
       highlightedLevelId,
       keyLevelsController,
+      structureFilter,
+      onStructureFilterChange,
+      highlightedStructureId,
+      structuresController,
       drawings,
       selectedDrawingId,
       onDeleteDrawing,
@@ -801,6 +851,7 @@ export function WorkbenchShell({
       onPopoutChart,
       onOpenRightTab,
       onAdoptKeyLevel,
+      onAdoptStructure,
       onAdoptAnnotation,
     ],
   );

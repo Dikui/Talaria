@@ -429,6 +429,17 @@ pub fn freeze_snapshot_sync(
                 None,
                 &derivatives,
             );
+            let _ = state.structures.compute_and_register(
+                snapshot_id.clone(),
+                &spec.instrument_id,
+                tf,
+                bars,
+                cutoff_ts,
+                now,
+                session_profile.as_ref(),
+                None,
+                &derivatives,
+            );
         }
     }
 

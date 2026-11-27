@@ -348,6 +348,55 @@
                         ],
                         "title": "RuleLevelPrice",
                         "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "edge": {
+                            "default": "upper",
+                            "enum": [
+                              "lower",
+                              "upper"
+                            ],
+                            "title": "Edge",
+                            "type": "string"
+                          },
+                          "source": {
+                            "const": "structure_price",
+                            "title": "Source",
+                            "type": "string"
+                          },
+                          "structure_family": {
+                            "default": null,
+                            "oneOf": [
+                              {
+                                "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                "enum": [
+                                  "LEVEL",
+                                  "ZONE",
+                                  "TRENDLINE",
+                                  "CHANNEL",
+                                  "CONFLUENCE"
+                                ],
+                                "title": "StructureFamily",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "structure_id": {
+                            "title": "Structure Id",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "structure_id"
+                        ],
+                        "title": "RuleStructurePrice",
+                        "type": "object"
                       }
                     ],
                     "title": "Left"
@@ -692,6 +741,55 @@
                         ],
                         "title": "RuleLevelPrice",
                         "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "edge": {
+                            "default": "upper",
+                            "enum": [
+                              "lower",
+                              "upper"
+                            ],
+                            "title": "Edge",
+                            "type": "string"
+                          },
+                          "source": {
+                            "const": "structure_price",
+                            "title": "Source",
+                            "type": "string"
+                          },
+                          "structure_family": {
+                            "default": null,
+                            "oneOf": [
+                              {
+                                "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                "enum": [
+                                  "LEVEL",
+                                  "ZONE",
+                                  "TRENDLINE",
+                                  "CHANNEL",
+                                  "CONFLUENCE"
+                                ],
+                                "title": "StructureFamily",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "structure_id": {
+                            "title": "Structure Id",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "source",
+                          "structure_id"
+                        ],
+                        "title": "RuleStructurePrice",
+                        "type": "object"
                       }
                     ],
                     "title": "Right"
@@ -829,6 +927,56 @@
                   "event"
                 ],
                 "title": "RuleLevelEvent",
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "event": {
+                    "enum": [
+                      "TOUCH",
+                      "BREAK",
+                      "RETEST"
+                    ],
+                    "title": "AlertLevelEvent",
+                    "type": "string"
+                  },
+                  "op": {
+                    "const": "structure_event",
+                    "title": "Op",
+                    "type": "string"
+                  },
+                  "structure_family": {
+                    "default": null,
+                    "oneOf": [
+                      {
+                        "description": "市场结构上位家族，对应几何形态与业务语义。",
+                        "enum": [
+                          "LEVEL",
+                          "ZONE",
+                          "TRENDLINE",
+                          "CHANNEL",
+                          "CONFLUENCE"
+                        ],
+                        "title": "StructureFamily",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "structure_id": {
+                    "title": "Structure Id",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "op",
+                  "structure_id",
+                  "event"
+                ],
+                "title": "RuleStructureEvent",
                 "type": "object"
               },
               {
@@ -1175,6 +1323,55 @@
                                   ],
                                   "title": "RuleLevelPrice",
                                   "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "edge": {
+                                      "default": "upper",
+                                      "enum": [
+                                        "lower",
+                                        "upper"
+                                      ],
+                                      "title": "Edge",
+                                      "type": "string"
+                                    },
+                                    "source": {
+                                      "const": "structure_price",
+                                      "title": "Source",
+                                      "type": "string"
+                                    },
+                                    "structure_family": {
+                                      "default": null,
+                                      "oneOf": [
+                                        {
+                                          "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                          "enum": [
+                                            "LEVEL",
+                                            "ZONE",
+                                            "TRENDLINE",
+                                            "CHANNEL",
+                                            "CONFLUENCE"
+                                          ],
+                                          "title": "StructureFamily",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "structure_id": {
+                                      "title": "Structure Id",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "structure_id"
+                                  ],
+                                  "title": "RuleStructurePrice",
+                                  "type": "object"
                                 }
                               ],
                               "title": "Left"
@@ -1519,6 +1716,55 @@
                                   ],
                                   "title": "RuleLevelPrice",
                                   "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "edge": {
+                                      "default": "upper",
+                                      "enum": [
+                                        "lower",
+                                        "upper"
+                                      ],
+                                      "title": "Edge",
+                                      "type": "string"
+                                    },
+                                    "source": {
+                                      "const": "structure_price",
+                                      "title": "Source",
+                                      "type": "string"
+                                    },
+                                    "structure_family": {
+                                      "default": null,
+                                      "oneOf": [
+                                        {
+                                          "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                          "enum": [
+                                            "LEVEL",
+                                            "ZONE",
+                                            "TRENDLINE",
+                                            "CHANNEL",
+                                            "CONFLUENCE"
+                                          ],
+                                          "title": "StructureFamily",
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    },
+                                    "structure_id": {
+                                      "title": "Structure Id",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "structure_id"
+                                  ],
+                                  "title": "RuleStructurePrice",
+                                  "type": "object"
                                 }
                               ],
                               "title": "Right"
@@ -1656,6 +1902,56 @@
                             "event"
                           ],
                           "title": "RuleLevelEvent",
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "event": {
+                              "enum": [
+                                "TOUCH",
+                                "BREAK",
+                                "RETEST"
+                              ],
+                              "title": "AlertLevelEvent",
+                              "type": "string"
+                            },
+                            "op": {
+                              "const": "structure_event",
+                              "title": "Op",
+                              "type": "string"
+                            },
+                            "structure_family": {
+                              "default": null,
+                              "oneOf": [
+                                {
+                                  "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                  "enum": [
+                                    "LEVEL",
+                                    "ZONE",
+                                    "TRENDLINE",
+                                    "CHANNEL",
+                                    "CONFLUENCE"
+                                  ],
+                                  "title": "StructureFamily",
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "structure_id": {
+                              "title": "Structure Id",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "op",
+                            "structure_id",
+                            "event"
+                          ],
+                          "title": "RuleStructureEvent",
                           "type": "object"
                         },
                         {
@@ -2002,6 +2298,55 @@
                                             ],
                                             "title": "RuleLevelPrice",
                                             "type": "object"
+                                          },
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "edge": {
+                                                "default": "upper",
+                                                "enum": [
+                                                  "lower",
+                                                  "upper"
+                                                ],
+                                                "title": "Edge",
+                                                "type": "string"
+                                              },
+                                              "source": {
+                                                "const": "structure_price",
+                                                "title": "Source",
+                                                "type": "string"
+                                              },
+                                              "structure_family": {
+                                                "default": null,
+                                                "oneOf": [
+                                                  {
+                                                    "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                                    "enum": [
+                                                      "LEVEL",
+                                                      "ZONE",
+                                                      "TRENDLINE",
+                                                      "CHANNEL",
+                                                      "CONFLUENCE"
+                                                    ],
+                                                    "title": "StructureFamily",
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "structure_id": {
+                                                "title": "Structure Id",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "source",
+                                              "structure_id"
+                                            ],
+                                            "title": "RuleStructurePrice",
+                                            "type": "object"
                                           }
                                         ],
                                         "title": "Left"
@@ -2346,6 +2691,55 @@
                                             ],
                                             "title": "RuleLevelPrice",
                                             "type": "object"
+                                          },
+                                          {
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "edge": {
+                                                "default": "upper",
+                                                "enum": [
+                                                  "lower",
+                                                  "upper"
+                                                ],
+                                                "title": "Edge",
+                                                "type": "string"
+                                              },
+                                              "source": {
+                                                "const": "structure_price",
+                                                "title": "Source",
+                                                "type": "string"
+                                              },
+                                              "structure_family": {
+                                                "default": null,
+                                                "oneOf": [
+                                                  {
+                                                    "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                                    "enum": [
+                                                      "LEVEL",
+                                                      "ZONE",
+                                                      "TRENDLINE",
+                                                      "CHANNEL",
+                                                      "CONFLUENCE"
+                                                    ],
+                                                    "title": "StructureFamily",
+                                                    "type": "string"
+                                                  },
+                                                  {
+                                                    "type": "null"
+                                                  }
+                                                ]
+                                              },
+                                              "structure_id": {
+                                                "title": "Structure Id",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "source",
+                                              "structure_id"
+                                            ],
+                                            "title": "RuleStructurePrice",
+                                            "type": "object"
                                           }
                                         ],
                                         "title": "Right"
@@ -2483,6 +2877,56 @@
                                       "event"
                                     ],
                                     "title": "RuleLevelEvent",
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "event": {
+                                        "enum": [
+                                          "TOUCH",
+                                          "BREAK",
+                                          "RETEST"
+                                        ],
+                                        "title": "AlertLevelEvent",
+                                        "type": "string"
+                                      },
+                                      "op": {
+                                        "const": "structure_event",
+                                        "title": "Op",
+                                        "type": "string"
+                                      },
+                                      "structure_family": {
+                                        "default": null,
+                                        "oneOf": [
+                                          {
+                                            "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                            "enum": [
+                                              "LEVEL",
+                                              "ZONE",
+                                              "TRENDLINE",
+                                              "CHANNEL",
+                                              "CONFLUENCE"
+                                            ],
+                                            "title": "StructureFamily",
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "structure_id": {
+                                        "title": "Structure Id",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "op",
+                                      "structure_id",
+                                      "event"
+                                    ],
+                                    "title": "RuleStructureEvent",
                                     "type": "object"
                                   },
                                   {
@@ -2829,6 +3273,55 @@
                                                       ],
                                                       "title": "RuleLevelPrice",
                                                       "type": "object"
+                                                    },
+                                                    {
+                                                      "additionalProperties": false,
+                                                      "properties": {
+                                                        "edge": {
+                                                          "default": "upper",
+                                                          "enum": [
+                                                            "lower",
+                                                            "upper"
+                                                          ],
+                                                          "title": "Edge",
+                                                          "type": "string"
+                                                        },
+                                                        "source": {
+                                                          "const": "structure_price",
+                                                          "title": "Source",
+                                                          "type": "string"
+                                                        },
+                                                        "structure_family": {
+                                                          "default": null,
+                                                          "oneOf": [
+                                                            {
+                                                              "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                                              "enum": [
+                                                                "LEVEL",
+                                                                "ZONE",
+                                                                "TRENDLINE",
+                                                                "CHANNEL",
+                                                                "CONFLUENCE"
+                                                              ],
+                                                              "title": "StructureFamily",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "type": "null"
+                                                            }
+                                                          ]
+                                                        },
+                                                        "structure_id": {
+                                                          "title": "Structure Id",
+                                                          "type": "string"
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "source",
+                                                        "structure_id"
+                                                      ],
+                                                      "title": "RuleStructurePrice",
+                                                      "type": "object"
                                                     }
                                                   ],
                                                   "title": "Left"
@@ -3173,6 +3666,55 @@
                                                       ],
                                                       "title": "RuleLevelPrice",
                                                       "type": "object"
+                                                    },
+                                                    {
+                                                      "additionalProperties": false,
+                                                      "properties": {
+                                                        "edge": {
+                                                          "default": "upper",
+                                                          "enum": [
+                                                            "lower",
+                                                            "upper"
+                                                          ],
+                                                          "title": "Edge",
+                                                          "type": "string"
+                                                        },
+                                                        "source": {
+                                                          "const": "structure_price",
+                                                          "title": "Source",
+                                                          "type": "string"
+                                                        },
+                                                        "structure_family": {
+                                                          "default": null,
+                                                          "oneOf": [
+                                                            {
+                                                              "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                                              "enum": [
+                                                                "LEVEL",
+                                                                "ZONE",
+                                                                "TRENDLINE",
+                                                                "CHANNEL",
+                                                                "CONFLUENCE"
+                                                              ],
+                                                              "title": "StructureFamily",
+                                                              "type": "string"
+                                                            },
+                                                            {
+                                                              "type": "null"
+                                                            }
+                                                          ]
+                                                        },
+                                                        "structure_id": {
+                                                          "title": "Structure Id",
+                                                          "type": "string"
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "source",
+                                                        "structure_id"
+                                                      ],
+                                                      "title": "RuleStructurePrice",
+                                                      "type": "object"
                                                     }
                                                   ],
                                                   "title": "Right"
@@ -3310,6 +3852,56 @@
                                                 "event"
                                               ],
                                               "title": "RuleLevelEvent",
+                                              "type": "object"
+                                            },
+                                            {
+                                              "additionalProperties": false,
+                                              "properties": {
+                                                "event": {
+                                                  "enum": [
+                                                    "TOUCH",
+                                                    "BREAK",
+                                                    "RETEST"
+                                                  ],
+                                                  "title": "AlertLevelEvent",
+                                                  "type": "string"
+                                                },
+                                                "op": {
+                                                  "const": "structure_event",
+                                                  "title": "Op",
+                                                  "type": "string"
+                                                },
+                                                "structure_family": {
+                                                  "default": null,
+                                                  "oneOf": [
+                                                    {
+                                                      "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                                      "enum": [
+                                                        "LEVEL",
+                                                        "ZONE",
+                                                        "TRENDLINE",
+                                                        "CHANNEL",
+                                                        "CONFLUENCE"
+                                                      ],
+                                                      "title": "StructureFamily",
+                                                      "type": "string"
+                                                    },
+                                                    {
+                                                      "type": "null"
+                                                    }
+                                                  ]
+                                                },
+                                                "structure_id": {
+                                                  "title": "Structure Id",
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "op",
+                                                "structure_id",
+                                                "event"
+                                              ],
+                                              "title": "RuleStructureEvent",
                                               "type": "object"
                                             },
                                             {
@@ -3656,6 +4248,55 @@
                                                                 ],
                                                                 "title": "RuleLevelPrice",
                                                                 "type": "object"
+                                                              },
+                                                              {
+                                                                "additionalProperties": false,
+                                                                "properties": {
+                                                                  "edge": {
+                                                                    "default": "upper",
+                                                                    "enum": [
+                                                                      "lower",
+                                                                      "upper"
+                                                                    ],
+                                                                    "title": "Edge",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "source": {
+                                                                    "const": "structure_price",
+                                                                    "title": "Source",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "structure_family": {
+                                                                    "default": null,
+                                                                    "oneOf": [
+                                                                      {
+                                                                        "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                                                        "enum": [
+                                                                          "LEVEL",
+                                                                          "ZONE",
+                                                                          "TRENDLINE",
+                                                                          "CHANNEL",
+                                                                          "CONFLUENCE"
+                                                                        ],
+                                                                        "title": "StructureFamily",
+                                                                        "type": "string"
+                                                                      },
+                                                                      {
+                                                                        "type": "null"
+                                                                      }
+                                                                    ]
+                                                                  },
+                                                                  "structure_id": {
+                                                                    "title": "Structure Id",
+                                                                    "type": "string"
+                                                                  }
+                                                                },
+                                                                "required": [
+                                                                  "source",
+                                                                  "structure_id"
+                                                                ],
+                                                                "title": "RuleStructurePrice",
+                                                                "type": "object"
                                                               }
                                                             ],
                                                             "title": "Left"
@@ -4000,6 +4641,55 @@
                                                                 ],
                                                                 "title": "RuleLevelPrice",
                                                                 "type": "object"
+                                                              },
+                                                              {
+                                                                "additionalProperties": false,
+                                                                "properties": {
+                                                                  "edge": {
+                                                                    "default": "upper",
+                                                                    "enum": [
+                                                                      "lower",
+                                                                      "upper"
+                                                                    ],
+                                                                    "title": "Edge",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "source": {
+                                                                    "const": "structure_price",
+                                                                    "title": "Source",
+                                                                    "type": "string"
+                                                                  },
+                                                                  "structure_family": {
+                                                                    "default": null,
+                                                                    "oneOf": [
+                                                                      {
+                                                                        "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                                                        "enum": [
+                                                                          "LEVEL",
+                                                                          "ZONE",
+                                                                          "TRENDLINE",
+                                                                          "CHANNEL",
+                                                                          "CONFLUENCE"
+                                                                        ],
+                                                                        "title": "StructureFamily",
+                                                                        "type": "string"
+                                                                      },
+                                                                      {
+                                                                        "type": "null"
+                                                                      }
+                                                                    ]
+                                                                  },
+                                                                  "structure_id": {
+                                                                    "title": "Structure Id",
+                                                                    "type": "string"
+                                                                  }
+                                                                },
+                                                                "required": [
+                                                                  "source",
+                                                                  "structure_id"
+                                                                ],
+                                                                "title": "RuleStructurePrice",
+                                                                "type": "object"
                                                               }
                                                             ],
                                                             "title": "Right"
@@ -4137,6 +4827,56 @@
                                                           "event"
                                                         ],
                                                         "title": "RuleLevelEvent",
+                                                        "type": "object"
+                                                      },
+                                                      {
+                                                        "additionalProperties": false,
+                                                        "properties": {
+                                                          "event": {
+                                                            "enum": [
+                                                              "TOUCH",
+                                                              "BREAK",
+                                                              "RETEST"
+                                                            ],
+                                                            "title": "AlertLevelEvent",
+                                                            "type": "string"
+                                                          },
+                                                          "op": {
+                                                            "const": "structure_event",
+                                                            "title": "Op",
+                                                            "type": "string"
+                                                          },
+                                                          "structure_family": {
+                                                            "default": null,
+                                                            "oneOf": [
+                                                              {
+                                                                "description": "市场结构上位家族，对应几何形态与业务语义。",
+                                                                "enum": [
+                                                                  "LEVEL",
+                                                                  "ZONE",
+                                                                  "TRENDLINE",
+                                                                  "CHANNEL",
+                                                                  "CONFLUENCE"
+                                                                ],
+                                                                "title": "StructureFamily",
+                                                                "type": "string"
+                                                              },
+                                                              {
+                                                                "type": "null"
+                                                              }
+                                                            ]
+                                                          },
+                                                          "structure_id": {
+                                                            "title": "Structure Id",
+                                                            "type": "string"
+                                                          }
+                                                        },
+                                                        "required": [
+                                                          "op",
+                                                          "structure_id",
+                                                          "event"
+                                                        ],
+                                                        "title": "RuleStructureEvent",
                                                         "type": "object"
                                                       }
                                                     ]

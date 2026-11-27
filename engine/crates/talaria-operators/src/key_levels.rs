@@ -1,5 +1,8 @@
 //! Deterministic, lookahead-free Key Level engine matching Python `foundation/key_levels`.
 //!
+//! **Deprecated transitional module (ADR-0027):** Prefer `crate::structures` (`compute_structure_set`,
+//! `geometry_bounds_at`, `geometry_to_drawing`) for unified market structures and trendlines.
+//!
 //! All prices, tolerances, ATRs, volume profiles, VWAPs, and liquidation buckets are computed
 //! using exact `rust_decimal::Decimal` / IBM GDA `prec = 28` arithmetic (zero `f64`).
 //! Only the heuristic UI ranking field `KeyLevel.strength: f64` reproduces Python's IEEE-754
@@ -378,7 +381,7 @@ fn kind_str(kind: KeyLevelKind) -> &'static str {
     }
 }
 
-fn normalize_gda(price: &GdaDecimal) -> Result<String, OperatorError> {
+pub(crate) fn normalize_gda(price: &GdaDecimal) -> Result<String, OperatorError> {
     let d = price.to_decimal()?;
     Ok(format_normalized_decimal_str(d))
 }
@@ -482,7 +485,7 @@ fn true_ranges(bars: &[CompactBar]) -> Vec<Option<GdaDecimal>> {
     ranges
 }
 
-fn atr_series(bars: &[CompactBar], period: usize) -> Result<Vec<Option<GdaDecimal>>, OperatorError> {
+pub(crate) fn atr_series(bars: &[CompactBar], period: usize) -> Result<Vec<Option<GdaDecimal>>, OperatorError> {
     let ranges = true_ranges(bars);
     let mut result = vec![None; bars.len()];
     for index in 0..bars.len() {
@@ -638,12 +641,12 @@ fn merge_parameters(
     merged
 }
 
-fn bar_ms_for(timeframe: &str) -> i64 {
+pub(crate) fn bar_ms_for(timeframe: &str) -> i64 {
     timeframe_ms(timeframe).unwrap_or(60_000)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn structure_levels(
+pub(crate) fn structure_levels(
     instrument_id: &str,
     timeframe: &str,
     bars: &[CompactBar],
@@ -933,7 +936,7 @@ fn build_session_level(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn session_levels(
+pub(crate) fn session_levels(
     instrument_id: &str,
     timeframe: &str,
     bars: &[CompactBar],
@@ -1198,7 +1201,7 @@ fn session_levels(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn gap_levels(
+pub(crate) fn gap_levels(
     instrument_id: &str,
     timeframe: &str,
     bars: &[CompactBar],
@@ -1330,7 +1333,7 @@ fn round_step_for(price: &GdaDecimal) -> GdaDecimal {
     }
 }
 
-fn round_levels(
+pub(crate) fn round_levels(
     instrument_id: &str,
     timeframe: &str,
     bars: &[CompactBar],
@@ -1428,7 +1431,7 @@ fn quantize6(val: &GdaDecimal) -> Result<GdaDecimal, OperatorError> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn volume_profile_levels(
+pub(crate) fn volume_profile_levels(
     instrument_id: &str,
     timeframe: &str,
     bars: &[CompactBar],
@@ -1649,7 +1652,7 @@ fn volume_profile_levels(
     Ok(levels)
 }
 
-fn anchored_vwap_levels(
+pub(crate) fn anchored_vwap_levels(
     instrument_id: &str,
     timeframe: &str,
     bars: &[CompactBar],
@@ -1819,7 +1822,7 @@ struct LiqEvent {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn liquidation_levels(
+pub(crate) fn liquidation_levels(
     instrument_id: &str,
     timeframe: &str,
     bars: &[CompactBar],

@@ -43,6 +43,12 @@ import type {
   KeyLevelCategory,
   KeyLevelFeedbackSummary,
   KeyLevelIgnoreList,
+  PriceScaleMode,
+  StructureCategory,
+  StructureFamily,
+  StructureFeedbackSummary,
+  StructureIgnoreList,
+  StructureSet,
   KeyLevelSet,
   OperatorRequest,
   PaperAccountView,
@@ -711,6 +717,113 @@ export const api = {
   ): Promise<DrawingRecord> {
     return writeJson<DrawingRecord>(
       `/api/key-levels/${encodeURIComponent(levelId)}/adopt`,
+      "POST",
+      { snapshot_id: snapshotId, timeframe },
+    );
+  },
+
+  structures(
+    snapshotId: string,
+    timeframe: string,
+    options: {
+      families?: StructureFamily[];
+      categories?: StructureCategory[];
+      detectorIds?: string[];
+      htf?: string[];
+      scale?: PriceScaleMode;
+      minStrength?: number;
+      order?: string;
+      limit?: number;
+    } = {},
+  ): Promise<StructureSet> {
+    const params = new URLSearchParams({ timeframe });
+    if (options.families !== undefined && options.families.length > 0) {
+      params.set("families", options.families.join(","));
+    }
+    if (options.categories !== undefined && options.categories.length > 0) {
+      params.set("categories", options.categories.join(","));
+    }
+    if (options.detectorIds !== undefined && options.detectorIds.length > 0) {
+      params.set("detector_ids", options.detectorIds.join(","));
+    }
+    if (options.htf !== undefined && options.htf.length > 0) {
+      params.set("htf", options.htf.join(","));
+    }
+    if (options.scale !== undefined) {
+      params.set("scale", options.scale);
+    }
+    if (options.minStrength !== undefined) {
+      params.set("min_strength", String(options.minStrength));
+    }
+    if (options.order !== undefined) {
+      params.set("order", options.order);
+    }
+    if (options.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    return getJson<StructureSet>(
+      `/api/snapshots/${encodeURIComponent(snapshotId)}/structures?${params.toString()}`,
+    );
+  },
+
+  structuresAt(
+    instrumentId: string,
+    timeframe: string,
+    asOf: number,
+    options: {
+      htf?: string[];
+      scale?: PriceScaleMode;
+      limit?: number;
+    } = {},
+  ): Promise<StructureSet> {
+    const params = new URLSearchParams({
+      instrument_id: instrumentId,
+      timeframe,
+      as_of: String(asOf),
+    });
+    if (options.htf !== undefined && options.htf.length > 0) {
+      params.set("htf", options.htf.join(","));
+    }
+    if (options.scale !== undefined) {
+      params.set("scale", options.scale);
+    }
+    if (options.limit !== undefined) {
+      params.set("limit", String(options.limit));
+    }
+    return getJson<StructureSet>(`/api/structures/at?${params.toString()}`);
+  },
+
+  ignoredStructures(instrumentId: string): Promise<StructureIgnoreList> {
+    return getJson<StructureIgnoreList>(
+      `/api/structures/ignored?instrument_id=${encodeURIComponent(instrumentId)}`,
+    );
+  },
+
+  setStructureIgnored(
+    instrumentId: string,
+    structureId: string,
+    ignored: boolean,
+  ): Promise<StructureIgnoreList> {
+    return writeJson<StructureIgnoreList>("/api/structures/ignored", "PUT", {
+      instrument_id: instrumentId,
+      structure_id: structureId,
+      ignored,
+    });
+  },
+
+  structureFeedback(instrumentId: string): Promise<StructureFeedbackSummary> {
+    return getJson<StructureFeedbackSummary>(
+      `/api/structures/feedback?instrument_id=${encodeURIComponent(instrumentId)}`,
+    );
+  },
+
+  adoptStructure(
+    structureId: string,
+    snapshotId: string,
+    timeframe: string,
+  ): Promise<DrawingRecord> {
+    return writeJson<DrawingRecord>(
+      `/api/structures/${encodeURIComponent(structureId)}/adopt`,
       "POST",
       { snapshot_id: snapshotId, timeframe },
     );

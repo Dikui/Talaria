@@ -19,7 +19,8 @@ use talaria_contracts::{
     BriefingStatus, ConfirmedDraft, Direction, DraftConfirmation, DraftContent,
     DraftDiscardRequest, DraftReceipt, DraftRecord, DraftStatus, DrawingKind, DrawingPoint,
     DrawingRecord, DrawingStyle, EvidenceRef, KeyLevelAdoptionRecord, KeyLevelIgnoreRecord,
-    PaperCommand, PaperCommandReceipt, PaperCommandRecord, ScannerBriefing, error_codes,
+    PaperCommand, PaperCommandReceipt, PaperCommandRecord, ScannerBriefing,
+    StructureAdoptionRecord, StructureIgnoreRecord, error_codes,
 };
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -143,6 +144,26 @@ CREATE TABLE IF NOT EXISTS key_level_adoptions (
 );
 CREATE INDEX IF NOT EXISTS key_level_adoptions_by_instrument
     ON key_level_adoptions (instrument_id, adopted_ts DESC);
+CREATE TABLE IF NOT EXISTS structure_ignores (
+    instrument_id TEXT NOT NULL,
+    structure_id TEXT NOT NULL,
+    ignored INTEGER NOT NULL CHECK (ignored IN (0, 1)),
+    updated_ts INTEGER NOT NULL,
+    PRIMARY KEY (instrument_id, structure_id)
+);
+CREATE INDEX IF NOT EXISTS structure_ignores_by_instrument
+    ON structure_ignores (instrument_id, updated_ts);
+CREATE TABLE IF NOT EXISTS structure_adoptions (
+    instrument_id TEXT NOT NULL,
+    structure_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    drawing_id TEXT NOT NULL,
+    adopted_ts INTEGER NOT NULL,
+    timeframe TEXT NOT NULL,
+    PRIMARY KEY (instrument_id, structure_id)
+);
+CREATE INDEX IF NOT EXISTS structure_adoptions_by_instrument
+    ON structure_adoptions (instrument_id, adopted_ts DESC);
 CREATE TABLE IF NOT EXISTS agent_annotations (
     annotation_id TEXT PRIMARY KEY,
     instrument_id TEXT NOT NULL,
@@ -472,6 +493,8 @@ fn maybe_migrate_legacy(
             "alert_triggers",
             "key_level_ignores",
             "key_level_adoptions",
+            "structure_ignores",
+            "structure_adoptions",
             "agent_annotations",
             "annotation_adoptions",
         ];
@@ -2557,6 +2580,174 @@ pub fn key_level_record_adoption(
         &serde_json::json!({
             "instrument_id": rec.instrument_id,
             "level_id": rec.level_id,
+            "snapshot_id": rec.snapshot_id,
+            "drawing_id": rec.drawing_id,
+            "timeframe": rec.timeframe,
+        }),
+        rec.adopted_ts,
+    )?;
+    tx.commit().map_err(map_sqlite_err)?;
+    Ok(())
+}
+
+// ============================================================================
+// Market Structure Feedback Repository
+// ============================================================================
+
+pub fn structure_list_ignores(
+    conn: &Connection,
+    instrument_id: &str,
+) -> Result<Vec<StructureIgnoreRecord>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT instrument_id, structure_id, ignored, updated_ts
+             FROM structure_ignores
+             WHERE instrument_id = ?1
+             ORDER BY updated_ts DESC, structure_id",
+        )
+        .map_err(map_sqlite_err)?;
+    let rows = stmt
+        .query_map(params![instrument_id], |r| {
+            Ok(StructureIgnoreRecord {
+                instrument_id: r.get(0)?,
+                structure_id: r.get(1)?,
+                ignored: r.get::<_, i64>(2)? != 0,
+                updated_ts: r.get(3)?,
+            })
+        })
+        .map_err(map_sqlite_err)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(map_sqlite_err)?);
+    }
+    Ok(out)
+}
+
+pub fn structure_set_ignore(
+    conn: &mut Connection,
+    instrument_id: &str,
+    structure_id: &str,
+    ignored: bool,
+    now: i64,
+) -> Result<(), ApiError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_err)?;
+    tx.execute(
+        "INSERT INTO structure_ignores (instrument_id, structure_id, ignored, updated_ts)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(instrument_id, structure_id) DO UPDATE SET
+             ignored = excluded.ignored,
+             updated_ts = excluded.updated_ts",
+        params![
+            instrument_id,
+            structure_id,
+            if ignored { 1i64 } else { 0i64 },
+            now
+        ],
+    )
+    .map_err(map_sqlite_err)?;
+    append_event(
+        &tx,
+        "structure.ignore",
+        &serde_json::json!({
+            "instrument_id": instrument_id,
+            "structure_id": structure_id,
+            "ignored": ignored,
+        }),
+        now,
+    )?;
+    tx.commit().map_err(map_sqlite_err)?;
+    Ok(())
+}
+
+pub fn structure_get_adoption(
+    conn: &Connection,
+    instrument_id: &str,
+    structure_id: &str,
+) -> Result<Option<StructureAdoptionRecord>, ApiError> {
+    conn.query_row(
+        "SELECT instrument_id, structure_id, snapshot_id, drawing_id, adopted_ts, timeframe
+         FROM structure_adoptions WHERE instrument_id = ?1 AND structure_id = ?2",
+        params![instrument_id, structure_id],
+        |r| {
+            Ok(StructureAdoptionRecord {
+                instrument_id: r.get(0)?,
+                structure_id: r.get(1)?,
+                snapshot_id: r.get(2)?,
+                drawing_id: r.get(3)?,
+                adopted_ts: r.get(4)?,
+                timeframe: r.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(map_sqlite_err)
+}
+
+pub fn structure_list_adoptions(
+    conn: &Connection,
+    instrument_id: &str,
+) -> Result<Vec<StructureAdoptionRecord>, ApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT instrument_id, structure_id, snapshot_id, drawing_id, adopted_ts, timeframe
+             FROM structure_adoptions
+             WHERE instrument_id = ?1
+             ORDER BY adopted_ts DESC, structure_id",
+        )
+        .map_err(map_sqlite_err)?;
+    let rows = stmt
+        .query_map(params![instrument_id], |r| {
+            Ok(StructureAdoptionRecord {
+                instrument_id: r.get(0)?,
+                structure_id: r.get(1)?,
+                snapshot_id: r.get(2)?,
+                drawing_id: r.get(3)?,
+                adopted_ts: r.get(4)?,
+                timeframe: r.get(5)?,
+            })
+        })
+        .map_err(map_sqlite_err)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(map_sqlite_err)?);
+    }
+    Ok(out)
+}
+
+pub fn structure_record_adoption(
+    conn: &mut Connection,
+    rec: &StructureAdoptionRecord,
+) -> Result<(), ApiError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(map_sqlite_err)?;
+    tx.execute(
+        "INSERT INTO structure_adoptions
+            (instrument_id, structure_id, snapshot_id, drawing_id, adopted_ts, timeframe)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(instrument_id, structure_id) DO UPDATE SET
+             snapshot_id = excluded.snapshot_id,
+             drawing_id = excluded.drawing_id,
+             adopted_ts = excluded.adopted_ts,
+             timeframe = excluded.timeframe",
+        params![
+            rec.instrument_id,
+            rec.structure_id,
+            rec.snapshot_id,
+            rec.drawing_id,
+            rec.adopted_ts,
+            rec.timeframe,
+        ],
+    )
+    .map_err(map_sqlite_err)?;
+    append_event(
+        &tx,
+        "structure.adopt",
+        &serde_json::json!({
+            "instrument_id": rec.instrument_id,
+            "structure_id": rec.structure_id,
             "snapshot_id": rec.snapshot_id,
             "drawing_id": rec.drawing_id,
             "timeframe": rec.timeframe,

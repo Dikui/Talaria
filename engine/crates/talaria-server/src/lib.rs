@@ -11,6 +11,7 @@ pub mod scanner;
 pub mod security;
 pub mod snapshot_store;
 pub mod state_store;
+pub mod structures;
 pub mod subscriptions;
 pub mod ws;
 

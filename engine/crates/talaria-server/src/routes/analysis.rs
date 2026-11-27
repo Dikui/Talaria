@@ -30,10 +30,15 @@ use talaria_contracts::rules::{
     RulePreviewResponse,
 };
 use talaria_contracts::snapshot::{ChartPage, SnapshotMeta, SnapshotRequest};
+use talaria_contracts::structures::{
+    PriceScaleMode, STRUCTURE_METHOD_VERSION, StructureAdoptionRecord, StructureAdoptionRequest,
+    StructureCategory, StructureFamily, StructureFeature, StructureFeedbackSummary,
+    StructureGeometry, StructureIgnoreList, StructureIgnoreRequest, StructureSet,
+};
 use talaria_contracts::timeframe_ms;
 use talaria_operators::{
-    DerivativeSample, KeyLevelParams, OperatorSpec, compute_indicator_series,
-    compute_key_levels_with_notes, derivative_samples,
+    DerivativeSample, KeyLevelParams, OperatorSpec, StructureParams, compute_indicator_series,
+    compute_key_levels_with_notes, compute_structure_set, derivative_samples, geometry_to_drawing,
 };
 use uuid::Uuid;
 
@@ -47,6 +52,8 @@ use crate::state_store::{
     INDICATOR_DEFAULTS_META_KEY, drawings_create, drawings_get, key_level_get_adoption,
     key_level_list_adoptions, key_level_list_ignores, key_level_record_adoption,
     key_level_set_ignore, load_indicator_defaults_overrides, meta_get, meta_set,
+    structure_get_adoption, structure_list_adoptions, structure_list_ignores,
+    structure_record_adoption, structure_set_ignore,
 };
 use crate::server::AppState;
 
@@ -86,6 +93,18 @@ pub fn router() -> Router<Arc<AppState>> {
         )
         .route("/api/key-levels/{level_id}/adopt", post(adopt_key_level))
         .route("/api/key-levels/feedback", get(key_level_feedback))
+        .route(
+            "/api/snapshots/{snapshot_id}/structures",
+            get(get_snapshot_structures),
+        )
+        .route("/api/structures", get(get_structures_alias))
+        .route("/api/structures/at", get(get_structures_at))
+        .route(
+            "/api/structures/ignored",
+            get(list_ignored_structures).put(set_ignored_structure),
+        )
+        .route("/api/structures/{structure_id}/adopt", post(adopt_structure))
+        .route("/api/structures/feedback", get(structure_feedback))
 }
 
 async fn create_snapshot(
@@ -820,6 +839,11 @@ async fn preview_rule_handler(
                 .key_levels
                 .lookup_level_map(&meta.instrument_id, &tf, cutoff)
         };
+        let structures_fn = |cutoff: i64| -> HashMap<String, StructureFeature> {
+            state_c
+                .structures
+                .lookup_structure_map(&meta.instrument_id, &tf, cutoff)
+        };
         let drawing_lookup = |id: &str| -> Option<DrawingRecord> {
             drawings_map
                 .get(id)
@@ -835,6 +859,7 @@ async fn preview_rule_handler(
             &oi,
             &mark,
             &levels_fn,
+            &structures_fn,
             &drawing_lookup,
             limit,
         )
@@ -884,7 +909,9 @@ fn pin_rule_indicator_params(
                 pin_rule_indicator_params(child, defaults);
             }
         }
-        RuleExpression::Overlay { .. } | RuleExpression::LevelEvent { .. } => {}
+        RuleExpression::Overlay { .. }
+        | RuleExpression::LevelEvent { .. }
+        | RuleExpression::StructureEvent { .. } => {}
     }
 }
 
@@ -928,7 +955,7 @@ pub(crate) fn collect_rule_drawing_ids(expr: &RuleExpression, out: &mut Vec<Stri
                 collect_rule_drawing_ids(child, out);
             }
         }
-        RuleExpression::LevelEvent { .. } => {}
+        RuleExpression::LevelEvent { .. } | RuleExpression::StructureEvent { .. } => {}
     }
 }
 
@@ -967,7 +994,7 @@ fn collect_rule_level_refs(
                 collect_rule_level_refs(child, out);
             }
         }
-        RuleExpression::Overlay { .. } => {}
+        RuleExpression::Overlay { .. } | RuleExpression::StructureEvent { .. } => {}
     }
 }
 
@@ -1608,5 +1635,676 @@ async fn key_level_feedback(
         instrument_id: q.instrument_id,
         adopted_level_ids,
         ignored_level_ids,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuresQuery {
+    #[serde(default)]
+    snapshot_id: Option<String>,
+    #[serde(default)]
+    instrument_id: Option<String>,
+    #[serde(default)]
+    instrument: Option<String>,
+    timeframe: String,
+    #[serde(default)]
+    as_of: Option<i64>,
+    #[serde(default)]
+    families: Option<String>,
+    #[serde(default)]
+    categories: Option<String>,
+    #[serde(default)]
+    detector_ids: Option<String>,
+    #[serde(default)]
+    htf: Option<String>,
+    #[serde(default)]
+    scale: Option<String>,
+    #[serde(default = "default_all")]
+    evidence_class: String,
+    #[serde(default)]
+    min_strength: f64,
+    #[serde(default = "default_order")]
+    order: String,
+    #[serde(default = "default_200")]
+    limit: usize,
+    #[serde(default = "default_session")]
+    vwap_anchor: String,
+    #[serde(default)]
+    vwap_anchor_ts: Option<i64>,
+    #[serde(default = "default_value_area")]
+    value_area_ratio: f64,
+}
+
+struct ParsedStructureFilters {
+    families: HashSet<StructureFamily>,
+    categories: HashSet<StructureCategory>,
+    detector_ids: HashSet<String>,
+    htf_timeframes: Vec<String>,
+    evidence: Option<EvidenceClass>,
+    params: StructureParams,
+}
+
+fn parse_structure_filters(q: &StructuresQuery) -> Result<ParsedStructureFilters, ApiError> {
+    if !(0.0..=1.0).contains(&q.min_strength) {
+        return Err(ApiError::validation("min_strength must be in [0, 1]"));
+    }
+    let (_, evidence, kl_params) = parse_key_level_filters(
+        None,
+        q.min_strength,
+        &q.evidence_class,
+        &q.vwap_anchor,
+        q.vwap_anchor_ts,
+        q.value_area_ratio,
+    )?;
+
+    let mut families = HashSet::new();
+    if let Some(raw) = &q.families {
+        for tok in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let quoted = serde_json::to_string(&tok.to_uppercase()).unwrap_or_default();
+            let fam: StructureFamily = serde_json::from_str(&quoted)
+                .map_err(|_| ApiError::validation(format!("未知的结构家族：{tok}")))?;
+            families.insert(fam);
+        }
+    }
+
+    let mut categories = HashSet::new();
+    if let Some(raw) = &q.categories {
+        for tok in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let quoted = serde_json::to_string(&tok.to_uppercase()).unwrap_or_default();
+            let cat: StructureCategory = serde_json::from_str(&quoted)
+                .map_err(|_| ApiError::validation(format!("未知的结构类别：{tok}")))?;
+            categories.insert(cat);
+        }
+    }
+
+    let detector_ids: HashSet<String> = q
+        .detector_ids
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+
+    let mut htf_timeframes = Vec::new();
+    if let Some(raw) = &q.htf {
+        for tok in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            validate_timeframe(tok)?;
+            if tok != q.timeframe && !htf_timeframes.iter().any(|x| x == tok) {
+                htf_timeframes.push(tok.to_owned());
+            }
+        }
+    }
+
+    let mut params = StructureParams::default();
+    params.vwap_anchor = kl_params.vwap_anchor;
+    params.vwap_anchor_ts = kl_params.vwap_anchor_ts;
+    params.value_area_ratio = kl_params
+        .value_area_ratio
+        .to_string()
+        .parse::<f64>()
+        .unwrap_or(0.70);
+    if let Some(raw_scale) = &q.scale {
+        params.trendline_scale = match raw_scale.trim().to_uppercase().as_str() {
+            "LINEAR" => PriceScaleMode::Linear,
+            "LOG" => PriceScaleMode::Log,
+            _ => {
+                return Err(ApiError::validation(format!(
+                    "未知的坐标系：{raw_scale}"
+                )));
+            }
+        };
+    }
+    params.validate()?;
+
+    Ok(ParsedStructureFilters {
+        families,
+        categories,
+        detector_ids,
+        htf_timeframes,
+        evidence,
+        params,
+    })
+}
+
+fn filter_and_sort_structures(
+    items: &mut Vec<StructureFeature>,
+    filters: &ParsedStructureFilters,
+    min_strength: f64,
+    order: &str,
+    limit: usize,
+) {
+    items.retain(|st| {
+        (filters.families.is_empty() || filters.families.contains(&st.family))
+            && (filters.categories.is_empty() || filters.categories.contains(&st.category))
+            && (filters.detector_ids.is_empty() || filters.detector_ids.contains(&st.detector_id))
+            && st.strength >= min_strength
+            && filters.evidence.is_none_or(|e| st.evidence_class == e)
+    });
+    match order {
+        "price_asc" => items.sort_by(|a, b| {
+            let pa = structure_ref_price(a, false);
+            let pb = structure_ref_price(b, false);
+            pa.cmp(&pb)
+        }),
+        "price_desc" => items.sort_by(|a, b| {
+            let pa = structure_ref_price(a, true);
+            let pb = structure_ref_price(b, true);
+            pb.cmp(&pa)
+        }),
+        "recent_desc" => items.sort_by_key(|a| std::cmp::Reverse(a.ts_available)),
+        _ => items.sort_by(|a, b| {
+            b.strength
+                .total_cmp(&a.strength)
+                .then_with(|| b.ts_available.cmp(&a.ts_available))
+                .then_with(|| a.structure_id.cmp(&b.structure_id))
+        }),
+    }
+    items.truncate(limit.clamp(1, 500));
+}
+
+fn structure_ref_price(st: &StructureFeature, upper: bool) -> Decimal {
+    match &st.geometry {
+        StructureGeometry::HorizontalLine { price } => *price,
+        StructureGeometry::HorizontalZone {
+            price_low,
+            price_high,
+            ..
+        } => {
+            if upper {
+                *price_high
+            } else {
+                *price_low
+            }
+        }
+        StructureGeometry::SlopeLine { anchor_end, .. } => anchor_end.price,
+        StructureGeometry::Channel {
+            upper: ch_up,
+            lower: ch_low,
+        } => {
+            if upper {
+                ch_up.anchor_end.price
+            } else {
+                ch_low.anchor_end.price
+            }
+        }
+    }
+}
+
+fn compute_snapshot_structures(
+    state: &AppState,
+    snapshot_id: &str,
+    timeframe: &str,
+    filters: &ParsedStructureFilters,
+    min_strength: f64,
+    order: &str,
+    limit: usize,
+) -> Result<StructureSet, ApiError> {
+    let (meta, bars) = state.snapshots.get_bars(snapshot_id, timeframe)?;
+    let (_, derivs) = state.snapshots.get_derivatives(snapshot_id, timeframe)?;
+    let session_profile = state
+        .pack
+        .traits(&meta.instrument_id)
+        .ok()
+        .map(|t| SessionProfile::from(&t.session));
+
+    let mut result = compute_structure_set(
+        snapshot_id,
+        &meta.instrument_id,
+        timeframe,
+        &bars,
+        meta.cutoff_ts,
+        Some(meta.cutoff_ts),
+        session_profile.as_ref(),
+        Some(&filters.params),
+        &derivs,
+        None,
+        None,
+    )?;
+
+    for htf in &filters.htf_timeframes {
+        let htf_bars = match state.snapshots.get_bars(snapshot_id, htf) {
+            Ok((_, b)) => b,
+            Err(_) => load_confirmed_series(state, &meta.instrument_id, htf, meta.cutoff_ts, 600)
+                .unwrap_or_default(),
+        };
+        if htf_bars.is_empty() {
+            continue;
+        }
+        if let Ok(htf_set) = compute_structure_set(
+            snapshot_id,
+            &meta.instrument_id,
+            htf,
+            &htf_bars,
+            meta.cutoff_ts,
+            Some(meta.cutoff_ts),
+            session_profile.as_ref(),
+            Some(&filters.params),
+            &derivs,
+            None,
+            None,
+        ) {
+            for mut feat in htf_set.structures {
+                feat.source_timeframe = Some(htf.clone());
+                result.structures.push(feat);
+            }
+        }
+    }
+
+    filter_and_sort_structures(&mut result.structures, filters, min_strength, order, limit);
+    Ok(result)
+}
+
+fn compute_structures_at_sync(
+    state: &AppState,
+    instrument_id: &str,
+    timeframe: &str,
+    as_of: i64,
+    filters: &ParsedStructureFilters,
+    min_strength: f64,
+    order: &str,
+    limit: usize,
+) -> Result<StructureSet, ApiError> {
+    let spec = find_instrument(state, instrument_id)?;
+    let effective_as_of = as_of.min(state.now_ms());
+    let bars = load_confirmed_series(state, &spec.instrument_id, timeframe, effective_as_of, 5000)?;
+    let (funding, oi, mark) = load_derivative_points(state, &spec, effective_as_of);
+    let mut derivs = Vec::with_capacity(funding.len() + oi.len() + mark.len());
+    derivs.extend(funding);
+    derivs.extend(oi);
+    derivs.extend(mark);
+    let session_profile = state
+        .pack
+        .traits(&spec.instrument_id)
+        .ok()
+        .map(|t| SessionProfile::from(&t.session));
+
+    let mut result = compute_structure_set(
+        "at",
+        &spec.instrument_id,
+        timeframe,
+        &bars,
+        effective_as_of,
+        Some(effective_as_of),
+        session_profile.as_ref(),
+        Some(&filters.params),
+        &derivs,
+        None,
+        None,
+    )?;
+
+    for htf in &filters.htf_timeframes {
+        let htf_bars =
+            load_confirmed_series(state, &spec.instrument_id, htf, effective_as_of, 600)
+                .unwrap_or_default();
+        if htf_bars.is_empty() {
+            continue;
+        }
+        if let Ok(htf_set) = compute_structure_set(
+            "at",
+            &spec.instrument_id,
+            htf,
+            &htf_bars,
+            effective_as_of,
+            Some(effective_as_of),
+            session_profile.as_ref(),
+            Some(&filters.params),
+            &derivs,
+            None,
+            None,
+        ) {
+            for mut feat in htf_set.structures {
+                feat.source_timeframe = Some(htf.clone());
+                result.structures.push(feat);
+            }
+        }
+    }
+
+    filter_and_sort_structures(&mut result.structures, filters, min_strength, order, limit);
+    Ok(result)
+}
+
+async fn get_snapshot_structures(
+    State(state): State<Arc<AppState>>,
+    ApiPath(snapshot_id): ApiPath<String>,
+    ApiQuery(q): ApiQuery<StructuresQuery>,
+) -> Result<ApiJson<StructureSet>, ApiError> {
+    let _ = validate_timeframe(&q.timeframe)?;
+    let filters = parse_structure_filters(&q)?;
+    let state_c = Arc::clone(&state);
+    let tf = q.timeframe.clone();
+    let order = q.order.clone();
+    let limit = q.limit;
+    let min_strength = q.min_strength;
+
+    let set = tokio::task::spawn_blocking(move || {
+        compute_snapshot_structures(
+            &state_c,
+            &snapshot_id,
+            &tf,
+            &filters,
+            min_strength,
+            &order,
+            limit,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))??;
+    Ok(ApiJson(set))
+}
+
+async fn get_structures_alias(
+    State(state): State<Arc<AppState>>,
+    ApiQuery(q): ApiQuery<StructuresQuery>,
+) -> Result<ApiJson<StructureSet>, ApiError> {
+    let _ = validate_timeframe(&q.timeframe)?;
+    let filters = parse_structure_filters(&q)?;
+    if let Some(snap_id) = q.snapshot_id.clone() {
+        let state_c = Arc::clone(&state);
+        let tf = q.timeframe.clone();
+        let order = q.order.clone();
+        let limit = q.limit;
+        let min_strength = q.min_strength;
+        let set = tokio::task::spawn_blocking(move || {
+            compute_snapshot_structures(
+                &state_c,
+                &snap_id,
+                &tf,
+                &filters,
+                min_strength,
+                &order,
+                limit,
+            )
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))??;
+        return Ok(ApiJson(set));
+    }
+
+    let inst_id = q
+        .instrument_id
+        .clone()
+        .or(q.instrument.clone())
+        .ok_or_else(|| ApiError::validation("snapshot_id or instrument_id is required"))?;
+    if let Some(as_of) = q.as_of {
+        if as_of < 0 {
+            return Err(ApiError::validation("as_of must be non-negative"));
+        }
+        let state_c = Arc::clone(&state);
+        let tf = q.timeframe.clone();
+        let order = q.order.clone();
+        let limit = q.limit;
+        let min_strength = q.min_strength;
+        let set = tokio::task::spawn_blocking(move || {
+            compute_structures_at_sync(
+                &state_c,
+                &inst_id,
+                &tf,
+                as_of,
+                &filters,
+                min_strength,
+                &order,
+                limit,
+            )
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))??;
+        return Ok(ApiJson(set));
+    }
+
+    let spec = find_instrument(&state, &inst_id)?;
+    let cutoff = state.now_ms();
+    let mut structures = state.structures.structures_with_mtfa(
+        &spec.instrument_id,
+        &q.timeframe,
+        &filters.htf_timeframes,
+        cutoff,
+    );
+    filter_and_sort_structures(&mut structures, &filters, q.min_strength, &q.order, q.limit);
+    Ok(ApiJson(StructureSet {
+        snapshot_id: "registry".to_owned(),
+        instrument_id: spec.instrument_id,
+        timeframe: q.timeframe,
+        cutoff_ts: cutoff,
+        as_of_ts: cutoff,
+        method_version: STRUCTURE_METHOD_VERSION.to_owned(),
+        detector_ids: Vec::new(),
+        parameters: filters.params.as_parameters()?,
+        notes: Vec::new(),
+        structures,
+    }))
+}
+
+async fn get_structures_at(
+    State(state): State<Arc<AppState>>,
+    ApiQuery(q): ApiQuery<StructuresQuery>,
+) -> Result<ApiJson<StructureSet>, ApiError> {
+    let _ = validate_timeframe(&q.timeframe)?;
+    let as_of = q
+        .as_of
+        .ok_or_else(|| ApiError::validation("as_of is required"))?;
+    if as_of < 0 {
+        return Err(ApiError::validation("as_of must be non-negative"));
+    }
+    let inst_id = q
+        .instrument_id
+        .clone()
+        .or(q.instrument.clone())
+        .ok_or_else(|| ApiError::validation("instrument or instrument_id is required"))?;
+    let filters = parse_structure_filters(&q)?;
+    let state_c = Arc::clone(&state);
+    let tf = q.timeframe.clone();
+    let order = q.order.clone();
+    let limit = q.limit;
+    let min_strength = q.min_strength;
+
+    let set = tokio::task::spawn_blocking(move || {
+        compute_structures_at_sync(
+            &state_c,
+            &inst_id,
+            &tf,
+            as_of,
+            &filters,
+            min_strength,
+            &order,
+            limit,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))??;
+    Ok(ApiJson(set))
+}
+
+async fn list_ignored_structures(
+    State(state): State<Arc<AppState>>,
+    ApiQuery(q): ApiQuery<InstrumentQuery>,
+) -> Result<ApiJson<StructureIgnoreList>, ApiError> {
+    let _ = find_instrument(&state, &q.instrument_id)?;
+    let inst = q.instrument_id.clone();
+    let entries = state
+        .state_store
+        .read(move |conn| structure_list_ignores(conn, &inst))
+        .await?;
+    Ok(ApiJson(StructureIgnoreList {
+        instrument_id: q.instrument_id,
+        entries,
+    }))
+}
+
+async fn set_ignored_structure(
+    State(state): State<Arc<AppState>>,
+    ApiJson(payload): ApiJson<StructureIgnoreRequest>,
+) -> Result<ApiJson<StructureIgnoreList>, ApiError> {
+    let _ = find_instrument(&state, &payload.instrument_id)?;
+    let inst = payload.instrument_id.clone();
+    let inst_read = inst.clone();
+    let entries = state
+        .state_store
+        .write(move |conn, now| {
+            structure_set_ignore(conn, &inst, &payload.structure_id, payload.ignored, now)?;
+            structure_list_ignores(conn, &inst)
+        })
+        .await?;
+    Ok(ApiJson(StructureIgnoreList {
+        instrument_id: inst_read,
+        entries,
+    }))
+}
+
+async fn adopt_structure(
+    State(state): State<Arc<AppState>>,
+    ApiPath(structure_id): ApiPath<String>,
+    ApiJson(payload): ApiJson<StructureAdoptionRequest>,
+) -> Result<ApiJson<DrawingRecord>, ApiError> {
+    let _ = validate_timeframe(&payload.timeframe)?;
+    let state_c = Arc::clone(&state);
+    let snap_id = payload.snapshot_id.clone();
+    let tf = payload.timeframe.clone();
+    let st_id = structure_id.clone();
+
+    let found = tokio::task::spawn_blocking(move || -> Result<Option<StructureFeature>, ApiError> {
+        let filters = ParsedStructureFilters {
+            families: HashSet::new(),
+            categories: HashSet::new(),
+            detector_ids: HashSet::new(),
+            htf_timeframes: Vec::new(),
+            evidence: None,
+            params: StructureParams::default(),
+        };
+        let base_set = compute_snapshot_structures(
+            &state_c,
+            &snap_id,
+            &tf,
+            &filters,
+            0.0,
+            "strength_desc",
+            500,
+        )?;
+        if let Some(hit) = base_set
+            .structures
+            .into_iter()
+            .find(|st| st.structure_id == st_id)
+        {
+            return Ok(Some(hit));
+        }
+        // 也支持在 LOG 坐标及多周期快照中查找（例如 MTFA 或 LOG 趋势线）
+        let mut log_filters = filters;
+        log_filters.params.trendline_scale = PriceScaleMode::Log;
+        if let Ok(log_set) = compute_snapshot_structures(
+            &state_c,
+            &snap_id,
+            &tf,
+            &log_filters,
+            0.0,
+            "strength_desc",
+            500,
+        ) && let Some(hit) = log_set
+            .structures
+            .into_iter()
+            .find(|st| st.structure_id == st_id)
+        {
+            return Ok(Some(hit));
+        }
+        if let Ok((meta, _)) = state_c.snapshots.get_bars(&snap_id, &tf) {
+            for htf in ["15m", "1h", "4h", "1d"] {
+                if htf == tf {
+                    continue;
+                }
+                if let Some(hit) = state_c
+                    .structures
+                    .structures_at(&meta.instrument_id, htf, meta.cutoff_ts)
+                    .into_iter()
+                    .find(|st| st.structure_id == st_id)
+                {
+                    return Ok(Some(hit));
+                }
+            }
+        }
+        Ok(None)
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))??;
+
+    let feature = found
+        .ok_or_else(|| ApiError::not_found(NOT_FOUND, format!("市场结构 {structure_id} 不存在")))?;
+
+    let bar_ms = timeframe_ms(&feature.timeframe).unwrap_or(60_000);
+    let (kind, points) = geometry_to_drawing(&feature.geometry, feature.formed_ts.max(0), bar_ms);
+    let inst_id = feature.instrument_id.clone();
+    let sid = feature.structure_id.clone();
+    let snap_id = payload.snapshot_id.clone();
+    let tf = payload.timeframe.clone();
+    let label = feature.kind.clone();
+
+    let record = state
+        .state_store
+        .write(move |conn, now| {
+            if let Some(existing) = structure_get_adoption(conn, &inst_id, &sid)?
+                && let Ok(drw) = drawings_get(conn, &existing.drawing_id, None)
+                && drw.deleted_at.is_none()
+            {
+                return Ok(drw);
+            }
+            let drw = DrawingRecord {
+                drawing_id: format!("drw_{}", Uuid::new_v4().simple()),
+                instrument_id: inst_id.clone(),
+                kind,
+                visible_timeframes: vec![],
+                points,
+                text: label,
+                style: DrawingStyle::default(),
+                version: 1,
+                created_ts: now,
+                updated_ts: now,
+                deleted_at: None,
+            };
+            drawings_create(conn, &drw)?;
+            structure_record_adoption(
+                conn,
+                &StructureAdoptionRecord {
+                    instrument_id: inst_id,
+                    structure_id: sid,
+                    snapshot_id: snap_id,
+                    drawing_id: drw.drawing_id.clone(),
+                    adopted_ts: now,
+                    timeframe: tf,
+                },
+            )?;
+            Ok(drw)
+        })
+        .await?;
+
+    state.alerts.refresh_drawings(std::slice::from_ref(&record));
+    Ok(ApiJson(record))
+}
+
+async fn structure_feedback(
+    State(state): State<Arc<AppState>>,
+    ApiQuery(q): ApiQuery<InstrumentQuery>,
+) -> Result<ApiJson<StructureFeedbackSummary>, ApiError> {
+    let _ = find_instrument(&state, &q.instrument_id)?;
+    let inst = q.instrument_id.clone();
+    let (adopted_structure_ids, ignored_structure_ids) = state
+        .state_store
+        .read(move |conn| {
+            let adoptions = structure_list_adoptions(conn, &inst)?;
+            let ignores = structure_list_ignores(conn, &inst)?;
+            Ok((
+                adoptions.into_iter().map(|a| a.structure_id).collect(),
+                ignores
+                    .into_iter()
+                    .filter(|i| i.ignored)
+                    .map(|i| i.structure_id)
+                    .collect(),
+            ))
+        })
+        .await?;
+
+    Ok(ApiJson(StructureFeedbackSummary {
+        instrument_id: q.instrument_id,
+        adopted_structure_ids,
+        ignored_structure_ids,
     }))
 }

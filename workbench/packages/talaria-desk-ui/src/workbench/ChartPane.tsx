@@ -10,6 +10,7 @@ import type {
   PaperRound,
   SizingPreviewResponse,
   SnapshotMeta,
+  StructureFeature,
 } from "@talaria/contracts";
 
 import {
@@ -38,6 +39,13 @@ import {
   toggleKeyLevelsEnabled,
   visibleKeyLevels,
 } from "../features/key-levels/model";
+import {
+  formatStructureGeometry,
+  isStructuresEnabled,
+  structureMidPrice,
+  toggleStructuresEnabled,
+  visibleStructures,
+} from "../features/structures/model";
 import { annotationPriceLabel } from "../features/annotations/model";
 import { BarrierDragConfirmModal } from "../features/paper/BarrierDragConfirmModal";
 import {
@@ -122,6 +130,7 @@ export function ChartPane({
   const [creatingDraftBusy, setCreatingDraftBusy] = useState(false);
   const [orderGestureNotice, setOrderGestureNotice] = useState<string | null>(null);
   const [inspectedLevel, setInspectedLevel] = useState<KeyLevel | null>(null);
+  const [inspectedStructure, setInspectedStructure] = useState<StructureFeature | null>(null);
   const [inspectedAnnotation, setInspectedAnnotation] =
     useState<AgentAnnotationRecord | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -239,10 +248,17 @@ export function ChartPane({
       },
       onSelectKeyLevel: (level) => {
         setInspectedAnnotation(null);
+        setInspectedStructure(null);
         setInspectedLevel(level);
+      },
+      onSelectStructure: (structure) => {
+        setInspectedAnnotation(null);
+        setInspectedLevel(null);
+        setInspectedStructure(structure);
       },
       onSelectAnnotation: (annotation) => {
         setInspectedLevel(null);
+        setInspectedStructure(null);
         setInspectedAnnotation(annotation);
       },
       onSelectStagedDraft: (draft) => {
@@ -327,6 +343,7 @@ export function ChartPane({
     prevMarketRef.current = { instrumentId, timeframe, snapshotCutoff };
     setLoadError(null);
     setInspectedLevel(null);
+    setInspectedStructure(null);
     setInspectedAnnotation(null);
     setActiveOrderTool(null);
     setOrderGesture(null);
@@ -774,6 +791,34 @@ export function ChartPane({
     });
   }, [visibleLevels, pricePrecision, ctx.highlightedLevelId]);
 
+  const effectiveStructuresSource = ctx.structuresController.structures;
+  const visibleSystemStructures = useMemo(
+    () =>
+      visibleStructures(
+        effectiveStructuresSource,
+        ctx.structureFilter,
+        ctx.structuresController.ignoredIds,
+      ),
+    [
+      effectiveStructuresSource,
+      ctx.structureFilter,
+      ctx.structuresController.ignoredIds,
+    ],
+  );
+
+  useEffect(() => {
+    adapterRef.current?.setSystemStructures(visibleSystemStructures, {
+      precision: pricePrecision,
+      highlightId: ctx.highlightedStructureId,
+    });
+  }, [visibleSystemStructures, pricePrecision, ctx.highlightedStructureId]);
+
+  useEffect(() => {
+    if (stream.structures && (activePaneId === paneId || isPopout)) {
+      ctx.onStreamStructures(stream.structures);
+    }
+  }, [stream.structures, activePaneId, paneId, isPopout, ctx.onStreamStructures]);
+
   const replayVisibleAnnotations = useMemo(
     () =>
       filterReplayAnnotations(ctx.annotationsController.annotations, {
@@ -1002,10 +1047,10 @@ export function ChartPane({
         bundle={indicatorBundle}
         loading={indicatorsLoading}
         error={indicatorError}
-        keyLevelsEnabled={isKeyLevelsEnabled(ctx.keyLevelFilter)}
-        keyLevelsCount={visibleLevels.length}
+        keyLevelsEnabled={isStructuresEnabled(ctx.structureFilter)}
+        keyLevelsCount={visibleSystemStructures.length}
         onToggleKeyLevels={() =>
-          ctx.onKeyLevelFilterChange(toggleKeyLevelsEnabled(ctx.keyLevelFilter))
+          ctx.onStructureFilterChange(toggleStructuresEnabled(ctx.structureFilter))
         }
       />
 
@@ -1230,6 +1275,63 @@ export function ChartPane({
             </div>
           );
         })()}
+
+        {inspectedStructure && (
+          <div
+            className="layer-inspect-popover"
+            data-testid="structure-inspect-popover"
+            role="dialog"
+          >
+            <div className="layer-inspect-head">
+              <strong>
+                {inspectedStructure.kind} ·{" "}
+                {formatStructureGeometry(inspectedStructure, pricePrecision)}
+              </strong>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setInspectedStructure(null)}
+              >
+                <X size={13} />
+              </button>
+            </div>
+            <span className="layer-inspect-meta">
+              {inspectedStructure.detector_id}
+              {inspectedStructure.source_timeframe ? ` · ${inspectedStructure.source_timeframe}` : ""}
+              {" · "}
+              {t("只读系统市场结构（不可拖拽）", "Read-only system structure (non-draggable)")}
+            </span>
+            {!(ctx.readOnly || replay.active) && (
+              <div className="layer-inspect-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    void ctx.onAdoptStructure(inspectedStructure);
+                    setInspectedStructure(null);
+                  }}
+                >
+                  {t("采纳为画线", "Adopt drawing")}
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    ctx.onSeedAlert({
+                      price: structureMidPrice(inspectedStructure),
+                      instrumentId,
+                      timeframe,
+                    });
+                    ctx.onOpenRightTab("alerts");
+                    setInspectedStructure(null);
+                  }}
+                >
+                  {t("创建预警", "Create alert")}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {inspectedLevel && (
           <div

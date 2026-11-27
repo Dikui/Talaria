@@ -7,6 +7,7 @@ import type {
   OrderBookEvent,
   PaperAccountView,
   ScannerTrigger,
+  StructureSet,
 } from "@talaria/contracts";
 
 import { getApiBaseUrl, getApiToken } from "../../lib/api";
@@ -41,6 +42,7 @@ export interface DeskChannelCallbacks {
   onDerivatives?: (event: DerivativeTickEvent) => void;
   onHealth?: (event: FeedHealthEvent) => void;
   onLevels?: (levels: KeyLevelSet) => void;
+  onStructures?: (structures: StructureSet) => void;
   onAlert?: (alert: AlertTriggerRecord) => void;
   onAlertQuota?: (deniedAlerts: string[]) => void;
   onScanner?: (trigger: ScannerTrigger) => void;
@@ -240,6 +242,16 @@ export class DeskSocketHub {
             sub.timeframe === msg.data.timeframe
           ) {
             sub.callbacks.onLevels?.(msg.data);
+          }
+        }
+        break;
+      case "structures":
+        for (const sub of this.subscribers.values()) {
+          if (
+            sub.instrumentId === msg.data.instrument_id &&
+            sub.timeframe === msg.data.timeframe
+          ) {
+            sub.callbacks.onStructures?.(msg.data);
           }
         }
         break;

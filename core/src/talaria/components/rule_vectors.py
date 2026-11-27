@@ -29,7 +29,7 @@ from talaria.foundation.key_levels import (
     KeyLevelKind,
     KeyLevelStatus,
 )
-from talaria.foundation.rules import Rule, RuleExpression, RuleGroup, RuleLevelEvent
+from talaria.foundation.rules import Rule, RuleExpression, RuleGroup, RuleLevelEvent, RuleStructureEvent
 from talaria.foundation.types import PrecisionTier, decimal_to_string
 
 EPOCH_MS = 1_700_000_000_000
@@ -198,7 +198,7 @@ def _retest_node_paths(expression: RuleExpression, path: str = "root") -> dict[i
     if isinstance(expression, RuleGroup):
         for idx, child in enumerate(expression.args):
             paths.update(_retest_node_paths(child, f"{path}.{idx}"))
-    elif isinstance(expression, RuleLevelEvent):
+    elif isinstance(expression, (RuleLevelEvent, RuleStructureEvent)):
         paths[id(expression)] = path
     return paths
 

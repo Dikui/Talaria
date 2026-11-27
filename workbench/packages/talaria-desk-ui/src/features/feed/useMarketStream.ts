@@ -85,6 +85,9 @@ export function useMarketStream(
       onLevels(data) {
         dispatch({ type: "message", message: { type: "levels", data } });
       },
+      onStructures(data) {
+        dispatch({ type: "message", message: { type: "structures", data } });
+      },
       onAlert(data) {
         dispatch({ type: "message", message: { type: "alert", data } });
       },

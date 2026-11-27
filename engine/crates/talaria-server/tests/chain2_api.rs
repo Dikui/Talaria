@@ -828,3 +828,179 @@ async fn runs_endpoints_skip_incomplete_dirs_and_succeed_without_ledger_sqlite()
 
     srv.shutdown().await;
 }
+
+#[tokio::test]
+async fn structures_api_mtfa_adopt_and_feedback_roundtrip() {
+    use talaria_contracts::drawings::{DrawingKind, DrawingRecord};
+    use talaria_contracts::structures::{
+        PriceScaleMode, StructureFamily, StructureFeedbackSummary, StructureGeometry,
+        StructureIgnoreList, StructureSet,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let now_ms = BASE_TS + 120 * MINUTE;
+    let cfg = offline_config(tmp.path(), now_ms);
+    let srv = start_server(cfg).await.unwrap();
+    let cold_store = srv.state.cold_store.as_ref().unwrap();
+    let spec = btc_spec();
+
+    let mut bars_1m = Vec::new();
+    for i in 0..80 {
+        let ts = BASE_TS + (i as i64) * MINUTE;
+        let base = 50_000 + (i as i64) * 30;
+        let (o, h, l, c) = if i % 8 == 2 {
+            (base - 40, base + 20, base - 250, base)
+        } else if i % 8 == 6 {
+            (base + 20, base + 280, base - 20, base + 40)
+        } else {
+            (base, base + 40, base - 40, base + 10)
+        };
+        bars_1m.push(raw_bar(ts, o, h, l, c));
+    }
+    cold_store.publish_bars(&spec, "1m", &bars_1m).unwrap();
+
+    let mut bars_15m = Vec::new();
+    for i in 0..10 {
+        let ts = BASE_TS + (i as i64) * 15 * MINUTE;
+        let base = 49_500 + (i as i64) * 200;
+        let mut b = raw_bar(ts, base, base + 180, base - 150, base + 80);
+        b.timeframe = "15m".to_owned();
+        b.ts_available = ts + 15 * MINUTE;
+        bars_15m.push(b);
+    }
+    cold_store.publish_bars(&spec, "15m", &bars_15m).unwrap();
+
+    let client = reqwest::Client::new();
+
+    // 1. Create snapshot on 1m + 15m at cutoff = BASE_TS + 60 * MINUTE
+    let cutoff = BASE_TS + 60 * MINUTE;
+    let snap: Value = client
+        .post(format!("{}/api/snapshots", srv.base_url()))
+        .bearer_auth(srv.token())
+        .json(&json!({
+            "instrument_id": BTC,
+            "timeframes": ["1m", "15m"],
+            "cutoff_ts": cutoff,
+            "mode": "HISTORICAL_PIT"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let snap_id = snap["snapshot_id"].as_str().unwrap().to_owned();
+
+    // 2. Query /api/snapshots/{id}/structures with scale=LOG and htf=15m
+    let st_set: StructureSet = client
+        .get(format!(
+            "{}/api/snapshots/{snap_id}/structures?timeframe=1m&scale=LOG&htf=15m&limit=100",
+            srv.base_url()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!st_set.structures.is_empty());
+    assert!(st_set.structures.iter().all(|s| s.ts_available <= cutoff));
+    let trend = st_set
+        .structures
+        .iter()
+        .find(|s| s.family == StructureFamily::Trendline)
+        .expect("expected at least one trendline");
+    if let StructureGeometry::SlopeLine { scale, .. } = &trend.geometry {
+        assert_eq!(*scale, PriceScaleMode::Log);
+    } else {
+        panic!("expected SlopeLine geometry");
+    }
+    assert!(
+        st_set
+            .structures
+            .iter()
+            .any(|s| s.source_timeframe.as_deref() == Some("15m")),
+        "expected MTFA 15m projection"
+    );
+
+    // 3. Adopt trendline -> creates DrawingKind::Ray + records feedback
+    let drw: DrawingRecord = client
+        .post(format!(
+            "{}/api/structures/{}/adopt",
+            srv.base_url(),
+            trend.structure_id
+        ))
+        .bearer_auth(srv.token())
+        .json(&json!({
+            "snapshot_id": snap_id,
+            "timeframe": "1m"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(drw.kind, DrawingKind::Ray);
+
+    // 4. Ignore another structure and inspect /api/structures/feedback
+    let first_id = st_set.structures[0].structure_id.clone();
+    let ignored_list: StructureIgnoreList = client
+        .put(format!("{}/api/structures/ignored", srv.base_url()))
+        .bearer_auth(srv.token())
+        .json(&json!({
+            "instrument_id": BTC,
+            "structure_id": first_id,
+            "ignored": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ignored_list.entries.len(), 1);
+
+    let feedback: StructureFeedbackSummary = client
+        .get(format!(
+            "{}/api/structures/feedback?instrument_id={BTC}",
+            srv.base_url()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(feedback.adopted_structure_ids.contains(&trend.structure_id));
+    assert!(feedback.ignored_structure_ids.contains(&first_id));
+
+    // 5. Stateless PIT query /api/structures/at
+    let at_set: StructureSet = client
+        .get(format!(
+            "{}/api/structures/at?instrument_id={BTC}&timeframe=1m&as_of={cutoff}&htf=15m",
+            srv.base_url()
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!at_set.structures.is_empty());
+    assert!(at_set.structures.iter().all(|s| s.ts_available <= cutoff));
+
+    srv.shutdown().await;
+}

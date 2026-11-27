@@ -1200,11 +1200,17 @@ async fn create_annotation(
 
     tokio::task::spawn_blocking(move || -> Result<(), ApiError> {
         let (meta, bars) = state_c.snapshots.get_bars(&snap_id, &tf)?;
-        let valid_levels: HashSet<String> = state_c
+        let mut valid_levels: HashSet<String> = state_c
             .key_levels
             .lookup_level_map(&meta.instrument_id, &tf, meta.cutoff_ts)
             .into_keys()
             .collect();
+        valid_levels.extend(
+            state_c
+                .structures
+                .lookup_structure_map(&meta.instrument_id, &tf, meta.cutoff_ts)
+                .into_keys(),
+        );
         evaluate_annotation_gate(&payload_c, &spec, &meta, &bars, &valid_levels)
     })
     .await

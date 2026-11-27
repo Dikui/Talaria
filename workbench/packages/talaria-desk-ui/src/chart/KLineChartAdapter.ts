@@ -7,6 +7,7 @@ import type {
   IndicatorSeries,
   KeyLevel,
   KlineEvent,
+  StructureFeature,
 } from "@talaria/contracts";
 
 import type { Locale } from "../lib/i18n";
@@ -85,6 +86,7 @@ export class KLineChartAdapter implements ChartSurfaceAdapter {
   setIndicators(_series: IndicatorSeries[]): void {}
   setTradeMarkers(_trades: TradeExecution[]): void {}
   setSystemLevels(_levels: KeyLevel[]): void {}
+  setSystemStructures(_structures: StructureFeature[]): void {}
   setAgentAnnotations(_annotations: AgentAnnotationRecord[]): void {}
   setExecutionBarriers(_barriers: ExecutionBarrierItem[]): void {}
   cancelBarrierDragConfirm(): void {}

@@ -7,6 +7,7 @@ import type {
   OrderBookEvent,
   PaperAccountView,
   ScannerTrigger,
+  StructureSet,
 } from "@talaria/contracts";
 
 import { t } from "../../lib/i18n";
@@ -20,6 +21,7 @@ export type DeskMessage =
   | { type: "health"; data: FeedHealthEvent }
   | { type: "derivatives"; data: DerivativeTickEvent }
   | { type: "levels"; data: KeyLevelSet }
+  | { type: "structures"; data: StructureSet }
   | { type: "alert"; data: AlertTriggerRecord }
   | { type: "scanner"; data: ScannerTrigger }
   | { type: "paper_account"; data: PaperAccountView }
@@ -107,6 +109,15 @@ export function parseDeskMessage(raw: string): DeskMessage | null {
         typeof data.timeframe === "string" &&
         Array.isArray(data.levels)
         ? { type: "levels", data: record.data as KeyLevelSet }
+        : null;
+    }
+    case "structures": {
+      const data = asRecord(record.data);
+      return data !== null &&
+        typeof data.instrument_id === "string" &&
+        typeof data.timeframe === "string" &&
+        Array.isArray(data.structures)
+        ? { type: "structures", data: record.data as StructureSet }
         : null;
     }
     case "alert": {

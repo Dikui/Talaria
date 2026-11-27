@@ -416,6 +416,8 @@ pub struct BriefingResultRequest {
 #[serde(deny_unknown_fields)]
 pub struct AnnotationEvidence {
     #[serde(default)]
+    pub structure_id: Option<String>,
+    #[serde(default)]
     pub level_id: Option<String>,
     #[serde(default)]
     pub kline_ts: Option<i64>,

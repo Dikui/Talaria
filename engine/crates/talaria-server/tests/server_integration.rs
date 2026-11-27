@@ -556,6 +556,7 @@ async fn desk_static_bootstrap_and_state_persistence_across_restart() {
             price_high: Decimal::from(50_000),
             ts_anchor: BASE_TS + 10 * MINUTE,
             evidence_refs: vec![AnnotationEvidence {
+                structure_id: None,
                 level_id: None,
                 kline_ts: Some(BASE_TS + 10 * MINUTE),
                 note: "pivot".to_owned(),

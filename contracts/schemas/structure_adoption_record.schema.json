@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "description": "采纳记录：仅追踪来源，生成后的人工画线与系统结构完全解耦。",
+  "properties": {
+    "adopted_ts": {
+      "title": "Adopted Ts",
+      "type": "integer"
+    },
+    "drawing_id": {
+      "title": "Drawing Id",
+      "type": "string"
+    },
+    "instrument_id": {
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "structure_id": {
+      "title": "Structure Id",
+      "type": "string"
+    },
+    "timeframe": {
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument_id",
+    "structure_id",
+    "snapshot_id",
+    "drawing_id",
+    "adopted_ts",
+    "timeframe"
+  ],
+  "title": "StructureAdoptionRecord",
+  "type": "object"
+}

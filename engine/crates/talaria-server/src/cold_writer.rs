@@ -25,6 +25,7 @@ use crate::alerts::AlertEngine;
 use crate::key_levels::KeyLevelRegistry;
 use crate::scanner::ScannerEngine;
 use crate::state_store::{WorkbenchStateStore, alerts_write};
+use crate::structures::StructureRegistry;
 use crate::ws::desk::DeskBroadcast;
 use crate::ws::strategy::{StrategyKey, StrategyStream};
 
@@ -71,6 +72,7 @@ impl ColdWriter {
         desk: Arc<DeskBroadcast>,
         strategy_stream: Option<Arc<StrategyStream>>,
         key_levels: Arc<KeyLevelRegistry>,
+        structures: Arc<StructureRegistry>,
         alerts: Arc<AlertEngine>,
         scanner: Arc<ScannerEngine>,
         state_store: Arc<WorkbenchStateStore>,
@@ -86,6 +88,7 @@ impl ColdWriter {
         let w_reader = reader;
         let w_strategy = strategy_stream.clone();
         let w_levels = Arc::clone(&key_levels);
+        let w_structures = Arc::clone(&structures);
         let w_now = Arc::clone(&now_ms);
         let w_instruments = Arc::clone(&shared_instruments);
 
@@ -105,6 +108,7 @@ impl ColdWriter {
                             &w_reader,
                             w_strategy.as_ref(),
                             &w_levels,
+                            &w_structures,
                             &w_now,
                             &mut pending_bars,
                             &mut pending_derivs,
@@ -147,6 +151,7 @@ impl ColdWriter {
                                     &w_reader,
                                     w_strategy.as_ref(),
                                     &w_levels,
+                                    &w_structures,
                                     &w_now,
                                     &mut pending_bars,
                                     &mut pending_derivs,
@@ -161,6 +166,7 @@ impl ColdWriter {
                                     &w_reader,
                                     w_strategy.as_ref(),
                                     &w_levels,
+                                    &w_structures,
                                     &w_now,
                                     &mut pending_bars,
                                     &mut pending_derivs,
@@ -188,6 +194,7 @@ impl ColdWriter {
                                     &w_reader,
                                     w_strategy.as_ref(),
                                     &w_levels,
+                                    &w_structures,
                                     &w_now,
                                     &mut pending_bars,
                                     &mut pending_derivs,
@@ -489,6 +496,7 @@ async fn flush_pending(
     reader: &Arc<ColdReader>,
     strategy_stream: Option<&Arc<StrategyStream>>,
     key_levels: &Arc<KeyLevelRegistry>,
+    structures: &Arc<StructureRegistry>,
     now_ms: &NowFn,
     pending_bars: &mut PendingBarsMap,
     pending_derivs: &mut PendingDerivsMap,
@@ -527,6 +535,7 @@ async fn flush_pending(
                     // Refresh KeyLevelRegistry from recent cold bars asynchronously
                     let reader_c = Arc::clone(reader);
                     let levels_c = Arc::clone(key_levels);
+                    let structs_c = Arc::clone(structures);
                     let now = now_ms();
                     let inst_c = instrument.clone();
                     let tf_c = timeframe.clone();
@@ -545,6 +554,17 @@ async fn flush_pending(
                                 let cutoff = compact.last().map(|b| b.ts_available).unwrap_or(now);
                                 let snapshot_id = format!("live-{}-{}-{}", inst_c.instrument_id, tf_c, cutoff);
                                 let _ = levels_c.compute_and_register(
+                                    snapshot_id.clone(),
+                                    &inst_c.instrument_id,
+                                    &tf_c,
+                                    &compact,
+                                    cutoff,
+                                    now,
+                                    None,
+                                    None,
+                                    &[],
+                                );
+                                let _ = structs_c.compute_and_register(
                                     snapshot_id,
                                     &inst_c.instrument_id,
                                     &tf_c,

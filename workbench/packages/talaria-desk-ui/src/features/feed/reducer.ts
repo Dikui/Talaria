@@ -6,6 +6,7 @@ import type {
   KlineEvent,
   OrderBookEvent,
   ScannerTrigger,
+  StructureSet,
 } from "@talaria/contracts";
 
 import type { DeskMessage } from "./messages";
@@ -29,6 +30,7 @@ export interface FeedState {
   derivatives: DerivativeTickEvent | null;
   bars: KlineEvent[];
   levels: KeyLevelSet | null;
+  structures: StructureSet | null;
   alert: AlertTriggerRecord | null;
   scanner: ScannerTrigger | null;
   deniedAlerts: string[];
@@ -45,6 +47,7 @@ export const initialFeedState: FeedState = {
   derivatives: null,
   bars: [],
   levels: null,
+  structures: null,
   alert: null,
   scanner: null,
   deniedAlerts: [],
@@ -114,6 +117,8 @@ function applyMessage(state: FeedState, message: DeskMessage): FeedState {
       return { ...state, derivatives: message.data };
     case "levels":
       return { ...state, levels: message.data };
+    case "structures":
+      return { ...state, structures: message.data };
     case "alert":
       return { ...state, alert: message.data };
     case "scanner":
@@ -148,6 +153,7 @@ export function feedReducer(state: FeedState, action: FeedAction): FeedState {
         derivatives: null,
         health: null,
         levels: null,
+        structures: null,
         alert: null,
         scanner: null,
         error: null,

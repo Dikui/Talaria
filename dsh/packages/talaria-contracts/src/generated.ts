@@ -26,6 +26,16 @@ export type KeyLevelStatus = "ACTIVE" | "BROKEN" | "FLIPPED";
 
 export type EvidenceClass = "OBSERVED" | "ESTIMATED";
 
+export type StructureFamily = "LEVEL" | "ZONE" | "TRENDLINE" | "CHANNEL" | "CONFLUENCE";
+
+export type StructureCategory = "STRUCTURE" | "SESSION" | "GAP" | "ROUND_NUMBER" | "VOLUME" | "LIQUIDATION" | "TREND" | "CONFLUENCE";
+
+export type StructureStatus = "ACTIVE" | "BROKEN" | "FLIPPED" | "EXPIRED";
+
+export type PriceScaleMode = "LINEAR" | "LOG";
+
+export type AnchorSource = "WICK" | "BODY";
+
 export type WatchlistGroupKind = "MANUAL" | "SCANNER_FOCUS";
 
 export type QuoteSource = "SUPERVISOR" | "SNAPSHOT" | "UNAVAILABLE";
@@ -613,6 +623,74 @@ export interface KeyLevelFeedbackSummary {
   adopted_level_ids?: string[];
   ignored_level_ids?: string[];
 }
+export interface StructureFeature {
+  structure_id: string;
+  instrument_id: string;
+  detector_id: string;
+  family: StructureFamily;
+  category: StructureCategory;
+  kind: string;
+  evidence_class?: EvidenceClass;
+  timeframe: string;
+  source_timeframe?: string | null;
+  geometry: HorizontalLineGeometry | HorizontalZoneGeometry | SlopeLineGeometry | ChannelGeometry;
+  strength: number;
+  status: StructureStatus;
+  ts_available: number;
+  formed_ts: number;
+  analysis_window: AnalysisWindow;
+  touch_count?: number;
+  touch_timestamps?: number[];
+  last_touch_ts?: number | null;
+  volume_weight?: DecimalString;
+  constituent_ids?: string[];
+  method_version?: string;
+  parameters?: Record<string, string>;
+}
+export interface StructureSet {
+  snapshot_id: string;
+  instrument_id: string;
+  timeframe: string;
+  cutoff_ts: number;
+  as_of_ts: number;
+  method_version?: string;
+  detector_ids?: string[];
+  parameters?: Record<string, string>;
+  notes?: string[];
+  structures?: StructureFeature[];
+}
+export interface StructureIgnoreRequest {
+  instrument_id: string;
+  structure_id: string;
+  ignored?: boolean;
+}
+export interface StructureIgnoreRecord {
+  instrument_id: string;
+  structure_id: string;
+  ignored: boolean;
+  updated_ts: number;
+}
+export interface StructureIgnoreList {
+  instrument_id: string;
+  entries?: StructureIgnoreRecord[];
+}
+export interface StructureAdoptionRequest {
+  snapshot_id: string;
+  timeframe: string;
+}
+export interface StructureAdoptionRecord {
+  instrument_id: string;
+  structure_id: string;
+  snapshot_id: string;
+  drawing_id: string;
+  adopted_ts: number;
+  timeframe: string;
+}
+export interface StructureFeedbackSummary {
+  instrument_id: string;
+  adopted_structure_ids?: string[];
+  ignored_structure_ids?: string[];
+}
 export interface WatchlistGroupCreate {
   name: string;
 }
@@ -660,7 +738,7 @@ export interface Watchlist {
 export interface Rule {
   version: "1";
   timing: "bar_close" | "event";
-  expression: RuleComparison | RuleOverlay | RuleLevelEvent | RuleGroup;
+  expression: RuleComparison | RuleOverlay | RuleLevelEvent | RuleStructureEvent | RuleGroup;
 }
 export interface RulePreviewRequest {
   timeframe: string;
@@ -963,6 +1041,7 @@ export interface UsageSummaryResponse {
   recent?: UsageRow[];
 }
 export interface AnnotationEvidence {
+  structure_id?: string | null;
   level_id?: string | null;
   kline_ts?: number | null;
   note?: string;
@@ -1178,13 +1257,13 @@ export interface TrailingStopSpec {
 }
 export interface RuleGroup {
   op: "all" | "any" | "not";
-  args: (RuleComparison | RuleOverlay | RuleLevelEvent | RuleGroup)[];
+  args: (RuleComparison | RuleOverlay | RuleLevelEvent | RuleStructureEvent | RuleGroup)[];
 }
 export interface RuleComparison {
   op: "compare";
   test: "lt" | "lte" | "gt" | "gte" | "eq" | "cross_above" | "cross_below";
-  left: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice;
-  right: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice;
+  left: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice | RuleStructurePrice;
+  right: RuleConstant | RuleBar | RuleEvent | RuleDerivative | RuleIndicator | RuleDrawingPrice | RuleLevelPrice | RuleStructurePrice;
 }
 export interface RuleConstant {
   source: "constant";
@@ -1222,6 +1301,12 @@ export interface RuleLevelEvent {
   event: AlertLevelEvent;
   level_kind?: KeyLevelKind | null;
 }
+export interface RuleStructureEvent {
+  op: "structure_event";
+  structure_id: string;
+  event: AlertLevelEvent;
+  structure_family?: StructureFamily | null;
+}
 export interface RuleOverlay {
   op: "overlay";
   drawing_id: string;
@@ -1241,6 +1326,12 @@ export interface RuleLevelPrice {
   level_kind?: KeyLevelKind | null;
   edge?: "lower" | "upper";
 }
+export interface RuleStructurePrice {
+  source: "structure_price";
+  structure_id: string;
+  structure_family?: StructureFamily | null;
+  edge?: "lower" | "upper";
+}
 export interface RulePreviewIndicator {
   operand: RuleIndicator;
   pane: "main" | "sub";
@@ -1251,6 +1342,38 @@ export interface RulePreviewSignal {
   observed_at: number;
   price: DecimalString | null;
 }
+export interface StructureAnchor {
+  ts: number;
+  price: DecimalString;
+}
+export interface AnalysisWindow {
+  from_ts: number;
+  to_ts: number;
+}
+export interface HorizontalLineGeometry {
+  kind?: "HORIZONTAL_LINE";
+  price: DecimalString;
+}
+export interface HorizontalZoneGeometry {
+  kind?: "HORIZONTAL_ZONE";
+  price_low: DecimalString;
+  price_high: DecimalString;
+  start_ts?: number | null;
+  end_ts?: number | null;
+}
+export interface SlopeLineGeometry {
+  kind?: "SLOPE_LINE";
+  anchor_start: StructureAnchor;
+  anchor_end: StructureAnchor;
+  scale?: PriceScaleMode;
+  extend_right?: boolean;
+}
+export interface ChannelGeometry {
+  kind?: "CHANNEL";
+  upper: SlopeLineGeometry;
+  lower: SlopeLineGeometry;
+}
+export type StructureGeometry = HorizontalLineGeometry | HorizontalZoneGeometry | SlopeLineGeometry | ChannelGeometry;
 
 export const RULE_EDITOR_SCHEMA = {
   "barFields": [
@@ -1298,7 +1421,8 @@ export const RULE_EDITOR_SCHEMA = {
     "compare",
     "level_event",
     "not",
-    "overlay"
+    "overlay",
+    "structure_event"
   ],
   "levelEvents": [
     "TOUCH",
@@ -1314,7 +1438,8 @@ export const RULE_EDITOR_SCHEMA = {
     "drawing_price",
     "event",
     "indicator",
-    "level_price"
+    "level_price",
+    "structure_price"
   ],
   "operators": {
     "ATR": {

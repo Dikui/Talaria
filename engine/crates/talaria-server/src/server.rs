@@ -40,6 +40,7 @@ use crate::security::{
 };
 use crate::snapshot_store::SnapshotStore;
 use crate::state_store::{WorkbenchStateStore, alerts_append_trigger, alerts_list, alerts_write, custom_instruments_list, drawings_get, watchlist_list};
+use crate::structures::StructureRegistry;
 use crate::subscriptions::{SubscriptionScheduler, WATCHLIST_TIMEFRAME};
 use crate::ws::desk::{DeskBroadcast, ws_desk_handler};
 use crate::ws::strategy::{StrategyStream, ws_strategy_handler};
@@ -107,6 +108,7 @@ pub struct AppState {
     pub desk: Arc<DeskBroadcast>,
     pub scheduler: Arc<SubscriptionScheduler>,
     pub key_levels: Arc<KeyLevelRegistry>,
+    pub structures: Arc<StructureRegistry>,
     pub alerts: Arc<AlertEngine>,
     pub scanner: Arc<ScannerEngine>,
     pub strategy_stream: Option<Arc<StrategyStream>>,
@@ -336,6 +338,13 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
             desk_c.project_levels(set);
         }));
     }
+    let structures = Arc::new(StructureRegistry::new(Arc::clone(&now_fn)));
+    {
+        let desk_c = Arc::clone(&desk);
+        structures.set_on_latest(Arc::new(move |set| {
+            desk_c.project_structures(set);
+        }));
+    }
 
     let alerts = Arc::new(AlertEngine::new(Arc::clone(&now_fn), 600));
     let scanner_freeze_snapshots = Arc::clone(&snapshots);
@@ -504,6 +513,10 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
             Some(freeze_snap),
             Some(on_trigger),
         );
+        let st_reg = Arc::clone(&structures);
+        alerts.set_structure_provider(Some(Arc::new(move |inst_id: &str, tf: &str, cutoff: i64| {
+            st_reg.lookup_structure_map(inst_id, tf, cutoff)
+        })));
     }
 
     let history_connector: Option<Arc<dyn HistoryConnector>> = if features.market_data
@@ -565,6 +578,7 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
             Arc::clone(&desk),
             Some(Arc::clone(&s_stream)),
             Arc::clone(&key_levels),
+            Arc::clone(&structures),
             Arc::clone(&alerts),
             Arc::clone(&scanner),
             Arc::clone(&state_store),
@@ -622,6 +636,7 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         desk,
         scheduler,
         key_levels,
+        structures,
         alerts,
         scanner,
         strategy_stream,
@@ -804,6 +819,17 @@ fn warm_initial_key_levels(state: &Arc<AppState>) {
                     .ok()
                     .map(|t| talaria_contracts::key_levels::SessionProfile::from(&t.session));
                 let _ = state_c.key_levels.compute_and_register(
+                    format!("boot-{}-1m-{now}", spec.instrument_id),
+                    &spec.instrument_id,
+                    "1m",
+                    &bars,
+                    now,
+                    now,
+                    session_profile.as_ref(),
+                    None,
+                    &derivs,
+                );
+                let _ = state_c.structures.compute_and_register(
                     format!("boot-{}-1m-{now}", spec.instrument_id),
                     &spec.instrument_id,
                     "1m",

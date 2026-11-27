@@ -30,12 +30,13 @@ class AnnotationStatus(StrEnum):
 
 
 class AnnotationEvidence(ContractModel):
-    """一条可核验证据：引用快照内关键位，或引用窗口内的具体 K 线。
+    """一条可核验证据：引用快照内市场结构 / 关键位，或引用窗口内的具体 K 线。
 
-    ``level_id`` 与 ``kline_ts`` 必须恰好提供一个。K 线时间戳允许与真实
+    ``structure_id``、``level_id`` 与 ``kline_ts`` 必须恰好提供一个。K 线时间戳允许与真实
     bar 相差一根周期以内（由服务端按 ``timeframe`` 显式判定）。
     """
 
+    structure_id: str | None = Field(default=None, min_length=1, max_length=120)
     level_id: str | None = Field(default=None, min_length=1, max_length=120)
     kline_ts: int | None = Field(default=None, ge=0)
     note: str = Field(default="", max_length=200)
@@ -43,10 +44,10 @@ class AnnotationEvidence(ContractModel):
     @model_validator(mode="after")
     def _exactly_one_reference(self) -> AnnotationEvidence:
         references = [
-            value for value in (self.level_id, self.kline_ts) if value is not None
+            value for value in (self.structure_id, self.level_id, self.kline_ts) if value is not None
         ]
         if len(references) != 1:
-            raise ValueError("证据必须且只能提供 level_id 或 kline_ts 之一")
+            raise ValueError("证据必须且只能提供 structure_id、level_id 或 kline_ts 之一")
         return self
 
 

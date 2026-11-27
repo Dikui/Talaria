@@ -28,6 +28,17 @@ class GetKeyLevelsInput(ToolBase):
     min_strength: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class GetStructuresInput(ToolBase):
+    timeframe: str = Field(min_length=1, max_length=16)
+    families: list[str] = Field(default_factory=list, max_length=5)
+    categories: list[str] = Field(default_factory=list, max_length=8)
+    detector_ids: list[str] = Field(default_factory=list, max_length=16)
+    htf_timeframes: list[str] = Field(default_factory=list, max_length=4)
+    scale: str | None = Field(default=None, max_length=16)
+    min_strength: float = Field(default=0.0, ge=0.0, le=1.0)
+    limit: int = Field(default=40, ge=1, le=500)
+
+
 class ComputeOperatorInput(ToolBase):
     timeframe: str = Field(min_length=1, max_length=8)
     operator: str = Field(min_length=1, max_length=32)

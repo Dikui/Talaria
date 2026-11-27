@@ -160,6 +160,13 @@ def test_unknown_level_evidence_rejected() -> None:
     assert _code(annotation) == "EVIDENCE_UNRESOLVED"
 
 
+def test_structure_id_evidence_accepted_when_known_and_rejected_when_unknown() -> None:
+    ok_ann = _annotation(evidence_refs=[AnnotationEvidence(structure_id="st_trend_1")])
+    _evaluate(ok_ann, valid_level_ids=set(), valid_structure_ids={"st_trend_1"})
+    bad_ann = _annotation(evidence_refs=[AnnotationEvidence(structure_id="st_missing")])
+    assert _code(bad_ann) == "EVIDENCE_UNRESOLVED"
+
+
 def test_kline_evidence_accepts_exact_and_one_bar_tolerance() -> None:
     for offset in (-1, 0, 1):
         annotation = _annotation(
