@@ -49,16 +49,47 @@ const CATALOG_RESULTS: CatalogInstrument[] = [
   },
 ];
 
-describe("InstrumentSearchModal", () => {
+describe("InstrumentSearchModal (unified selector & catalog search)", () => {
   beforeEach(() => {
     setLocale("zh");
     vi.restoreAllMocks();
   });
 
-  it("searches catalog and registers a new instrument on click", async () => {
+  it("shows existing instruments immediately without remote fetch and switches directly on click", async () => {
+    const searchSpy = vi.spyOn(api, "searchInstruments");
+    const addSpy = vi.spyOn(api, "addInstrument");
+
+    const onClose = vi.fn();
+    const onInstrumentsChanged = vi.fn();
+    const onPicked = vi.fn();
+
+    render(
+      <InstrumentSearchModal
+        open={true}
+        currentInstrumentId="BTC-USDT-PERP"
+        existingInstruments={[BTC_SPEC]}
+        onClose={onClose}
+        onInstrumentsChanged={onInstrumentsChanged}
+        onPicked={onPicked}
+      />,
+    );
+
+    expect(screen.getByTestId("symbol-search-item-BTC-USDT-PERP")).toBeTruthy();
+    expect(searchSpy).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("symbol-search-item-BTC-USDT-PERP"));
+
+    await waitFor(() => {
+      expect(addSpy).not.toHaveBeenCalled();
+      expect(onPicked).toHaveBeenCalledWith(BTC_SPEC);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("queries remote catalog when typing and registers a new instrument on click", async () => {
     const searchSpy = vi.spyOn(api, "searchInstruments").mockResolvedValue({
       pack: "crypto_perp",
-      query: "",
+      query: "doge",
       results: CATALOG_RESULTS,
     });
     const addSpy = vi.spyOn(api, "addInstrument").mockResolvedValue({
@@ -81,8 +112,12 @@ describe("InstrumentSearchModal", () => {
       />,
     );
 
+    fireEvent.change(screen.getByTestId("symbol-search-input"), {
+      target: { value: "doge" },
+    });
+
     await waitFor(() => {
-      expect(searchSpy).toHaveBeenCalled();
+      expect(searchSpy).toHaveBeenCalledWith("doge", { venue: undefined, limit: 50 });
       expect(screen.getByTestId("symbol-search-item-DOGE-USDT-PERP")).toBeTruthy();
     });
 
@@ -92,41 +127,6 @@ describe("InstrumentSearchModal", () => {
       expect(addSpy).toHaveBeenCalledWith(DOGE_SPEC);
       expect(onInstrumentsChanged).toHaveBeenCalledWith([BTC_SPEC, DOGE_SPEC]);
       expect(onPicked).toHaveBeenCalledWith(DOGE_SPEC);
-      expect(onClose).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it("opens an already-registered instrument directly without calling addInstrument", async () => {
-    vi.spyOn(api, "searchInstruments").mockResolvedValue({
-      pack: "crypto_perp",
-      query: "btc",
-      results: [CATALOG_RESULTS[0]],
-    });
-    const addSpy = vi.spyOn(api, "addInstrument");
-
-    const onClose = vi.fn();
-    const onInstrumentsChanged = vi.fn();
-    const onPicked = vi.fn();
-
-    render(
-      <InstrumentSearchModal
-        open={true}
-        existingInstruments={[BTC_SPEC]}
-        onClose={onClose}
-        onInstrumentsChanged={onInstrumentsChanged}
-        onPicked={onPicked}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("symbol-search-item-BTC-USDT-PERP")).toBeTruthy();
-    });
-
-    fireEvent.click(screen.getByTestId("symbol-search-item-BTC-USDT-PERP"));
-
-    await waitFor(() => {
-      expect(addSpy).not.toHaveBeenCalled();
-      expect(onPicked).toHaveBeenCalledWith(BTC_SPEC);
       expect(onClose).toHaveBeenCalledTimes(1);
     });
   });

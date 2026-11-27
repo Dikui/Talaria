@@ -14,7 +14,6 @@ import {
   PanelRight,
   Plus,
   RotateCcw,
-  Search,
   Sun,
 } from "lucide-react";
 import type {
@@ -898,15 +897,6 @@ export function WorkbenchShell({
           </div>
 
           <div className="wb-toolbar">
-            <button
-              type="button"
-              className="ghost-button"
-              data-testid="header-symbol-search"
-              title={t("检索并添加标的 (⌘K)", "Search & add symbols (⌘K)")}
-              onClick={() => onOpenSymbolSearch()}
-            >
-              <Search size={13} /> {t("检索标的", "Symbols")}
-            </button>
             {!popoutConfig && !isMobile && (
               <>
                 <div className="wb-btn-group" role="group" aria-label={t("布局预设", "Layout presets")}>
@@ -1135,6 +1125,9 @@ export function WorkbenchShell({
           open={symbolSearch.open}
           title={symbolSearch.options?.title}
           actionLabel={symbolSearch.options?.actionLabel}
+          currentInstrumentId={
+            symbolSearch.options?.currentInstrumentId ?? telemetry.instrumentId
+          }
           existingInstruments={instruments}
           onClose={() => setSymbolSearch({ open: false })}
           onInstrumentsChanged={setInstruments}

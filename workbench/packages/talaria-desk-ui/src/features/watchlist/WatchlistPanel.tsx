@@ -269,16 +269,33 @@ export function WatchlistPanel({
                       <button
                         type="button"
                         className="ghost-button"
+                        data-testid={`watchlist-add-symbol-${group.group_id}`}
+                        disabled={busy}
                         onClick={() => {
-                          setAddingTo(addingTo === group.group_id ? null : group.group_id);
-                          setAddDraft(instruments[0]?.instrument_id ?? "");
+                          if (onOpenSymbolSearch) {
+                            onOpenSymbolSearch({
+                              title: t(
+                                `添加标的到「${group.name}」`,
+                                `Add symbol to "${group.name}"`,
+                              ),
+                              actionLabel: t("加入自选", "Add to list"),
+                              onPicked: async (spec) => {
+                                await mutate(async () =>
+                                  api.addWatchlistItem(group.group_id, spec.instrument_id),
+                                );
+                              },
+                            });
+                          } else {
+                            setAddingTo(addingTo === group.group_id ? null : group.group_id);
+                            setAddDraft(instruments[0]?.instrument_id ?? "");
+                          }
                         }}
                       >
                         + {t("加标的", "Symbol")}
                       </button>
                     )}
                   </div>
-                  {addingTo === group.group_id && (
+                  {!onOpenSymbolSearch && addingTo === group.group_id && (
                     <div className="watchlist-add-row">
                       <select value={addDraft} onChange={(e) => setAddDraft(e.target.value)}>
                         {venueGroups.length > 1
@@ -314,35 +331,6 @@ export function WatchlistPanel({
                       >
                         {t("加入", "Add")}
                       </button>
-                      {onOpenSymbolSearch && (
-                        <button
-                          type="button"
-                          className="ghost-button"
-                          data-testid="watchlist-search-new-symbol"
-                          disabled={busy}
-                          onClick={() =>
-                            onOpenSymbolSearch({
-                              title: t(
-                                `检索并加入「${group.name}」`,
-                                `Search & add to "${group.name}"`,
-                              ),
-                              actionLabel: t("加入自选", "Add to list"),
-                              onPicked: async (spec) => {
-                                await mutate(async () => {
-                                  const next = await api.addWatchlistItem(
-                                    group.group_id,
-                                    spec.instrument_id,
-                                  );
-                                  setAddingTo(null);
-                                  return next;
-                                });
-                              },
-                            })
-                          }
-                        >
-                          {t("检索新标的", "Search…")}
-                        </button>
-                      )}
                     </div>
                   )}
                   <ul className="watchlist-list">

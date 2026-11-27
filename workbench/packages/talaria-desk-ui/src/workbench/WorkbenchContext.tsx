@@ -50,6 +50,7 @@ export interface ActiveChartTelemetry {
 export interface SymbolSearchOptions {
   title?: string;
   actionLabel?: string;
+  currentInstrumentId?: string;
   onPicked?: (spec: InstrumentSpec) => void | Promise<void>;
 }
 

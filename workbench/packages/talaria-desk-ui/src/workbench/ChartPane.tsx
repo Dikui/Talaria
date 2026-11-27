@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, RefreshCw, Search, X } from "lucide-react";
+import { ChevronDown, ExternalLink, RefreshCw, Search, X } from "lucide-react";
 import type {
   AgentAnnotationRecord,
   DerivativeBundle,
@@ -64,9 +64,7 @@ import { TIMEFRAMES } from "./panels";
 import { useLinkCrosshair, useLinkSnapshot, usePanelLink } from "./usePanelLink";
 import {
   groupInstrumentsByVenue,
-  pickInstrumentForVenue,
   symbolDisplayName,
-  venueDisplayName,
   venueShortLabel,
 } from "./venues";
 import { useWorkbenchContext } from "./WorkbenchContext";
@@ -204,12 +202,6 @@ export function ChartPane({
     [ctx.instruments, instrumentId],
   );
   const activeVenue = spec?.venue ?? venueGroups[0]?.venue ?? "";
-  const activeVenueInstruments = useMemo(() => {
-    if (venueGroups.length <= 1) return ctx.instruments;
-    return (
-      venueGroups.find((item) => item.venue === activeVenue)?.instruments ?? ctx.instruments
-    );
-  }, [venueGroups, activeVenue, ctx.instruments]);
   const pricePrecision = spec?.price_precision ?? 2;
   const volumePrecision = spec?.qty_precision ?? 3;
 
@@ -864,61 +856,31 @@ export function ChartPane({
     >
       <div className="chart-pane-toolbar">
         <div className="chart-pane-selectors">
-          {venueGroups.length > 1 && (
-            <select
-              className="chart-venue-select"
-              data-testid={`venue-select-${paneId}`}
-              aria-label={t("选择数据源", "Select data source")}
-              value={activeVenue}
-              onChange={(e) => {
-                const next = pickInstrumentForVenue(
-                  ctx.instruments,
-                  e.target.value,
-                  instrumentId,
-                );
-                if (next) {
-                  link.setSymbol(next.instrument_id, timeframe);
-                }
-              }}
-            >
-              {venueGroups.map((venueGroup) => (
-                <option key={venueGroup.venue} value={venueGroup.venue}>
-                  {venueDisplayName(venueGroup.venue, locale)}
-                </option>
-              ))}
-            </select>
-          )}
-          <select
-            data-testid={`instrument-select-${paneId}`}
-            aria-label={t("选择标的", "Select instrument")}
-            value={instrumentId}
-            onChange={(e) => link.setSymbol(e.target.value, timeframe)}
-          >
-            {(activeVenueInstruments.length > 0
-              ? activeVenueInstruments
-              : [{ instrument_id: instrumentId, venue: activeVenue }]
-            ).map((item) => (
-              <option key={item.instrument_id} value={item.instrument_id}>
-                {symbolDisplayName(item)}
-              </option>
-            ))}
-          </select>
-
           <button
             type="button"
-            className="ghost-button icon-only"
-            data-testid={`open-symbol-search-${paneId}`}
-            title={t("检索并添加新标的", "Search & add symbol")}
-            aria-label={t("检索并添加新标的", "Search & add symbol")}
+            className="chart-symbol-trigger"
+            data-testid={`instrument-select-${paneId}`}
+            title={t("选择或检索标的 (⌘K)", "Select or search symbol (⌘K)")}
+            aria-label={t("选择或检索标的", "Select or search symbol")}
             onClick={() =>
               ctx.onOpenSymbolSearch({
-                onPicked: (spec) => {
-                  link.setSymbol(spec.instrument_id, timeframe);
+                currentInstrumentId: instrumentId,
+                onPicked: (picked) => {
+                  link.setSymbol(picked.instrument_id, timeframe);
                 },
               })
             }
           >
-            <Search size={13} />
+            <Search size={13} className="chart-symbol-trigger-icon" />
+            {venueGroups.length > 1 && activeVenue && (
+              <span className="chart-symbol-trigger-venue">
+                {venueShortLabel(activeVenue)}
+              </span>
+            )}
+            <span className="chart-symbol-trigger-name">
+              {spec ? symbolDisplayName(spec) : instrumentId}
+            </span>
+            <ChevronDown size={13} className="chart-symbol-trigger-caret" />
           </button>
 
           <div className="tf-pills" role="group" aria-label={t("周期", "Timeframe")}>

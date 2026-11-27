@@ -1248,3 +1248,100 @@ input {
   background: var(--surface-muted);
   color: var(--text-muted);
 }
+
+.chart-symbol-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chart-symbol-trigger:hover,
+.chart-symbol-trigger:focus-visible {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+  outline: none;
+}
+
+.chart-symbol-trigger-icon,
+.chart-symbol-trigger-caret {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.chart-symbol-trigger-venue {
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.chart-symbol-trigger-name {
+  white-space: nowrap;
+}
+
+.symbol-search-kbd {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.symbol-search-section {
+  margin-bottom: 10px;
+}
+
+.symbol-search-section-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.symbol-search-item-btn.is-active {
+  background: var(--surface-hover);
+  border-color: var(--border);
+}
+
+.symbol-search-item-btn.is-current {
+  border-color: var(--accent);
+}
+
+.symbol-search-current-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.symbol-search-browse-hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-top: 4px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
