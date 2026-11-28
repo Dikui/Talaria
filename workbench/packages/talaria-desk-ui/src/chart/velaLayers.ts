@@ -32,9 +32,11 @@ import {
   levelPrice,
 } from "../features/key-levels/model";
 import {
+  detectorLabel,
   familyMeta,
   structureLabel,
 } from "../features/structures/model";
+import { t } from "../lib/i18n";
 import type { ExecutionBarrierItem } from "./adapter";
 import {
   layoutBarrierTargets,
@@ -659,9 +661,9 @@ function createSystemStructureLayer(): RendererLayerInstance {
             }
             ctx.setLineDash([]);
             ctx.globalAlpha = 0.95;
-            const info = `${feature.detector_id}${
+            const info = `${detectorLabel(feature.detector_id)}${
               feature.source_timeframe ? ` · ${feature.source_timeframe}` : ""
-            } · Str ${(feature.strength * 100).toFixed(0)}%`;
+            } · ${t("强度", "Str")} ${(feature.strength * 100).toFixed(0)}%`;
             drawPill(
               ctx,
               info,

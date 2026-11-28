@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { StructureFeature } from "@talaria/contracts";
 
+import { getLocale, setLocale } from "../../lib/i18n";
 import {
+  catalogDetectors,
   defaultStructureFilter,
+  detectorLabel,
+  disableAllDetectors,
+  enableAllDetectors,
   formatStructureGeometry,
   higherTimeframesFor,
+  toggleDetectorId,
   toggleFamily,
   visibleStructures,
   type StructureFilter,
@@ -104,5 +110,97 @@ describe("Market structure model & Simple/Expert filtering", () => {
     expect(formatStructureGeometry(trend, 0)).toBe("68000 → 68500");
     expect(formatStructureGeometry(channel, 0)).toBe("68500–69000");
     expect(higherTimeframesFor("15m")).toEqual(["1h", "4h", "1d"]);
+  });
+
+  it("localizes built-in detector IDs in zh/en, shows non-v1 versions, and falls back for unknown IDs", () => {
+    const prev = getLocale();
+    try {
+      const cases: Array<[id: string, zh: string, en: string]> = [
+        ["confluence@1", "多维共振带", "Confluence zones"],
+        ["convex_envelope@1", "凸包包络线", "Convex envelope"],
+        ["equal_levels@1", "等高/等低位", "Equal levels"],
+        ["fvg@1", "FVG 缺口", "Fair value gap"],
+        ["gap_levels@1", "跳空缺口", "Price gaps"],
+        ["liquidation_zones@1", "清算估算区", "Liquidation zones"],
+        ["pivot_trendline@1", "摆动趋势线", "Pivot trendline"],
+        ["round_numbers@1", "整数关口", "Round numbers"],
+        ["session_levels@1", "时段关键位", "Session levels"],
+        ["swing_levels@1", "摆动高低位", "Swing levels"],
+        ["volume_profile@1", "量价/VWAP", "Volume profile"],
+      ];
+
+      setLocale("zh");
+      for (const [id, zh] of cases) {
+        expect(detectorLabel(id)).toBe(zh);
+      }
+      expect(detectorLabel("pivot_trendline@2")).toBe("摆动趋势线 v2");
+      expect(detectorLabel("custom_algo@1")).toBe("custom_algo@1");
+
+      setLocale("en");
+      for (const [id, , en] of cases) {
+        expect(detectorLabel(id)).toBe(en);
+      }
+      expect(detectorLabel("pivot_trendline@2")).toBe("Pivot trendline v2");
+      expect(detectorLabel("custom_algo@1")).toBe("custom_algo@1");
+    } finally {
+      setLocale(prev);
+    }
+  });
+
+  it("unplugs and re-plugs single detectors across simple and expert modes", () => {
+    const simpleBase: StructureFilter = { ...defaultStructureFilter, enabled: true, viewMode: "simple" };
+    const unplugged = toggleDetectorId(simpleBase, "confluence@1");
+    expect(unplugged.disabledDetectorIds).toEqual(["confluence@1"]);
+    expect(visibleStructures(all, unplugged, new Set()).map((s) => s.structure_id)).toEqual([
+      "st_trend_1",
+    ]);
+
+    const expertUnplugged: StructureFilter = { ...unplugged, viewMode: "expert" };
+    expect(visibleStructures(all, expertUnplugged, new Set()).map((s) => s.structure_id)).toEqual([
+      "st_trend_1",
+      "st_lvl_1",
+      "st_chan_1",
+    ]);
+
+    const replugged = toggleDetectorId(unplugged, "confluence@1");
+    expect(replugged.disabledDetectorIds).toEqual([]);
+    expect(visibleStructures(all, replugged, new Set()).map((s) => s.structure_id)).toEqual([
+      "st_conf_1",
+      "st_trend_1",
+    ]);
+
+    const fullCatalog = catalogDetectors([], all);
+    const allDisabled = disableAllDetectors(replugged, fullCatalog);
+    expect(allDisabled.disabledDetectorIds).toEqual(fullCatalog);
+    expect(visibleStructures(all, allDisabled, new Set())).toEqual([]);
+    expect(enableAllDetectors(allDisabled).disabledDetectorIds).toEqual([]);
+  });
+
+  it("builds version-sorted catalog including 0-count registered detectors and disambiguates multi-version labels", () => {
+    const prev = getLocale();
+    try {
+      const catalog = catalogDetectors(
+        ["gap_levels@1", "pivot_trendline@2", "pivot_trendline@1"],
+        [trend, level],
+      );
+      expect(catalog).toEqual([
+        "confluence@1",
+        "gap_levels@1",
+        "pivot_trendline@1",
+        "pivot_trendline@2",
+        "swing@1",
+      ]);
+
+      setLocale("zh");
+      expect(detectorLabel("pivot_trendline@1", catalog)).toBe("摆动趋势线 v1");
+      expect(detectorLabel("pivot_trendline@2", catalog)).toBe("摆动趋势线 v2");
+      expect(detectorLabel("gap_levels@1", catalog)).toBe("跳空缺口");
+
+      setLocale("en");
+      expect(detectorLabel("pivot_trendline@1", catalog)).toBe("Pivot trendline v1");
+      expect(detectorLabel("pivot_trendline@2", catalog)).toBe("Pivot trendline v2");
+    } finally {
+      setLocale(prev);
+    }
   });
 });

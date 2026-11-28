@@ -203,7 +203,7 @@ export function loadStructureFilter(options?: PreferenceEnvOptions): StructureFi
     htfTimeframes: [...defaultStructureFilter.htfTimeframes],
     families: [...defaultStructureFilter.families],
     categories: [...defaultStructureFilter.categories],
-    detectorIds: [...defaultStructureFilter.detectorIds],
+    disabledDetectorIds: [...defaultStructureFilter.disabledDetectorIds],
     evidenceClasses: [...defaultStructureFilter.evidenceClasses],
   };
   const storage = resolveStorage(options);
@@ -232,9 +232,9 @@ export function loadStructureFilter(options?: PreferenceEnvOptions): StructureFi
       categories: Array.isArray(parsed.categories)
         ? parsed.categories.filter((c): c is StructureCategory => typeof c === "string" && validCategories.has(c))
         : base.categories,
-      detectorIds: Array.isArray(parsed.detectorIds)
-        ? parsed.detectorIds.filter((d): d is string => typeof d === "string")
-        : base.detectorIds,
+      disabledDetectorIds: Array.isArray(parsed.disabledDetectorIds)
+        ? parsed.disabledDetectorIds.filter((d): d is string => typeof d === "string")
+        : base.disabledDetectorIds,
       evidenceClasses: Array.isArray(parsed.evidenceClasses)
         ? parsed.evidenceClasses.filter((e): e is EvidenceClass => typeof e === "string" && validEvidence.has(e))
         : base.evidenceClasses,

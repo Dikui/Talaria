@@ -40,6 +40,7 @@ import {
   visibleKeyLevels,
 } from "../features/key-levels/model";
 import {
+  detectorLabel,
   formatStructureGeometry,
   isStructuresEnabled,
   structureMidPrice,
@@ -1305,8 +1306,8 @@ export function ChartPane({
                 <X size={13} />
               </button>
             </div>
-            <span className="layer-inspect-meta">
-              {inspectedStructure.detector_id}
+            <span className="layer-inspect-meta" title={inspectedStructure.detector_id}>
+              {detectorLabel(inspectedStructure.detector_id)}
               {inspectedStructure.source_timeframe ? ` · ${inspectedStructure.source_timeframe}` : ""}
               {" · "}
               {t("只读系统市场结构（不可拖拽）", "Read-only system structure (non-draggable)")}

@@ -1254,8 +1254,64 @@ input {
   background: var(--accent-soft);
 }
 
+.filter-chip.is-unplugged {
+  opacity: 0.52;
+  border-style: dashed;
+}
+
+.chip-version {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  opacity: 0.78;
+  margin-left: 3px;
+}
+
 .chip-count {
   color: var(--text-muted);
+}
+
+.detector-plug-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detector-plug-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.detector-plug-toggle {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.detector-plug-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.detector-plug-action {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  padding: 1px 5px;
+  cursor: pointer;
+}
+
+.detector-plug-action:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .range-row {

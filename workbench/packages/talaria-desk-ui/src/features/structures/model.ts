@@ -55,7 +55,7 @@ export interface StructureFilter {
   htfTimeframes: string[];
   families: StructureFamily[];
   categories: StructureCategory[];
-  detectorIds: string[];
+  disabledDetectorIds: string[];
   evidenceClasses: EvidenceClass[];
   minStrength: number;
 }
@@ -67,7 +67,7 @@ export const defaultStructureFilter: StructureFilter = {
   htfTimeframes: [],
   families: [...STRUCTURE_FAMILIES],
   categories: [...STRUCTURE_CATEGORIES],
-  detectorIds: [],
+  disabledDetectorIds: [],
   evidenceClasses: [...STRUCTURE_EVIDENCE_CLASSES],
   minStrength: 0.35,
 };
@@ -134,6 +134,95 @@ export function structureStatusLabel(status: StructureStatus): string {
   }
 }
 
+const DETECTOR_LABELS: Record<string, readonly [zh: string, en: string]> = {
+  confluence: ["多维共振带", "Confluence zones"],
+  convex_envelope: ["凸包包络线", "Convex envelope"],
+  equal_levels: ["等高/等低位", "Equal levels"],
+  fvg: ["FVG 缺口", "Fair value gap"],
+  gap_levels: ["跳空缺口", "Price gaps"],
+  liquidation_zones: ["清算估算区", "Liquidation zones"],
+  pivot_trendline: ["摆动趋势线", "Pivot trendline"],
+  round_numbers: ["整数关口", "Round numbers"],
+  session_levels: ["时段关键位", "Session levels"],
+  swing_levels: ["摆动高低位", "Swing levels"],
+  volume_profile: ["量价/VWAP", "Volume profile"],
+};
+
+export function parseDetectorId(detectorId: string): {
+  base: string;
+  version: string | null;
+} {
+  const atIdx = detectorId.lastIndexOf("@");
+  if (atIdx <= 0) {
+    return { base: detectorId, version: null };
+  }
+  const base = detectorId.slice(0, atIdx);
+  const version = detectorId.slice(atIdx + 1) || null;
+  return { base, version };
+}
+
+export function detectorBaseLabel(detectorId: string): string {
+  const { base } = parseDetectorId(detectorId);
+  const entry = DETECTOR_LABELS[base];
+  return entry ? t(entry[0], entry[1]) : base;
+}
+
+export function detectorVersionBadge(detectorId: string): string | null {
+  const { version } = parseDetectorId(detectorId);
+  return version ? `v${version}` : null;
+}
+
+export function detectorLabel(detectorId: string, catalogIds?: readonly string[]): string {
+  const { base, version } = parseDetectorId(detectorId);
+  const entry = DETECTOR_LABELS[base];
+  if (!entry) return detectorId;
+  const label = t(entry[0], entry[1]);
+  const hasMultipleVersions =
+    catalogIds !== undefined &&
+    new Set(catalogIds.filter((id) => parseDetectorId(id).base === base)).size >= 2;
+  return version && (version !== "1" || hasMultipleVersions) ? `${label} v${version}` : label;
+}
+
+function numericVersion(version: string | null): number {
+  if (!version) return Number.POSITIVE_INFINITY;
+  const num = Number(version);
+  return Number.isFinite(num) && /^\d+(?:\.\d+)?$/.test(version)
+    ? num
+    : Number.POSITIVE_INFINITY;
+}
+
+export function catalogDetectors(
+  registeredIds: readonly string[],
+  structures: readonly StructureFeature[],
+): string[] {
+  const set = new Set<string>(registeredIds);
+  if (registeredIds.length > 0) {
+    set.add("confluence@1");
+  }
+  for (const item of structures) {
+    if (item.detector_id) set.add(item.detector_id);
+  }
+  return Array.from(set).sort((a, b) => {
+    const pa = parseDetectorId(a);
+    const pb = parseDetectorId(b);
+    if (pa.base !== pb.base) return pa.base.localeCompare(pb.base);
+    const va = numericVersion(pa.version);
+    const vb = numericVersion(pb.version);
+    if (va !== vb) return va - vb;
+    return a.localeCompare(b);
+  });
+}
+
+export function countByDetector(
+  structures: readonly StructureFeature[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const s of structures) {
+    counts[s.detector_id] = (counts[s.detector_id] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export function structureEvidenceClass(feature: StructureFeature): EvidenceClass {
   return feature.evidence_class ?? "OBSERVED";
 }
@@ -176,7 +265,9 @@ export function visibleStructures(
   ignoredIds: ReadonlySet<string>,
 ): StructureFeature[] {
   if (!filter.enabled) return [];
-  const active = structures.filter((item) => !ignoredIds.has(item.structure_id));
+  const active = structures.filter(
+    (item) => !ignoredIds.has(item.structure_id) && isDetectorEnabled(filter, item.detector_id),
+  );
 
   if (filter.viewMode === "simple") {
     const confluence = active
@@ -200,9 +291,6 @@ export function visibleStructures(
     if (!filter.categories.includes(item.category)) return false;
     if (!filter.evidenceClasses.includes(structureEvidenceClass(item))) return false;
     if (item.strength < filter.minStrength) return false;
-    if (filter.detectorIds.length > 0 && !filter.detectorIds.includes(item.detector_id)) {
-      return false;
-    }
     return true;
   });
 }
@@ -254,14 +342,29 @@ export function toggleHtfTimeframe(filter: StructureFilter, tf: string): Structu
   };
 }
 
+export function isDetectorEnabled(filter: StructureFilter, detectorId: string): boolean {
+  return !filter.disabledDetectorIds.includes(detectorId);
+}
+
 export function toggleDetectorId(filter: StructureFilter, detectorId: string): StructureFilter {
-  const exists = filter.detectorIds.includes(detectorId);
+  const disabled = filter.disabledDetectorIds.includes(detectorId);
   return {
     ...filter,
-    detectorIds: exists
-      ? filter.detectorIds.filter((id) => id !== detectorId)
-      : [...filter.detectorIds, detectorId],
+    disabledDetectorIds: disabled
+      ? filter.disabledDetectorIds.filter((id) => id !== detectorId)
+      : [...filter.disabledDetectorIds, detectorId],
   };
+}
+
+export function enableAllDetectors(filter: StructureFilter): StructureFilter {
+  return { ...filter, disabledDetectorIds: [] };
+}
+
+export function disableAllDetectors(
+  filter: StructureFilter,
+  catalog: readonly string[],
+): StructureFilter {
+  return { ...filter, disabledDetectorIds: Array.from(new Set(catalog)) };
 }
 
 export function toggleStructureEvidence(

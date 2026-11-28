@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type {
   StructureCategory,
   StructureFamily,
@@ -9,10 +10,18 @@ import {
   STRUCTURE_CATEGORIES,
   STRUCTURE_EVIDENCE_CLASSES,
   STRUCTURE_FAMILIES,
+  catalogDetectors,
+  countByDetector,
   countByFamily,
+  detectorBaseLabel,
+  detectorLabel,
+  detectorVersionBadge,
+  disableAllDetectors,
+  enableAllDetectors,
   familyMeta,
   formatStructureGeometry,
   higherTimeframesFor,
+  isDetectorEnabled,
   isStructuresEnabled,
   structureCategoryMeta,
   structureStatusLabel,
@@ -28,6 +37,7 @@ import {
 export interface StructurePanelProps {
   structures: StructureFeature[];
   allStructures: StructureFeature[];
+  registeredDetectors?: readonly string[];
   activeTimeframe: string;
   filter: StructureFilter;
   onFilterChange: (next: StructureFilter) => void;
@@ -50,6 +60,7 @@ export interface StructurePanelProps {
 export function StructurePanel({
   structures,
   allStructures,
+  registeredDetectors = [],
   activeTimeframe,
   filter,
   onFilterChange,
@@ -72,9 +83,13 @@ export function StructurePanel({
   const enabled = isStructuresEnabled(filter);
   const familyCounts = countByFamily(allStructures);
   const htfOptions = higherTimeframesFor(activeTimeframe);
-  const availableDetectors = Array.from(
-    new Set(allStructures.map((item) => item.detector_id)),
-  ).sort();
+  const detectorCatalog = catalogDetectors(registeredDetectors, allStructures);
+  const detectorCounts = countByDetector(allStructures);
+  const enabledDetectorCount = detectorCatalog.filter((id) =>
+    isDetectorEnabled(filter, id),
+  ).length;
+  const [detectorsExpanded, setDetectorsExpanded] = useState(false);
+  const showDetectorGrid = filter.viewMode === "expert" || detectorsExpanded;
   const strengthValue = Math.round(filter.minStrength * 100);
 
   return (
@@ -168,6 +183,81 @@ export function StructurePanel({
           </div>
         )}
 
+        {detectorCatalog.length > 0 && (
+          <div className="detector-plug-box">
+            <div className="detector-plug-head">
+              {filter.viewMode === "simple" ? (
+                <button
+                  type="button"
+                  className="detector-plug-toggle"
+                  data-testid="structure-detectors-toggle"
+                  aria-expanded={showDetectorGrid}
+                  onClick={() => setDetectorsExpanded((prev) => !prev)}
+                >
+                  <span>
+                    {t("检测器拔插", "Detectors")} {enabledDetectorCount}/{detectorCatalog.length}
+                  </span>
+                </button>
+              ) : (
+                <span>
+                  {t("检测器拔插", "Detectors")} {enabledDetectorCount}/{detectorCatalog.length}
+                </span>
+              )}
+              {showDetectorGrid && !readOnly && (
+                <div className="detector-plug-actions">
+                  <button
+                    type="button"
+                    className="detector-plug-action"
+                    data-testid="structure-detectors-enable-all"
+                    disabled={enabledDetectorCount === detectorCatalog.length}
+                    onClick={() => onFilterChange(enableAllDetectors(filter))}
+                  >
+                    {t("全开", "All")}
+                  </button>
+                  <button
+                    type="button"
+                    className="detector-plug-action"
+                    data-testid="structure-detectors-disable-all"
+                    disabled={enabledDetectorCount === 0}
+                    onClick={() => onFilterChange(disableAllDetectors(filter, detectorCatalog))}
+                  >
+                    {t("全关", "None")}
+                  </button>
+                </div>
+              )}
+            </div>
+            {showDetectorGrid && (
+              <div className="chip-grid" role="group" aria-label={t("检测器拔插", "Detectors")}>
+                {detectorCatalog.map((detId) => {
+                  const selected = isDetectorEnabled(filter, detId);
+                  const ver = detectorVersionBadge(detId);
+                  const count = detectorCounts[detId] ?? 0;
+                  return (
+                    <button
+                      key={detId}
+                      type="button"
+                      className={`filter-chip${selected ? " is-active" : " is-unplugged"}`}
+                      aria-pressed={selected}
+                      disabled={readOnly}
+                      data-testid={`structure-detector-${detId}`}
+                      title={`${detId} · ${
+                        selected
+                          ? t("已启用（点击拔出）", "Plugged in (click to unplug)")
+                          : t("已拔出（点击启用）", "Unplugged (click to plug in)")
+                      }`}
+                      onClick={() => onFilterChange(toggleDetectorId(filter, detId))}
+                    >
+                      <span>{detectorBaseLabel(detId)}</span>
+                      {ver && <span className="chip-version">{ver}</span>}
+                      <span className="chip-count">{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {filter.viewMode === "expert" && (
           <>
             <div className="chip-grid" role="group" aria-label={t("结构家族", "Families")}>
@@ -212,27 +302,6 @@ export function StructurePanel({
                 );
               })}
             </div>
-
-            {availableDetectors.length > 0 && (
-              <div className="chip-grid" role="group" aria-label={t("检测器", "Detectors")}>
-                {availableDetectors.map((detId) => {
-                  const selected =
-                    filter.detectorIds.length === 0 || filter.detectorIds.includes(detId);
-                  return (
-                    <button
-                      key={detId}
-                      type="button"
-                      className={`filter-chip${selected ? " is-active" : ""}`}
-                      aria-pressed={selected}
-                      disabled={readOnly}
-                      onClick={() => onFilterChange(toggleDetectorId(filter, detId))}
-                    >
-                      <span>{detId}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
 
             <div className="chip-grid" role="group" aria-label={t("证据", "Evidence")}>
               {STRUCTURE_EVIDENCE_CLASSES.map((ev) => {
@@ -306,7 +375,7 @@ export function StructurePanel({
             const fMeta = familyMeta(item.family);
             const adopted = adoptedIds.has(item.structure_id);
             const highlighted = highlightedId === item.structure_id;
-            const winTooltip = `${item.detector_id} · window ${new Date(
+            const winTooltip = `${detectorLabel(item.detector_id, detectorCatalog)} (${item.detector_id}) · window ${new Date(
               item.analysis_window.from_ts,
             ).toISOString()} → ${new Date(item.analysis_window.to_ts).toISOString()}`;
             return (
@@ -332,8 +401,9 @@ export function StructurePanel({
                 <div className="entity-card-main">
                   <strong>{formatStructureGeometry(item, precision)}</strong>
                   <span>
-                    {item.detector_id} · {t("强度", "Str")} {(item.strength * 100).toFixed(0)}% ·{" "}
-                    {t("触及", "Touch")} {item.touch_count ?? 0}
+                    {detectorLabel(item.detector_id, detectorCatalog)} · {t("强度", "Str")}{" "}
+                    {(item.strength * 100).toFixed(0)}% · {t("触及", "Touch")}{" "}
+                    {item.touch_count ?? 0}
                   </span>
                 </div>
                 {!readOnly && (

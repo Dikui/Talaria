@@ -899,6 +899,7 @@ export function WorkbenchShell({
       structureProps={{
         structures: filteredStructures,
         allStructures,
+        registeredDetectors: structuresController.structureSet?.detector_ids ?? [],
         activeTimeframe,
         filter: structureFilter,
         onFilterChange: onStructureFilterChange,

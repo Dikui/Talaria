@@ -14,14 +14,21 @@ import {
   visibleKeyLevels,
 } from "../features/key-levels/model";
 import {
+  defaultStructureFilter,
+  toggleDetectorId,
+} from "../features/structures/model";
+import {
   INDICATOR_PREFS_STORAGE_KEY,
   KEY_LEVEL_PREFS_STORAGE_KEY,
+  STRUCTURE_PREFS_STORAGE_KEY,
   isLocalWorkbenchRuntime,
   loadIndicatorSettings,
   loadKeyLevelFilter,
+  loadStructureFilter,
   mergeIndicatorDefaults,
   saveIndicatorSettings,
   saveKeyLevelFilter,
+  saveStructureFilter,
 } from "./chartPreferences";
 
 function createMemoryStorage(): Pick<Storage, "getItem" | "setItem"> & {
@@ -165,5 +172,19 @@ describe("chartPreferences", () => {
     expect(merged.RSI.period).toBe(7);
     // Unenabled indicator remains disabled.
     expect(merged.ATR.enabled).toBe(false);
+  });
+
+  it("persists disabledDetectorIds in local runtime and resets in cloud runtime", () => {
+    const storage = createMemoryStorage();
+    const updated = toggleDetectorId(defaultStructureFilter, "pivot_trendline@1");
+    saveStructureFilter(updated, { isLocal: true, storage });
+
+    const reloadedLocal = loadStructureFilter({ isLocal: true, storage });
+    expect(reloadedLocal.disabledDetectorIds).toEqual(["pivot_trendline@1"]);
+
+    expect(storage.getItem(STRUCTURE_PREFS_STORAGE_KEY)).toContain("pivot_trendline@1");
+
+    const reloadedCloud = loadStructureFilter({ isLocal: false, storage });
+    expect(reloadedCloud.disabledDetectorIds).toEqual([]);
   });
 });
