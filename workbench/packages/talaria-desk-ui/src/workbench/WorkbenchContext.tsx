@@ -24,6 +24,7 @@ import type { RunsController } from "../features/runs/useRuns";
 import type { ScannerController } from "../features/scanner/useScanner";
 import type { Locale } from "../lib/i18n";
 import type { Theme } from "../lib/theme";
+import type { LegacyOrConsolidatedPanelTarget } from "./layoutStore";
 import type { LocateTarget, PanelLink } from "./link";
 
 export interface ReplayTriggerRequest {
@@ -142,18 +143,7 @@ export interface WorkbenchContextValue {
     instrumentId: string;
     timeframe: string;
   }) => void;
-  onOpenRightTab: (
-    tab:
-      | "watchlist"
-      | "alerts"
-      | "levels"
-      | "scanner"
-      | "drawings"
-      | "annotations"
-      | "runs"
-      | "drafts"
-      | "account",
-  ) => void;
+  onOpenRightTab: (tab: LegacyOrConsolidatedPanelTarget) => void;
   onAdoptKeyLevel: (level: KeyLevel) => Promise<void>;
   onAdoptStructure: (structure: StructureFeature) => Promise<void>;
   onAdoptAnnotation: (annotation: AgentAnnotationRecord) => Promise<void>;

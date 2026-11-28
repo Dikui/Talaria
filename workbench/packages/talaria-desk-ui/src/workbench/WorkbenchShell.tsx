@@ -8,7 +8,14 @@ import {
   type IDockviewPanelProps,
 } from "dockview-react";
 import {
+  Activity,
+  Bookmark,
+  Briefcase,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
+  History,
+  Layers,
   LayoutGrid,
   Moon,
   PanelRight,
@@ -29,12 +36,9 @@ import type {
 
 import { VELA_ATTRIBUTION } from "../chart/adapter";
 import { useWebglBudget } from "../chart/webglBudget";
-import { AlertWorkbench } from "../features/alerts/AlertWorkbench";
 import { AlertToast, type AlertFormSeed } from "../features/alerts/AlertPanel";
 import { useAlerts } from "../features/alerts/useAlerts";
-import { AnnotationPanel } from "../features/annotations/AnnotationPanel";
 import { useAnnotations } from "../features/annotations/useAnnotations";
-import { DrawingManager } from "../features/drawings/DrawingManager";
 import { deskSocketHub } from "../features/feed/deskSocketHub";
 import {
   isMobileDrawerViewport,
@@ -50,25 +54,20 @@ import {
   type IndicatorSettings,
 } from "../features/indicators/config";
 import { InstrumentSearchModal } from "../features/instruments/InstrumentSearchModal";
-import { KeyLevelPanel } from "../features/key-levels/KeyLevelPanel";
 import {
   visibleKeyLevels,
   type KeyLevelFilter,
 } from "../features/key-levels/model";
 import { useKeyLevels } from "../features/key-levels/useKeyLevels";
-import { StructurePanel } from "../features/structures/StructurePanel";
 import {
   structureMidPrice,
   visibleStructures,
   type StructureFilter,
 } from "../features/structures/model";
 import { useStructures } from "../features/structures/useStructures";
-import { AccountPanel } from "../features/paper/AccountPanel";
-import { DraftPanel } from "../features/paper/DraftPanel";
 import type { DraftSeed } from "../features/paper/DraftForm";
 import { RunsPanel } from "../features/runs/RunsPanel";
 import { useRuns } from "../features/runs/useRuns";
-import { ScannerPanel } from "../features/scanner/ScannerPanel";
 import { useScanner } from "../features/scanner/useScanner";
 import { WatchlistPanel } from "../features/watchlist/WatchlistPanel";
 import { api, getApiDataDir } from "../lib/api";
@@ -90,22 +89,31 @@ import {
   saveStructureFilter,
 } from "./chartPreferences";
 import { ChartPane } from "./ChartPane";
+import { LayersPanel } from "./LayersPanel";
 import {
-  RIGHT_DOCK_TABS,
+  MOBILE_TABS,
   applyPresetLayout,
+  clampBottomDrawerHeight,
+  clampRightDrawerWidth,
   clearSavedLayout,
-  ensureAllRightDockPanels,
-  ensureRightDockPanel,
-  findRightDockGroup,
   loadLayoutFromStorage,
+  loadShellUiState,
+  resolveMobileNavigation,
+  resolvePanelNavigation,
   saveLayoutToStorage,
-  syncRightDockTitles,
+  saveShellUiState,
+  toggleRightDrawerState,
   type ChartPaneParams,
   type LayoutPreset,
-  type RightDockTabId,
+  type LegacyOrConsolidatedPanelTarget,
+  type MobileTabId,
+  type RightDrawerId,
+  type ShellUiState,
 } from "./layoutStore";
 import type { LocateTarget } from "./link";
-import { DESK_PATH, panelLabel, type PanelName } from "./panels";
+import { MonitorPanel } from "./MonitorPanel";
+import { DESK_PATH, consolidatedLabel, type PanelName } from "./panels";
+import { TradePanel } from "./TradePanel";
 import { useLinkSnapshot, usePanelLink } from "./usePanelLink";
 import {
   WorkbenchProvider,
@@ -135,171 +143,8 @@ function DockChartPanel({ api: panelApi, params }: IDockviewPanelProps<ChartPane
   );
 }
 
-function DockWatchlistPanel() {
-  const ctx = useWorkbenchContext();
-  return (
-    <WatchlistPanel
-      instruments={ctx.instruments}
-      selectedInstrumentId={ctx.activeInstrumentId}
-      onSelect={ctx.onSelectInstrument}
-      onOpenSymbolSearch={ctx.onOpenSymbolSearch}
-    />
-  );
-}
-
-function DockAlertsPanel() {
-  const ctx = useWorkbenchContext();
-  return (
-    <AlertWorkbench
-      controller={ctx.alertsController}
-      deniedAlerts={ctx.deniedAlerts}
-      instrumentId={ctx.activeInstrumentId}
-      timeframe={ctx.activeTimeframe}
-      instruments={ctx.instruments}
-      initialDrawings={ctx.drawings}
-      onLocate={ctx.onLocateTarget}
-      link={ctx.primaryLink}
-      formSeed={ctx.alertSeed}
-      onSeedConsumed={ctx.clearAlertSeed}
-      replayActive={ctx.replayActive}
-    />
-  );
-}
-
-function DockKeyLevelsPanel() {
-  const ctx = useWorkbenchContext();
-  const precision =
-    ctx.instruments.find((item) => item.instrument_id === ctx.activeInstrumentId)
-      ?.price_precision ?? 2;
-  const allStructures = ctx.structuresController.structures.filter(
-    (item) => !ctx.structuresController.ignoredIds.has(item.structure_id),
-  );
-  const filtered = visibleStructures(
-    ctx.structuresController.structures,
-    ctx.structureFilter,
-    ctx.structuresController.ignoredIds,
-  );
-  return (
-    <StructurePanel
-      structures={filtered}
-      allStructures={allStructures}
-      activeTimeframe={ctx.activeTimeframe}
-      filter={ctx.structureFilter}
-      onFilterChange={ctx.onStructureFilterChange}
-      precision={precision}
-      ignoredCount={ctx.structuresController.ignoredIds.size}
-      onIgnore={ctx.structuresController.ignore}
-      ignoringId={ctx.structuresController.ignoringId}
-      onAdopt={(feature) => void ctx.onAdoptStructure(feature)}
-      adoptingId={ctx.structuresController.adoptingId}
-      adoptedIds={ctx.structuresController.adoptedIds}
-      onAttachAlert={(feature) => {
-        ctx.onSeedAlert({
-          price: structureMidPrice(feature),
-          instrumentId: ctx.activeInstrumentId,
-          timeframe: ctx.activeTimeframe,
-        });
-        ctx.onOpenRightTab("alerts");
-      }}
-      loading={ctx.structuresController.loading}
-      error={ctx.structuresController.error}
-      readOnly={ctx.readOnly}
-      notes={ctx.structuresController.notes}
-      highlightedId={ctx.highlightedStructureId}
-      onHover={ctx.onHoverStructureId}
-    />
-  );
-}
-
-function DockScannerPanel() {
-  const ctx = useWorkbenchContext();
-  return (
-    <ScannerPanel
-      controller={ctx.scannerController}
-      onLocate={ctx.onLocateTarget}
-      readOnly={ctx.readOnly}
-    />
-  );
-}
-
-function DockDrawingsPanel() {
-  const ctx = useWorkbenchContext();
-  return (
-    <DrawingManager
-      drawings={ctx.drawings}
-      selectedId={ctx.selectedDrawingId}
-      readOnly={ctx.readOnly || ctx.replayActive}
-      onSelect={ctx.onDrawingSelected}
-      onDelete={(id) => void ctx.onDeleteDrawing(id)}
-      onAttachAlert={(drawing) => {
-        const price = drawing.points[0]?.price ? Number(drawing.points[0].price) : null;
-        ctx.onSeedAlert({
-          drawingId: drawing.drawing_id,
-          price,
-          instrumentId: drawing.instrument_id,
-          timeframe: ctx.activeTimeframe,
-        });
-        ctx.onOpenRightTab("alerts");
-      }}
-      onClearInstrument={() => void ctx.onClearDrawings()}
-    />
-  );
-}
-
-function DockAnnotationsPanel() {
-  const ctx = useWorkbenchContext();
-  return (
-    <AnnotationPanel
-      controller={ctx.annotationsController}
-      readOnly={ctx.readOnly || ctx.replayActive}
-      onAdopted={() => ctx.primaryLink.notifyDrawingsChanged(ctx.activeInstrumentId)}
-    />
-  );
-}
-
-function DockRunsPanel() {
-  const ctx = useWorkbenchContext();
-  return (
-    <RunsPanel
-      controller={ctx.runsController}
-      activeTimeframe={ctx.activeTimeframe}
-      onJumpToRound={ctx.onJumpToRound}
-      onReplayBeforeRound={ctx.onReplayBeforeRound}
-    />
-  );
-}
-
-function DockDraftsPanel() {
-  const ctx = useWorkbenchContext();
-  return (
-    <DraftPanel
-      activeInstrumentId={ctx.activeInstrumentId}
-      activeTimeframe={ctx.activeTimeframe}
-      readOnly={ctx.readOnly}
-      replayActive={ctx.replayActive}
-      externalSeed={ctx.draftSeed}
-      onExternalSeedConsumed={ctx.clearDraftSeed}
-      highlightedDraftId={ctx.selectedDraftId}
-      onDraftsMutated={ctx.notifyDraftsChanged}
-    />
-  );
-}
-
-function DockAccountPanel() {
-  return <AccountPanel />;
-}
-
 const DOCKVIEW_COMPONENTS = {
   chart: DockChartPanel,
-  watchlist: DockWatchlistPanel,
-  alerts: DockAlertsPanel,
-  levels: DockKeyLevelsPanel,
-  scanner: DockScannerPanel,
-  drawings: DockDrawingsPanel,
-  annotations: DockAnnotationsPanel,
-  runs: DockRunsPanel,
-  drafts: DockDraftsPanel,
-  account: DockAccountPanel,
 };
 
 export interface WorkbenchShellProps {
@@ -312,8 +157,6 @@ export interface WorkbenchShellProps {
     paneId: string;
   } | null;
 }
-
-type RightTabId = RightDockTabId;
 
 export function WorkbenchShell({
   initialTheme,
@@ -389,9 +232,9 @@ export function WorkbenchShell({
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [draftsRevision, setDraftsRevision] = useState(0);
 
-  const [rightDockVisible, setRightDockVisible] = useState(true);
+  const [shellUi, setShellUi] = useState<ShellUiState>(() => loadShellUiState());
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
-  const [mobileTab, setMobileTab] = useState<RightTabId>("watchlist");
+  const [mobileTab, setMobileTab] = useState<MobileTabId>("watchlist");
   const [tauriKeepRunning, setTauriKeepRunning] = useState<boolean | null>(null);
   const [activeDataDir, setActiveDataDir] = useState<string | null>(() => getApiDataDir());
 
@@ -467,10 +310,8 @@ export function WorkbenchShell({
   }, [alertsController.ingestTrigger, scannerController.ingest]);
 
   useEffect(() => {
-    if (dockApiRef.current) {
-      syncRightDockTitles(dockApiRef.current, locale);
-    }
-  }, [locale]);
+    saveShellUiState(shellUi);
+  }, [shellUi]);
 
   const onOpenSymbolSearch = useCallback((options?: SymbolSearchOptions) => {
     setSymbolSearch({ open: true, options });
@@ -669,26 +510,25 @@ export function WorkbenchShell({
     setDraftsRevision((n) => n + 1);
   }, []);
 
-  const syncRightDockVisibility = useCallback((dockApi: DockviewApi | null) => {
-    const group = dockApi ? findRightDockGroup(dockApi) : undefined;
-    setRightDockVisible(Boolean(group && group.api.isVisible));
-  }, []);
-
   const onOpenRightTab = useCallback(
-    (tab: RightTabId) => {
+    (tab: LegacyOrConsolidatedPanelTarget) => {
       if (isMobile) {
-        setMobileTab(tab);
+        const nav = resolveMobileNavigation(tab);
+        setMobileTab(nav.tab);
+        if (nav.monitorTab || nav.layerSource || nav.tradeTab) {
+          setShellUi((prev) => ({
+            ...prev,
+            ...(nav.monitorTab ? { monitorTab: nav.monitorTab } : {}),
+            ...(nav.layerSource ? { layerSource: nav.layerSource } : {}),
+            ...(nav.tradeTab ? { tradeTab: nav.tradeTab } : {}),
+          }));
+        }
         setMobileDrawerOpen(true);
         return;
       }
-      const dockApi = dockApiRef.current;
-      if (!dockApi) return;
-      const panel = ensureRightDockPanel(dockApi, tab, locale);
-      panel.group.api.setVisible(true);
-      panel.api.setActive();
-      setRightDockVisible(true);
+      setShellUi((prev) => resolvePanelNavigation(prev, tab));
     },
-    [isMobile, locale],
+    [isMobile],
   );
 
   const onPopoutChart = useCallback(
@@ -899,38 +739,31 @@ export function WorkbenchShell({
     ],
   );
 
-  const handleDockReady = useCallback(
-    (event: DockviewReadyEvent) => {
-      dockApiRef.current = event.api;
-      const activeLocale = getLocale();
-      const saved = loadLayoutFromStorage();
-      if (saved) {
-        try {
-          event.api.fromJSON(saved);
-        } catch {
-          applyPresetLayout(event.api, "multi-tf", activeLocale);
-        }
-      } else {
-        applyPresetLayout(event.api, "multi-tf", activeLocale);
+  const handleDockReady = useCallback((event: DockviewReadyEvent) => {
+    dockApiRef.current = event.api;
+    const saved = loadLayoutFromStorage();
+    if (saved) {
+      try {
+        event.api.fromJSON(saved);
+      } catch {
+        applyPresetLayout(event.api, "multi-tf");
       }
-      syncRightDockTitles(event.api, activeLocale);
-      syncRightDockVisibility(event.api);
+    } else {
+      applyPresetLayout(event.api, "multi-tf");
+    }
 
-      event.api.onDidLayoutChange(() => {
-        syncRightDockVisibility(event.api);
-        if (saveTimerRef.current !== null) {
-          window.clearTimeout(saveTimerRef.current);
+    event.api.onDidLayoutChange(() => {
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = window.setTimeout(() => {
+        saveTimerRef.current = null;
+        if (dockApiRef.current) {
+          saveLayoutToStorage(dockApiRef.current);
         }
-        saveTimerRef.current = window.setTimeout(() => {
-          saveTimerRef.current = null;
-          if (dockApiRef.current) {
-            saveLayoutToStorage(dockApiRef.current);
-          }
-        }, 250);
-      });
-    },
-    [syncRightDockVisibility],
-  );
+      }, 250);
+    });
+  }, []);
 
   const addChartPane = () => {
     const dockApi = dockApiRef.current;
@@ -951,35 +784,214 @@ export function WorkbenchShell({
   const applyPreset = (preset: LayoutPreset) => {
     const dockApi = dockApiRef.current;
     if (!dockApi) return;
-    applyPresetLayout(dockApi, preset, locale);
+    applyPresetLayout(dockApi, preset);
     saveLayoutToStorage(dockApi);
-    syncRightDockVisibility(dockApi);
   };
 
   const resetLayout = () => {
     clearSavedLayout();
     applyPreset("multi-tf");
+    setShellUi((prev) => ({
+      ...prev,
+      rightDrawer: prev.mode === "live" ? "watchlist" : null,
+      rightDrawerWidth: 340,
+      tradeDrawerHeight: 280,
+      backtestDrawerHeight: 320,
+    }));
   };
 
-  const toggleRightDock = () => {
-    if (isMobile) {
-      setMobileDrawerOpen((v) => !v);
-      return;
-    }
-    const dockApi = dockApiRef.current;
-    if (!dockApi) return;
-    const group = findRightDockGroup(dockApi);
-    if (group) {
-      const next = !group.api.isVisible;
-      group.api.setVisible(next);
-      setRightDockVisible(next);
-      return;
-    }
-    const watchlist = ensureAllRightDockPanels(dockApi, locale);
-    watchlist.group.api.setVisible(true);
-    watchlist.api.setActive();
-    setRightDockVisible(true);
+  const toggleRightRail = (id: RightDrawerId) => {
+    setShellUi((prev) => toggleRightDrawerState(prev, id));
   };
+
+  const startResizeRightDrawer = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = shellUi.rightDrawerWidth;
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = startX - moveEvent.clientX;
+      setShellUi((prev) => ({
+        ...prev,
+        rightDrawerWidth: clampRightDrawerWidth(startWidth + delta),
+      }));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const startResizeBottomDrawer = (
+    event: React.PointerEvent<HTMLDivElement>,
+    kind: "trade" | "backtest",
+  ) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight =
+      kind === "trade" ? shellUi.tradeDrawerHeight : shellUi.backtestDrawerHeight;
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = startY - moveEvent.clientY;
+      const nextHeight = clampBottomDrawerHeight(startHeight + delta);
+      setShellUi((prev) =>
+        kind === "trade"
+          ? { ...prev, tradeDrawerHeight: nextHeight }
+          : { ...prev, backtestDrawerHeight: nextHeight },
+      );
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const activeInstrument = telemetry.instrumentId || primarySnap.instrumentId;
+  const activeTimeframe = telemetry.timeframe || primarySnap.timeframe;
+  const activePrecision =
+    instruments.find((item) => item.instrument_id === activeInstrument)
+      ?.price_precision ?? 2;
+  const allStructures = useMemo(
+    () =>
+      structuresController.structures.filter(
+        (item) => !structuresController.ignoredIds.has(item.structure_id),
+      ),
+    [structuresController.structures, structuresController.ignoredIds],
+  );
+  const filteredStructures = useMemo(
+    () =>
+      visibleStructures(
+        structuresController.structures,
+        structureFilter,
+        structuresController.ignoredIds,
+      ),
+    [structuresController.structures, structureFilter, structuresController.ignoredIds],
+  );
+
+  const activeDrawingsCount = useMemo(
+    () => drawings.filter((d) => d.deleted_at == null).length,
+    [drawings],
+  );
+  const layersTotalCount =
+    filteredStructures.length +
+    activeDrawingsCount +
+    annotationsController.annotations.length;
+  const monitorBadgeCount =
+    alertsController.unread > 0
+      ? alertsController.unread
+      : scannerController.triggers.length;
+
+  const activeRightDrawer: RightDrawerId | null =
+    shellUi.mode === "live"
+      ? shellUi.rightDrawer
+      : shellUi.rightDrawer === "layers"
+        ? "layers"
+        : null;
+
+  const renderLayersPanel = () => (
+    <LayersPanel
+      sourceFilter={shellUi.layerSource}
+      onSourceChange={(layerSource) =>
+        setShellUi((prev) => ({ ...prev, layerSource }))
+      }
+      structureProps={{
+        structures: filteredStructures,
+        allStructures,
+        activeTimeframe,
+        filter: structureFilter,
+        onFilterChange: onStructureFilterChange,
+        precision: activePrecision,
+        ignoredCount: structuresController.ignoredIds.size,
+        onIgnore: structuresController.ignore,
+        ignoringId: structuresController.ignoringId,
+        onAdopt: (feature) => void onAdoptStructure(feature),
+        adoptingId: structuresController.adoptingId,
+        adoptedIds: structuresController.adoptedIds,
+        onAttachAlert: (feature) => {
+          onSeedAlert({
+            price: structureMidPrice(feature),
+            instrumentId: activeInstrument,
+            timeframe: activeTimeframe,
+          });
+          onOpenRightTab("alerts");
+        },
+        loading: structuresController.loading,
+        error: structuresController.error,
+        readOnly,
+        notes: structuresController.notes,
+        highlightedId: highlightedStructureId,
+        onHover: setHighlightedStructureId,
+      }}
+      drawingProps={{
+        drawings,
+        selectedId: selectedDrawingId,
+        readOnly: readOnly || replayActive,
+        onSelect: setSelectedDrawingId,
+        onDelete: (id) => void onDeleteDrawing(id),
+        onAttachAlert: (drawing) => {
+          const price = drawing.points[0]?.price
+            ? Number(drawing.points[0].price)
+            : null;
+          onSeedAlert({
+            drawingId: drawing.drawing_id,
+            price,
+            instrumentId: drawing.instrument_id,
+            timeframe: activeTimeframe,
+          });
+          onOpenRightTab("alerts");
+        },
+        onClearInstrument: () => void onClearDrawings(),
+      }}
+      annotationProps={{
+        controller: annotationsController,
+        readOnly: readOnly || replayActive,
+        onAdopted: () => primaryLink.notifyDrawingsChanged(activeInstrument),
+      }}
+    />
+  );
+
+  const renderMonitorPanel = () => (
+    <MonitorPanel
+      activeTab={shellUi.monitorTab}
+      onTabChange={(monitorTab) =>
+        setShellUi((prev) => ({ ...prev, monitorTab }))
+      }
+      scannerController={scannerController}
+      alertsController={alertsController}
+      deniedAlerts={deniedAlerts}
+      instrumentId={activeInstrument}
+      timeframe={activeTimeframe}
+      instruments={instruments}
+      drawings={drawings}
+      link={primaryLink}
+      alertSeed={alertSeed}
+      onSeedConsumed={clearAlertSeed}
+      onLocate={onLocateTarget}
+      readOnly={readOnly}
+      replayActive={replayActive}
+    />
+  );
+
+  const renderTradePanel = (showSplitToggle: boolean, onCollapse?: () => void) => (
+    <TradePanel
+      activeTab={shellUi.tradeTab}
+      onTabChange={(tradeTab) => setShellUi((prev) => ({ ...prev, tradeTab }))}
+      showSplitToggle={showSplitToggle}
+      onCollapse={onCollapse}
+      draftPanelProps={{
+        activeInstrumentId: activeInstrument,
+        activeTimeframe,
+        readOnly,
+        replayActive,
+        externalSeed: draftSeed,
+        onExternalSeedConsumed: clearDraftSeed,
+        highlightedDraftId: selectedDraftId,
+        onDraftsMutated: notifyDraftsChanged,
+      }}
+    />
+  );
 
   return (
     <WorkbenchProvider value={contextValue}>
@@ -1013,6 +1025,42 @@ export function WorkbenchShell({
                 )}
               </span>
             </div>
+            {!popoutConfig && !isMobile && (
+              <div
+                className="wb-mode-switch"
+                role="tablist"
+                aria-label={t("工作台模式", "Workspace mode")}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={shellUi.mode === "live"}
+                  className={`wb-mode-btn${shellUi.mode === "live" ? " is-active" : ""}`}
+                  data-testid="workspace-mode-live"
+                  onClick={() =>
+                    setShellUi((prev) => ({ ...prev, mode: "live" }))
+                  }
+                >
+                  {consolidatedLabel("live", locale)}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={shellUi.mode === "backtest"}
+                  className={`wb-mode-btn${shellUi.mode === "backtest" ? " is-active" : ""}`}
+                  data-testid="workspace-mode-backtest"
+                  onClick={() =>
+                    setShellUi((prev) => ({
+                      ...prev,
+                      mode: "backtest",
+                      backtestDrawerOpen: true,
+                    }))
+                  }
+                >
+                  {consolidatedLabel("backtest", locale)}
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="wb-toolbar">
@@ -1081,17 +1129,14 @@ export function WorkbenchShell({
               </>
             )}
 
-            {!popoutConfig && (
+            {!popoutConfig && isMobile && (
               <button
                 type="button"
-                className={`ghost-button${
-                  isMobile ? (mobileDrawerOpen ? " is-active" : "") : rightDockVisible ? " is-active" : ""
-                }`}
+                className={`ghost-button${mobileDrawerOpen ? " is-active" : ""}`}
                 data-testid="toggle-right-dock"
-                onClick={toggleRightDock}
+                onClick={() => setMobileDrawerOpen((v) => !v)}
               >
-                <PanelRight size={14} />{" "}
-                {isMobile ? t("面板", "Panels") : t("右栏", "Dock")}
+                <PanelRight size={14} /> {t("面板", "Panels")}
               </button>
             )}
 
@@ -1170,38 +1215,187 @@ export function WorkbenchShell({
               {mobileDrawerOpen && (
                 <div className="wb-mobile-drawer" data-testid="mobile-drawer">
                   <div className="wb-mobile-drawer-tabs">
-                    {RIGHT_DOCK_TABS.map((tabId) => (
+                    {MOBILE_TABS.map((tabId) => (
                       <button
                         key={tabId}
                         type="button"
                         className={`tab-button${mobileTab === tabId ? " is-active" : ""}`}
                         onClick={() => setMobileTab(tabId)}
                       >
-                        {panelLabel(tabId, locale)}
+                        {consolidatedLabel(tabId, locale)}
                       </button>
                     ))}
                   </div>
                   <div className="wb-mobile-drawer-body">
-                    {mobileTab === "watchlist" && <DockWatchlistPanel />}
-                    {mobileTab === "alerts" && <DockAlertsPanel />}
-                    {mobileTab === "levels" && <DockKeyLevelsPanel />}
-                    {mobileTab === "scanner" && <DockScannerPanel />}
-                    {mobileTab === "drawings" && <DockDrawingsPanel />}
-                    {mobileTab === "annotations" && <DockAnnotationsPanel />}
-                    {mobileTab === "runs" && <DockRunsPanel />}
-                    {mobileTab === "drafts" && <DockDraftsPanel />}
-                    {mobileTab === "account" && <DockAccountPanel />}
+                    {mobileTab === "watchlist" && (
+                      <WatchlistPanel
+                        instruments={instruments}
+                        selectedInstrumentId={activeInstrument}
+                        onSelect={onSelectInstrument}
+                        onOpenSymbolSearch={onOpenSymbolSearch}
+                      />
+                    )}
+                    {mobileTab === "monitor" && renderMonitorPanel()}
+                    {mobileTab === "layers" && renderLayersPanel()}
+                    {mobileTab === "trade" && renderTradePanel(false)}
+                    {mobileTab === "runs" && (
+                      <RunsPanel
+                        controller={runsController}
+                        activeTimeframe={activeTimeframe}
+                        onJumpToRound={onJumpToRound}
+                        onReplayBeforeRound={onReplayBeforeRound}
+                      />
+                    )}
                   </div>
                 </div>
               )}
             </div>
           ) : (
-            <div className="wb-dockview-host" data-testid="dockview-host">
-              <DockviewReact
-                theme={theme === "dark" ? themeDark : themeLight}
-                components={DOCKVIEW_COMPONENTS}
-                onReady={handleDockReady}
-              />
+            <div className={`wb-workspace-body is-mode-${shellUi.mode}`}>
+              <div className="wb-center-column">
+                <div className="wb-dockview-host" data-testid="dockview-host">
+                  <DockviewReact
+                    theme={theme === "dark" ? themeDark : themeLight}
+                    components={DOCKVIEW_COMPONENTS}
+                    onReady={handleDockReady}
+                  />
+                </div>
+
+                {shellUi.mode === "live" && shellUi.tradeDrawerOpen && (
+                  <>
+                    <div
+                      className="wb-resize-handle-y"
+                      role="separator"
+                      aria-orientation="horizontal"
+                      onPointerDown={(e) => startResizeBottomDrawer(e, "trade")}
+                    />
+                    <section
+                      className="wb-bottom-drawer"
+                      style={{ height: shellUi.tradeDrawerHeight }}
+                      data-testid="trade-bottom-drawer"
+                    >
+                      {renderTradePanel(true, () =>
+                        setShellUi((prev) => ({ ...prev, tradeDrawerOpen: false })),
+                      )}
+                    </section>
+                  </>
+                )}
+
+                {shellUi.mode === "backtest" && shellUi.backtestDrawerOpen && (
+                  <>
+                    <div
+                      className="wb-resize-handle-y"
+                      role="separator"
+                      aria-orientation="horizontal"
+                      onPointerDown={(e) => startResizeBottomDrawer(e, "backtest")}
+                    />
+                    <section
+                      className="wb-bottom-drawer wb-bottom-drawer--backtest"
+                      style={{ height: shellUi.backtestDrawerHeight }}
+                      data-testid="backtest-bottom-drawer"
+                    >
+                      <RunsPanel
+                        controller={runsController}
+                        activeTimeframe={activeTimeframe}
+                        onJumpToRound={onJumpToRound}
+                        onReplayBeforeRound={onReplayBeforeRound}
+                        layout="wide"
+                        onCollapse={() =>
+                          setShellUi((prev) => ({ ...prev, backtestDrawerOpen: false }))
+                        }
+                      />
+                    </section>
+                  </>
+                )}
+              </div>
+
+              {activeRightDrawer && (
+                <>
+                  <div
+                    className="wb-resize-handle-x"
+                    role="separator"
+                    aria-orientation="vertical"
+                    onPointerDown={startResizeRightDrawer}
+                  />
+                  <aside
+                    className="wb-right-drawer"
+                    style={{ width: shellUi.rightDrawerWidth }}
+                    data-testid={`right-drawer-${activeRightDrawer}`}
+                  >
+                    {activeRightDrawer === "watchlist" && (
+                      <WatchlistPanel
+                        instruments={instruments}
+                        selectedInstrumentId={activeInstrument}
+                        onSelect={onSelectInstrument}
+                        onOpenSymbolSearch={onOpenSymbolSearch}
+                      />
+                    )}
+                    {activeRightDrawer === "monitor" && renderMonitorPanel()}
+                    {activeRightDrawer === "layers" && renderLayersPanel()}
+                  </aside>
+                </>
+              )}
+
+              <nav
+                className="wb-activity-rail"
+                aria-label={t("工作台功能栏", "Workbench activity rail")}
+                data-testid="activity-rail"
+              >
+                {shellUi.mode === "live" && (
+                  <>
+                    <button
+                      type="button"
+                      className={`wb-rail-btn${
+                        activeRightDrawer === "watchlist" ? " is-active" : ""
+                      }`}
+                      data-testid="rail-watchlist"
+                      aria-pressed={activeRightDrawer === "watchlist"}
+                      onClick={() => toggleRightRail("watchlist")}
+                    >
+                      <Bookmark size={16} />
+                      <span>{consolidatedLabel("watchlist", locale)}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className={`wb-rail-btn${
+                        activeRightDrawer === "monitor" ? " is-active" : ""
+                      }`}
+                      data-testid="rail-monitor"
+                      aria-pressed={activeRightDrawer === "monitor"}
+                      onClick={() => toggleRightRail("monitor")}
+                    >
+                      <Activity size={16} />
+                      <span>{consolidatedLabel("monitor", locale)}</span>
+                      {monitorBadgeCount > 0 && (
+                        <span
+                          className={`wb-rail-badge${
+                            alertsController.unread > 0 ? " is-alert" : ""
+                          }`}
+                        >
+                          {monitorBadgeCount}
+                        </span>
+                      )}
+                    </button>
+                  </>
+                )}
+
+                <button
+                  type="button"
+                  className={`wb-rail-btn${
+                    activeRightDrawer === "layers" ? " is-active" : ""
+                  }`}
+                  data-testid="rail-layers"
+                  aria-pressed={activeRightDrawer === "layers"}
+                  onClick={() => toggleRightRail("layers")}
+                >
+                  <Layers size={16} />
+                  <span>{consolidatedLabel("layers", locale)}</span>
+                  {layersTotalCount > 0 && (
+                    <span className="wb-rail-badge">{layersTotalCount}</span>
+                  )}
+                </button>
+              </nav>
             </div>
           )}
         </main>
@@ -1232,12 +1426,64 @@ export function WorkbenchShell({
             </span>
           </div>
 
-          <div className="wb-footer-right" data-testid="vela-attribution">
-            <span>{t("图表引擎：", "Charted by ")}</span>
-            <a href={VELA_ATTRIBUTION.url} target="_blank" rel="noreferrer">
-              {VELA_ATTRIBUTION.label}
-            </a>
-            <span className="wb-attribution-url">({VELA_ATTRIBUTION.url})</span>
+          <div className="wb-footer-right">
+            {!popoutConfig && !isMobile && shellUi.mode === "live" && (
+              <button
+                type="button"
+                className={`wb-footer-drawer-toggle${
+                  shellUi.tradeDrawerOpen ? " is-active" : ""
+                }`}
+                data-testid="footer-trade-toggle"
+                onClick={() =>
+                  setShellUi((prev) => ({
+                    ...prev,
+                    tradeDrawerOpen: !prev.tradeDrawerOpen,
+                  }))
+                }
+              >
+                <Briefcase size={12} />
+                <span>{consolidatedLabel("trade", locale)}</span>
+                {shellUi.tradeDrawerOpen ? (
+                  <ChevronDown size={12} />
+                ) : (
+                  <ChevronUp size={12} />
+                )}
+              </button>
+            )}
+
+            {!popoutConfig && !isMobile && shellUi.mode === "backtest" && (
+              <button
+                type="button"
+                className={`wb-footer-drawer-toggle${
+                  shellUi.backtestDrawerOpen ? " is-active" : ""
+                }`}
+                data-testid="footer-backtest-toggle"
+                onClick={() =>
+                  setShellUi((prev) => ({
+                    ...prev,
+                    backtestDrawerOpen: !prev.backtestDrawerOpen,
+                  }))
+                }
+              >
+                <History size={12} />
+                <span>
+                  {consolidatedLabel("runs", locale)} ({runsController.runs.length})
+                </span>
+                {shellUi.backtestDrawerOpen ? (
+                  <ChevronDown size={12} />
+                ) : (
+                  <ChevronUp size={12} />
+                )}
+              </button>
+            )}
+
+            <div className="wb-vela-group" data-testid="vela-attribution">
+              <span>{t("图表引擎：", "Charted by ")}</span>
+              <a href={VELA_ATTRIBUTION.url} target="_blank" rel="noreferrer">
+                {VELA_ATTRIBUTION.label}
+              </a>
+              <span className="wb-attribution-url">({VELA_ATTRIBUTION.url})</span>
+            </div>
           </div>
         </footer>
         {!replayActive && alertsController.toast && (

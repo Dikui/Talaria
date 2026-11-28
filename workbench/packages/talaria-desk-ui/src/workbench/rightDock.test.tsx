@@ -4,14 +4,21 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AlertPanel } from "../features/alerts/AlertPanel";
 import type { AlertsController } from "../features/alerts/useAlerts";
+import type { AnnotationsController } from "../features/annotations/useAnnotations";
 import { DeskSocketHub } from "../features/feed/deskSocketHub";
+import type { ScannerController } from "../features/scanner/useScanner";
+import { defaultStructureFilter } from "../features/structures/model";
 import {
-  RIGHT_DOCK_TABS,
-  ensureAllRightDockPanels,
-  ensureRightDockPanel,
-  findRightDockGroup,
-  syncRightDockTitles,
+  DEFAULT_SHELL_UI_STATE,
+  applyPresetLayout,
+  loadShellUiState,
+  resolvePanelNavigation,
+  saveShellUiState,
+  toggleRightDrawerState,
 } from "./layoutStore";
+import { LayersPanel } from "./LayersPanel";
+import { MonitorPanel } from "./MonitorPanel";
+import { TradePanel } from "./TradePanel";
 
 interface MockPanel {
   id: string;
@@ -77,6 +84,7 @@ function createMockDockApi() {
     },
     addPanel(opts: {
       id: string;
+      component?: string;
       title?: string;
       position?: { referenceGroup?: MockGroup; direction?: string };
     }) {
@@ -96,6 +104,10 @@ function createMockDockApi() {
       targetGroup.panels.push(panel);
       panelMap.set(panel.id, panel);
       return panel;
+    },
+    clear() {
+      groups.length = 0;
+      panelMap.clear();
     },
     removePanel(panel: MockPanel) {
       panelMap.delete(panel.id);
@@ -136,53 +148,192 @@ function makeAlertsController(): AlertsController {
   };
 }
 
-describe("Right-dock layout helpers, AlertPanel seed consumption, and global WS events", () => {
-  it("locates right-dock group after closing watchlist, recreates closed tabs, and syncs locale titles", () => {
+function makeScannerController(): ScannerController {
+  return {
+    triggers: [],
+    focus: [],
+    loading: false,
+    scanning: false,
+    error: null,
+    unread: 0,
+    refresh: vi.fn(async () => undefined),
+    scanNow: vi.fn(async () => undefined),
+    ingest: vi.fn(),
+    markSeen: vi.fn(),
+  };
+}
+
+function makeAnnotationsController(): AnnotationsController {
+  return {
+    annotations: [],
+    loading: false,
+    error: null,
+    refresh: vi.fn(async () => undefined),
+    adopt: vi.fn(async () => undefined),
+    dismiss: vi.fn(async () => undefined),
+  };
+}
+
+describe("Scheme B layout helpers, consolidated panels, AlertPanel seed consumption, and global WS events", () => {
+  it("applies chart-only Dockview presets and manages Scheme B shell navigation & storage", () => {
     const dock = createMockDockApi();
-    expect(findRightDockGroup(dock)).toBeUndefined();
-
-    const first = ensureAllRightDockPanels(dock, "zh");
-    expect(first.id).toBe("dock-watchlist");
-    const group = findRightDockGroup(dock);
-    expect(group).toBeDefined();
-    expect(group?.panels.map((p) => p.id)).toEqual(
-      RIGHT_DOCK_TABS.map((tab) => `dock-${tab}`),
-    );
-    expect(dock.getPanel("dock-levels")?.api).toBeDefined();
-    expect((dock.getPanel("dock-levels") as unknown as MockPanel).title).toBe("结构位");
-
-    // Closing dock-watchlist leaves the remaining 8 tabs in the right group.
-    dock.removePanel(first);
+    applyPresetLayout(dock, "multi-tf");
+    expect(dock.getPanel("chart-1m")).toBeDefined();
+    expect(dock.getPanel("chart-5m")).toBeDefined();
+    expect(dock.getPanel("chart-1h")).toBeDefined();
     expect(dock.getPanel("dock-watchlist")).toBeUndefined();
-    const afterCloseOne = findRightDockGroup(dock);
-    expect(afterCloseOne).toBe(group);
-    expect(afterCloseOne?.panels.length).toBe(8);
 
-    // Syncing locale updates all open right-dock tabs without touching chart panels.
-    syncRightDockTitles(dock, "en");
-    expect((dock.getPanel("dock-levels") as unknown as MockPanel).title).toBe("Structures");
-    expect((dock.getPanel("dock-account") as unknown as MockPanel).title).toBe("Paper");
-    expect((dock.getPanel("chart-1m") as unknown as MockPanel).title).toBe("BTC-USDT-PERP · 1m");
+    // Toggling the same rail icon collapses the drawer; clicking another switches to it.
+    const collapsed = toggleRightDrawerState(DEFAULT_SHELL_UI_STATE, "watchlist");
+    expect(collapsed.rightDrawer).toBeNull();
+    const switched = toggleRightDrawerState(collapsed, "monitor");
+    expect(switched.rightDrawer).toBe("monitor");
 
-    syncRightDockTitles(dock, "zh");
-    expect((dock.getPanel("dock-levels") as unknown as MockPanel).title).toBe("结构位");
+    // Legacy & consolidated panel targets map cleanly to Scheme B regions.
+    const toAlerts = resolvePanelNavigation(DEFAULT_SHELL_UI_STATE, "alerts");
+    expect(toAlerts.mode).toBe("live");
+    expect(toAlerts.rightDrawer).toBe("monitor");
+    expect(toAlerts.monitorTab).toBe("alerts");
 
-    // ensureRightDockPanel restores a single closed tab back into the same group.
-    const restoredWatchlist = ensureRightDockPanel(dock, "watchlist", "zh");
-    expect(restoredWatchlist.group).toBe(group);
+    const toLevels = resolvePanelNavigation(DEFAULT_SHELL_UI_STATE, "levels");
+    expect(toLevels.rightDrawer).toBe("layers");
+    expect(toLevels.layerSource).toBe("structure");
 
-    // Closing every right-dock panel leaves findRightDockGroup undefined, and
-    // ensureAllRightDockPanels cleanly recreates all 9 panels.
-    for (const tab of RIGHT_DOCK_TABS) {
-      const p = dock.getPanel(`dock-${tab}`);
-      if (p) dock.removePanel(p);
-    }
-    expect(findRightDockGroup(dock)).toBeUndefined();
+    const toDrafts = resolvePanelNavigation(DEFAULT_SHELL_UI_STATE, "drafts");
+    expect(toDrafts.mode).toBe("live");
+    expect(toDrafts.tradeDrawerOpen).toBe(true);
+    expect(toDrafts.tradeTab).toBe("drafts");
 
-    ensureAllRightDockPanels(dock, "en");
-    const recreated = findRightDockGroup(dock);
-    expect(recreated?.panels.length).toBe(RIGHT_DOCK_TABS.length);
-    expect((dock.getPanel("dock-watchlist") as unknown as MockPanel).title).toBe("Watchlist");
+    const toRuns = resolvePanelNavigation(DEFAULT_SHELL_UI_STATE, "runs");
+    expect(toRuns.mode).toBe("backtest");
+    expect(toRuns.backtestDrawerOpen).toBe(true);
+
+    // Persists & clamps shell UI state safely.
+    const mem = new Map<string, string>();
+    const storage = {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        mem.set(k, v);
+      },
+    };
+    saveShellUiState(
+      {
+        ...toRuns,
+        rightDrawerWidth: 999,
+        tradeDrawerHeight: 50,
+      },
+      storage,
+    );
+    const loaded = loadShellUiState(storage);
+    expect(loaded.mode).toBe("backtest");
+    expect(loaded.rightDrawerWidth).toBe(560);
+    expect(loaded.tradeDrawerHeight).toBe(180);
+  });
+
+  it("switches consolidated MonitorPanel, LayersPanel, and TradePanel sub-views", () => {
+    const onMonitorTab = vi.fn();
+    const { rerender: rerenderMonitor } = render(
+      <MonitorPanel
+        activeTab="scanner"
+        onTabChange={onMonitorTab}
+        scannerController={makeScannerController()}
+        alertsController={makeAlertsController()}
+        deniedAlerts={[]}
+        instrumentId="BTC-USDT-PERP"
+        timeframe="1m"
+        instruments={[]}
+        drawings={[]}
+        link={{ subscribeDrawings: () => () => undefined }}
+        alertSeed={null}
+        onSeedConsumed={vi.fn()}
+        onLocate={vi.fn()}
+        readOnly={false}
+        replayActive={false}
+      />,
+    );
+    expect(screen.getByTestId("scanner-dock")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("monitor-tab-alerts"));
+    expect(onMonitorTab).toHaveBeenCalledWith("alerts");
+    rerenderMonitor(
+      <MonitorPanel
+        activeTab="alerts"
+        onTabChange={onMonitorTab}
+        scannerController={makeScannerController()}
+        alertsController={makeAlertsController()}
+        deniedAlerts={[]}
+        instrumentId="BTC-USDT-PERP"
+        timeframe="1m"
+        instruments={[]}
+        drawings={[]}
+        link={{ subscribeDrawings: () => () => undefined }}
+        alertSeed={null}
+        onSeedConsumed={vi.fn()}
+        onLocate={vi.fn()}
+        readOnly={false}
+        replayActive={false}
+      />,
+    );
+    expect(screen.getByTestId("alerts-panel")).toBeTruthy();
+
+    const onLayerSource = vi.fn();
+    render(
+      <LayersPanel
+        sourceFilter="all"
+        onSourceChange={onLayerSource}
+        structureProps={{
+          structures: [],
+          allStructures: [],
+          activeTimeframe: "1m",
+          filter: defaultStructureFilter,
+          onFilterChange: vi.fn(),
+          precision: 2,
+          ignoredCount: 0,
+          onIgnore: vi.fn(),
+          ignoringId: null,
+          onAdopt: vi.fn(),
+          adoptingId: null,
+          adoptedIds: new Set(),
+          onAttachAlert: vi.fn(),
+          loading: false,
+          error: null,
+          readOnly: false,
+        }}
+        drawingProps={{
+          drawings: [],
+          selectedId: null,
+          readOnly: false,
+          onSelect: vi.fn(),
+          onDelete: vi.fn(),
+          onAttachAlert: vi.fn(),
+        }}
+        annotationProps={{
+          controller: makeAnnotationsController(),
+          readOnly: false,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("layers-all-stack")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("layers-source-drawing"));
+    expect(onLayerSource).toHaveBeenCalledWith("drawing");
+
+    const onTradeTab = vi.fn();
+    const onCollapse = vi.fn();
+    render(
+      <TradePanel
+        activeTab="account"
+        onTabChange={onTradeTab}
+        onCollapse={onCollapse}
+        draftPanelProps={{
+          activeInstrumentId: "BTC-USDT-PERP",
+          activeTimeframe: "1m",
+          pollIntervalMs: 0,
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("trade-tab-drafts"));
+    expect(onTradeTab).toHaveBeenCalledWith("drafts");
+    fireEvent.click(screen.getByTestId("trade-drawer-collapse"));
+    expect(onCollapse).toHaveBeenCalledTimes(1);
   });
 
   it("consumes formSeed once and does not reopen the form on subsequent prop updates", () => {

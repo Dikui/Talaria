@@ -32,6 +32,35 @@ export function panelLabel(panel: PanelName, locale: Locale = getLocale()): stri
   return (locale === "zh" ? PANEL_LABELS : ENGLISH_LABELS)[panel];
 }
 
+export const CONSOLIDATED_LABELS_ZH = {
+  live: "看盘",
+  backtest: "回测",
+  watchlist: "自选",
+  monitor: "监控",
+  layers: "图层",
+  trade: "交易",
+  runs: "回测",
+} as const;
+
+export const CONSOLIDATED_LABELS_EN = {
+  live: "Live",
+  backtest: "Backtest",
+  watchlist: "Watchlist",
+  monitor: "Monitor",
+  layers: "Layers",
+  trade: "Trade",
+  runs: "Runs",
+} as const;
+
+export type ConsolidatedLabelKey = keyof typeof CONSOLIDATED_LABELS_ZH;
+
+export function consolidatedLabel(
+  key: ConsolidatedLabelKey,
+  locale: Locale = getLocale(),
+): string {
+  return (locale === "zh" ? CONSOLIDATED_LABELS_ZH : CONSOLIDATED_LABELS_EN)[key];
+}
+
 export const PANELS = Object.keys(PANEL_LABELS) as PanelName[];
 export const DESK_PATH = "/desk";
 export const LINK_PATH = "/desk/link";

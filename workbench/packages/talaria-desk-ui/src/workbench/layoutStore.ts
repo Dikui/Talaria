@@ -1,11 +1,31 @@
 import type { DockviewApi, SerializedDockview } from "dockview-react";
 
-import { getLocale, type Locale } from "../lib/i18n";
-import { panelLabel } from "./panels";
-
-export const WORKBENCH_LAYOUT_STORAGE_KEY = "talaria-workbench-dockview-layout-v1";
+export const WORKBENCH_LAYOUT_STORAGE_KEY = "talaria-workbench-dockview-layout-v2";
+export const SHELL_UI_STORAGE_KEY = "talaria-workbench-shell-ui-v1";
 
 export type LayoutPreset = "multi-tf" | "single" | "quad";
+export type WorkspaceMode = "live" | "backtest";
+export type RightDrawerId = "watchlist" | "monitor" | "layers";
+export type MonitorSubTab = "scanner" | "alerts";
+export type LayerSourceTab = "all" | "structure" | "drawing" | "annotation";
+export type TradeDrawerTab = "account" | "drafts" | "split";
+
+export const MOBILE_TABS = ["watchlist", "monitor", "layers", "trade", "runs"] as const;
+export type MobileTabId = (typeof MOBILE_TABS)[number];
+
+export type LegacyOrConsolidatedPanelTarget =
+  | "watchlist"
+  | "alerts"
+  | "levels"
+  | "scanner"
+  | "drawings"
+  | "annotations"
+  | "runs"
+  | "drafts"
+  | "account"
+  | "monitor"
+  | "layers"
+  | "trade";
 
 export interface ChartPaneParams {
   paneId: string;
@@ -13,114 +33,131 @@ export interface ChartPaneParams {
   syncTimeframe: boolean;
 }
 
-export const RIGHT_DOCK_TABS = [
-  "watchlist",
-  "alerts",
-  "levels",
-  "scanner",
-  "drawings",
-  "annotations",
-  "runs",
-  "drafts",
-  "account",
-] as const;
-
-export type RightDockTabId = (typeof RIGHT_DOCK_TABS)[number];
-
-export interface RightDockParams {
-  panelType: RightDockTabId;
+export interface ShellUiState {
+  mode: WorkspaceMode;
+  rightDrawer: RightDrawerId | null;
+  rightDrawerWidth: number;
+  monitorTab: MonitorSubTab;
+  layerSource: LayerSourceTab;
+  tradeDrawerOpen: boolean;
+  tradeDrawerHeight: number;
+  tradeTab: TradeDrawerTab;
+  backtestDrawerOpen: boolean;
+  backtestDrawerHeight: number;
 }
 
-type DockGroup = DockviewApi["groups"][number];
-type DockPanel = NonNullable<ReturnType<DockviewApi["getPanel"]>>;
+export const DEFAULT_SHELL_UI_STATE: ShellUiState = {
+  mode: "live",
+  rightDrawer: "watchlist",
+  rightDrawerWidth: 340,
+  monitorTab: "scanner",
+  layerSource: "all",
+  tradeDrawerOpen: false,
+  tradeDrawerHeight: 280,
+  tradeTab: "account",
+  backtestDrawerOpen: true,
+  backtestDrawerHeight: 320,
+};
 
-const RIGHT_DOCK_PANEL_IDS = new Set<string>(
-  RIGHT_DOCK_TABS.map((tab) => `dock-${tab}`),
-);
-
-export function rightDockPanelId(tab: RightDockTabId): string {
-  return `dock-${tab}`;
+export function clampRightDrawerWidth(width: number): number {
+  if (!Number.isFinite(width)) return DEFAULT_SHELL_UI_STATE.rightDrawerWidth;
+  return Math.max(260, Math.min(560, Math.round(width)));
 }
 
-export function isRightDockPanelId(id: string): boolean {
-  return RIGHT_DOCK_PANEL_IDS.has(id);
+export function clampBottomDrawerHeight(height: number): number {
+  if (!Number.isFinite(height)) return DEFAULT_SHELL_UI_STATE.tradeDrawerHeight;
+  return Math.max(180, Math.min(560, Math.round(height)));
 }
 
-/**
- * Locate the Dockview group hosting the right-dock panels.
- * Prefers a pure right-dock group (highest panel count) and falls back to any
- * group containing right-dock panels so closing `自选` or splitting panels
- * never orphans the header toggle.
- */
-export function findRightDockGroup(api: DockviewApi): DockGroup | undefined {
-  let bestPure: { group: DockGroup; count: number } | null = null;
-  let bestAny: { group: DockGroup; count: number } | null = null;
-  for (const group of api.groups) {
-    const rightCount = group.panels.filter((p) => isRightDockPanelId(p.id)).length;
-    if (rightCount === 0) continue;
-    const isPure = rightCount === group.panels.length;
-    if (isPure && (!bestPure || rightCount > bestPure.count)) {
-      bestPure = { group, count: rightCount };
-    }
-    if (!bestAny || rightCount > bestAny.count) {
-      bestAny = { group, count: rightCount };
-    }
+export function toggleRightDrawerState(
+  state: ShellUiState,
+  id: RightDrawerId,
+): ShellUiState {
+  return {
+    ...state,
+    rightDrawer: state.rightDrawer === id ? null : id,
+  };
+}
+
+export function resolvePanelNavigation(
+  state: ShellUiState,
+  target: LegacyOrConsolidatedPanelTarget,
+): ShellUiState {
+  switch (target) {
+    case "watchlist":
+      return { ...state, mode: "live", rightDrawer: "watchlist" };
+    case "alerts":
+      return { ...state, mode: "live", rightDrawer: "monitor", monitorTab: "alerts" };
+    case "scanner":
+      return { ...state, mode: "live", rightDrawer: "monitor", monitorTab: "scanner" };
+    case "monitor":
+      return { ...state, mode: "live", rightDrawer: "monitor" };
+    case "levels":
+      return { ...state, rightDrawer: "layers", layerSource: "structure" };
+    case "drawings":
+      return { ...state, rightDrawer: "layers", layerSource: "drawing" };
+    case "annotations":
+      return { ...state, rightDrawer: "layers", layerSource: "annotation" };
+    case "layers":
+      return { ...state, rightDrawer: "layers" };
+    case "drafts":
+      return {
+        ...state,
+        mode: "live",
+        tradeDrawerOpen: true,
+        tradeTab: state.tradeTab === "split" ? "split" : "drafts",
+      };
+    case "account":
+      return {
+        ...state,
+        mode: "live",
+        tradeDrawerOpen: true,
+        tradeTab: state.tradeTab === "split" ? "split" : "account",
+      };
+    case "trade":
+      return { ...state, mode: "live", tradeDrawerOpen: true };
+    case "runs":
+      return { ...state, mode: "backtest", backtestDrawerOpen: true };
   }
-  return bestPure?.group ?? bestAny?.group;
 }
 
-/** Ensure a single right-dock tab exists in the right dock group and return it. */
-export function ensureRightDockPanel(
-  api: DockviewApi,
-  tab: RightDockTabId,
-  locale: Locale = getLocale(),
-): DockPanel {
-  const id = rightDockPanelId(tab);
-  const existing = api.getPanel(id);
-  if (existing) return existing;
-
-  const group = findRightDockGroup(api);
-  return api.addPanel<RightDockParams>({
-    id,
-    component: tab,
-    title: panelLabel(tab, locale),
-    params: { panelType: tab },
-    ...(group
-      ? { position: { referenceGroup: group } }
-      : { position: { direction: "right" }, initialWidth: 340 }),
-  });
-}
-
-/** Ensure all right-dock tabs exist in canonical order and return Watchlist. */
-export function ensureAllRightDockPanels(
-  api: DockviewApi,
-  locale: Locale = getLocale(),
-): DockPanel {
-  let first: DockPanel | null = null;
-  for (const tab of RIGHT_DOCK_TABS) {
-    const panel = ensureRightDockPanel(api, tab, locale);
-    if (!first) first = panel;
-  }
-  return first!;
-}
-
-/** Synchronize right-dock tab titles with the active UI locale. */
-export function syncRightDockTitles(
-  api: DockviewApi,
-  locale: Locale = getLocale(),
-): void {
-  for (const tab of RIGHT_DOCK_TABS) {
-    const panel = api.getPanel(rightDockPanelId(tab));
-    if (panel) {
-      panel.api.setTitle(panelLabel(tab, locale));
-    }
+export function resolveMobileNavigation(target: LegacyOrConsolidatedPanelTarget): {
+  tab: MobileTabId;
+  monitorTab?: MonitorSubTab;
+  layerSource?: LayerSourceTab;
+  tradeTab?: TradeDrawerTab;
+} {
+  switch (target) {
+    case "watchlist":
+      return { tab: "watchlist" };
+    case "alerts":
+      return { tab: "monitor", monitorTab: "alerts" };
+    case "scanner":
+      return { tab: "monitor", monitorTab: "scanner" };
+    case "monitor":
+      return { tab: "monitor" };
+    case "levels":
+      return { tab: "layers", layerSource: "structure" };
+    case "drawings":
+      return { tab: "layers", layerSource: "drawing" };
+    case "annotations":
+      return { tab: "layers", layerSource: "annotation" };
+    case "layers":
+      return { tab: "layers" };
+    case "drafts":
+      return { tab: "trade", tradeTab: "drafts" };
+    case "account":
+      return { tab: "trade", tradeTab: "account" };
+    case "trade":
+      return { tab: "trade" };
+    case "runs":
+      return { tab: "runs" };
   }
 }
 
 export function applyPresetLayout(
   api: DockviewApi,
   preset: LayoutPreset,
-  locale: Locale = getLocale(),
 ): void {
   api.clear();
 
@@ -170,10 +207,6 @@ export function applyPresetLayout(
     });
   }
 
-  const rightDock = ensureAllRightDockPanels(api, locale);
-
-  // Focus watchlist & primary chart cleanly.
-  rightDock.api.setActive();
   p1.api.setActive();
 }
 
@@ -208,7 +241,10 @@ export function loadLayoutFromStorage(
       parsed.panels &&
       Object.keys(parsed.panels).length > 0
     ) {
-      return parsed;
+      const panels = Object.values(parsed.panels) as Array<{ contentComponent?: string }>;
+      if (panels.every((p) => p?.contentComponent === "chart")) {
+        return parsed;
+      }
     }
   } catch {
     // Corrupt layout -> fall back to preset.
@@ -225,5 +261,88 @@ export function clearSavedLayout(
     storage?.removeItem(WORKBENCH_LAYOUT_STORAGE_KEY);
   } catch {
     // Ignore.
+  }
+}
+
+export function saveShellUiState(
+  state: ShellUiState,
+  storage: Pick<Storage, "setItem"> | undefined = typeof localStorage !== "undefined"
+    ? localStorage
+    : undefined,
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(SHELL_UI_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Ignore storage quota errors.
+  }
+}
+
+export function loadShellUiState(
+  storage: Pick<Storage, "getItem"> | undefined = typeof localStorage !== "undefined"
+    ? localStorage
+    : undefined,
+): ShellUiState {
+  if (!storage) return DEFAULT_SHELL_UI_STATE;
+  try {
+    const raw = storage.getItem(SHELL_UI_STORAGE_KEY);
+    if (!raw) return DEFAULT_SHELL_UI_STATE;
+    const parsed = JSON.parse(raw) as Partial<ShellUiState> | null;
+    if (!parsed || typeof parsed !== "object") return DEFAULT_SHELL_UI_STATE;
+
+    const mode: WorkspaceMode = parsed.mode === "backtest" ? "backtest" : "live";
+    const rightDrawer: RightDrawerId | null =
+      parsed.rightDrawer === null
+        ? null
+        : parsed.rightDrawer === "watchlist" ||
+            parsed.rightDrawer === "monitor" ||
+            parsed.rightDrawer === "layers"
+          ? parsed.rightDrawer
+          : DEFAULT_SHELL_UI_STATE.rightDrawer;
+    const monitorTab: MonitorSubTab =
+      parsed.monitorTab === "alerts" ? "alerts" : "scanner";
+    const layerSource: LayerSourceTab =
+      parsed.layerSource === "structure" ||
+      parsed.layerSource === "drawing" ||
+      parsed.layerSource === "annotation"
+        ? parsed.layerSource
+        : "all";
+    const tradeTab: TradeDrawerTab =
+      parsed.tradeTab === "drafts" || parsed.tradeTab === "split"
+        ? parsed.tradeTab
+        : "account";
+
+    return {
+      mode,
+      rightDrawer,
+      rightDrawerWidth: clampRightDrawerWidth(
+        typeof parsed.rightDrawerWidth === "number"
+          ? parsed.rightDrawerWidth
+          : DEFAULT_SHELL_UI_STATE.rightDrawerWidth,
+      ),
+      monitorTab,
+      layerSource,
+      tradeDrawerOpen:
+        typeof parsed.tradeDrawerOpen === "boolean"
+          ? parsed.tradeDrawerOpen
+          : DEFAULT_SHELL_UI_STATE.tradeDrawerOpen,
+      tradeDrawerHeight: clampBottomDrawerHeight(
+        typeof parsed.tradeDrawerHeight === "number"
+          ? parsed.tradeDrawerHeight
+          : DEFAULT_SHELL_UI_STATE.tradeDrawerHeight,
+      ),
+      tradeTab,
+      backtestDrawerOpen:
+        typeof parsed.backtestDrawerOpen === "boolean"
+          ? parsed.backtestDrawerOpen
+          : DEFAULT_SHELL_UI_STATE.backtestDrawerOpen,
+      backtestDrawerHeight: clampBottomDrawerHeight(
+        typeof parsed.backtestDrawerHeight === "number"
+          ? parsed.backtestDrawerHeight
+          : DEFAULT_SHELL_UI_STATE.backtestDrawerHeight,
+      ),
+    };
+  } catch {
+    return DEFAULT_SHELL_UI_STATE;
   }
 }

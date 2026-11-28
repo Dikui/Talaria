@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Layers } from "lucide-react";
 import type { IndicatorBundle, IndicatorName, IndicatorSeries } from "@talaria/contracts";
 
 import { t, useLocale } from "../../lib/i18n";
@@ -27,6 +28,8 @@ interface IndicatorToolbarProps {
   keyLevelsEnabled?: boolean;
   keyLevelsCount?: number;
   onToggleKeyLevels?: () => void;
+  layersCount?: number;
+  onOpenLayers?: () => void;
 }
 
 export function IndicatorToolbar({
@@ -42,6 +45,8 @@ export function IndicatorToolbar({
   keyLevelsEnabled = false,
   keyLevelsCount = 0,
   onToggleKeyLevels,
+  layersCount = 0,
+  onOpenLayers,
 }: IndicatorToolbarProps) {
   const locale = useLocale();
   const [editing, setEditing] = useState<IndicatorName | null>(null);
@@ -96,6 +101,20 @@ export function IndicatorToolbar({
               {keyLevelsEnabled && keyLevelsCount > 0 && (
                 <span className="indicator-latest">{keyLevelsCount}</span>
               )}
+            </button>
+          </div>
+        )}
+        {onOpenLayers && (
+          <div className="indicator-chip">
+            <button
+              type="button"
+              className="indicator-toggle"
+              data-testid="chart-open-layers"
+              onClick={onOpenLayers}
+            >
+              <Layers size={12} />
+              <span>{t("图层", "Layers")}</span>
+              {layersCount > 0 && <span className="indicator-latest">{layersCount}</span>}
             </button>
           </div>
         )}

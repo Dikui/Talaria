@@ -1056,6 +1056,12 @@ export function ChartPane({
         onToggleKeyLevels={() =>
           ctx.onStructureFilterChange(toggleStructuresEnabled(ctx.structureFilter))
         }
+        layersCount={
+          visibleSystemStructures.length +
+          ctx.drawings.filter((d) => d.deleted_at == null).length +
+          ctx.annotationsController.annotations.length
+        }
+        onOpenLayers={isPopout ? undefined : () => ctx.onOpenRightTab("layers")}
       />
 
       <ReplayToolbar
