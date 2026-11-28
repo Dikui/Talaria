@@ -50,6 +50,12 @@ export interface DeskChannelCallbacks {
   onError?: (msg: Extract<DeskMessage, { type: "error" }>) => void;
 }
 
+export interface DeskGlobalEventCallbacks {
+  onAlert?: (alert: AlertTriggerRecord) => void;
+  onAlertQuota?: (deniedAlerts: string[]) => void;
+  onScanner?: (trigger: ScannerTrigger) => void;
+}
+
 interface SubscriptionEntry {
   instrumentId: string;
   timeframe: string;
@@ -71,6 +77,7 @@ export class DeskSocketHub {
   private quotaTimers = new Map<string, number>();
   private subscribers = new Map<number, SubscriptionEntry>();
   private paperAccountListeners = new Map<number, (view: PaperAccountView) => void>();
+  private globalEventListeners = new Map<number, DeskGlobalEventCallbacks>();
   private activeChannels = new Map<string, number>();
   private channelModes = new Map<string, boolean>();
   private nextId = 1;
@@ -174,6 +181,9 @@ export class DeskSocketHub {
         for (const sub of this.subscribers.values()) {
           sub.callbacks.onHello?.(this.hello, this.deniedAlerts);
         }
+        for (const listener of this.globalEventListeners.values()) {
+          listener.onAlertQuota?.(this.deniedAlerts);
+        }
         break;
       case "channel_mode": {
         const key = this.channelKey(msg.instrument_id, msg.timeframe);
@@ -192,6 +202,9 @@ export class DeskSocketHub {
         this.deniedAlerts = msg.denied_alerts;
         for (const sub of this.subscribers.values()) {
           sub.callbacks.onAlertQuota?.(msg.denied_alerts);
+        }
+        for (const listener of this.globalEventListeners.values()) {
+          listener.onAlertQuota?.(msg.denied_alerts);
         }
         break;
       case "bar":
@@ -259,10 +272,16 @@ export class DeskSocketHub {
         for (const sub of this.subscribers.values()) {
           sub.callbacks.onAlert?.(msg.data);
         }
+        for (const listener of this.globalEventListeners.values()) {
+          listener.onAlert?.(msg.data);
+        }
         break;
       case "scanner":
         for (const sub of this.subscribers.values()) {
           sub.callbacks.onScanner?.(msg.data);
+        }
+        for (const listener of this.globalEventListeners.values()) {
+          listener.onScanner?.(msg.data);
         }
         break;
       case "paper_account":
@@ -358,7 +377,7 @@ export class DeskSocketHub {
         this.activeChannels.set(key, current - 1);
       }
 
-      if (this.subscribers.size === 0 && this.paperAccountListeners.size === 0) {
+      if (this.hasNoListeners()) {
         this.closeIfIdle();
       }
     };
@@ -371,10 +390,34 @@ export class DeskSocketHub {
     this.ensureConnected();
     return () => {
       this.paperAccountListeners.delete(id);
-      if (this.subscribers.size === 0 && this.paperAccountListeners.size === 0) {
+      if (this.hasNoListeners()) {
         this.closeIfIdle();
       }
     };
+  }
+
+  subscribeGlobalEvents(callbacks: DeskGlobalEventCallbacks): () => void {
+    this.disposed = false;
+    const id = this.nextId++;
+    this.globalEventListeners.set(id, callbacks);
+    if (this.hello) {
+      callbacks.onAlertQuota?.(this.deniedAlerts);
+    }
+    this.ensureConnected();
+    return () => {
+      this.globalEventListeners.delete(id);
+      if (this.hasNoListeners()) {
+        this.closeIfIdle();
+      }
+    };
+  }
+
+  private hasNoListeners(): boolean {
+    return (
+      this.subscribers.size === 0 &&
+      this.paperAccountListeners.size === 0 &&
+      this.globalEventListeners.size === 0
+    );
   }
 
   private closeIfIdle(): void {
@@ -398,6 +441,7 @@ export class DeskSocketHub {
     this.quotaTimers.clear();
     this.subscribers.clear();
     this.paperAccountListeners.clear();
+    this.globalEventListeners.clear();
     this.activeChannels.clear();
     this.closeIfIdle();
   }

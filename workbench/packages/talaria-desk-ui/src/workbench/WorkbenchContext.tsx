@@ -104,8 +104,10 @@ export interface WorkbenchContextValue {
   onClearDrawings: () => Promise<void>;
 
   alertsController: AlertsController;
+  deniedAlerts: string[];
   alertSeed: AlertFormSeed | null;
   onSeedAlert: (seed: Omit<AlertFormSeed, "nonce">) => void;
+  clearAlertSeed: (nonce?: number) => void;
 
   draftSeed: (DraftSeed & { nonce: number }) | null;
   onSeedDraft: (seed: DraftSeed) => void;

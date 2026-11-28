@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type {
   AlertDirection,
   AlertLevelEvent,
@@ -56,6 +56,7 @@ export interface AlertPanelProps {
   currentInstrument: string;
   currentTimeframe: string;
   formSeed: AlertFormSeed | null;
+  onSeedConsumed?: (nonce: number) => void;
   replayActive?: boolean;
   onLocate: (trigger: AlertTriggerRecord) => void;
 }
@@ -68,6 +69,7 @@ export function AlertPanel({
   currentInstrument,
   currentTimeframe,
   formSeed,
+  onSeedConsumed,
   replayActive = false,
   onLocate,
 }: AlertPanelProps) {
@@ -79,6 +81,7 @@ export function AlertPanel({
   );
   const [formError, setFormError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const consumedSeedNonceRef = useRef<number | null>(null);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -86,7 +89,8 @@ export function AlertPanel({
   }, []);
 
   useEffect(() => {
-    if (formSeed === null) return;
+    if (formSeed === null || consumedSeedNonceRef.current === formSeed.nonce) return;
+    consumedSeedNonceRef.current = formSeed.nonce;
     const hasRemoteDrawing =
       formSeed.drawingId !== undefined &&
       drawings.some((d) => d.drawing_id === formSeed.drawingId);
@@ -105,7 +109,8 @@ export function AlertPanel({
     setFormError(null);
     setFormOpen(true);
     setTab("active");
-  }, [formSeed, currentInstrument, currentTimeframe, drawings]);
+    onSeedConsumed?.(formSeed.nonce);
+  }, [formSeed, currentInstrument, currentTimeframe, drawings, onSeedConsumed]);
 
   const counts = useMemo(() => tabCounts(controller.alerts), [controller.alerts]);
   const visibleAlerts = useMemo(

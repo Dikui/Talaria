@@ -3,36 +3,43 @@ import type { DrawingRecord, InstrumentSpec } from "@talaria/contracts";
 
 import { api } from "../../lib/api";
 import type { LocateTarget, PanelLink } from "../../workbench/link";
-import { useMarketStream } from "../feed/useMarketStream";
-import { AlertPanel, AlertToast, type AlertFormSeed } from "./AlertPanel";
-import { useAlerts } from "./useAlerts";
+import { AlertPanel, type AlertFormSeed } from "./AlertPanel";
+import type { AlertsController } from "./useAlerts";
 
 export interface AlertWorkbenchProps {
+  controller: AlertsController;
+  deniedAlerts?: string[];
   instrumentId: string;
   timeframe: string;
   instruments: InstrumentSpec[];
+  initialDrawings?: DrawingRecord[];
   onLocate: (target: LocateTarget) => void;
   link: Pick<PanelLink, "subscribeDrawings">;
   formSeed?: AlertFormSeed | null;
+  onSeedConsumed?: (nonce: number) => void;
   replayActive?: boolean;
 }
 
 export function AlertWorkbench({
+  controller,
+  deniedAlerts = [],
   instrumentId,
   timeframe,
   instruments,
+  initialDrawings,
   onLocate,
   link,
   formSeed,
+  onSeedConsumed,
   replayActive = false,
 }: AlertWorkbenchProps) {
-  const controller = useAlerts();
-  const { alert, deniedAlerts } = useMarketStream(instrumentId, timeframe);
-  const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
+  const [drawings, setDrawings] = useState<DrawingRecord[]>(() => initialDrawings ?? []);
 
   useEffect(() => {
-    if (alert) controller.ingestTrigger(alert);
-  }, [alert, controller.ingestTrigger]);
+    if (initialDrawings && initialDrawings.length > 0 && drawings.length === 0) {
+      setDrawings(initialDrawings);
+    }
+  }, [initialDrawings, drawings.length]);
 
   useEffect(() => {
     let active = true;
@@ -55,28 +62,17 @@ export function AlertWorkbench({
   }, [instrumentId, timeframe, link]);
 
   return (
-    <>
-      <AlertPanel
-        controller={controller}
-        deniedAlerts={deniedAlerts}
-        instruments={instruments}
-        drawings={drawings}
-        currentInstrument={instrumentId}
-        currentTimeframe={timeframe}
-        formSeed={formSeed ?? null}
-        replayActive={replayActive}
-        onLocate={onLocate}
-      />
-      {!replayActive && controller.toast && (
-        <AlertToast
-          trigger={controller.toast}
-          onLocate={(trig) => {
-            onLocate(trig);
-            controller.clearToast();
-          }}
-          onDismiss={controller.clearToast}
-        />
-      )}
-    </>
+    <AlertPanel
+      controller={controller}
+      deniedAlerts={deniedAlerts}
+      instruments={instruments}
+      drawings={drawings}
+      currentInstrument={instrumentId}
+      currentTimeframe={timeframe}
+      formSeed={formSeed ?? null}
+      onSeedConsumed={onSeedConsumed}
+      replayActive={replayActive}
+      onLocate={onLocate}
+    />
   );
 }

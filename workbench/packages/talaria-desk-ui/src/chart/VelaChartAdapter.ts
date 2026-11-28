@@ -639,6 +639,10 @@ export class VelaChartAdapter implements ChartSurfaceAdapter {
 
   selectHumanDrawing(drawingId: string | null): void {
     if (!this.chart) return;
+    if (this.drawingBridge) {
+      this.drawingBridge.selectDrawing(drawingId);
+      return;
+    }
     this.chart.drawings.select(drawingId);
   }
 

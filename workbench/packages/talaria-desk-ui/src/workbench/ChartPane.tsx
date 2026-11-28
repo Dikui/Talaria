@@ -373,6 +373,10 @@ export function ChartPane({
     adapterRef.current?.setReadOnly(ctx.readOnly);
   }, [ctx.readOnly]);
 
+  useEffect(() => {
+    adapterRef.current?.selectHumanDrawing(ctx.selectedDrawingId);
+  }, [ctx.selectedDrawingId]);
+
   // Sync external BroadcastChannel crosshair onto Vela ghost crosshair.
   useEffect(() => {
     adapterRef.current?.setExternalCrosshair(

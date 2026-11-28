@@ -30,11 +30,12 @@ import type {
 import { VELA_ATTRIBUTION } from "../chart/adapter";
 import { useWebglBudget } from "../chart/webglBudget";
 import { AlertWorkbench } from "../features/alerts/AlertWorkbench";
-import type { AlertFormSeed } from "../features/alerts/AlertPanel";
+import { AlertToast, type AlertFormSeed } from "../features/alerts/AlertPanel";
 import { useAlerts } from "../features/alerts/useAlerts";
 import { AnnotationPanel } from "../features/annotations/AnnotationPanel";
 import { useAnnotations } from "../features/annotations/useAnnotations";
 import { DrawingManager } from "../features/drawings/DrawingManager";
+import { deskSocketHub } from "../features/feed/deskSocketHub";
 import {
   isMobileDrawerViewport,
   isReadOnlyViewport,
@@ -90,12 +91,18 @@ import {
 } from "./chartPreferences";
 import { ChartPane } from "./ChartPane";
 import {
+  RIGHT_DOCK_TABS,
   applyPresetLayout,
   clearSavedLayout,
+  ensureAllRightDockPanels,
+  ensureRightDockPanel,
+  findRightDockGroup,
   loadLayoutFromStorage,
   saveLayoutToStorage,
+  syncRightDockTitles,
   type ChartPaneParams,
   type LayoutPreset,
+  type RightDockTabId,
 } from "./layoutStore";
 import type { LocateTarget } from "./link";
 import { DESK_PATH, panelLabel, type PanelName } from "./panels";
@@ -144,12 +151,16 @@ function DockAlertsPanel() {
   const ctx = useWorkbenchContext();
   return (
     <AlertWorkbench
+      controller={ctx.alertsController}
+      deniedAlerts={ctx.deniedAlerts}
       instrumentId={ctx.activeInstrumentId}
       timeframe={ctx.activeTimeframe}
       instruments={ctx.instruments}
+      initialDrawings={ctx.drawings}
       onLocate={ctx.onLocateTarget}
       link={ctx.primaryLink}
       formSeed={ctx.alertSeed}
+      onSeedConsumed={ctx.clearAlertSeed}
       replayActive={ctx.replayActive}
     />
   );
@@ -302,19 +313,7 @@ export interface WorkbenchShellProps {
   } | null;
 }
 
-const RIGHT_DOCK_TABS = [
-  "watchlist",
-  "alerts",
-  "levels",
-  "scanner",
-  "drawings",
-  "annotations",
-  "runs",
-  "drafts",
-  "account",
-] as const;
-
-type RightTabId = (typeof RIGHT_DOCK_TABS)[number];
+type RightTabId = RightDockTabId;
 
 export function WorkbenchShell({
   initialTheme,
@@ -385,6 +384,7 @@ export function WorkbenchShell({
   const [drawings, setDrawings] = useState<DrawingRecord[]>([]);
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
   const [alertSeed, setAlertSeed] = useState<AlertFormSeed | null>(null);
+  const [deniedAlerts, setDeniedAlerts] = useState<string[]>([]);
   const [draftSeed, setDraftSeed] = useState<(DraftSeed & { nonce: number }) | null>(null);
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [draftsRevision, setDraftsRevision] = useState(0);
@@ -457,6 +457,20 @@ export function WorkbenchShell({
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  useEffect(() => {
+    return deskSocketHub.subscribeGlobalEvents({
+      onAlert: (trigger) => alertsController.ingestTrigger(trigger),
+      onAlertQuota: (denied) => setDeniedAlerts(denied),
+      onScanner: (trigger) => scannerController.ingest(trigger),
+    });
+  }, [alertsController.ingestTrigger, scannerController.ingest]);
+
+  useEffect(() => {
+    if (dockApiRef.current) {
+      syncRightDockTitles(dockApiRef.current, locale);
+    }
+  }, [locale]);
 
   const onOpenSymbolSearch = useCallback((options?: SymbolSearchOptions) => {
     setSymbolSearch({ open: true, options });
@@ -628,7 +642,15 @@ export function WorkbenchShell({
   );
 
   const onSeedAlert = useCallback((seed: Omit<AlertFormSeed, "nonce">) => {
-    setAlertSeed({ ...seed, nonce: Date.now() });
+    setAlertSeed({ ...seed, nonce: Date.now() + Math.random() });
+  }, []);
+
+  const clearAlertSeed = useCallback((nonce?: number) => {
+    setAlertSeed((prev) => {
+      if (!prev) return null;
+      if (nonce !== undefined && prev.nonce !== nonce) return prev;
+      return null;
+    });
   }, []);
 
   const onSeedDraft = useCallback((seed: DraftSeed) => {
@@ -647,6 +669,11 @@ export function WorkbenchShell({
     setDraftsRevision((n) => n + 1);
   }, []);
 
+  const syncRightDockVisibility = useCallback((dockApi: DockviewApi | null) => {
+    const group = dockApi ? findRightDockGroup(dockApi) : undefined;
+    setRightDockVisible(Boolean(group && group.api.isVisible));
+  }, []);
+
   const onOpenRightTab = useCallback(
     (tab: RightTabId) => {
       if (isMobile) {
@@ -655,14 +682,13 @@ export function WorkbenchShell({
         return;
       }
       const dockApi = dockApiRef.current;
-      const panel = dockApi?.getPanel(`dock-${tab}`);
-      if (panel) {
-        panel.group.api.setVisible(true);
-        panel.api.setActive();
-        setRightDockVisible(true);
-      }
+      if (!dockApi) return;
+      const panel = ensureRightDockPanel(dockApi, tab, locale);
+      panel.group.api.setVisible(true);
+      panel.api.setActive();
+      setRightDockVisible(true);
     },
-    [isMobile],
+    [isMobile, locale],
   );
 
   const onPopoutChart = useCallback(
@@ -779,8 +805,10 @@ export function WorkbenchShell({
       onDeleteDrawing,
       onClearDrawings,
       alertsController,
+      deniedAlerts,
       alertSeed,
       onSeedAlert,
+      clearAlertSeed,
       draftSeed,
       onSeedDraft,
       clearDraftSeed,
@@ -839,8 +867,10 @@ export function WorkbenchShell({
       onDeleteDrawing,
       onClearDrawings,
       alertsController,
+      deniedAlerts,
       alertSeed,
       onSeedAlert,
+      clearAlertSeed,
       draftSeed,
       onSeedDraft,
       clearDraftSeed,
@@ -869,31 +899,38 @@ export function WorkbenchShell({
     ],
   );
 
-  const handleDockReady = useCallback((event: DockviewReadyEvent) => {
-    dockApiRef.current = event.api;
-    const saved = loadLayoutFromStorage();
-    if (saved) {
-      try {
-        event.api.fromJSON(saved);
-      } catch {
-        applyPresetLayout(event.api, "multi-tf");
-      }
-    } else {
-      applyPresetLayout(event.api, "multi-tf");
-    }
-
-    event.api.onDidLayoutChange(() => {
-      if (saveTimerRef.current !== null) {
-        window.clearTimeout(saveTimerRef.current);
-      }
-      saveTimerRef.current = window.setTimeout(() => {
-        saveTimerRef.current = null;
-        if (dockApiRef.current) {
-          saveLayoutToStorage(dockApiRef.current);
+  const handleDockReady = useCallback(
+    (event: DockviewReadyEvent) => {
+      dockApiRef.current = event.api;
+      const activeLocale = getLocale();
+      const saved = loadLayoutFromStorage();
+      if (saved) {
+        try {
+          event.api.fromJSON(saved);
+        } catch {
+          applyPresetLayout(event.api, "multi-tf", activeLocale);
         }
-      }, 250);
-    });
-  }, []);
+      } else {
+        applyPresetLayout(event.api, "multi-tf", activeLocale);
+      }
+      syncRightDockTitles(event.api, activeLocale);
+      syncRightDockVisibility(event.api);
+
+      event.api.onDidLayoutChange(() => {
+        syncRightDockVisibility(event.api);
+        if (saveTimerRef.current !== null) {
+          window.clearTimeout(saveTimerRef.current);
+        }
+        saveTimerRef.current = window.setTimeout(() => {
+          saveTimerRef.current = null;
+          if (dockApiRef.current) {
+            saveLayoutToStorage(dockApiRef.current);
+          }
+        }, 250);
+      });
+    },
+    [syncRightDockVisibility],
+  );
 
   const addChartPane = () => {
     const dockApi = dockApiRef.current;
@@ -914,9 +951,9 @@ export function WorkbenchShell({
   const applyPreset = (preset: LayoutPreset) => {
     const dockApi = dockApiRef.current;
     if (!dockApi) return;
-    applyPresetLayout(dockApi, preset);
+    applyPresetLayout(dockApi, preset, locale);
     saveLayoutToStorage(dockApi);
-    setRightDockVisible(true);
+    syncRightDockVisibility(dockApi);
   };
 
   const resetLayout = () => {
@@ -930,12 +967,18 @@ export function WorkbenchShell({
       return;
     }
     const dockApi = dockApiRef.current;
-    const watchlistPanel = dockApi?.getPanel("dock-watchlist");
-    if (watchlistPanel) {
-      const next = !rightDockVisible;
-      watchlistPanel.group.api.setVisible(next);
+    if (!dockApi) return;
+    const group = findRightDockGroup(dockApi);
+    if (group) {
+      const next = !group.api.isVisible;
+      group.api.setVisible(next);
       setRightDockVisible(next);
+      return;
     }
+    const watchlist = ensureAllRightDockPanels(dockApi, locale);
+    watchlist.group.api.setVisible(true);
+    watchlist.api.setActive();
+    setRightDockVisible(true);
   };
 
   return (
@@ -1197,6 +1240,16 @@ export function WorkbenchShell({
             <span className="wb-attribution-url">({VELA_ATTRIBUTION.url})</span>
           </div>
         </footer>
+        {!replayActive && alertsController.toast && (
+          <AlertToast
+            trigger={alertsController.toast}
+            onLocate={(trig) => {
+              onLocateTarget(trig);
+              alertsController.clearToast();
+            }}
+            onDismiss={alertsController.clearToast}
+          />
+        )}
         <InstrumentSearchModal
           open={symbolSearch.open}
           title={symbolSearch.options?.title}

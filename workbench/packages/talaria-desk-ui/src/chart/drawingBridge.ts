@@ -337,6 +337,7 @@ export class VelaDrawingSyncBridge {
   private remoteRecords = new Map<string, DrawingRecord>();
   private ephemeralIds = new Set<string>();
   private debounceTimers = new Map<string, number>();
+  private selectedRemoteId: string | null = null;
   private suppressEvents = false;
   private readOnly = false;
   private replayFilter: ReplayDrawingFilter = {
@@ -442,9 +443,33 @@ export class VelaDrawingSyncBridge {
           }
         }
         const resolved = id ? (this.localToRemoteId.get(id) ?? id) : null;
+        this.selectedRemoteId = resolved;
         this.onSelected?.(resolved);
       }),
     );
+  }
+
+  /** Select or clear a persisted drawing on the chart by its remote `drawing_id`. */
+  selectDrawing(remoteDrawingId: string | null): void {
+    if (remoteDrawingId === this.selectedRemoteId) return;
+    if (remoteDrawingId === null) {
+      this.selectedRemoteId = null;
+      this.chart.drawings.select(null);
+      return;
+    }
+    const all = this.chart.drawings.all();
+    let localId = all.find((d) => d.id === remoteDrawingId)?.id ?? null;
+    if (!localId) {
+      for (const [k, v] of this.localToRemoteId.entries()) {
+        if (v === remoteDrawingId) {
+          localId = k;
+          break;
+        }
+      }
+    }
+    if (!localId) return;
+    this.selectedRemoteId = remoteDrawingId;
+    this.chart.drawings.select(localId);
   }
 
   /**

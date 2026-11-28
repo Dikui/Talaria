@@ -1,6 +1,7 @@
 import type { DockviewApi, SerializedDockview } from "dockview-react";
 
-import { t } from "../lib/i18n";
+import { getLocale, type Locale } from "../lib/i18n";
+import { panelLabel } from "./panels";
 
 export const WORKBENCH_LAYOUT_STORAGE_KEY = "talaria-workbench-dockview-layout-v1";
 
@@ -12,20 +13,115 @@ export interface ChartPaneParams {
   syncTimeframe: boolean;
 }
 
+export const RIGHT_DOCK_TABS = [
+  "watchlist",
+  "alerts",
+  "levels",
+  "scanner",
+  "drawings",
+  "annotations",
+  "runs",
+  "drafts",
+  "account",
+] as const;
+
+export type RightDockTabId = (typeof RIGHT_DOCK_TABS)[number];
+
 export interface RightDockParams {
-  panelType:
-    | "watchlist"
-    | "alerts"
-    | "levels"
-    | "scanner"
-    | "drawings"
-    | "annotations"
-    | "runs"
-    | "drafts"
-    | "account";
+  panelType: RightDockTabId;
 }
 
-export function applyPresetLayout(api: DockviewApi, preset: LayoutPreset): void {
+type DockGroup = DockviewApi["groups"][number];
+type DockPanel = NonNullable<ReturnType<DockviewApi["getPanel"]>>;
+
+const RIGHT_DOCK_PANEL_IDS = new Set<string>(
+  RIGHT_DOCK_TABS.map((tab) => `dock-${tab}`),
+);
+
+export function rightDockPanelId(tab: RightDockTabId): string {
+  return `dock-${tab}`;
+}
+
+export function isRightDockPanelId(id: string): boolean {
+  return RIGHT_DOCK_PANEL_IDS.has(id);
+}
+
+/**
+ * Locate the Dockview group hosting the right-dock panels.
+ * Prefers a pure right-dock group (highest panel count) and falls back to any
+ * group containing right-dock panels so closing `自选` or splitting panels
+ * never orphans the header toggle.
+ */
+export function findRightDockGroup(api: DockviewApi): DockGroup | undefined {
+  let bestPure: { group: DockGroup; count: number } | null = null;
+  let bestAny: { group: DockGroup; count: number } | null = null;
+  for (const group of api.groups) {
+    const rightCount = group.panels.filter((p) => isRightDockPanelId(p.id)).length;
+    if (rightCount === 0) continue;
+    const isPure = rightCount === group.panels.length;
+    if (isPure && (!bestPure || rightCount > bestPure.count)) {
+      bestPure = { group, count: rightCount };
+    }
+    if (!bestAny || rightCount > bestAny.count) {
+      bestAny = { group, count: rightCount };
+    }
+  }
+  return bestPure?.group ?? bestAny?.group;
+}
+
+/** Ensure a single right-dock tab exists in the right dock group and return it. */
+export function ensureRightDockPanel(
+  api: DockviewApi,
+  tab: RightDockTabId,
+  locale: Locale = getLocale(),
+): DockPanel {
+  const id = rightDockPanelId(tab);
+  const existing = api.getPanel(id);
+  if (existing) return existing;
+
+  const group = findRightDockGroup(api);
+  return api.addPanel<RightDockParams>({
+    id,
+    component: tab,
+    title: panelLabel(tab, locale),
+    params: { panelType: tab },
+    ...(group
+      ? { position: { referenceGroup: group } }
+      : { position: { direction: "right" }, initialWidth: 340 }),
+  });
+}
+
+/** Ensure all right-dock tabs exist in canonical order and return Watchlist. */
+export function ensureAllRightDockPanels(
+  api: DockviewApi,
+  locale: Locale = getLocale(),
+): DockPanel {
+  let first: DockPanel | null = null;
+  for (const tab of RIGHT_DOCK_TABS) {
+    const panel = ensureRightDockPanel(api, tab, locale);
+    if (!first) first = panel;
+  }
+  return first!;
+}
+
+/** Synchronize right-dock tab titles with the active UI locale. */
+export function syncRightDockTitles(
+  api: DockviewApi,
+  locale: Locale = getLocale(),
+): void {
+  for (const tab of RIGHT_DOCK_TABS) {
+    const panel = api.getPanel(rightDockPanelId(tab));
+    if (panel) {
+      panel.api.setTitle(panelLabel(tab, locale));
+    }
+  }
+}
+
+export function applyPresetLayout(
+  api: DockviewApi,
+  preset: LayoutPreset,
+  locale: Locale = getLocale(),
+): void {
   api.clear();
 
   const p1 = api.addPanel<ChartPaneParams>({
@@ -74,71 +170,7 @@ export function applyPresetLayout(api: DockviewApi, preset: LayoutPreset): void 
     });
   }
 
-  const rightDock = api.addPanel<RightDockParams>({
-    id: "dock-watchlist",
-    component: "watchlist",
-    title: t("自选", "Watchlist"),
-    params: { panelType: "watchlist" },
-    position: { direction: "right" },
-    initialWidth: 340,
-  });
-
-  api.addPanel<RightDockParams>({
-    id: "dock-alerts",
-    component: "alerts",
-    title: t("预警", "Alerts"),
-    params: { panelType: "alerts" },
-    position: { referenceGroup: rightDock.group },
-  });
-  api.addPanel<RightDockParams>({
-    id: "dock-levels",
-    component: "levels",
-    title: t("关键位", "Key Levels"),
-    params: { panelType: "levels" },
-    position: { referenceGroup: rightDock.group },
-  });
-  api.addPanel<RightDockParams>({
-    id: "dock-scanner",
-    component: "scanner",
-    title: t("扫描", "Scanner"),
-    params: { panelType: "scanner" },
-    position: { referenceGroup: rightDock.group },
-  });
-  api.addPanel<RightDockParams>({
-    id: "dock-drawings",
-    component: "drawings",
-    title: t("画线", "Drawings"),
-    params: { panelType: "drawings" },
-    position: { referenceGroup: rightDock.group },
-  });
-  api.addPanel<RightDockParams>({
-    id: "dock-annotations",
-    component: "annotations",
-    title: t("标注", "Annotations"),
-    params: { panelType: "annotations" },
-    position: { referenceGroup: rightDock.group },
-  });
-  api.addPanel<RightDockParams>({
-    id: "dock-runs",
-    component: "runs",
-    title: t("回测", "Runs"),
-    params: { panelType: "runs" },
-    position: { referenceGroup: rightDock.group },
-  });
-  api.addPanel<RightDockParams>({
-    id: "dock-drafts",
-    component: "drafts",
-    title: t("草案", "Drafts"),
-    params: { panelType: "drafts" },
-    position: { referenceGroup: rightDock.group },
-  });
-  api.addPanel<RightDockParams>({
-    id: "dock-account",
-    component: "account",
-    title: t("模拟盘", "Paper"),
-    params: { panelType: "account" },
-    position: { referenceGroup: rightDock.group },
-  });
+  const rightDock = ensureAllRightDockPanels(api, locale);
 
   // Focus watchlist & primary chart cleanly.
   rightDock.api.setActive();
