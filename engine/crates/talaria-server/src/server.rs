@@ -1,5 +1,6 @@
 //! Talaria loopback daemon (`AppState`, `ServerConfig`, lifecycle, and `serve()`).
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -115,6 +116,7 @@ pub struct AppState {
     pub supervisor: Option<Arc<FeedSupervisor>>,
     pub history_connector: Option<Arc<dyn HistoryConnector>>,
     pub cold_writer: Option<Arc<ColdWriter>>,
+    pub backfill_cooldown: Arc<Mutex<HashMap<String, i64>>>,
     now_fn: Arc<dyn Fn() -> i64 + Send + Sync>,
     feed_mode_label: String,
 }
@@ -643,6 +645,7 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         supervisor,
         history_connector,
         cold_writer,
+        backfill_cooldown: Arc::new(Mutex::new(HashMap::new())),
         now_fn,
         feed_mode_label,
     });

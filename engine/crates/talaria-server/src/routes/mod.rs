@@ -17,7 +17,7 @@ pub mod runs;
 pub mod state;
 pub mod ticks;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::Router;
@@ -159,6 +159,85 @@ pub async fn publish_derivatives_to_cold_store(
 }
 
 const SNAPSHOT_HISTORY_TARGET_BARS: usize = 1500;
+const SNAPSHOT_DERIV_LOOKBACK_PADDING_MS: i64 = 24 * 60 * 60 * 1000;
+const SNAPSHOT_DERIV_DEFAULT_WINDOW_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const BACKFILL_COOLDOWN_MS: i64 = 60_000;
+
+struct WindowedBars {
+    cold: Vec<RawBar>,
+    hot: Vec<RawBar>,
+    visible: Vec<RawBar>,
+}
+
+fn snapshot_bar_read_start(closed_end: i64, interval: i64) -> i64 {
+    closed_end.saturating_sub(interval.saturating_mul((SNAPSHOT_HISTORY_TARGET_BARS as i64) * 2))
+}
+
+fn read_snapshot_window_bars(
+    state: &AppState,
+    spec: &InstrumentSpec,
+    tf: &str,
+    closed_end: i64,
+    cutoff_ts: i64,
+    interval: i64,
+) -> Result<WindowedBars, ApiError> {
+    let window_start = snapshot_bar_read_start(closed_end, interval).max(0);
+    let cold = state
+        .reader
+        .read_revisions(spec, tf, Some(window_start), Some(closed_end))
+        .map_err(ApiError::from)?;
+    let hot = state
+        .hot_buffer
+        .revisions(&spec.instrument_id, tf, window_start, Some(closed_end));
+    let visible = range_visible_bars(&cold, &hot, Some(cutoff_ts), false);
+    if visible.len() >= SNAPSHOT_HISTORY_TARGET_BARS || window_start == 0 {
+        return Ok(WindowedBars { cold, hot, visible });
+    }
+    // Bounded window had fewer than target bars (e.g. market holidays or sparse fixtures);
+    // widen to full history only if older generations actually exist before `window_start`.
+    let has_older_cold = state
+        .reader
+        .generations(spec, tf)
+        .map(|gens| gens.iter().any(|g| g.first_ts < window_start))
+        .unwrap_or(false);
+    if !has_older_cold {
+        return Ok(WindowedBars { cold, hot, visible });
+    }
+    let full_cold = state
+        .reader
+        .read_revisions(spec, tf, None, Some(closed_end))
+        .map_err(ApiError::from)?;
+    let full_hot = state
+        .hot_buffer
+        .revisions(&spec.instrument_id, tf, 0, Some(closed_end));
+    let full_visible = range_visible_bars(&full_cold, &full_hot, Some(cutoff_ts), false);
+    Ok(WindowedBars {
+        cold: full_cold,
+        hot: full_hot,
+        visible: full_visible,
+    })
+}
+
+fn is_in_backfill_cooldown(state: &AppState, key: &str, now: i64) -> bool {
+    if state.fixture_dir.is_some() {
+        return false;
+    }
+    state
+        .backfill_cooldown
+        .lock()
+        .ok()
+        .and_then(|map| map.get(key).copied())
+        .is_some_and(|until| now < until)
+}
+
+fn mark_backfill_cooldown(state: &AppState, key: String, now: i64) {
+    if state.fixture_dir.is_some() {
+        return;
+    }
+    if let Ok(mut map) = state.backfill_cooldown.lock() {
+        map.insert(key, now.saturating_add(BACKFILL_COOLDOWN_MS));
+    }
+}
 
 /// Ensure history via `history_connector` (when enabled) and freeze a deterministic PIT snapshot.
 pub async fn freeze_snapshot(
@@ -181,26 +260,31 @@ pub async fn freeze_snapshot(
     let now = state.now_ms();
     let cutoff_ts = req.cutoff_ts.unwrap_or(now).min(now);
 
+    let mut preloaded_bars: HashMap<String, Vec<RawBar>> = HashMap::new();
+    let mut preloaded_derivs: Option<Vec<DerivativePoint>> = None;
+
     if let (Some(connector), Some(cold_store)) = (&state.history_connector, &state.cold_store)
         && (state.replay_path.is_none() || state.fixture_dir.is_some())
     {
+        let mut earliest_bar_ts: Option<i64> = None;
+
         for tf in &req.timeframes {
             let interval = timeframe_ms(tf).map_err(|e| ApiError::validation(e.to_string()))?;
             let closed_end = last_closed_bar_start(cutoff_ts, interval);
-            let reader = Arc::clone(&state.reader);
-            let hot_buffer = Arc::clone(&state.hot_buffer);
+            let state_c = Arc::clone(&state);
             let spec_c = spec.clone();
             let tf_c = tf.clone();
-            let (cold, hot) = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
-                let c = reader.read_revisions(&spec_c, &tf_c, None, Some(closed_end))?;
-                let h = hot_buffer.revisions(&spec_c.instrument_id, &tf_c, 0, Some(closed_end));
-                Ok((c, h))
+            let WindowedBars { cold, hot, visible } = tokio::task::spawn_blocking(move || {
+                read_snapshot_window_bars(&state_c, &spec_c, &tf_c, closed_end, cutoff_ts, interval)
             })
             .await
             .map_err(|e| ApiError::internal(e.to_string()))??;
 
-            let visible = range_visible_bars(&cold, &hot, Some(cutoff_ts), false);
-            if visible.len() < SNAPSHOT_HISTORY_TARGET_BARS {
+            let mut did_publish = false;
+            let bar_cooldown_key = format!("bars:{}:{tf}", spec.instrument_id);
+            if visible.len() < SNAPSHOT_HISTORY_TARGET_BARS
+                && !is_in_backfill_cooldown(&state, &bar_cooldown_key, now)
+            {
                 let end_ts = visible
                     .first()
                     .map(|b| b.ts_event.saturating_sub(1))
@@ -234,15 +318,21 @@ pub async fn freeze_snapshot(
                                     && !existing_ts.contains(&b.ts_event)
                             })
                             .collect();
-                        publish_bars_to_cold_store(
-                            Arc::clone(cold_store),
-                            spec.clone(),
-                            tf.clone(),
-                            to_publish,
-                        )
-                        .await?;
+                        if to_publish.is_empty() {
+                            mark_backfill_cooldown(&state, bar_cooldown_key, now);
+                        } else {
+                            did_publish = true;
+                            publish_bars_to_cold_store(
+                                Arc::clone(cold_store),
+                                spec.clone(),
+                                tf.clone(),
+                                to_publish,
+                            )
+                            .await?;
+                        }
                     }
                     Err(err) => {
+                        mark_backfill_cooldown(&state, bar_cooldown_key, now);
                         let has_sup_bars = state
                             .supervisor
                             .as_ref()
@@ -259,16 +349,39 @@ pub async fn freeze_snapshot(
                     }
                 }
             }
+
+            if !did_publish {
+                let tail_start = visible.len().saturating_sub(SNAPSHOT_HISTORY_TARGET_BARS);
+                if let Some(first_bar) = visible.get(tail_start) {
+                    earliest_bar_ts = Some(
+                        earliest_bar_ts
+                            .map_or(first_bar.ts_event, |cur| cur.min(first_bar.ts_event)),
+                    );
+                }
+                preloaded_bars.insert(tf.clone(), visible);
+            }
         }
 
         // Best-effort derivative backfill for snapshots when local cold derivatives are empty
+        let deriv_start = Some(
+            earliest_bar_ts
+                .map(|ts| ts.saturating_sub(SNAPSHOT_DERIV_LOOKBACK_PADDING_MS))
+                .unwrap_or_else(|| cutoff_ts.saturating_sub(SNAPSHOT_DERIV_DEFAULT_WINDOW_MS)),
+        );
         let state_c = Arc::clone(&state);
         let spec_c = spec.clone();
-        let (funding, oi, mark) =
-            tokio::task::spawn_blocking(move || load_derivative_points(&state_c, &spec_c, cutoff_ts))
-                .await
-                .map_err(|e| ApiError::internal(e.to_string()))?;
-        if funding.is_empty() && oi.is_empty() && mark.is_empty() {
+        let (funding, oi, mark) = tokio::task::spawn_blocking(move || {
+            load_derivative_points_since(&state_c, &spec_c, deriv_start, cutoff_ts)
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        let deriv_cooldown_key = format!("derivs:{}", spec.instrument_id);
+        if funding.is_empty()
+            && oi.is_empty()
+            && mark.is_empty()
+            && !is_in_backfill_cooldown(&state, &deriv_cooldown_key, now)
+        {
             let mut targets: Vec<(DerivativeKind, Option<&str>)> =
                 vec![(DerivativeKind::FundingRate, None)];
             for tf in &req.timeframes {
@@ -277,6 +390,7 @@ pub async fn freeze_snapshot(
                     targets.push((DerivativeKind::OpenInterest, Some(oi_tf)));
                 }
             }
+            let mut published_any_deriv = false;
             for (kind, d_tf) in targets {
                 if let Ok(pts) = backfill_derivatives(
                     connector.as_ref(),
@@ -298,28 +412,54 @@ pub async fn freeze_snapshot(
                         .filter(|p| p.ts_available <= cutoff_ts)
                         .map(|p| p.to_point(&spec.instrument_id))
                         .collect();
-                    let _ = publish_derivatives_to_cold_store(
-                        Arc::clone(cold_store),
-                        spec.clone(),
-                        kind,
-                        points,
-                    )
-                    .await;
+                    if !points.is_empty()
+                        && publish_derivatives_to_cold_store(
+                            Arc::clone(cold_store),
+                            spec.clone(),
+                            kind,
+                            points,
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        published_any_deriv = true;
+                    }
                 }
             }
+            if !published_any_deriv {
+                mark_backfill_cooldown(&state, deriv_cooldown_key, now);
+                preloaded_derivs = Some(Vec::new());
+            }
+        } else {
+            let mut combined = Vec::with_capacity(mark.len() + funding.len() + oi.len());
+            combined.extend(mark);
+            combined.extend(funding);
+            combined.extend(oi);
+            preloaded_derivs = Some(combined);
         }
     }
 
     let state_c = Arc::clone(&state);
-    tokio::task::spawn_blocking(move || freeze_snapshot_sync(&state_c, &req))
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?
+    tokio::task::spawn_blocking(move || {
+        freeze_snapshot_inner(&state_c, &req, Some(preloaded_bars), preloaded_derivs)
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?
 }
 
 /// Freeze a deterministic PIT snapshot into `SnapshotStore` and register its `KeyLevelSet`.
 pub fn freeze_snapshot_sync(
     state: &AppState,
     req: &SnapshotRequest,
+) -> Result<SnapshotMeta, ApiError> {
+    freeze_snapshot_inner(state, req, None, None)
+}
+
+fn freeze_snapshot_inner(
+    state: &AppState,
+    req: &SnapshotRequest,
+    mut preloaded_bars: Option<HashMap<String, Vec<RawBar>>>,
+    preloaded_derivs: Option<Vec<DerivativePoint>>,
 ) -> Result<SnapshotMeta, ApiError> {
     if req.mode == SnapshotMode::ObservedReplay {
         return Err(ApiError::not_implemented(
@@ -340,22 +480,27 @@ pub fn freeze_snapshot_sync(
 
     let mut frames: BTreeMap<String, Vec<CompactBar>> = BTreeMap::new();
     let mut bar_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut earliest_bar_ts: Option<i64> = None;
 
     for tf in &req.timeframes {
         let interval = timeframe_ms(tf).map_err(|e| ApiError::validation(e.to_string()))?;
         let closed_end = last_closed_bar_start(cutoff_ts, interval);
-        let cold = state
-            .reader
-            .read_revisions(&spec, tf, None, Some(closed_end))
-            .map_err(ApiError::from)?;
-        let hot = state
-            .hot_buffer
-            .revisions(&spec.instrument_id, tf, 0, Some(closed_end));
-        let mut visible = range_visible_bars(&cold, &hot, Some(cutoff_ts), false);
+        let mut visible = match preloaded_bars.as_mut().and_then(|m| m.remove(tf)) {
+            Some(v) => v,
+            None => {
+                read_snapshot_window_bars(state, &spec, tf, closed_end, cutoff_ts, interval)?
+                    .visible
+            }
+        };
         let compact = if !visible.is_empty() {
             let tail_start = visible.len().saturating_sub(SNAPSHOT_HISTORY_TARGET_BARS);
             if tail_start > 0 {
                 visible.drain(0..tail_start);
+            }
+            if let Some(first_bar) = visible.first() {
+                earliest_bar_ts = Some(
+                    earliest_bar_ts.map_or(first_bar.ts_event, |cur| cur.min(first_bar.ts_event)),
+                );
             }
             compact_series(&visible, tf, cutoff_ts)?
         } else if let Some(sup) = &state.supervisor {
@@ -378,19 +523,20 @@ pub fn freeze_snapshot_sync(
         ));
     }
 
-    let mut derivatives: Vec<DerivativePoint> = Vec::new();
-    for kind in [
-        talaria_contracts::derivatives::DerivativeKind::MarkPrice,
-        talaria_contracts::derivatives::DerivativeKind::FundingRate,
-        talaria_contracts::derivatives::DerivativeKind::OpenInterest,
-    ] {
-        if let Ok(pts) = state
-            .reader
-            .read_derivatives(&spec, kind, None, Some(cutoff_ts), Some(cutoff_ts), false)
-        {
-            derivatives.extend(pts);
+    let derivatives = match preloaded_derivs {
+        Some(pts) => pts,
+        None => {
+            let deriv_start = earliest_bar_ts
+                .map(|ts| ts.saturating_sub(SNAPSHOT_DERIV_LOOKBACK_PADDING_MS));
+            let (funding, oi, mark) =
+                load_derivative_points_since(state, &spec, deriv_start, cutoff_ts);
+            let mut combined = Vec::with_capacity(mark.len() + funding.len() + oi.len());
+            combined.extend(mark);
+            combined.extend(funding);
+            combined.extend(oi);
+            combined
         }
-    }
+    };
 
     let snapshot_id = format!("snp_{}", Uuid::new_v4().simple());
     let meta = SnapshotMeta {
@@ -485,12 +631,21 @@ pub fn load_derivative_points(
     instrument: &InstrumentSpec,
     as_of: i64,
 ) -> (Vec<DerivativePoint>, Vec<DerivativePoint>, Vec<DerivativePoint>) {
+    load_derivative_points_since(state, instrument, None, as_of)
+}
+
+fn load_derivative_points_since(
+    state: &AppState,
+    instrument: &InstrumentSpec,
+    start_ts: Option<i64>,
+    as_of: i64,
+) -> (Vec<DerivativePoint>, Vec<DerivativePoint>, Vec<DerivativePoint>) {
     let funding = state
         .reader
         .read_derivatives(
             instrument,
             talaria_contracts::derivatives::DerivativeKind::FundingRate,
-            None,
+            start_ts,
             Some(as_of),
             Some(as_of),
             false,
@@ -501,7 +656,7 @@ pub fn load_derivative_points(
         .read_derivatives(
             instrument,
             talaria_contracts::derivatives::DerivativeKind::OpenInterest,
-            None,
+            start_ts,
             Some(as_of),
             Some(as_of),
             false,
@@ -512,7 +667,7 @@ pub fn load_derivative_points(
         .read_derivatives(
             instrument,
             talaria_contracts::derivatives::DerivativeKind::MarkPrice,
-            None,
+            start_ts,
             Some(as_of),
             Some(as_of),
             false,
