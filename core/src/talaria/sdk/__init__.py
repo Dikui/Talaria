@@ -19,15 +19,16 @@ import httpx
 
 from talaria.foundation.bars import MAX_RANGE_BARS, BarsQuery, BarsResponse, RangeBar
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
-from talaria.foundation.errors import InstrumentNotFoundError, InvalidRequestError, TalariaError
+from talaria.foundation.errors import InvalidRequestError, TalariaError
 from talaria.foundation.indicators import IndicatorParams
+from talaria.foundation.market import InstrumentSpec
 from talaria.foundation.operators import IndicatorName
 from talaria.foundation.ticks import Quote, TickKind, Trade
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
-from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdManifest, ColdReader
 from talaria.perception.indicator_defaults import read_indicator_defaults
 from talaria.perception.raw_store import latest_visible_bars
+from talaria.sdk._resolve import default_data_dir, list_instruments, resolve_instrument_spec
 from talaria.sdk._arrow import (
     ARROW_STREAM_CONTENT_TYPE,
     bars_from_arrow,
@@ -68,9 +69,11 @@ __all__ = [
     "asof_join",
     "bars",
     "cold_parquet_paths",
+    "data_dir",
     "derivatives",
     "funding_settlements",
     "indicator_defaults",
+    "instruments",
     "query_duckdb",
     "quotes",
     "trades",
@@ -189,8 +192,20 @@ def _time_ms(value: int | str) -> int | Fraction:
     return Fraction(micros, 1_000)
 
 
-def _data_root(data_dir: str | Path | None) -> Path:
-    return Path(data_dir or os.environ.get("TALARIA_DATA_DIR") or ".talaria").expanduser().resolve()
+def _data_root(data_dir_path: str | Path | None) -> Path:
+    return default_data_dir(data_dir_path)
+
+
+def data_dir(path: str | Path | None = None) -> Path:
+    """返回 SDK 当前使用的数据目录（显式参数 > ``TALARIA_DATA_DIR`` > ``~/.talaria/data``）。"""
+    return default_data_dir(path)
+
+
+def instruments(
+    *, data_dir: str | Path | None = None, offline: bool = False,
+) -> tuple[InstrumentSpec, ...]:
+    """返回在线服务或本地清单中的可用标的规格列表。"""
+    return tuple(list_instruments(data_dir=data_dir, offline=offline, client_cls=httpx.Client))
 
 
 def indicator_defaults(*, data_dir: str | Path | None = None) -> dict[IndicatorName, IndicatorParams]:
@@ -220,9 +235,6 @@ def _tick_range(
     instrument: str, kind: TickKind, start: int | str, end: int | str | None,
     as_of: int | str | None, data_dir: str | Path | None,
 ) -> list[Trade | Quote]:
-    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
-    if spec is None:
-        raise InstrumentNotFoundError(f"未知标的：{instrument}")
     exact_start = _time_ms(start)
     exact_end = None if end is None else _time_ms(end)
     if exact_end is not None and exact_end < exact_start:
@@ -232,6 +244,9 @@ def _tick_range(
     root = _data_root(data_dir)
     endpoint = read_service_endpoint(root)
     directory_id = data_dir_id(root)
+    spec = resolve_instrument_spec(
+        instrument, root=root, endpoint=endpoint, directory_id=directory_id, client_cls=httpx.Client,
+    )
     service_now: int | None = None
     if endpoint is not None:
         try:
@@ -290,21 +305,21 @@ def _derivative_range(
     instrument: str, kind: DerivativeKind, start: int | str, end: int | str | None,
     as_of: int | str | None, data_dir: str | Path | None, *, historical_only: bool = False,
 ) -> DerivativesResult:
-    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
-    if spec is None:
-        raise InstrumentNotFoundError(f"未知标的：{instrument}")
     exact_start = _time_ms(start)
     exact_end = None if end is None else _time_ms(end)
     if exact_end is not None and exact_end < exact_start:
         raise ValueError("end 不得早于 start")
     root = _data_root(data_dir)
+    endpoint = read_service_endpoint(root)
+    directory_id = data_dir_id(root)
+    spec = resolve_instrument_spec(
+        instrument, root=root, endpoint=endpoint, directory_id=directory_id, client_cls=httpx.Client,
+    )
     start_ts = ceil(exact_start)
     end_ts = None if exact_end is None else floor(exact_end)
     cutoff = None if as_of is None else floor(_time_ms(as_of))
     if end_ts is not None and end_ts < start_ts:
         return DerivativesResult(())
-    endpoint = read_service_endpoint(root)
-    directory_id = data_dir_id(root)
     now: int | None = None
     if endpoint is not None:
         try:
@@ -361,10 +376,9 @@ def _derivative_range(
 def _archived_derivative_revisions(
     instrument: str, kind: DerivativeKind, *, end: int, data_dir: str | Path | None,
 ) -> list[DerivativePoint]:
-    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
-    if spec is None:
-        raise InstrumentNotFoundError(f"未知标的：{instrument}")
-    return ColdReader(_data_root(data_dir)).read_derivative_revisions(spec, kind, start_ts=0, end_ts=end)
+    root = _data_root(data_dir)
+    spec = resolve_instrument_spec(instrument, root=root, offline=True)
+    return ColdReader(root).read_derivative_revisions(spec, kind, start_ts=0, end_ts=end)
 
 
 def _service_clock(client: httpx.Client, directory_id: str) -> int | None:
@@ -414,10 +428,7 @@ def _fetch_tail(
     *,
     expected_symbol: str | None = None,
 ) -> tuple[int, int, list[_TailSegment], list[RangeBar]] | None:
-    resolved_symbol = expected_symbol
-    if resolved_symbol is None:
-        spec = get_market_pack(DEFAULT_PACK).instrument(query.instrument)
-        resolved_symbol = spec.symbol if spec is not None else query.instrument
+    resolved_symbol = expected_symbol or query.instrument
     interval = timeframe_ms(query.timeframe)
     span = MAX_RANGE_BARS * interval
     tail: list[RangeBar] = []
@@ -514,7 +525,7 @@ def bars(
     整数采用 UTC 毫秒，无时区的 ISO 日期时间采用 UTC。省略 ``end`` 时取最后一根已收盘柱。
     在线查询省略 ``as_of`` 时，直读和补尾共用服务时钟给出的截点。
     数据目录优先使用
-    ``data_dir``，其次为 ``TALARIA_DATA_DIR``，默认 ``./.talaria``。
+    ``data_dir``，其次为 ``TALARIA_DATA_DIR``，默认 ``~/.talaria/data``。
     ``offline=True`` 时直接读取本地清单。
     在线补尾与直读重试后仍不一致时抛出 ``BarsConsistencyError``。
     """
@@ -529,26 +540,33 @@ def bars(
         as_of=None if as_of is None else floor(_time_ms(as_of)),
         tail_only=True,
     )
-    spec = get_market_pack(DEFAULT_PACK).instrument(query.instrument)
-    if spec is None:
-        raise InstrumentNotFoundError(f"未知标的：{query.instrument}")
     if query.timeframe not in SUPPORTED_TIMEFRAMES:
         raise InvalidRequestError(f"不支持的周期：{query.timeframe}")
     start_ts = ceil(exact_start)
-    if query.end is not None and query.end < start_ts:
-        return BarsResult((), tail_completed=False)
-    query = query.model_copy(update={"start": start_ts})
 
     endpoint = None
+    root = _data_root(data_dir)
     if _cold_reader is None:
-        root = _data_root(data_dir)
         reader = ColdReader(root)
         if not offline:
             endpoint = read_service_endpoint(root)
     else:
         reader = _cold_reader
+    directory_id = data_dir_id(root) if endpoint is not None else None
+    spec = resolve_instrument_spec(
+        query.instrument,
+        root=root,
+        endpoint=endpoint,
+        directory_id=directory_id,
+        offline=offline,
+        reader=reader,
+        client_cls=httpx.Client,
+    )
+    if query.end is not None and query.end < start_ts:
+        return BarsResult((), tail_completed=False)
+    query = query.model_copy(update={"start": start_ts})
     if endpoint is not None:
-        directory_id = data_dir_id(root)
+        assert directory_id is not None
         # 各分段必须来自同一热端版本，并与直读时所选的范围文件一致。
         for _ in range(2):
             response = _fetch_tail(endpoint, query, directory_id, expected_symbol=spec.symbol)

@@ -30,10 +30,10 @@ pub use revisions::{
 };
 pub use store::{ColdReader, ColdStore};
 pub use types::{
-    ARCHIVE_SUBDIR, ArchivedBatch, COLD_COLUMN_SCALES_METADATA, COLD_DECIMAL_PRECISION,
-    COLD_FORMAT_DECIMAL128, COLD_FORMAT_METADATA, COLD_INSTRUMENT_VERSION_METADATA, COLD_SUBDIR,
-    ColdBatch, ColdCursor, ColdGeneration, ColdManifest, ColdPhase, ColdSnapshot, CompactionReport,
-    DerivativeBatch, FaultHook, MANIFEST_DB, OrphanCleanupReport, RATE_COLUMN_SCALE,
-    RETAINED_MANIFESTS, RETENTION_MS, STAGING_SUBDIR, TICK_BATCH_ROWS, TickRows, partition_day,
-    partition_month,
+    ACTIVE_TAIL_MERGE_MIN_FILES, ACTIVE_TAIL_TARGET_ROWS, ARCHIVE_SUBDIR, ArchivedBatch,
+    COLD_COLUMN_SCALES_METADATA, COLD_DECIMAL_PRECISION, COLD_FORMAT_DECIMAL128,
+    COLD_FORMAT_METADATA, COLD_INSTRUMENT_VERSION_METADATA, COLD_SUBDIR, ColdBatch, ColdCursor,
+    ColdGeneration, ColdManifest, ColdPhase, ColdSnapshot, CompactionReport, DerivativeBatch,
+    FaultHook, MANIFEST_DB, OrphanCleanupReport, RATE_COLUMN_SCALE, RETAINED_MANIFESTS,
+    RETENTION_MS, STAGING_SUBDIR, TICK_BATCH_ROWS, TickRows, partition_day, partition_month,
 };

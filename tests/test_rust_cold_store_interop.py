@@ -374,3 +374,88 @@ def test_rust_cold_store_python_cold_reader_interop(tmp_path: Path) -> None:
         data_dir=tmp_path,
     )
     assert [q.bid_price for q in sdk_quotes] == [Decimal("68000.1")]
+
+
+def test_rust_okx_backfill_and_custom_spec_interop_with_python_sdk(tmp_path: Path) -> None:
+    """Cross-module #1: Rust `talaria-data` OKX/custom specs resolve identically in Python SDK."""
+    okx_fixture = REPO_ROOT / "tests" / "fixtures" / "okx"
+    payload = json.loads((okx_fixture / "BTC-USDT-SWAP" / "1m.json").read_text(encoding="utf-8"))
+    expected_rows = sorted(payload["data"], key=lambda row: int(row[0]))
+    first_ts = int(expected_rows[0][0])
+    last_ts = int(expected_rows[-1][0])
+
+    env = os.environ.copy()
+    if "CARGO_TARGET_DIR" not in env:
+        isolated = ENGINE_DIR / "target" / "rust-store"
+        if isolated.exists():
+            env["CARGO_TARGET_DIR"] = str(isolated)
+
+    out_okx = tmp_path / "okx_data"
+    proc = subprocess.run(
+        [
+            "cargo",
+            "run",
+            "--locked",
+            "-p",
+            "talaria-cli",
+            "--",
+            "--data-dir",
+            str(out_okx),
+            "backfill",
+            "--pack",
+            "okx_perp",
+            "--instrument",
+            "BTC-USDT-PERP",
+            "--timeframe",
+            "1m",
+            "--start",
+            str(first_ts),
+            "--end",
+            str(last_ts),
+            "--fixture-dir",
+            str(okx_fixture),
+        ],
+        cwd=ENGINE_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"talaria-cli backfill failed:\n{proc.stdout}\n{proc.stderr}"
+
+    okx_bars = sdk.bars(
+        "BTC-USDT-PERP",
+        "1m",
+        first_ts,
+        last_ts,
+        as_of=last_ts + 120_000,
+        data_dir=out_okx,
+        offline=True,
+    )
+    assert len(okx_bars) == 2  # third row in fixture is unconfirmed ("0")
+    assert [bar.close for bar in okx_bars] == [Decimal(expected_rows[0][4]), Decimal(expected_rows[1][4])]
+    specs = sdk.instruments(data_dir=out_okx, offline=True)
+    btc_spec = next(s for s in specs if s.instrument_id == "BTC-USDT-PERP")
+    assert (btc_spec.venue, btc_spec.symbol) == ("okx", "BTC-USDT-SWAP")
+
+    # Non-default composite instrument (BTC-USDT-BN-SPOT) resolves cleanly without InstrumentNotFoundError.
+    from contextlib import closing
+    from talaria.foundation.market import InstrumentSpec
+    from talaria.perception.cold_store import ColdStore
+
+    spot_dir = tmp_path / "spot_data"
+    spot_spec = InstrumentSpec(
+        instrument_id="BTC-USDT-BN-SPOT",
+        venue="binance",
+        symbol="BTCUSDT-SPOT",
+        asset_class="crypto_spot",
+        tick_size="0.01",
+        qty_step="0.00001",
+        min_qty="0.00001",
+        price_precision=2,
+        qty_precision=5,
+    )
+    with closing(ColdStore(spot_dir)) as store:
+        store.register_instrument_specs([spot_spec])
+    assert list(sdk.bars("BTC-USDT-BN-SPOT", "1m", first_ts, last_ts, data_dir=spot_dir, offline=True)) == []
+

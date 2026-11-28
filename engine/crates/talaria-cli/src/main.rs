@@ -249,6 +249,11 @@ fn default_data_dir() -> PathBuf {
     {
         return PathBuf::from(raw);
     }
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+        && !home.is_empty()
+    {
+        return PathBuf::from(home).join(".talaria").join("data");
+    }
     PathBuf::from(".talaria")
 }
 
@@ -528,6 +533,7 @@ async fn run_backfill(data_dir: PathBuf, args: BackfillArgs) -> anyhow::Result<(
         }
     };
     let store = ColdStore::open(&resolved)?;
+    let _ = store.register_instrument_specs(&specs);
 
     let rest_window = match &backend {
         BackfillBackend::Rest(_) => {

@@ -301,6 +301,16 @@ impl HotStreamBuffer {
         format!("{}:{seq}", self.epoch)
     }
 
+    /// Return `true` if any buffered bar for `(instrument_id, timeframe)` has `ts_event < ts_exclusive`.
+    pub fn has_older_than(&self, instrument_id: &str, timeframe: &str, ts_exclusive: i64) -> bool {
+        let guard = self.state.lock().expect("HotStreamBuffer mutex poisoned");
+        guard
+            .series
+            .get(&(instrument_id.to_owned(), timeframe.to_owned()))
+            .and_then(|ring| ring.slots.keys().next().copied())
+            .is_some_and(|first_ts| first_ts < ts_exclusive)
+    }
+
     /// Look up the pinned `HotSlot` for `(instrument_id, timeframe, ts_event)`.
     pub fn slot(&self, instrument_id: &str, timeframe: &str, ts_event: i64) -> Option<Arc<HotSlot>> {
         let guard = self.state.lock().expect("HotStreamBuffer mutex poisoned");

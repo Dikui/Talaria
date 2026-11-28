@@ -126,6 +126,16 @@ body,
   color: var(--text-muted);
 }
 
+.wb-data-dir {
+  display: inline-block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .wb-toolbar {
   display: flex;
   flex-wrap: wrap;

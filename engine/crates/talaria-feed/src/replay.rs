@@ -252,8 +252,8 @@ pub fn data_dirs_overlap(left: &Path, right: &Path) -> Result<bool, FeedError> {
         || right_folded.starts_with(&left_folded))
 }
 
-/// Enforce the safety guard forbidding replay mode from writing into the default production data dir
-/// (`.talaria`), `$TALARIA_DATA_DIR`, or any caller-supplied protected service directories.
+/// Enforce the safety guard forbidding replay mode from writing into the default production data dirs
+/// (`.talaria`, `~/.talaria/data`), `$TALARIA_DATA_DIR`, or any caller-supplied protected service directories.
 pub fn validate_replay_data_dir(
     data_dir: Option<&Path>,
     extra_protected: &[PathBuf],
@@ -261,7 +261,13 @@ pub fn validate_replay_data_dir(
     let env_dir = std::env::var_os("TALARIA_DATA_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
-    validate_replay_data_dir_with_env(data_dir, env_dir.as_deref(), extra_protected)
+    let mut protected = extra_protected.to_vec();
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+        && !home.is_empty()
+    {
+        protected.push(PathBuf::from(home).join(".talaria").join("data"));
+    }
+    validate_replay_data_dir_with_env(data_dir, env_dir.as_deref(), &protected)
 }
 
 /// Race-free variant of [`validate_replay_data_dir`] accepting an explicit `env_data_dir` override.

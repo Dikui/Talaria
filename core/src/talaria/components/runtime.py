@@ -180,7 +180,10 @@ class _ColdSeriesIndex:
         self, reader: ColdReader, instrument_id: str, timeframe: str, *, start: int, end: int,
     ) -> None:
         self._reader = reader
-        self._spec = get_market_pack(DEFAULT_PACK).instrument(instrument_id)
+        spec = reader.resolve_instrument(instrument_id) or get_market_pack(DEFAULT_PACK).instrument(instrument_id)
+        if spec is None:
+            raise ValueError(f"未知标的：{instrument_id}")
+        self._spec = spec
         self._timeframe = timeframe
         self._interval = timeframe_ms(timeframe)
         self._loaded_start = start

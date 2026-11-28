@@ -294,12 +294,12 @@ def _load_round_bars(
     if resolved_data_dir is None:
         return None
     snapshot = config.cold_snapshot if config is not None else None
-    spec = get_market_pack(DEFAULT_PACK).instrument(instrument_id)
-    if spec is None:
-        return None
     tf = "1m" if snapshot is not None else (timeframe or "1m")
     try:
         reader = ColdReader(resolved_data_dir, snapshot=snapshot)
+        spec = reader.resolve_instrument(instrument_id) or get_market_pack(DEFAULT_PACK).instrument(instrument_id)
+        if spec is None:
+            return None
         bars = reader.read_bars(spec, tf, start_ts=start, end_ts=end, as_of=end)
         if not bars and tf != (timeframe or "1m") and timeframe is not None:
             tf = timeframe

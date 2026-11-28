@@ -6,7 +6,8 @@
 //! - `ColdStore` (month/day partitioned Parquet generation commits)
 //! - `KeyLevelRegistry`, `AlertEngine`, and `ScannerEngine`
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -42,7 +43,7 @@ const BULK_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 /// Early-flush threshold per pending derivative/trade batch to cap in-memory buffering.
 const BULK_FLUSH_MAX_ROWS: usize = 2_000;
 /// Periodic background compaction interval while the daemon stays running.
-const PERIODIC_COMPACT_INTERVAL: Duration = Duration::from_secs(300);
+pub(crate) const PERIODIC_COMPACT_INTERVAL: Duration = Duration::from_secs(300);
 
 enum ColdCmd {
     Bar {
@@ -53,7 +54,23 @@ enum ColdCmd {
     Derivative(InstrumentSpec, DerivativePoint),
     Trade(InstrumentSpec, Trade),
     Flush(oneshot::Sender<()>),
+    Compact(oneshot::Sender<()>),
     Shutdown(oneshot::Sender<()>),
+}
+
+#[derive(Default)]
+struct DrainedControl {
+    flush_waiters: Vec<oneshot::Sender<()>>,
+    compact_waiters: Vec<oneshot::Sender<()>>,
+    shutdown_waiters: Vec<oneshot::Sender<()>>,
+}
+
+struct CompactFlagGuard(Arc<AtomicBool>);
+
+impl Drop for CompactFlagGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 pub struct ColdWriter {
@@ -105,7 +122,8 @@ impl ColdWriter {
             let mut pending_bars: PendingBarsMap = HashMap::new();
             let mut pending_derivs: PendingDerivsMap = HashMap::new();
             let mut pending_trades: PendingTradesMap = HashMap::new();
-            let mut dirty_since_compact = false;
+            let compacting = Arc::new(AtomicBool::new(false));
+            let mut compact_task: Option<JoinHandle<()>> = None;
 
             let mut bar_flush_interval = tokio::time::interval(BAR_FLUSH_INTERVAL);
             bar_flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -125,7 +143,7 @@ impl ColdWriter {
             loop {
                 tokio::select! {
                     _ = bar_flush_interval.tick() => {
-                        if flush_bars(
+                        flush_bars(
                             w_store.as_ref(),
                             &w_reader,
                             w_strategy.as_ref(),
@@ -133,22 +151,18 @@ impl ColdWriter {
                             &w_structures,
                             &w_now,
                             &mut pending_bars,
-                        ).await {
-                            dirty_since_compact = true;
-                        }
+                        ).await;
                     }
                     _ = bulk_flush_interval.tick() => {
-                        if flush_bulk(
+                        flush_bulk(
                             w_store.as_ref(),
                             w_strategy.as_ref(),
                             &mut pending_derivs,
                             &mut pending_trades,
-                        ).await {
-                            dirty_since_compact = true;
-                        }
+                        ).await;
                     }
                     _ = compact_interval.tick() => {
-                        if flush_pending(
+                        flush_pending(
                             w_store.as_ref(),
                             &w_reader,
                             w_strategy.as_ref(),
@@ -158,40 +172,53 @@ impl ColdWriter {
                             &mut pending_bars,
                             &mut pending_derivs,
                             &mut pending_trades,
-                        ).await {
-                            dirty_since_compact = true;
-                        }
-                        if dirty_since_compact
-                            && let Some(store) = &w_store
+                        ).await;
+                        if let Some(store) = &w_store
+                            && !compacting.load(Ordering::Acquire)
                         {
-                            let all_specs: Vec<InstrumentSpec> = w_instruments
-                                .read()
-                                .map(|m| m.values().cloned().collect())
-                                .unwrap_or_default();
-                            let store_c = Arc::clone(store);
                             let now = (w_now)();
-                            match tokio::task::spawn_blocking(move || {
-                                store_c.compact(&all_specs, Some(now))
+                            let store_check = Arc::clone(store);
+                            let need_compact = tokio::task::spawn_blocking(move || {
+                                store_check.has_compactable_work(Some(now)).unwrap_or(false)
                             })
                             .await
+                            .unwrap_or(false);
+                            if need_compact
+                                && compacting
+                                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                                    .is_ok()
                             {
-                                Ok(Ok(report)) => {
-                                    dirty_since_compact = false;
-                                    if report.compacted_groups > 0 || report.pruned_files > 0 {
-                                        tracing::info!(
-                                            compacted_groups = report.compacted_groups,
-                                            retired_files_added = report.retired_files_added,
-                                            pruned_files = report.pruned_files,
-                                            "periodic cold store compaction finished"
-                                        );
+                                let all_specs: Vec<InstrumentSpec> = w_instruments
+                                    .read()
+                                    .map(|m| m.values().cloned().collect())
+                                    .unwrap_or_default();
+                                let store_c = Arc::clone(store);
+                                let flag = Arc::clone(&compacting);
+                                compact_task = Some(tokio::spawn(async move {
+                                    let _guard = CompactFlagGuard(flag);
+                                    match tokio::task::spawn_blocking(move || {
+                                        store_c.compact_periodic(&all_specs, Some(now))
+                                    })
+                                    .await
+                                    {
+                                        Ok(Ok(report)) => {
+                                            if report.compacted_groups > 0 || report.pruned_files > 0 {
+                                                tracing::info!(
+                                                    compacted_groups = report.compacted_groups,
+                                                    retired_files_added = report.retired_files_added,
+                                                    pruned_files = report.pruned_files,
+                                                    "periodic cold store compaction finished"
+                                                );
+                                            }
+                                        }
+                                        Ok(Err(err)) => {
+                                            tracing::warn!(error = %err, "periodic cold store compaction failed");
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(error = %err, "periodic cold store compaction task panicked");
+                                        }
                                     }
-                                }
-                                Ok(Err(err)) => {
-                                    tracing::warn!(error = %err, "periodic cold store compaction failed");
-                                }
-                                Err(err) => {
-                                    tracing::warn!(error = %err, "periodic cold store compaction task panicked");
-                                }
+                                }));
                             }
                         }
                     }
@@ -213,15 +240,14 @@ impl ColdWriter {
                                     .entry(key)
                                     .or_insert_with(|| (instrument, pt.kind, Vec::new()));
                                 entry.2.push(pt);
-                                if entry.2.len() >= BULK_FLUSH_MAX_ROWS
-                                    && flush_bulk(
+                                if entry.2.len() >= BULK_FLUSH_MAX_ROWS {
+                                    flush_bulk(
                                         w_store.as_ref(),
                                         w_strategy.as_ref(),
                                         &mut pending_derivs,
                                         &mut pending_trades,
-                                    ).await
-                                {
-                                    dirty_since_compact = true;
+                                    )
+                                    .await;
                                 }
                             }
                             Some(ColdCmd::Trade(instrument, trade)) => {
@@ -231,36 +257,36 @@ impl ColdWriter {
                                     .entry(key)
                                     .or_insert_with(|| (instrument, Vec::new()));
                                 entry.1.push(trade);
-                                if entry.1.len() >= BULK_FLUSH_MAX_ROWS
-                                    && flush_bulk(
+                                if entry.1.len() >= BULK_FLUSH_MAX_ROWS {
+                                    flush_bulk(
                                         w_store.as_ref(),
                                         w_strategy.as_ref(),
                                         &mut pending_derivs,
                                         &mut pending_trades,
-                                    ).await
-                                {
-                                    dirty_since_compact = true;
+                                    )
+                                    .await;
                                 }
                             }
-                            Some(ColdCmd::Flush(done)) => {
-                                drain_rx_into_pending(&mut rx, &mut pending_bars, &mut pending_derivs, &mut pending_trades);
-                                if flush_pending(
-                                    w_store.as_ref(),
-                                    &w_reader,
-                                    w_strategy.as_ref(),
-                                    &w_levels,
-                                    &w_structures,
-                                    &w_now,
+                            cmd @ (Some(ColdCmd::Flush(_))
+                            | Some(ColdCmd::Compact(_))
+                            | Some(ColdCmd::Shutdown(_))
+                            | None) => {
+                                let is_channel_closed = cmd.is_none();
+                                let mut control = DrainedControl::default();
+                                match cmd {
+                                    Some(ColdCmd::Flush(done)) => control.flush_waiters.push(done),
+                                    Some(ColdCmd::Compact(done)) => control.compact_waiters.push(done),
+                                    Some(ColdCmd::Shutdown(done)) => control.shutdown_waiters.push(done),
+                                    None => {}
+                                    _ => unreachable!(),
+                                }
+                                drain_rx_into_pending(
+                                    &mut rx,
                                     &mut pending_bars,
                                     &mut pending_derivs,
                                     &mut pending_trades,
-                                ).await {
-                                    dirty_since_compact = true;
-                                }
-                                let _ = done.send(());
-                            }
-                            Some(ColdCmd::Shutdown(done)) => {
-                                drain_rx_into_pending(&mut rx, &mut pending_bars, &mut pending_derivs, &mut pending_trades);
+                                    &mut control,
+                                );
                                 flush_pending(
                                     w_store.as_ref(),
                                     &w_reader,
@@ -271,48 +297,30 @@ impl ColdWriter {
                                     &mut pending_bars,
                                     &mut pending_derivs,
                                     &mut pending_trades,
-                                ).await;
-                                if let Some(store) = &w_store {
-                                    let all_specs: Vec<InstrumentSpec> = w_instruments
-                                        .read()
-                                        .map(|m| m.values().cloned().collect())
-                                        .unwrap_or_default();
-                                    let store_c = Arc::clone(store);
-                                    let _ = tokio::task::spawn_blocking(move || {
-                                        let _ = store_c.compact(&all_specs, None);
-                                        let _ = store_c.close();
-                                    })
+                                )
+                                .await;
+                                notify_waiters(control.flush_waiters);
+                                if is_channel_closed || !control.shutdown_waiters.is_empty() {
+                                    run_shutdown_compact_and_close(
+                                        w_store.as_ref(),
+                                        &w_instruments,
+                                        &mut compact_task,
+                                    )
                                     .await;
+                                    notify_waiters(control.compact_waiters);
+                                    notify_waiters(control.shutdown_waiters);
+                                    break;
                                 }
-                                let _ = done.send(());
-                                break;
-                            }
-                            None => {
-                                drain_rx_into_pending(&mut rx, &mut pending_bars, &mut pending_derivs, &mut pending_trades);
-                                flush_pending(
-                                    w_store.as_ref(),
-                                    &w_reader,
-                                    w_strategy.as_ref(),
-                                    &w_levels,
-                                    &w_structures,
-                                    &w_now,
-                                    &mut pending_bars,
-                                    &mut pending_derivs,
-                                    &mut pending_trades,
-                                ).await;
-                                if let Some(store) = &w_store {
-                                    let all_specs: Vec<InstrumentSpec> = w_instruments
-                                        .read()
-                                        .map(|m| m.values().cloned().collect())
-                                        .unwrap_or_default();
-                                    let store_c = Arc::clone(store);
-                                    let _ = tokio::task::spawn_blocking(move || {
-                                        let _ = store_c.compact(&all_specs, None);
-                                        let _ = store_c.close();
-                                    })
+                                if !control.compact_waiters.is_empty() {
+                                    run_periodic_compact(
+                                        w_store.as_ref(),
+                                        &w_instruments,
+                                        &w_now,
+                                        &mut compact_task,
+                                    )
                                     .await;
+                                    notify_waiters(control.compact_waiters);
                                 }
-                                break;
                             }
                         }
                     }
@@ -338,6 +346,13 @@ impl ColdWriter {
     pub async fn flush(&self) {
         let (tx, rx) = oneshot::channel();
         if self.tx.send(ColdCmd::Flush(tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
+    pub async fn compact_periodic_now(&self) {
+        let (tx, rx) = oneshot::channel();
+        if self.tx.send(ColdCmd::Compact(tx)).is_ok() {
             let _ = rx.await;
         }
     }
@@ -545,6 +560,7 @@ fn drain_rx_into_pending(
     pending_bars: &mut PendingBarsMap,
     pending_derivs: &mut PendingDerivsMap,
     pending_trades: &mut PendingTradesMap,
+    control: &mut DrainedControl,
 ) {
     while let Ok(cmd) = rx.try_recv() {
         match cmd {
@@ -580,14 +596,76 @@ fn drain_rx_into_pending(
                     .push(trade);
             }
             ColdCmd::Flush(done) => {
-                let _ = done.send(());
+                control.flush_waiters.push(done);
+            }
+            ColdCmd::Compact(done) => {
+                control.compact_waiters.push(done);
             }
             ColdCmd::Shutdown(done) => {
-                let _ = done.send(());
+                control.shutdown_waiters.push(done);
                 break;
             }
         }
     }
+}
+
+fn notify_waiters(waiters: Vec<oneshot::Sender<()>>) {
+    for done in waiters {
+        let _ = done.send(());
+    }
+}
+
+async fn run_periodic_compact(
+    cold_store: Option<&Arc<ColdStore>>,
+    instruments: &Arc<RwLock<HashMap<String, InstrumentSpec>>>,
+    now_ms: &NowFn,
+    compact_task: &mut Option<JoinHandle<()>>,
+) {
+    if let Some(handle) = compact_task.take() {
+        let _ = handle.await;
+    }
+    let Some(store) = cold_store else {
+        return;
+    };
+    let now = (now_ms)();
+    let store_check = Arc::clone(store);
+    let need_compact = tokio::task::spawn_blocking(move || {
+        store_check.has_compactable_work(Some(now)).unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false);
+    if need_compact {
+        let all_specs: Vec<InstrumentSpec> = instruments
+            .read()
+            .map(|m| m.values().cloned().collect())
+            .unwrap_or_default();
+        let store_c = Arc::clone(store);
+        let _ = tokio::task::spawn_blocking(move || store_c.compact_periodic(&all_specs, Some(now)))
+            .await;
+    }
+}
+
+async fn run_shutdown_compact_and_close(
+    cold_store: Option<&Arc<ColdStore>>,
+    instruments: &Arc<RwLock<HashMap<String, InstrumentSpec>>>,
+    compact_task: &mut Option<JoinHandle<()>>,
+) {
+    if let Some(handle) = compact_task.take() {
+        let _ = handle.await;
+    }
+    let Some(store) = cold_store else {
+        return;
+    };
+    let all_specs: Vec<InstrumentSpec> = instruments
+        .read()
+        .map(|m| m.values().cloned().collect())
+        .unwrap_or_default();
+    let store_c = Arc::clone(store);
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = store_c.compact(&all_specs, None);
+        let _ = store_c.close();
+    })
+    .await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -640,6 +718,7 @@ async fn flush_bars(
         bars.sort_by_key(|b| (b.ts_event, b.revision));
         let min_ts = bars.first().map(|b| b.ts_event).unwrap_or(0);
         let max_ts = bars.last().map(|b| b.ts_event).unwrap_or(0);
+        let max_avail = bars.iter().map(|b| b.ts_available).max().unwrap_or(0);
         let store_c = Arc::clone(store);
         let inst_c = instrument.clone();
         let tf_c = timeframe.clone();
@@ -656,54 +735,71 @@ async fn flush_bars(
                         None,
                     );
                 }
-                // Refresh KeyLevelRegistry from recent cold bars asynchronously using a bounded window
+                // Refresh KeyLevelRegistry and StructureRegistry anchored to the latest visible series
+                // timestamp (handling historical replays and long market closures outside wall-clock 900x).
                 let reader_c = Arc::clone(reader);
                 let levels_c = Arc::clone(key_levels);
                 let structs_c = Arc::clone(structures);
                 let now = now_ms();
+                let as_of = now.max(max_avail);
                 let inst_c = instrument.clone();
                 let tf_c = timeframe.clone();
                 let _ = tokio::task::spawn_blocking(move || {
+                    let gens = reader_c.generations(&inst_c, &tf_c).unwrap_or_default();
+                    let anchor_ts = gens
+                        .iter()
+                        .map(|g| g.last_ts)
+                        .filter(|&ts| ts <= as_of)
+                        .max()
+                        .unwrap_or(max_ts);
                     let start_ts = talaria_contracts::timeframe_ms(&tf_c)
                         .ok()
-                        .map(|iv| now.saturating_sub(iv.saturating_mul(900)));
-                    if let Ok(raw) = reader_c.read_bars(&inst_c, &tf_c, start_ts, None, Some(now)) {
-                        let mut compact = Vec::with_capacity(raw.len().min(600));
-                        for r in raw.iter().rev().take(600).collect::<Vec<_>>().into_iter().rev() {
-                            let status = talaria_contracts::classify_flat_bar(
-                                r.open, r.high, r.low, r.close, r.volume,
-                            );
-                            if let Ok(c) = r.to_compact(status) {
-                                compact.push(c);
-                            }
+                        .map(|iv| anchor_ts.saturating_sub(iv.saturating_mul(900)).max(0));
+                    let mut raw = reader_c
+                        .read_bars(&inst_c, &tf_c, start_ts, None, Some(as_of))
+                        .unwrap_or_default();
+                    if raw.is_empty()
+                        && start_ts.is_some_and(|s| gens.iter().any(|g| g.first_ts < s))
+                    {
+                        raw = reader_c
+                            .read_bars(&inst_c, &tf_c, None, None, Some(as_of))
+                            .unwrap_or_default();
+                    }
+                    let mut compact = Vec::with_capacity(raw.len().min(600));
+                    for r in raw.iter().rev().take(600).collect::<Vec<_>>().into_iter().rev() {
+                        let status = talaria_contracts::classify_flat_bar(
+                            r.open, r.high, r.low, r.close, r.volume,
+                        );
+                        if let Ok(c) = r.to_compact(status) {
+                            compact.push(c);
                         }
-                        if !compact.is_empty() {
-                            let cutoff = compact.last().map(|b| b.ts_available).unwrap_or(now);
-                            let snapshot_id =
-                                format!("live-{}-{}-{}", inst_c.instrument_id, tf_c, cutoff);
-                            let _ = levels_c.compute_and_register(
-                                snapshot_id.clone(),
-                                &inst_c.instrument_id,
-                                &tf_c,
-                                &compact,
-                                cutoff,
-                                now,
-                                None,
-                                None,
-                                &[],
-                            );
-                            let _ = structs_c.compute_and_register(
-                                snapshot_id,
-                                &inst_c.instrument_id,
-                                &tf_c,
-                                &compact,
-                                cutoff,
-                                now,
-                                None,
-                                None,
-                                &[],
-                            );
-                        }
+                    }
+                    if !compact.is_empty() {
+                        let cutoff = compact.last().map(|b| b.ts_available).unwrap_or(as_of);
+                        let snapshot_id =
+                            format!("live-{}-{}-{}", inst_c.instrument_id, tf_c, cutoff);
+                        let _ = levels_c.compute_and_register(
+                            snapshot_id.clone(),
+                            &inst_c.instrument_id,
+                            &tf_c,
+                            &compact,
+                            cutoff,
+                            now,
+                            None,
+                            None,
+                            &[],
+                        );
+                        let _ = structs_c.compute_and_register(
+                            snapshot_id,
+                            &inst_c.instrument_id,
+                            &tf_c,
+                            &compact,
+                            cutoff,
+                            now,
+                            None,
+                            None,
+                            &[],
+                        );
                     }
                 })
                 .await;
@@ -736,24 +832,21 @@ async fn flush_bulk(
     if !pending_derivs.is_empty() {
         let batches: Vec<_> = pending_derivs.drain().map(|(_, v)| v).collect();
         for (instrument, kind, rows) in batches {
-            // Coalesce duplicate (ts_event, revision) ticks inside the batch window, keeping latest.
-            let mut deduped: BTreeMap<(i64, u64), DerivativePoint> = BTreeMap::new();
-            for r in rows {
-                deduped.insert((r.ts_event, r.revision), r);
-            }
-            let rows: Vec<DerivativePoint> = deduped.into_values().collect();
-            let min_ts = rows.first().map(|r| r.ts_event).unwrap_or(0);
-            let max_ts = rows.last().map(|r| r.ts_event).unwrap_or(0);
             let store_c = Arc::clone(store);
             let inst_c = instrument.clone();
             let res = tokio::task::spawn_blocking(move || {
-                store_c.publish_derivatives(&inst_c, kind, &rows)
+                store_c.publish_derivatives_reconciled(&inst_c, kind, &rows)
             })
             .await;
-            if let Ok(Ok(_)) = res {
+            if let Ok(Ok(Some(gen_info))) = res {
                 wrote_any = true;
                 if let Some(stream) = strategy_stream {
-                    stream.derivative_changed(&instrument.instrument_id, kind, min_ts, max_ts);
+                    stream.derivative_changed(
+                        &instrument.instrument_id,
+                        kind,
+                        gen_info.first_ts,
+                        gen_info.last_ts,
+                    );
                 }
             }
         }
@@ -773,4 +866,128 @@ async fn flush_bulk(
     }
 
     wrote_any
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::ScannerConfig;
+    use rust_decimal::Decimal;
+    use talaria_contracts::types::PrecisionTier;
+    use talaria_packs::{DEFAULT_PACK_NAME, get_market_pack};
+    use tempfile::TempDir;
+
+    const BASE_TS: i64 = 1_767_225_600_000; // 2026-01-01T00:00:00Z
+    const MINUTE: i64 = 60_000;
+    const DAY: i64 = 86_400_000;
+
+    fn test_bar(ts: i64, close_val: i64) -> RawBar {
+        let price = Decimal::from(close_val);
+        let vol = Decimal::from(10);
+        RawBar {
+            symbol: "BTCUSDT".to_owned(),
+            timeframe: "1m".to_owned(),
+            ts_event: ts,
+            open: price,
+            high: price + Decimal::from(5),
+            low: price - Decimal::from(5),
+            close: price,
+            volume: vol,
+            turnover: price * vol,
+            ts_available: ts + MINUTE,
+            ts_ingested: ts + MINUTE,
+            ts_committed: ts + MINUTE,
+            precision: PrecisionTier::SecondVerified,
+            revision: 0,
+            confirmed: true,
+            history_only: false,
+            synthetic: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_flush_and_compact_persists_and_compacts() {
+        let tmp = TempDir::new().unwrap();
+        let spec = get_market_pack(DEFAULT_PACK_NAME)
+            .unwrap()
+            .instrument("BTC-USDT-PERP")
+            .unwrap()
+            .clone();
+        // Wall clock 45 days later so 2026-01 is a past month eligible for periodic compaction.
+        let now_fn: NowFn = Arc::new(|| BASE_TS + 45 * DAY);
+        let store = Arc::new(ColdStore::open(tmp.path()).unwrap());
+        let reader = Arc::new(ColdReader::new(tmp.path()));
+        let hot = Arc::new(
+            HotStreamBuffer::with_default_capacity(
+                std::slice::from_ref(&spec),
+                Arc::clone(&now_fn),
+            )
+            .unwrap(),
+        );
+        let desk = Arc::new(DeskBroadcast::new());
+        let kl = Arc::new(KeyLevelRegistry::new(Arc::clone(&now_fn)));
+        let st = Arc::new(StructureRegistry::new(Arc::clone(&now_fn)));
+        let alerts = Arc::new(AlertEngine::new(Arc::clone(&now_fn), 600));
+        let scanner = Arc::new(ScannerEngine::new(
+            Arc::clone(&now_fn),
+            ScannerConfig::default(),
+            Arc::new(|_, _, _, _| String::new()),
+        ));
+        let state_store =
+            Arc::new(WorkbenchStateStore::open(tmp.path(), Arc::clone(&now_fn)).unwrap());
+
+        let writer = ColdWriter::spawn(
+            Arc::clone(&now_fn),
+            std::slice::from_ref(&spec),
+            Some(store),
+            Arc::clone(&reader),
+            hot,
+            desk,
+            None,
+            kl,
+            st,
+            alerts,
+            scanner,
+            state_store,
+        );
+
+        // First generation tail file.
+        writer.on_recovered_bar(&spec, &test_bar(BASE_TS, 50_000));
+        writer.flush().await;
+        assert_eq!(reader.generations(&spec, "1m").unwrap().len(), 1);
+
+        // Second bar followed immediately by queued Flush + Compact commands.
+        writer.on_recovered_bar(&spec, &test_bar(BASE_TS + MINUTE, 50_010));
+        let (bars_after_flush, ()) = tokio::join!(
+            async {
+                writer.flush().await;
+                reader.read_bars(&spec, "1m", None, None, None).unwrap()
+            },
+            writer.compact_periodic_now(),
+        );
+
+        assert_eq!(
+            bars_after_flush.len(),
+            2,
+            "flush() must wait until newly queued bars are persisted"
+        );
+        let gens = reader.generations(&spec, "1m").unwrap();
+        assert_eq!(
+            gens.len(),
+            1,
+            "queued Compact must execute periodic compaction rather than being dropped"
+        );
+        assert!(
+            gens[0]
+                .parquet_path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("partition-"),
+            "compacted generation should be merged into partition-*"
+        );
+
+        writer.shutdown().await;
+    }
 }

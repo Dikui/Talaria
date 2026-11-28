@@ -9,6 +9,7 @@ import pytest
 
 from talaria import sdk
 from talaria.foundation.connector import RawBar
+from talaria.foundation.errors import InstrumentNotFoundError
 from talaria.packs.crypto_perp import CRYPTO_PERP_PACK
 from talaria.perception.cold_store import ColdBatch, ColdStore
 from talaria.service_endpoint import (
@@ -206,6 +207,8 @@ def test_sdk_splits_http_range_without_skipping_the_boundary(tmp_path, monkeypat
         if request.url.path == "/api/bars.arrow":
             # Legacy JSON services without Arrow IPC trigger MAX_RANGE_BARS segmentation on /api/bars.
             return httpx.Response(404)
+        if request.url.path == "/api/instruments":
+            return httpx.Response(404)
         query = request.url.params
         start, end = int(query["start"]), int(query["end"])
         served.append((start, end))
@@ -251,3 +254,109 @@ def test_frame_has_stable_columns_and_dtypes(tmp_path, has_data):
         assert isinstance(result[0].close, Decimal)
     else:
         assert frame.empty
+
+
+def test_sdk_online_resolves_instrument_spec_from_instruments_endpoint(tmp_path, monkeypatch):
+    # Cross-module #1: online SDK resolves server-published venue/symbol from `/api/instruments`
+    # and validates `/api/bars.arrow` against the server's symbol (`BTC-USDT-SWAP`).
+    import io
+    import pyarrow as pa
+    import pyarrow.ipc as pa_ipc
+
+    okx_spec = {
+        "instrument_id": "BTC-USDT-PERP",
+        "venue": "okx",
+        "symbol": "BTC-USDT-SWAP",
+        "asset_class": "crypto_perp",
+        "tick_size": "0.1",
+        "qty_step": "0.0001",
+        "min_qty": "0.0001",
+        "price_precision": 1,
+        "qty_precision": 4,
+    }
+    table = pa.table({
+        "symbol": ["BTC-USDT-SWAP"],
+        "timeframe": ["1m"],
+        "ts_event": pa.array([START], type=pa.int64()),
+        "open": pa.array([Decimal("58100.0")], type=pa.decimal128(18, 1)),
+        "high": pa.array([Decimal("58200.0")], type=pa.decimal128(18, 1)),
+        "low": pa.array([Decimal("58050.0")], type=pa.decimal128(18, 1)),
+        "close": pa.array([Decimal("58150.0")], type=pa.decimal128(18, 1)),
+        "volume": pa.array([Decimal("12.0000")], type=pa.decimal128(18, 4)),
+        "turnover": pa.array([Decimal("697800.00000")], type=pa.decimal128(18, 5)),
+        "ts_available": pa.array([START + MINUTE], type=pa.int64()),
+        "precision": ["SECOND_VERIFIED"],
+        "confirmed": [True],
+        "revision": pa.array([0], type=pa.int64()),
+    })
+    sink = io.BytesIO()
+    with pa_ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    arrow_bytes = sink.getvalue()
+
+    def respond(transport, request):
+        if request.url.path == "/api/instruments":
+            return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path)}, json=[okx_spec])
+        if request.url.path == "/api/health":
+            return httpx.Response(200, headers={
+                DATA_DIR_HEADER: data_dir_id(tmp_path), NOW_MS_HEADER: str(START + MINUTE),
+            })
+        assert request.url.path == "/api/bars.arrow"
+        return httpx.Response(
+            200,
+            headers={
+                DATA_DIR_HEADER: data_dir_id(tmp_path),
+                "content-type": "application/vnd.apache.arrow.stream",
+                BARS_HOT_REVISION_HEADER: "test:0",
+            },
+            content=arrow_bytes,
+        )
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    with ServiceLock(tmp_path) as lock:
+        _write_descriptor(tmp_path, lock.pid)
+        result = sdk.bars("BTC-USDT-PERP", "1m", START, START, data_dir=tmp_path)
+
+    assert len(result) == 1
+    assert result[0].close == Decimal("58150.0")
+
+
+def test_sdk_online_rejects_unconfigured_default_pack_instrument(tmp_path, monkeypatch):
+    # Audit #3: when `/api/instruments` returns HTTP 200, unconfigured DEFAULT_PACK symbols must not fall back to Bybit.
+    okx_spec = {
+        "instrument_id": "BTC-USDT-PERP",
+        "venue": "okx",
+        "symbol": "BTC-USDT-SWAP",
+        "asset_class": "crypto_perp",
+        "tick_size": "0.1",
+        "qty_step": "0.0001",
+        "min_qty": "0.0001",
+        "price_precision": 1,
+        "qty_precision": 4,
+    }
+
+    def respond(transport, request):
+        if request.url.path == "/api/instruments":
+            return httpx.Response(200, headers={DATA_DIR_HEADER: data_dir_id(tmp_path)}, json=[okx_spec])
+        pytest.fail(f"unexpected request to {request.url}")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+    with ServiceLock(tmp_path) as lock:
+        _write_descriptor(tmp_path, lock.pid)
+        with pytest.raises(InstrumentNotFoundError, match="在线服务未配置标的：ETH-USDT-PERP"):
+            sdk.bars("ETH-USDT-PERP", "1m", START, START, data_dir=tmp_path)
+
+
+def test_sdk_default_data_dir_matches_shared_home_location(tmp_path, monkeypatch):
+    # Cross-module #3: default data_dir is ~/.talaria/data, overridable via TALARIA_DATA_DIR or arg.
+    fake_home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.delenv("TALARIA_DATA_DIR", raising=False)
+    assert sdk.data_dir() == (fake_home / ".talaria" / "data").resolve()
+
+    env_dir = tmp_path / "env-data"
+    monkeypatch.setenv("TALARIA_DATA_DIR", str(env_dir))
+    assert sdk.data_dir() == env_dir.resolve()
+
+    explicit_dir = tmp_path / "explicit-data"
+    assert sdk.data_dir(explicit_dir) == explicit_dir.resolve()

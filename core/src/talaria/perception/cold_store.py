@@ -338,12 +338,43 @@ _SCHEMA_SQL = (
     CREATE INDEX IF NOT EXISTS generations_series_range
     ON generations (venue, symbol, timeframe, first_ts, last_ts)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS instrument_specs (
+        instrument_id TEXT NOT NULL,
+        venue TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        spec_json TEXT NOT NULL,
+        updated_ts INTEGER NOT NULL,
+        PRIMARY KEY (instrument_id, venue, symbol)
+    )
+    """,
 )
 
 _GENERATION_COLUMNS = (
     "generation_id, parquet_path, sha256, content_sha256, "
     "first_ts, last_ts, bars, committed_ts"
 )
+
+
+def _upsert_instrument_spec(
+    connection: sqlite3.Connection, instrument: InstrumentSpec, updated_ts: int
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO instrument_specs (instrument_id, venue, symbol, spec_json, updated_ts)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(instrument_id, venue, symbol) DO UPDATE SET
+            spec_json = excluded.spec_json,
+            updated_ts = excluded.updated_ts
+        """,
+        (
+            instrument.instrument_id,
+            instrument.venue,
+            instrument.symbol,
+            instrument.model_dump_json(),
+            updated_ts,
+        ),
+    )
 
 
 def _content_bytes(bars: Iterable[RawBar], *, canonical_decimals: bool = False) -> bytes:
@@ -965,6 +996,35 @@ class ColdReader:
             ColdManifest(version, tuple(ticks)) if tick_instruments else None,
         )
 
+    def list_instrument_specs(self) -> list[InstrumentSpec]:
+        """读取清单中记录的标的规格，按最近更新时间倒序排列。"""
+        if not self._db_path.is_file():
+            return []
+        with closing(sqlite3.connect(f"{self._db_path.as_uri()}?mode=ro", uri=True)) as db:
+            db.execute("BEGIN")
+            has_table = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'instrument_specs'"
+            ).fetchone()
+            if has_table is None:
+                return []
+            rows = db.execute(
+                "SELECT spec_json FROM instrument_specs ORDER BY updated_ts DESC, rowid DESC"
+            ).fetchall()
+        specs: list[InstrumentSpec] = []
+        for (raw,) in rows:
+            try:
+                specs.append(InstrumentSpec.model_validate_json(str(raw)))
+            except Exception as exc:
+                raise ColdStoreIntegrityError(f"instrument_specs JSON 损坏：{exc}") from exc
+        return specs
+
+    def resolve_instrument(self, instrument_id: str) -> InstrumentSpec | None:
+        """按 ``instrument_id`` 从冷库清单解析最近的标的规格。"""
+        for spec in self.list_instrument_specs():
+            if spec.instrument_id == instrument_id:
+                return spec
+        return None
+
     def check_snapshot_files(self) -> None:
         if self._snapshot is None:
             return
@@ -1314,6 +1374,23 @@ class ColdStore:
             content = _content_bytes(batch.bars)
             return self._archive_content(content, _sha256_bytes(content))
 
+    def register_instrument_specs(self, specs: Sequence[InstrumentSpec]) -> None:
+        """将标的规格批量写入冷库清单 ``instrument_specs``。"""
+        if not specs:
+            return
+        with self._lock:
+            self._ensure_open()
+            now_ms = time.time_ns() // 1_000_000
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                for spec in specs:
+                    _upsert_instrument_spec(self._connection, spec, now_ms)
+                self._connection.execute("COMMIT")
+            except BaseException:
+                with suppress(sqlite3.Error):
+                    self._connection.execute("ROLLBACK")
+                raise
+
     def publish(self, batch: ColdBatch) -> ColdGeneration:
         """原子发布同月的尾部批次，复用清单里同内容的 generation。"""
 
@@ -1332,7 +1409,7 @@ class ColdStore:
                 return existing
 
             generation = self._prepare_generation(batch, generation_id)
-            self._commit_manifest(generation)
+            self._commit_manifest(generation, instrument=batch.instrument)
             return generation
 
     def publish_derivatives(
@@ -1353,7 +1430,7 @@ class ColdStore:
                 _verify_generation_file(self._data_dir, existing)
                 return existing
             generation = self._prepare_generation(batch, generation_id)
-            self._commit_manifest(generation)
+            self._commit_manifest(generation, instrument=instrument)
             return generation
 
     def publish_ticks(
@@ -1373,7 +1450,7 @@ class ColdStore:
                 _verify_generation_file(self._data_dir, existing)
                 return existing
             generation = self._prepare_generation(batch, generation_id, tick_content=content)
-            self._commit_manifest(generation)
+            self._commit_manifest(generation, instrument=instrument)
             return generation
 
     def read_tick_revisions(
@@ -1709,6 +1786,7 @@ class ColdStore:
         *,
         replaced: Sequence[ColdGeneration] = (),
         retired_ts: int | None = None,
+        instrument: InstrumentSpec | None = None,
     ) -> None:
         self._hook(ColdPhase.MANIFEST_BEFORE)
         connection = self._connection
@@ -1783,6 +1861,8 @@ class ColdStore:
                     generation.committed_ts,
                 ),
             )
+            if instrument is not None:
+                _upsert_instrument_spec(connection, instrument, generation.committed_ts)
             connection.execute("COMMIT")
         except BaseException:
             with suppress(sqlite3.Error):

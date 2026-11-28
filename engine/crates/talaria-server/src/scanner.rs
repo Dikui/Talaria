@@ -91,7 +91,7 @@ impl Default for ScannerConfig {
 }
 
 type NowFn = Arc<dyn Fn() -> i64 + Send + Sync>;
-type FreezeSnapshotFn = Arc<dyn Fn(&str, &str, i64) -> String + Send + Sync>;
+type FreezeSnapshotFn = Arc<dyn Fn(&str, &str, i64, &[DerivativePoint]) -> String + Send + Sync>;
 type RuleLevelsProvider = Arc<dyn Fn(&str, &str, i64) -> Vec<KeyLevel> + Send + Sync>;
 
 struct ScanCandidate {
@@ -374,7 +374,14 @@ impl ScannerEngine {
                     let as_of = last.ts_available.max(bar_ts + tf_ms);
                     let snapshot_id = snapshot_cache
                         .entry((inst.clone(), as_of))
-                        .or_insert_with(|| (self.freeze_snapshot)(&inst, &tf, as_of))
+                        .or_insert_with(|| {
+                            let mut derivs =
+                                Vec::with_capacity(mark.len() + funding.len() + oi.len());
+                            derivs.extend(mark.iter().cloned());
+                            derivs.extend(funding.iter().cloned());
+                            derivs.extend(oi.iter().cloned());
+                            (self.freeze_snapshot)(&inst, &tf, as_of, &derivs)
+                        })
                         .clone();
                     if !snapshot_id.is_empty() {
                         let trg = make_trigger(&inst, &tf, bar_ts, &fingerprint, now, snapshot_id, hit);
@@ -424,7 +431,14 @@ impl ScannerEngine {
                 if let Some(hit) = hit {
                     let snapshot_id = snapshot_cache
                         .entry((inst.clone(), now))
-                        .or_insert_with(|| (self.freeze_snapshot)(&inst, &tf, now))
+                        .or_insert_with(|| {
+                            let mut derivs =
+                                Vec::with_capacity(mark.len() + funding.len() + oi.len());
+                            derivs.extend(mark.iter().cloned());
+                            derivs.extend(funding.iter().cloned());
+                            derivs.extend(oi.iter().cloned());
+                            (self.freeze_snapshot)(&inst, &tf, now, &derivs)
+                        })
                         .clone();
                     if !snapshot_id.is_empty() {
                         let trg = make_trigger(&inst, &tf, bar_ts, "", now, snapshot_id, hit);

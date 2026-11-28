@@ -1,12 +1,12 @@
 """确定性策略批量回放的命令行。"""
 
 import argparse
-import os
 from pathlib import Path
 import sqlite3
 import sys
 
 from talaria.foundation.errors import TalariaError
+from talaria.service_endpoint import default_data_dir
 
 
 def add_replay_command(subparsers) -> None:
@@ -17,7 +17,7 @@ def add_replay_command(subparsers) -> None:
         help="UTC 毫秒，首个开盘槽下界与可获取时间上界，可重复。省略时使用方案范围",
     )
     replay.add_argument("--workers", type=int, default=1, help="同时运行的账户进程数（默认 1）")
-    replay.add_argument("--data-dir", type=Path, help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）")
+    replay.add_argument("--data-dir", type=Path, help="数据目录（默认 $TALARIA_DATA_DIR 或 ~/.talaria/data）")
     replay.set_defaults(func=_replay)
 
 
@@ -26,7 +26,7 @@ def _replay(args: argparse.Namespace) -> int:
 
     try:
         report = run_replays(
-            args.schemes, args.data_dir or Path(os.environ.get("TALARIA_DATA_DIR") or ".talaria"),
+            args.schemes, default_data_dir(args.data_dir),
             windows=[(start, end) for start, end in args.windows], workers=args.workers,
         )
     except (OSError, sqlite3.Error, TalariaError, ValueError) as exc:

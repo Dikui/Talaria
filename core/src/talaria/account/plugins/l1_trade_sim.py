@@ -248,7 +248,12 @@ class L1TradeSim(BarSim1m):
             default=event.as_of,
         )
         start = self._now if self._now else min(opening, event.as_of)
-        replay = TickReplay(self._reader, event.instrument_id, () if bar is None else (bar,))
+        replay = TickReplay(
+            self._reader,
+            event.instrument_id,
+            () if bar is None else (bar,),
+            spec=self._pack.instrument(event.instrument_id),
+        )
         seed_from = None if self._now else max(0, start - max(_MINUTE, self.quote_max_age_ms))
         ticks = replay.events(start, event.as_of, seed_from=seed_from)
         if bar is not None and replay.covers(bar.ts_event):

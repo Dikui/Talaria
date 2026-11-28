@@ -25,7 +25,7 @@ tests/workbench_api/test_paper_api.py  token="trader-session"
 engine/crates/talaria-server/src/routes/analysis.rs  let ev_token = evidence_class\.trim\(\)\.to_uppercase\(\);
 engine/crates/talaria-server/src/server.rs  token: token\.clone\(\),
 workbench/packages/talaria-desk-ui/src/features/feed/deskSocketHub.ts  const token = getApiToken\(\);
-workbench/packages/talaria-desk-ui/src/lib/api.ts  (apiToken = config\.token \?\? null;|const token = getApiToken\(\);|const metaToken = readMetaContent\("talaria-token"\);|configureApi\(\{ baseUrl: (conn\.base_url|metaBaseUrl \|\| apiBaseUrl), token: (conn\.token|metaMatch\[1\]) \}\);|token: (injected|data)\.token,|let token = readSessionToken\(\);|token = readSessionToken\(\);)
+workbench/packages/talaria-desk-ui/src/lib/api.ts  (apiToken = config\.token \?\? null;|const token = getApiToken\(\);|const metaToken = readMetaContent\("talaria-token"\);|configureApi\(\{ baseUrl: (conn\.base_url|metaBaseUrl \|\| apiBaseUrl), token: (conn\.token|metaMatch\[1\])(, dataDir: conn\.data_dir)? \}\);|token: (injected|data)\.token,|let token = readSessionToken\(\);|token = readSessionToken\(\);)
 workbench/packages/talaria-desk-ui/src/chart/velaIndicators.ts  token: instanceId,
 workbench/src-tauri/src/service.rs  (token: desc\.token\.clone\(\),|"token": info\.token,|"token": "secret-token-123",)
 dsh/packages/talaria-dsh-plugin/bridge.js  (const explicitToken = config\.token \|\| process\.env\.TALARIA_SERVICE_TOKEN|token: explicitToken,|token: parsed\.token \})

@@ -1258,3 +1258,354 @@ fn migrates_legacy_binance_spot_venue_to_binance_on_open() {
     let reopened_again = ColdStore::open(tmp.path()).unwrap();
     reopened_again.close().unwrap();
 }
+
+#[test]
+fn periodic_compaction_uses_tiered_active_month_merges_and_compacts_past_months() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let store = ColdStore::open(tmp.path()).unwrap();
+    let past_ts = Utc.with_ymd_and_hms(2025, 10, 15, 0, 0, 0).unwrap().timestamp_millis();
+    let active_ts = Utc.with_ymd_and_hms(2025, 11, 2, 0, 0, 0).unwrap().timestamp_millis();
+
+    // Active month gets an existing partition-* plus 3 tier-0 tails (< 4 min-merge threshold).
+    store
+        .publish_bars(&spec, "1m", &[make_bar(active_ts, "100.0", 0)])
+        .unwrap();
+    store.compact(std::slice::from_ref(&spec), Some(active_ts)).unwrap();
+
+    // Past month gets two small tails after initial compact -> compact_periodic must compact them into partition-*.
+    store
+        .publish_bars(&spec, "1m", &[make_bar(past_ts, "100.0", 0)])
+        .unwrap();
+    store
+        .publish_bars(&spec, "1m", &[make_bar(past_ts + MINUTE, "101.0", 0)])
+        .unwrap();
+
+    for i in 1..=3 {
+        store
+            .publish_bars(&spec, "1m", &[make_bar(active_ts + i * MINUTE, "101.0", 0)])
+            .unwrap();
+    }
+
+    let r1 = store
+        .compact_periodic(std::slice::from_ref(&spec), Some(active_ts + 10 * MINUTE))
+        .unwrap();
+    // Only the past month should compact; active month's 3 tier-0 tails stay unmerged and partition-* stays untouched.
+    assert_eq!(r1.compacted_groups, 1);
+
+    // Adding a 4th tier-0 tail triggers one tier-0 -> tier-1 tail merge (never rewriting partition-*).
+    store
+        .publish_bars(&spec, "1m", &[make_bar(active_ts + 4 * MINUTE, "100.5", 0)])
+        .unwrap();
+    let r2 = store
+        .compact_periodic(std::slice::from_ref(&spec), Some(active_ts + 11 * MINUTE))
+        .unwrap();
+    assert_eq!(r2.compacted_groups, 1);
+
+    // Adding 1 more tier-0 tail must NOT rewrite the tier-1 tail or the partition-*.
+    store
+        .publish_bars(&spec, "1m", &[make_bar(active_ts + 5 * MINUTE, "100.6", 0)])
+        .unwrap();
+    let r3 = store
+        .compact_periodic(std::slice::from_ref(&spec), Some(active_ts + 12 * MINUTE))
+        .unwrap();
+    assert_eq!(r3.compacted_groups, 0);
+
+    let reader = ColdReader::new(tmp.path());
+    let gens = reader.generations(&spec, "1m").unwrap();
+    let oct_gens: Vec<_> = gens
+        .iter()
+        .filter(|g| g.parquet_path.to_string_lossy().contains("/2025-10/"))
+        .collect();
+    assert_eq!(oct_gens.len(), 1);
+    assert!(
+        oct_gens[0]
+            .parquet_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("partition-")
+    );
+
+    let nov_gens: Vec<_> = gens
+        .iter()
+        .filter(|g| g.parquet_path.to_string_lossy().contains("/2025-11/"))
+        .collect();
+    assert_eq!(nov_gens.len(), 3); // 1 partition + 1 tier-1 tail (4 rows) + 1 tier-0 tail (1 row)
+    assert_eq!(
+        reader.read_bars(&spec, "1m", None, None, None).unwrap().len(),
+        8
+    );
+}
+
+#[test]
+fn read_last_visible_derivative_before_respects_pit_settlement_and_timeframe() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let t0 = base_ts();
+    let store = ColdStore::open(tmp.path()).unwrap();
+
+    let funding_settled = DerivativePoint {
+        instrument_id: spec.instrument_id.clone(),
+        kind: DerivativeKind::FundingRate,
+        ts_event: t0 - 48 * 3_600_000,
+        ts_published: Some(t0 - 48 * 3_600_000),
+        ts_available: t0 - 48 * 3_600_000,
+        value: dec("0.0001"),
+        timeframe: None,
+        precision: PrecisionTier::SecondVerified,
+        ts_ingested: t0 - 48 * 3_600_000,
+        ts_committed: t0 - 48 * 3_600_000,
+        revision: 0,
+        settled: Some(true),
+    };
+    let funding_predicted_later = DerivativePoint {
+        instrument_id: spec.instrument_id.clone(),
+        kind: DerivativeKind::FundingRate,
+        ts_event: t0 - 12 * 3_600_000,
+        ts_published: None,
+        ts_available: t0 - 12 * 3_600_000,
+        value: dec("0.0009"),
+        timeframe: None,
+        precision: PrecisionTier::SecondVerified,
+        ts_ingested: t0 - 12 * 3_600_000,
+        ts_committed: t0 - 12 * 3_600_000,
+        revision: 0,
+        settled: Some(false),
+    };
+    let funding_future_avail = DerivativePoint {
+        instrument_id: spec.instrument_id.clone(),
+        kind: DerivativeKind::FundingRate,
+        ts_event: t0 - 8 * 3_600_000,
+        ts_published: Some(t0 - 8 * 3_600_000),
+        ts_available: t0 + 10_000,
+        value: dec("0.0005"),
+        timeframe: None,
+        precision: PrecisionTier::SecondVerified,
+        ts_ingested: t0 + 10_000,
+        ts_committed: t0 + 10_000,
+        revision: 0,
+        settled: Some(true),
+    };
+    store
+        .publish_derivatives(
+            &spec,
+            DerivativeKind::FundingRate,
+            &[funding_settled.clone()],
+        )
+        .unwrap();
+    store
+        .publish_derivatives(
+            &spec,
+            DerivativeKind::FundingRate,
+            &[funding_predicted_later, funding_future_avail],
+        )
+        .unwrap();
+
+    let mark_1m = DerivativePoint {
+        instrument_id: spec.instrument_id.clone(),
+        kind: DerivativeKind::MarkPrice,
+        ts_event: t0 - 2 * 3_600_000,
+        ts_published: None,
+        ts_available: t0 - 2 * 3_600_000,
+        value: dec("101.5"),
+        timeframe: Some("1m".to_owned()),
+        precision: PrecisionTier::SecondVerified,
+        ts_ingested: t0 - 2 * 3_600_000,
+        ts_committed: t0 - 2 * 3_600_000,
+        revision: 0,
+        settled: None,
+    };
+    let mark_1h = DerivativePoint {
+        ts_event: t0 - 3_600_000,
+        ts_available: t0 - 3_600_000,
+        value: dec("102.5"),
+        timeframe: Some("1h".to_owned()),
+        ts_ingested: t0 - 3_600_000,
+        ts_committed: t0 - 3_600_000,
+        ..mark_1m.clone()
+    };
+    store
+        .publish_derivatives(&spec, DerivativeKind::MarkPrice, &[mark_1m, mark_1h])
+        .unwrap();
+
+    let reader = ColdReader::new(tmp.path());
+    assert!(
+        reader
+            .read_last_visible_derivative_before(
+                &spec,
+                DerivativeKind::FundingRate,
+                0,
+                Some(t0),
+                true,
+                None,
+            )
+            .unwrap()
+            .is_none()
+    );
+    let found_funding = reader
+        .read_last_visible_derivative_before(
+            &spec,
+            DerivativeKind::FundingRate,
+            t0,
+            Some(t0),
+            true,
+            None,
+        )
+        .unwrap()
+        .expect("settled funding before window");
+    assert_eq!(found_funding.value, dec("0.0001"));
+    assert_eq!(found_funding.ts_event, funding_settled.ts_event);
+
+    let found_mark_1m = reader
+        .read_last_visible_derivative_before(
+            &spec,
+            DerivativeKind::MarkPrice,
+            t0,
+            Some(t0),
+            false,
+            Some("1m"),
+        )
+        .unwrap()
+        .expect("1m mark price");
+    assert_eq!(found_mark_1m.value, dec("101.5"));
+
+    // Instrument specs persisted on publish & manual registration are readable via ColdReader.
+    let okx_spec = InstrumentSpec {
+        instrument_id: "BTC-USDT-PERP".to_owned(),
+        venue: "okx".to_owned(),
+        symbol: "BTC-USDT-SWAP".to_owned(),
+        asset_class: "crypto_perp".to_owned(),
+        tick_size: dec("0.1"),
+        qty_step: dec("0.0001"),
+        min_qty: dec("0.0001"),
+        price_precision: 1,
+        qty_precision: 4,
+    };
+    store.register_instrument_specs(&[okx_spec.clone()]).unwrap();
+    let specs = reader.list_instrument_specs().unwrap();
+    assert!(specs.iter().any(|s| s.venue == "okx" && s.symbol == "BTC-USDT-SWAP"));
+}
+
+#[test]
+fn has_compactable_work_tracks_active_tiers_and_month_rollover() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let store = ColdStore::open(tmp.path()).unwrap();
+    let active_ts = Utc.with_ymd_and_hms(2025, 11, 2, 0, 0, 0).unwrap().timestamp_millis();
+
+    assert!(!store.has_compactable_work(Some(active_ts)).unwrap());
+
+    for i in 0..3 {
+        store
+            .publish_bars(&spec, "1m", &[make_bar(active_ts + i * MINUTE, "100.0", 0)])
+            .unwrap();
+    }
+    assert!(
+        !store
+            .has_compactable_work(Some(active_ts + 10 * MINUTE))
+            .unwrap()
+    );
+
+    store
+        .publish_bars(&spec, "1m", &[make_bar(active_ts + 3 * MINUTE, "101.0", 0)])
+        .unwrap();
+    assert!(
+        store
+            .has_compactable_work(Some(active_ts + 10 * MINUTE))
+            .unwrap()
+    );
+
+    let report = store
+        .compact_periodic(std::slice::from_ref(&spec), Some(active_ts + 11 * MINUTE))
+        .unwrap();
+    assert_eq!(report.compacted_groups, 1);
+    assert!(
+        !store
+            .has_compactable_work(Some(active_ts + 11 * MINUTE))
+            .unwrap()
+    );
+
+    let next_month_ts = Utc.with_ymd_and_hms(2025, 12, 1, 0, 0, 0).unwrap().timestamp_millis();
+    assert!(store.has_compactable_work(Some(next_month_ts)).unwrap());
+}
+
+#[test]
+fn publish_derivatives_reconciled_survives_reopen_and_unifies_revisions() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let t0 = base_ts();
+
+    let initial = DerivativePoint {
+        instrument_id: spec.instrument_id.clone(),
+        kind: DerivativeKind::FundingRate,
+        ts_event: t0,
+        ts_published: Some(t0),
+        ts_available: t0 + 1_000,
+        value: dec("0.0001"),
+        timeframe: None,
+        precision: PrecisionTier::SecondVerified,
+        ts_ingested: t0 + 1_000,
+        ts_committed: t0 + 1_000,
+        revision: 0,
+        settled: Some(true),
+    };
+
+    {
+        let store = ColdStore::open(tmp.path()).unwrap();
+        let gen0 = store
+            .publish_derivatives_reconciled(&spec, DerivativeKind::FundingRate, &[initial.clone()])
+            .unwrap();
+        assert!(gen0.is_some());
+        store.close().unwrap();
+    }
+
+    let store = ColdStore::open(tmp.path()).unwrap();
+    let resend = DerivativePoint {
+        ts_available: t0 + 5_000,
+        ts_ingested: t0 + 5_000,
+        ts_committed: t0 + 5_000,
+        revision: 0,
+        ..initial.clone()
+    };
+    let resend_gen = store
+        .publish_derivatives_reconciled(&spec, DerivativeKind::FundingRate, &[resend])
+        .unwrap();
+    assert!(resend_gen.is_none());
+
+    let reader = ColdReader::new(tmp.path());
+    let visible_early = reader
+        .read_derivatives(
+            &spec,
+            DerivativeKind::FundingRate,
+            None,
+            None,
+            Some(t0 + 2_000),
+            false,
+        )
+        .unwrap();
+    assert_eq!(visible_early.len(), 1);
+    assert_eq!(visible_early[0].ts_available, t0 + 1_000);
+    assert_eq!(visible_early[0].revision, 0);
+
+    let modified = DerivativePoint {
+        value: dec("0.0002"),
+        ts_available: t0 + 6_000,
+        ts_ingested: t0 + 6_000,
+        ts_committed: t0 + 6_000,
+        revision: 0,
+        ..initial
+    };
+    let gen1 = store
+        .publish_derivatives_reconciled(&spec, DerivativeKind::FundingRate, &[modified])
+        .unwrap();
+    assert!(gen1.is_some());
+
+    let revisions = reader
+        .read_derivative_revisions(&spec, DerivativeKind::FundingRate, None, None, false)
+        .unwrap();
+    assert_eq!(revisions.len(), 2);
+    assert_eq!(revisions[1].revision, 1);
+    assert_eq!(revisions[1].value, dec("0.0002"));
+}

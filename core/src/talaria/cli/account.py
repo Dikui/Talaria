@@ -1,12 +1,12 @@
 """账户进程命令行。"""
 
 import argparse
-import os
 import sqlite3
 import sys
 from pathlib import Path
 
 from talaria.foundation.errors import TalariaError
+from talaria.service_endpoint import default_data_dir
 
 
 def add_account_command(subparsers) -> None:
@@ -15,7 +15,7 @@ def add_account_command(subparsers) -> None:
     run = commands.add_parser("run", help="启动账户进程")
     run.add_argument("scheme", type=Path, help="交易方案 YAML，或使用 --replay 传入 run-config.json")
     run.add_argument("--mode", choices=("backtest", "paper"), required=True)
-    run.add_argument("--data-dir", type=Path, help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）")
+    run.add_argument("--data-dir", type=Path, help="数据目录（默认 $TALARIA_DATA_DIR 或 ~/.talaria/data）")
     run.add_argument("--replay", action="store_true", help="使用已有回测产物中固定的方案、指标默认值、冷库清单和代码哈希")
     run.add_argument("--run-id", help=argparse.SUPPRESS)
     run.set_defaults(func=_run_account)
@@ -24,7 +24,7 @@ def add_account_command(subparsers) -> None:
     approve = commands.add_parser("strategy-approve", help="批准已审阅的 agent 策略代码哈希")
     for command in (register, approve):
         command.add_argument("path", type=Path, help="策略或宿主插件的 Python 入口文件")
-        command.add_argument("--data-dir", type=Path, help="数据目录（默认 $TALARIA_DATA_DIR 或 ./.talaria）")
+        command.add_argument("--data-dir", type=Path, help="数据目录（默认 $TALARIA_DATA_DIR 或 ~/.talaria/data）")
         command.set_defaults(func=_manage_strategy_code)
     register.add_argument("--source", choices=("human", "agent"), required=True)
     approve.add_argument("--sha256", required=True, help="交易员审阅的完整策略快照 SHA-256（由 strategy-register 输出）")
@@ -32,7 +32,7 @@ def add_account_command(subparsers) -> None:
 
 
 def _data_dir() -> Path:
-    return Path(os.environ.get("TALARIA_DATA_DIR") or ".talaria")
+    return default_data_dir()
 
 
 def _manage_strategy_code(args: argparse.Namespace) -> int:

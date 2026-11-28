@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use talaria_contracts::error_codes::NOT_FOUND;
 use talaria_contracts::market::InstrumentSpec;
-use talaria_contracts::snapshot::SnapshotRequest;
+use talaria_contracts::snapshot::{SnapshotMode, SnapshotRequest};
 use talaria_feed::{
     DEFAULT_STALE_AFTER_MS, FeedClock, FeedSupervisor, FeedSupervisorConfig, ReplayConfig,
     ReplayTransport, validate_replay_data_dir,
@@ -29,10 +29,13 @@ use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::alerts::AlertEngine;
-use crate::cold_writer::ColdWriter;
+use crate::cold_writer::{ColdWriter, PERIODIC_COMPACT_INTERVAL};
 use crate::error::ApiError;
 use crate::key_levels::KeyLevelRegistry;
-use crate::routes::{api_router, freeze_snapshot_sync, load_confirmed_series, load_derivative_points};
+use crate::routes::{
+    FreezeContext, api_router, freeze_snapshot_sync, freeze_snapshot_with_context,
+    load_confirmed_series, load_derivative_points,
+};
 use crate::scanner::{ScannerConfig, ScannerEngine};
 use crate::security::{
     DATA_DIR_HEADER, FeatureToggles, SecurityContext, ServiceDescriptor, build_descriptor,
@@ -116,9 +119,22 @@ pub struct AppState {
     pub supervisor: Option<Arc<FeedSupervisor>>,
     pub history_connector: Option<Arc<dyn HistoryConnector>>,
     pub cold_writer: Option<Arc<ColdWriter>>,
-    pub backfill_cooldown: Arc<Mutex<HashMap<String, i64>>>,
+    pub backfill_cooldown: Arc<Mutex<HashMap<String, BackfillCooldownEntry>>>,
     now_fn: Arc<dyn Fn() -> i64 + Send + Sync>,
     feed_mode_label: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackfillCooldownEntry {
+    pub until_ms: i64,
+    pub last_error: Option<BackfillCachedError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackfillCachedError {
+    pub status: StatusCode,
+    pub code: &'static str,
+    pub message: String,
 }
 
 impl AppState {
@@ -219,6 +235,7 @@ pub struct RunningServer {
     shutdown_tx: watch::Sender<bool>,
     serve_handle: Mutex<Option<JoinHandle<()>>>,
     paper_watcher_handle: Mutex<Option<JoinHandle<()>>>,
+    rest_compact_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl RunningServer {
@@ -238,6 +255,10 @@ impl RunningServer {
         }
         let watcher_handle = self.paper_watcher_handle.lock().unwrap().take();
         if let Some(handle) = watcher_handle {
+            let _ = handle.await;
+        }
+        let compact_handle = self.rest_compact_handle.lock().unwrap().take();
+        if let Some(handle) = compact_handle {
             let _ = handle.await;
         }
         if let Some(sup) = &self.state.supervisor {
@@ -322,7 +343,9 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
     let shared_instruments = Arc::new(RwLock::new(instruments.clone()));
     let snapshots = Arc::new(SnapshotStore::open(&data_dir)?);
     let cold_store = if features.cold_store {
-        Some(Arc::new(ColdStore::open(&data_dir)?))
+        let cs = Arc::new(ColdStore::open(&data_dir)?);
+        let _ = cs.register_instrument_specs(&instruments);
+        Some(cs)
     } else {
         None
     };
@@ -354,27 +377,38 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
     let scanner_hot = Arc::clone(&hot_buffer);
     let scanner_pack = Arc::clone(&pack);
     let scanner_kl = Arc::clone(&key_levels);
+    let scanner_st = Arc::clone(&structures);
     let scanner_insts = Arc::clone(&shared_instruments);
     let scanner_now = Arc::clone(&now_fn);
+    let scanner_market_data = features.market_data;
 
     let scanner = Arc::new(ScannerEngine::new(
         Arc::clone(&now_fn),
         ScannerConfig::default(),
-        Arc::new(move |inst_id, tf, as_of| {
+        Arc::new(move |inst_id, tf, as_of, extra_derivs| {
             let insts_l = scanner_insts.read().map(|g| g.clone()).unwrap_or_default();
-            freeze_ephemeral_snapshot(
-                &insts_l,
-                &scanner_pack,
-                &scanner_reader,
-                &scanner_hot,
-                &scanner_snapshots_ref(&scanner_freeze_snapshots),
-                &scanner_kl,
-                &scanner_now,
-                inst_id,
-                tf,
-                as_of,
-            )
-            .unwrap_or_default()
+            let now = (scanner_now)().max(as_of);
+            let ctx = FreezeContext {
+                instruments: &insts_l,
+                pack: &scanner_pack,
+                reader: &scanner_reader,
+                hot_buffer: &scanner_hot,
+                snapshots: &scanner_freeze_snapshots,
+                key_levels: &scanner_kl,
+                structures: &scanner_st,
+                supervisor: None,
+                market_data_enabled: scanner_market_data,
+                now_ms: now,
+            };
+            let req = SnapshotRequest {
+                instrument_id: inst_id.to_owned(),
+                timeframes: vec![tf.to_owned()],
+                cutoff_ts: Some(as_of),
+                mode: SnapshotMode::HistoricalPit,
+            };
+            freeze_snapshot_with_context(&ctx, &req, None, None, extra_derivs, false)
+                .map(|meta| meta.snapshot_id)
+                .unwrap_or_default()
         }),
     ));
     {
@@ -466,26 +500,40 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         });
         let freeze_snap = Arc::new({
             let kl = Arc::clone(&a_kl);
+            let st = Arc::clone(&structures);
             let reader_c = Arc::clone(&a_reader);
             let hot_c = Arc::clone(&a_hot);
             let snaps_c = Arc::clone(&a_snaps);
             let pack_c = Arc::clone(&a_pack);
+            let insts_c = Arc::clone(&shared_instruments);
             let now_c = Arc::clone(&a_now);
-            move |alert: &talaria_contracts::alerts::AlertRecord, as_of: i64| {
-                let insts_l = instruments_from_pack(&pack_c);
-                freeze_ephemeral_snapshot(
-                    &insts_l,
-                    &pack_c,
-                    &reader_c,
-                    &hot_c,
-                    &snaps_c,
-                    &kl,
-                    &now_c,
-                    &alert.instrument_id,
-                    &alert.timeframe,
-                    as_of,
-                )
-                .unwrap_or_default()
+            let market_data = features.market_data;
+            move |alert: &talaria_contracts::alerts::AlertRecord,
+                  as_of: i64,
+                  extra_derivs: &[talaria_contracts::derivatives::DerivativePoint]| {
+                let insts_l = insts_c.read().map(|g| g.clone()).unwrap_or_default();
+                let now = (now_c)().max(as_of);
+                let ctx = FreezeContext {
+                    instruments: &insts_l,
+                    pack: &pack_c,
+                    reader: &reader_c,
+                    hot_buffer: &hot_c,
+                    snapshots: &snaps_c,
+                    key_levels: &kl,
+                    structures: &st,
+                    supervisor: None,
+                    market_data_enabled: market_data,
+                    now_ms: now,
+                };
+                let req = SnapshotRequest {
+                    instrument_id: alert.instrument_id.clone(),
+                    timeframes: vec![alert.timeframe.clone()],
+                    cutoff_ts: Some(as_of),
+                    mode: SnapshotMode::HistoricalPit,
+                };
+                freeze_snapshot_with_context(&ctx, &req, None, None, extra_derivs, true)
+                    .map(|meta| meta.snapshot_id)
+                    .unwrap_or_default()
             }
         });
         let on_trigger = Arc::new(
@@ -697,6 +745,47 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         shutdown_tx.subscribe(),
         crate::paper_watcher::DEFAULT_PAPER_WATCHER_INTERVAL,
     );
+    let rest_compact_handle = if state.cold_writer.is_none() && state.cold_store.is_some() {
+        let compact_state = Arc::clone(&state);
+        let mut rx = shutdown_tx.subscribe();
+        Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval_at(
+                tokio::time::Instant::now() + PERIODIC_COMPACT_INTERVAL,
+                PERIODIC_COMPACT_INTERVAL,
+            );
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if let Some(store) = &compact_state.cold_store {
+                            let store_check = Arc::clone(store);
+                            let now = compact_state.now_ms();
+                            let has_work = tokio::task::spawn_blocking(move || {
+                                store_check.has_compactable_work(Some(now)).unwrap_or(false)
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if has_work {
+                                let specs = compact_state.instruments_snapshot();
+                                let store_c = Arc::clone(store);
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    let _ = store_c.compact_periodic(&specs, Some(now));
+                                })
+                                .await;
+                            }
+                        }
+                    }
+                    changed = rx.changed() => {
+                        if changed.is_err() || *rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }))
+    } else {
+        None
+    };
     let serve_handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
@@ -718,89 +807,12 @@ pub async fn start_server(config: ServerConfig) -> Result<RunningServer, ApiErro
         shutdown_tx,
         serve_handle: Mutex::new(Some(serve_handle)),
         paper_watcher_handle: Mutex::new(Some(paper_watcher_handle)),
+        rest_compact_handle: Mutex::new(rest_compact_handle),
     })
 }
 
 async fn json_fallback_handler() -> Response {
     ApiError::not_found(NOT_FOUND, "endpoint not found").into_response()
-}
-
-fn scanner_snapshots_ref(snaps: &Arc<SnapshotStore>) -> Arc<SnapshotStore> {
-    Arc::clone(snaps)
-}
-
-fn instruments_from_pack(pack: &Arc<dyn MarketPack>) -> Vec<InstrumentSpec> {
-    pack.instruments_snapshot()
-}
-
-#[allow(clippy::too_many_arguments)]
-fn freeze_ephemeral_snapshot(
-    instruments: &[InstrumentSpec],
-    pack: &Arc<dyn MarketPack>,
-    reader: &ColdReader,
-    hot_buffer: &Arc<HotStreamBuffer>,
-    snapshots: &Arc<SnapshotStore>,
-    key_levels: &Arc<KeyLevelRegistry>,
-    now_ms: &Arc<dyn Fn() -> i64 + Send + Sync>,
-    instrument_id: &str,
-    timeframe: &str,
-    cutoff_ts: i64,
-) -> Result<String, ApiError> {
-    let spec = instruments
-        .iter()
-        .find(|s| s.instrument_id == instrument_id)
-        .cloned()
-        .ok_or_else(|| ApiError::not_found(NOT_FOUND, "instrument not found"))?;
-    let interval = talaria_contracts::timeframe_ms(timeframe)?;
-    let closed_end = talaria_contracts::last_closed_bar_start(cutoff_ts, interval);
-    let cold = reader.read_revisions(&spec, timeframe, None, Some(closed_end))?;
-    let hot = hot_buffer.revisions(&spec.instrument_id, timeframe, 0, Some(closed_end));
-    let mut visible = talaria_store::range_visible_bars(&cold, &hot, Some(cutoff_ts), false);
-    let tail_start = visible.len().saturating_sub(600);
-    if tail_start > 0 {
-        visible.drain(0..tail_start);
-    }
-    let compact = talaria_feed::compact_series(&visible, timeframe, cutoff_ts)?;
-    if compact.is_empty() {
-        return Err(ApiError::feed_unavailable("no bars for snapshot"));
-    }
-    let mut bar_counts = std::collections::BTreeMap::new();
-    bar_counts.insert(timeframe.to_owned(), compact.len());
-    let mut frames = std::collections::BTreeMap::new();
-    frames.insert(timeframe.to_owned(), compact.clone());
-
-    let now = now_ms();
-    let snapshot_id = format!("snp_{}", uuid::Uuid::new_v4().simple());
-    let meta = talaria_contracts::snapshot::SnapshotMeta {
-        snapshot_id: snapshot_id.clone(),
-        instrument_id: spec.instrument_id.clone(),
-        timeframes: vec![timeframe.to_owned()],
-        cutoff_ts,
-        created_ts: now,
-        mode: talaria_contracts::snapshot::SnapshotMode::HistoricalPit,
-        bar_counts,
-    };
-    snapshots.save(&crate::snapshot_store::FrozenSnapshot {
-        meta,
-        frames,
-        derivatives: Vec::new(),
-    })?;
-    let session_profile = pack
-        .traits(&spec.instrument_id)
-        .ok()
-        .map(|t| talaria_contracts::key_levels::SessionProfile::from(&t.session));
-    let _ = key_levels.compute_and_register(
-        snapshot_id.clone(),
-        &spec.instrument_id,
-        timeframe,
-        &compact,
-        cutoff_ts,
-        now,
-        session_profile.as_ref(),
-        None,
-        &[],
-    );
-    Ok(snapshot_id)
 }
 
 fn warm_initial_key_levels(state: &Arc<AppState>) {

@@ -1,7 +1,7 @@
 //! Cold store single writer (`ColdStore`) with 4-stage atomic publish, compaction, retention,
 //! orphan cleanup, and lockless snapshot/manifest reader (`ColdReader`).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use rusqlite::{Connection, TransactionBehavior, params};
+use rust_decimal::Decimal;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use talaria_contracts::{
@@ -24,10 +25,12 @@ use crate::decimal_codec::{
 use crate::error::{Result, StoreError};
 use crate::manifest::{
     all_referenced_content_sha256, all_referenced_parquet_paths, canonical_db_key, checkpoint_wal,
-    claim_writer, commit_manifest, open_reader_connection, open_writer_connection, path_under_root,
-    posix_rel_path, prune_all_retired, prune_retired, read_cursor, read_manifest_version,
-    release_writer, select_distinct_series, select_generation_by_id, select_generations,
-    select_matching_bounds,
+    claim_writer, commit_manifest_with_spec, has_prunable_retired,
+    has_tail_generations as manifest_has_tail_generations, open_reader_connection,
+    open_writer_connection, path_under_root, posix_rel_path, prune_all_retired, prune_retired,
+    read_cursor, read_manifest_version, release_writer, select_distinct_series,
+    select_generation_by_id, select_generations, select_instrument_specs, select_matching_bounds,
+    select_tail_generation_summaries, upsert_instrument_spec,
 };
 use crate::parquet_io::{
     read_bars_parquet, read_derivatives_parquet, read_quotes_parquet, read_trades_parquet,
@@ -35,10 +38,11 @@ use crate::parquet_io::{
 };
 use crate::revisions::{latest_visible_bars, latest_visible_quotes, latest_visible_trades};
 use crate::types::{
-    ARCHIVE_SUBDIR, ArchivedBatch, COLD_SUBDIR, ColdBatch, ColdCursor, ColdGeneration, ColdManifest,
-    ColdPhase, ColdSnapshot, CompactionReport, DerivativeBatch, FaultHook, MANIFEST_DB,
-    OrphanCleanupReport, STAGING_SUBDIR, TICK_BATCH_ROWS, TickRows, parse_derivative_kind,
-    parse_tick_kind, partition_day, partition_month, safe_path_part, tick_kind_str,
+    ACTIVE_TAIL_MERGE_MIN_FILES, ACTIVE_TAIL_TARGET_ROWS, ARCHIVE_SUBDIR, ArchivedBatch,
+    COLD_SUBDIR, ColdBatch, ColdCursor, ColdGeneration, ColdManifest, ColdPhase, ColdSnapshot,
+    CompactionReport, DerivativeBatch, FaultHook, MANIFEST_DB, OrphanCleanupReport, STAGING_SUBDIR,
+    TICK_BATCH_ROWS, TickRows, parse_derivative_kind, parse_tick_kind, partition_day,
+    partition_month, safe_path_part, tick_kind_str,
 };
 
 const ALL_DERIVATIVE_KINDS: [DerivativeKind; 3] = [
@@ -363,11 +367,16 @@ impl<'a> PublishPayload<'a> {
 // ColdStore (Single Writer)
 // =========================================================================
 
+type DerivStateKey = (i64, Option<String>, bool);
+type DerivStateSeries = BTreeMap<DerivStateKey, (u64, Decimal, i64)>;
+const DERIV_STATE_MAX_KEYS: usize = 8_192;
+
 struct StoreInner {
     data_dir: PathBuf,
     db_key: Option<PathBuf>,
     conn: Option<Connection>,
     fault_hook: Option<FaultHook>,
+    deriv_states: HashMap<(String, String, DerivativeKind), DerivStateSeries>,
 }
 
 impl StoreInner {
@@ -524,11 +533,11 @@ impl StoreInner {
         staging_path: &Path,
         payload: &PublishPayload<'_>,
         generation_id: &str,
-        compacted: bool,
+        as_partition: bool,
     ) -> Result<PathBuf> {
         self.hook(ColdPhase::RenameBefore)?;
         let instrument = payload.instrument();
-        let kind_prefix = if compacted { "partition" } else { "tail" };
+        let kind_prefix = if as_partition { "partition" } else { "tail" };
         let version = instrument.instrument_spec_sha256();
         let partition = payload.partition_key()?;
         let final_path = self
@@ -577,6 +586,7 @@ impl StoreInner {
             generation_id,
             archive_content,
             compacted,
+            compacted,
             true,
         )
     }
@@ -586,7 +596,8 @@ impl StoreInner {
         payload: &PublishPayload<'_>,
         generation_id: &str,
         archive_content: Vec<u8>,
-        compacted: bool,
+        allow_equal_revisions: bool,
+        as_partition: bool,
         write_raw_archive: bool,
     ) -> Result<ColdGeneration> {
         let content_sha = sha256_bytes(&archive_content);
@@ -600,8 +611,8 @@ impl StoreInner {
             }
         };
         let staging_path = self.write_staging(&archived, payload)?;
-        self.quality_check(&staging_path, payload, compacted)?;
-        let final_path = self.promote(&staging_path, payload, generation_id, compacted)?;
+        self.quality_check(&staging_path, payload, allow_equal_revisions)?;
+        let final_path = self.promote(&staging_path, payload, generation_id, as_partition)?;
 
         let rel_path = final_path
             .strip_prefix(&self.data_dir)
@@ -631,11 +642,12 @@ impl StoreInner {
         generation: &ColdGeneration,
         replaced: &[ColdGeneration],
         retired_ts: Option<i64>,
+        instrument: Option<&InstrumentSpec>,
     ) -> Result<i64> {
         self.hook(ColdPhase::ManifestBefore)?;
         let ts = retired_ts.unwrap_or_else(current_time_ms);
         let conn = self.conn_mut()?;
-        let version = commit_manifest(conn, generation, replaced, ts)?;
+        let version = commit_manifest_with_spec(conn, generation, replaced, ts, instrument)?;
         self.hook(ColdPhase::ManifestAfter)?;
         Ok(version)
     }
@@ -758,17 +770,18 @@ impl StoreInner {
             }
         };
 
-        self.commit_generation(&new_gen, group, Some(now_ms))?;
+        self.commit_generation(&new_gen, group, Some(now_ms), Some(instrument))?;
         report.compacted_groups += 1;
         report.retired_files_added += group.len();
         Ok(())
     }
 
-    fn compact_series(
+    fn compact_series_with_mode(
         &mut self,
         instrument: &InstrumentSpec,
         timeframe: &str,
         now_ms: i64,
+        active_month: Option<&str>,
         report: &mut CompactionReport,
     ) -> Result<()> {
         let version = instrument.instrument_spec_sha256();
@@ -799,7 +812,63 @@ impl StoreInner {
             }
         }
 
-        for (_month, group) in groups {
+        for (month, group) in groups {
+            if active_month == Some(month.as_str()) {
+                // Active month: never rewrite `partition-*` files; apply base-4 size-tiered
+                // merging on `tail-*` files so each row is rewritten at most O(log N) times.
+                let mut tier_buckets: BTreeMap<usize, Vec<ColdGeneration>> = BTreeMap::new();
+                for item in group {
+                    let is_tail = item
+                        .parquet_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|s| s.starts_with(&tail_prefix));
+                    if !is_tail {
+                        continue;
+                    }
+                    let row_count = usize::try_from(item.bars).unwrap_or(0);
+                    if let Some(tier) = active_tail_tier(row_count) {
+                        tier_buckets.entry(tier).or_default().push(item);
+                    }
+                }
+
+                for (_tier, tails) in tier_buckets {
+                    if tails.len() < ACTIVE_TAIL_MERGE_MIN_FILES {
+                        continue;
+                    }
+                    let mut sub_groups: Vec<Vec<ColdGeneration>> = Vec::new();
+                    let mut cur: Vec<ColdGeneration> = Vec::new();
+                    let mut cur_rows: usize = 0;
+                    for tail in tails {
+                        let row_count = usize::try_from(tail.bars).unwrap_or(0);
+                        if cur.len() >= ACTIVE_TAIL_MERGE_MIN_FILES
+                            && (cur_rows >= ACTIVE_TAIL_TARGET_ROWS
+                                || cur_rows + row_count > ACTIVE_TAIL_TARGET_ROWS)
+                        {
+                            sub_groups.push(std::mem::take(&mut cur));
+                            cur_rows = 0;
+                        }
+                        cur_rows += row_count;
+                        cur.push(tail);
+                    }
+                    if cur.len() >= ACTIVE_TAIL_MERGE_MIN_FILES {
+                        sub_groups.push(cur);
+                    }
+
+                    for sub_group in sub_groups {
+                        self.merge_series_group(
+                            instrument,
+                            timeframe,
+                            &sub_group,
+                            now_ms,
+                            false,
+                            report,
+                        )?;
+                    }
+                }
+                continue;
+            }
+
             let has_tail = group.iter().any(|item| {
                 item.parquet_path
                     .file_name()
@@ -809,55 +878,82 @@ impl StoreInner {
             if !has_tail {
                 continue;
             }
-            let archive = compaction_archive_bytes(&group)?;
-
-            let new_gen = if let Some(deriv_kind) = parse_derivative_kind(timeframe) {
-                let mut points = Vec::new();
-                for item in &group {
-                    let path = verify_generation_file(&self.data_dir, item)?;
-                    points.extend(read_derivatives_parquet(&path, None, None, None)?);
-                }
-                points.sort_by(derivative_order_cmp);
-                let content = derivative_content_bytes(&points)?;
-                let mut hasher = Sha256::new();
-                hasher.update(b"partition\n");
-                hasher.update(&content);
-                let generation_id = hex::encode(hasher.finalize());
-                let batch = DerivativeBatch {
-                    instrument,
-                    kind: deriv_kind,
-                    rows: &points,
-                };
-                self.prepare_generation(
-                    &PublishPayload::Derivatives(&batch),
-                    &generation_id,
-                    archive,
-                    true,
-                )?
-            } else {
-                let mut bars = Vec::new();
-                for item in &group {
-                    let path = verify_generation_file(&self.data_dir, item)?;
-                    bars.extend(read_bars_parquet(&path, None, None)?);
-                }
-                dedup_bars_same_revision(&mut bars);
-                let content = bar_content_bytes(&bars, true)?;
-                let mut hasher = Sha256::new();
-                hasher.update(b"partition\n");
-                hasher.update(&content);
-                let generation_id = hex::encode(hasher.finalize());
-                let batch = ColdBatch {
-                    instrument,
-                    timeframe,
-                    bars: &bars,
-                };
-                self.prepare_generation(&PublishPayload::Bars(&batch), &generation_id, archive, true)?
-            };
-
-            self.commit_generation(&new_gen, &group, Some(now_ms))?;
-            report.compacted_groups += 1;
-            report.retired_files_added += group.len();
+            self.merge_series_group(instrument, timeframe, &group, now_ms, true, report)?;
         }
+        Ok(())
+    }
+
+    fn merge_series_group(
+        &mut self,
+        instrument: &InstrumentSpec,
+        timeframe: &str,
+        group: &[ColdGeneration],
+        now_ms: i64,
+        as_partition: bool,
+        report: &mut CompactionReport,
+    ) -> Result<()> {
+        let archive = compaction_archive_bytes(group)?;
+        let domain_prefix: &[u8] = if as_partition {
+            b"partition\n"
+        } else {
+            b"tail-segment\n"
+        };
+
+        let new_gen = if let Some(deriv_kind) = parse_derivative_kind(timeframe) {
+            let mut points = Vec::new();
+            for item in group {
+                let path = verify_generation_file(&self.data_dir, item)?;
+                points.extend(read_derivatives_parquet(&path, None, None, None)?);
+            }
+            points.sort_by(derivative_order_cmp);
+            let content = derivative_content_bytes(&points)?;
+            let mut hasher = Sha256::new();
+            hasher.update(domain_prefix);
+            hasher.update(&content);
+            let generation_id = hex::encode(hasher.finalize());
+            let batch = DerivativeBatch {
+                instrument,
+                kind: deriv_kind,
+                rows: &points,
+            };
+            self.prepare_generation_with_archive_mode(
+                &PublishPayload::Derivatives(&batch),
+                &generation_id,
+                archive,
+                true,
+                as_partition,
+                true,
+            )?
+        } else {
+            let mut bars = Vec::new();
+            for item in group {
+                let path = verify_generation_file(&self.data_dir, item)?;
+                bars.extend(read_bars_parquet(&path, None, None)?);
+            }
+            dedup_bars_same_revision(&mut bars);
+            let content = bar_content_bytes(&bars, true)?;
+            let mut hasher = Sha256::new();
+            hasher.update(domain_prefix);
+            hasher.update(&content);
+            let generation_id = hex::encode(hasher.finalize());
+            let batch = ColdBatch {
+                instrument,
+                timeframe,
+                bars: &bars,
+            };
+            self.prepare_generation_with_archive_mode(
+                &PublishPayload::Bars(&batch),
+                &generation_id,
+                archive,
+                true,
+                as_partition,
+                true,
+            )?
+        };
+
+        self.commit_generation(&new_gen, group, Some(now_ms), Some(instrument))?;
+        report.compacted_groups += 1;
+        report.retired_files_added += group.len();
         Ok(())
     }
 
@@ -924,7 +1020,7 @@ impl StoreInner {
                 archive,
                 true,
             )?;
-            self.commit_generation(&new_gen, &group, Some(now_ms))?;
+            self.commit_generation(&new_gen, &group, Some(now_ms), Some(instrument))?;
             report.compacted_groups += 1;
             report.retired_files_added += group.len();
         }
@@ -1121,6 +1217,7 @@ impl ColdStore {
             db_key: Some(db_key),
             conn: Some(conn),
             fault_hook,
+            deriv_states: HashMap::new(),
         };
         let _ = inner.cleanup_staging_and_temps();
         inner.migrate_legacy_venue("binance_spot", "binance")?;
@@ -1211,9 +1308,10 @@ impl ColdStore {
             &generation_id,
             archive,
             false,
+            false,
             write_raw_archive,
         )?;
-        inner.commit_generation(&generation, &[], None)?;
+        inner.commit_generation(&generation, &[], None, Some(batch.instrument))?;
         Ok(generation)
     }
 
@@ -1286,8 +1384,152 @@ impl ColdStore {
             content,
             false,
         )?;
-        inner.commit_generation(&generation, &[], None)?;
+        inner.commit_generation(&generation, &[], None, Some(instrument))?;
         Ok(generation)
+    }
+
+    /// Reconcile a same-month derivative batch against persisted & cached state, dropping
+    /// identical resends and monotonically bumping revisions for changed values.
+    pub fn publish_derivatives_reconciled(
+        &self,
+        instrument: &InstrumentSpec,
+        kind: DerivativeKind,
+        rows: &[DerivativePoint],
+    ) -> Result<Option<ColdGeneration>> {
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let mut inner = self.lock_inner()?;
+        let _ = inner.conn()?;
+
+        safe_path_part(&instrument.venue, "venue")?;
+        safe_path_part(&instrument.symbol, "symbol")?;
+        safe_path_part(kind.as_str(), "kind")?;
+
+        let expected_month = partition_month(rows[0].ts_event)?;
+        let mut min_ts = rows[0].ts_event;
+        let mut max_ts = rows[0].ts_event;
+        for (index, r) in rows.iter().enumerate() {
+            if r.instrument_id != instrument.instrument_id || r.kind != kind {
+                return Err(StoreError::Quality(format!(
+                    "derivative[{index}] instrument_id or kind mismatch"
+                )));
+            }
+            let row_month = partition_month(r.ts_event)?;
+            if row_month != expected_month {
+                return Err(StoreError::Quality(format!(
+                    "derivative[{index}] crosses month boundary ({expected_month} -> {row_month})"
+                )));
+            }
+            min_ts = min_ts.min(r.ts_event);
+            max_ts = max_ts.max(r.ts_event);
+        }
+
+        let state_key = (instrument.venue.clone(), instrument.symbol.clone(), kind);
+        let mut local_state = inner.deriv_states.get(&state_key).cloned().unwrap_or_default();
+        let missing_any = rows.iter().any(|r| {
+            let dkey: DerivStateKey = (r.ts_event, r.timeframe.clone(), r.is_funding_settlement());
+            !local_state.contains_key(&dkey)
+        });
+
+        if missing_any {
+            let gens = select_generations(
+                inner.conn()?,
+                instrument,
+                kind.as_str(),
+                Some(min_ts),
+                Some(max_ts),
+            )?;
+            let mut disk_best: HashMap<DerivStateKey, (u64, i64, i64, Decimal)> = HashMap::new();
+            for generation_item in gens {
+                let path = verify_generation_file(&inner.data_dir, &generation_item)?;
+                for pt in read_derivatives_parquet(&path, Some(min_ts), Some(max_ts), None)? {
+                    let dkey: DerivStateKey =
+                        (pt.ts_event, pt.timeframe.clone(), pt.is_funding_settlement());
+                    let replace = match disk_best.get(&dkey) {
+                        None => true,
+                        Some((prev_rev, prev_avail, prev_ingested, _)) => {
+                            (pt.revision, pt.ts_available, pt.ts_ingested)
+                                >= (*prev_rev, *prev_avail, *prev_ingested)
+                        }
+                    };
+                    if replace {
+                        disk_best.insert(dkey, (pt.revision, pt.ts_available, pt.ts_ingested, pt.value));
+                    }
+                }
+            }
+            for (dkey, (rev, avail, _ingested, val)) in disk_best {
+                let should_insert = match local_state.get(&dkey) {
+                    None => true,
+                    Some((cur_rev, _, cur_avail)) => (rev, avail) > (*cur_rev, *cur_avail),
+                };
+                if should_insert {
+                    local_state.insert(dkey, (rev, val, avail));
+                }
+            }
+        }
+
+        let mut out: Vec<DerivativePoint> = Vec::with_capacity(rows.len());
+        for mut r in rows.iter().cloned() {
+            let dkey: DerivStateKey = (r.ts_event, r.timeframe.clone(), r.is_funding_settlement());
+            match local_state.get(&dkey).copied() {
+                None => {
+                    local_state.insert(dkey, (r.revision, r.value, r.ts_available));
+                    out.push(r);
+                }
+                Some((prev_rev, prev_val, _prev_avail))
+                    if r.value == prev_val && r.revision <= prev_rev =>
+                {
+                    // Identical resend: drop so the earliest ts_available remains visible at historical as_of.
+                }
+                Some((prev_rev, _prev_val, prev_avail)) => {
+                    if r.revision <= prev_rev {
+                        r.revision = prev_rev.saturating_add(1);
+                    }
+                    r.ts_available = r.ts_available.max(prev_avail);
+                    local_state.insert(dkey, (r.revision, r.value, r.ts_available));
+                    out.push(r);
+                }
+            }
+        }
+
+        while local_state.len() > DERIV_STATE_MAX_KEYS {
+            local_state.pop_first();
+        }
+
+        if out.is_empty() {
+            inner.deriv_states.insert(state_key, local_state);
+            return Ok(None);
+        }
+
+        out.sort_by(derivative_order_cmp);
+        validate_derivatives(&out, instrument, kind, false)?;
+
+        let content = derivative_content_bytes(&out)?;
+        let generation_id = sha256_bytes(&content);
+
+        if let Some(existing) =
+            select_generation_by_id(inner.conn()?, instrument, kind.as_str(), &generation_id)?
+        {
+            verify_generation_file(&inner.data_dir, &existing)?;
+            inner.deriv_states.insert(state_key, local_state);
+            return Ok(Some(existing));
+        }
+
+        let batch = DerivativeBatch {
+            instrument,
+            kind,
+            rows: &out,
+        };
+        let generation = inner.prepare_generation(
+            &PublishPayload::Derivatives(&batch),
+            &generation_id,
+            content,
+            false,
+        )?;
+        inner.commit_generation(&generation, &[], None, Some(instrument))?;
+        inner.deriv_states.insert(state_key, local_state);
+        Ok(Some(generation))
     }
 
     /// Atomically publish a same-UTC-day batch of `Trade` ticks (sorted by `tick_order`).
@@ -1321,7 +1563,7 @@ impl ColdStore {
             content,
             false,
         )?;
-        inner.commit_generation(&generation, &[], None)?;
+        inner.commit_generation(&generation, &[], None, Some(instrument))?;
         Ok(generation)
     }
 
@@ -1356,7 +1598,7 @@ impl ColdStore {
             content,
             false,
         )?;
-        inner.commit_generation(&generation, &[], None)?;
+        inner.commit_generation(&generation, &[], None, Some(instrument))?;
         Ok(generation)
     }
 
@@ -1473,6 +1715,56 @@ impl ColdStore {
         ColdReader::new(&self.data_dir).read_quotes(instrument, start_ts, end_ts, as_of)
     }
 
+    /// Persist a batch of [`InstrumentSpec`] records into `data_manifest.sqlite`.
+    pub fn register_instrument_specs(&self, specs: &[InstrumentSpec]) -> Result<()> {
+        if specs.is_empty() {
+            return Ok(());
+        }
+        let mut inner = self.lock_inner()?;
+        let now = current_time_ms();
+        let conn = inner.conn_mut()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for spec in specs {
+            upsert_instrument_spec(&tx, spec, now)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Return `true` if any active generation in `generations` is an uncompacted `tail-*` file.
+    pub fn has_tail_generations(&self) -> Result<bool> {
+        let inner = self.lock_inner()?;
+        manifest_has_tail_generations(inner.conn()?)
+    }
+
+    /// Return `true` if periodic compaction has actionable work (ticks, past-month tails,
+    /// active-month tier buckets meeting the merge threshold, or prunable retired files).
+    pub fn has_compactable_work(&self, now_ms: Option<i64>) -> Result<bool> {
+        let inner = self.lock_inner()?;
+        let conn = inner.conn()?;
+        let effective_now = now_ms.unwrap_or_else(current_time_ms);
+        let active_month = partition_month(effective_now)?;
+        let mut active_tiers: HashMap<(String, String, String, usize), usize> = HashMap::new();
+        for row in select_tail_generation_summaries(conn)? {
+            if parse_tick_kind(&row.timeframe).is_some() {
+                return Ok(true);
+            }
+            if partition_month(row.first_ts)? != active_month {
+                return Ok(true);
+            }
+            if let Some(tier) = active_tail_tier(usize::try_from(row.bars).unwrap_or(0)) {
+                let count = active_tiers
+                    .entry((row.venue, row.symbol, row.timeframe, tier))
+                    .or_insert(0);
+                *count += 1;
+                if *count >= ACTIVE_TAIL_MERGE_MIN_FILES {
+                    return Ok(true);
+                }
+            }
+        }
+        has_prunable_retired(conn, effective_now)
+    }
+
     /// Compact tail files into partition files (preserving ALL revisions!) and prune retired files
     /// that satisfy BOTH `>= 24h` age and `>= 3` subsequent manifest versions.
     pub fn compact(
@@ -1480,8 +1772,33 @@ impl ColdStore {
         instruments: &[InstrumentSpec],
         now_ms: Option<i64>,
     ) -> Result<CompactionReport> {
+        self.compact_with_active_month(instruments, now_ms, false)
+    }
+
+    /// Periodic background compaction: merges past months into `partition-*` while leaving the
+    /// active month's `partition-*` untouched and merging small active-month `tail-*` files into
+    /// bounded `tail-*` segments.
+    pub fn compact_periodic(
+        &self,
+        instruments: &[InstrumentSpec],
+        now_ms: Option<i64>,
+    ) -> Result<CompactionReport> {
+        self.compact_with_active_month(instruments, now_ms, true)
+    }
+
+    fn compact_with_active_month(
+        &self,
+        instruments: &[InstrumentSpec],
+        now_ms: Option<i64>,
+        preserve_active_month_partition: bool,
+    ) -> Result<CompactionReport> {
         let mut inner = self.lock_inner()?;
         let effective_now = now_ms.unwrap_or_else(current_time_ms);
+        let active_month = if preserve_active_month_partition {
+            Some(partition_month(effective_now)?)
+        } else {
+            None
+        };
         let specs: BTreeMap<(&str, &str), &InstrumentSpec> = instruments
             .iter()
             .map(|s| ((s.venue.as_str(), s.symbol.as_str()), s))
@@ -1497,7 +1814,13 @@ impl ColdStore {
             if let Some(tick_kind) = parse_tick_kind(&timeframe) {
                 inner.compact_ticks(instrument, tick_kind, effective_now, &mut report)?;
             } else {
-                inner.compact_series(instrument, &timeframe, effective_now, &mut report)?;
+                inner.compact_series_with_mode(
+                    instrument,
+                    &timeframe,
+                    effective_now,
+                    active_month.as_deref(),
+                    &mut report,
+                )?;
             }
         }
 
@@ -1787,6 +2110,15 @@ impl ColdReader {
         })
     }
 
+    /// List persisted [`InstrumentSpec`] entries recorded in `data_manifest.sqlite`.
+    pub fn list_instrument_specs(&self) -> Result<Vec<InstrumentSpec>> {
+        if !self.db_path.is_file() {
+            return Ok(Vec::new());
+        }
+        let conn = open_reader_connection(&self.db_path)?;
+        select_instrument_specs(&conn)
+    }
+
     /// Query active generations for `(instrument, series)` without holding a write lock.
     pub fn generations(
         &self,
@@ -1987,6 +2319,88 @@ impl ColdReader {
         Ok(latest_visible_derivatives(revisions, as_of))
     }
 
+    /// Read the most recent PIT-visible derivative point strictly before `before_ts_exclusive`.
+    pub fn read_last_visible_derivative_before(
+        &self,
+        instrument: &InstrumentSpec,
+        kind: DerivativeKind,
+        before_ts_exclusive: i64,
+        as_of: Option<i64>,
+        settled_only: bool,
+        timeframe: Option<&str>,
+    ) -> Result<Option<DerivativePoint>> {
+        if before_ts_exclusive <= 0 {
+            return Ok(None);
+        }
+        let upper_ts = before_ts_exclusive - 1;
+        let mut gens = if let Some(_snapshot) = &self.snapshot {
+            let key = (
+                instrument.venue.clone(),
+                instrument.symbol.clone(),
+                kind.as_str().to_owned(),
+            );
+            self.pinned_series
+                .get(&key)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter(|g| g.first_ts <= upper_ts)
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else if !self.db_path.is_file() {
+            Vec::new()
+        } else {
+            let conn = open_reader_connection(&self.db_path)?;
+            select_generations(&conn, instrument, kind.as_str(), None, Some(upper_ts))?
+        };
+        if gens.is_empty() {
+            return Ok(None);
+        }
+        gens.sort_by(|a, b| (b.last_ts, b.committed_ts).cmp(&(a.last_ts, a.committed_ts)));
+
+        let mut best_ts: Option<i64> = None;
+        let mut collected: Vec<DerivativePoint> = Vec::new();
+        for g in &gens {
+            if best_ts.is_some_and(|bt| g.last_ts < bt) {
+                break;
+            }
+            let path = verify_generation_file(&self.data_dir, g)?;
+            let pts = read_derivatives_parquet(&path, None, Some(upper_ts), None)?;
+            for pt in pts {
+                if pt.ts_event >= before_ts_exclusive {
+                    continue;
+                }
+                if as_of.is_some_and(|cutoff| pt.ts_available > cutoff) {
+                    continue;
+                }
+                if settled_only && !pt.is_funding_settlement() {
+                    continue;
+                }
+                if timeframe.is_some_and(|want| pt.timeframe.as_deref().is_some_and(|have| have != want))
+                {
+                    continue;
+                }
+                best_ts = Some(best_ts.map_or(pt.ts_event, |cur| cur.max(pt.ts_event)));
+                collected.push(pt);
+            }
+        }
+        if collected.is_empty() {
+            return Ok(None);
+        }
+        let visible = latest_visible_derivatives(collected, as_of);
+        Ok(visible
+            .into_iter()
+            .filter(|pt| {
+                (!settled_only || pt.is_funding_settlement())
+                    && timeframe.is_none_or(|want| {
+                        pt.timeframe.as_deref().is_none_or(|have| have == want)
+                    })
+            })
+            .last())
+    }
+
     /// Read all trade revisions matching a set of 16-byte `trade_id`s across generations.
     pub fn read_trade_revisions_by_id(
         &self,
@@ -2109,4 +2523,17 @@ impl ColdReader {
         let rows = self.read_quote_revisions(instrument, start_ts, end_ts)?;
         Ok(latest_visible_quotes(rows, start_ts, end_ts, as_of))
     }
+}
+
+fn active_tail_tier(rows: usize) -> Option<usize> {
+    if rows >= ACTIVE_TAIL_TARGET_ROWS {
+        return None;
+    }
+    let mut tier = 0usize;
+    let mut upper = 4usize;
+    while rows >= upper && upper < ACTIVE_TAIL_TARGET_ROWS {
+        tier += 1;
+        upper = upper.saturating_mul(4);
+    }
+    Some(tier)
 }

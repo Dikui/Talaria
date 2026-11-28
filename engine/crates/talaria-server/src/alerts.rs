@@ -38,7 +38,7 @@ type StructureProvider =
     Arc<dyn Fn(&str, &str, i64) -> HashMap<String, StructureFeature> + Send + Sync>;
 type DerivativeArchiveProvider =
     Arc<dyn Fn(&str, DerivativeKind, i64) -> Vec<DerivativePoint> + Send + Sync>;
-type FreezeSnapshotFn = Arc<dyn Fn(&AlertRecord, i64) -> String + Send + Sync>;
+type FreezeSnapshotFn = Arc<dyn Fn(&AlertRecord, i64, &[DerivativePoint]) -> String + Send + Sync>;
 type OnTriggerFn = Arc<dyn Fn(&AlertTriggerRecord, &AlertRecord) + Send + Sync>;
 
 #[derive(Debug, Clone, Default)]
@@ -449,7 +449,7 @@ impl AlertEngine {
         let (pending, mut changed) = {
             let mut guard = self.inner.lock().unwrap();
             let mut changed: BTreeMap<String, AlertRecord> = BTreeMap::new();
-            let mut pending: Vec<(AlertRecord, RuleObservation, i64)> = Vec::new();
+            let mut pending: Vec<(AlertRecord, RuleObservation, i64, Vec<DerivativePoint>)> = Vec::new();
 
             let mut alert_ids: Vec<String> = guard
                 .alerts
@@ -673,16 +673,22 @@ impl AlertEngine {
                     rt.last_cross_ts = Some(cross_ts);
                 }
 
-                pending.push((alert, obs, eval_cutoff));
+                let mut trigger_derivs = Vec::with_capacity(
+                    mark_price.len() + funding.len() + open_interest.len(),
+                );
+                trigger_derivs.extend(mark_price);
+                trigger_derivs.extend(funding);
+                trigger_derivs.extend(open_interest);
+                pending.push((alert, obs, eval_cutoff, trigger_derivs));
             }
             (pending, changed)
         };
 
         // Outside lock: freeze snapshots & emit trigger callbacks cleanly
-        for (mut alert, obs, as_of) in pending {
+        for (mut alert, obs, as_of, trigger_derivs) in pending {
             let snapshot_id = freeze_snapshot
                 .as_ref()
-                .map(|cb| cb(&alert, as_of))
+                .map(|cb| cb(&alert, as_of, &trigger_derivs))
                 .unwrap_or_default();
             let trigger = AlertTriggerRecord {
                 trigger_id: format!("trg_{}", Uuid::new_v4().simple()),

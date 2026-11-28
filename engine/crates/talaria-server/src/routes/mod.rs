@@ -23,22 +23,28 @@ use std::sync::Arc;
 use axum::Router;
 use sha2::{Digest, Sha256};
 use talaria_contracts::bars::{BarStatus, CompactBar, RawBar};
-use talaria_contracts::derivatives::{DerivativeKind, DerivativePoint, oi_timeframe_for};
+use talaria_contracts::derivatives::{
+    DerivativeKind, DerivativePoint, latest_visible_derivatives, oi_timeframe_for,
+};
 use talaria_contracts::error_codes::{INSTRUMENT_NOT_FOUND, SNAPSHOT_NOT_FOUND, VALIDATION_ERROR};
 use talaria_contracts::feed::FeedHealthStatus;
 use talaria_contracts::market::InstrumentSpec;
 use talaria_contracts::snapshot::{SnapshotMeta, SnapshotMode, SnapshotRequest};
 use talaria_contracts::{SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms};
-use talaria_feed::compact_series;
+use talaria_feed::{FeedSupervisor, compact_series};
 use talaria_packs::{
     BackfillWindow, HistoryConnector, MarketPack, backfill_bars, backfill_derivatives,
 };
-use talaria_store::{ColdManifest, ColdStore, partition_month, range_visible_bars};
+use talaria_store::{
+    ColdManifest, ColdReader, ColdStore, HotStreamBuffer, partition_month, range_visible_bars,
+};
 use uuid::Uuid;
 
 use crate::error::ApiError;
-use crate::server::AppState;
-use crate::snapshot_store::FrozenSnapshot;
+use crate::key_levels::KeyLevelRegistry;
+use crate::server::{AppState, BackfillCachedError, BackfillCooldownEntry};
+use crate::snapshot_store::{FrozenSnapshot, SnapshotStore};
+use crate::structures::StructureRegistry;
 
 pub fn api_router(state: std::sync::Arc<AppState>) -> Router<std::sync::Arc<AppState>> {
     Router::new()
@@ -150,7 +156,7 @@ pub async fn publish_derivatives_to_cold_store(
         }
         for (_, mut batch) in by_month {
             batch.sort_by_key(|r| (r.ts_event, r.revision));
-            store.publish_derivatives(&spec, kind, &batch)?;
+            store.publish_derivatives_reconciled(&spec, kind, &batch)?;
         }
         Ok(())
     })
@@ -181,35 +187,49 @@ fn read_snapshot_window_bars(
     cutoff_ts: i64,
     interval: i64,
 ) -> Result<WindowedBars, ApiError> {
+    read_snapshot_window_bars_from(
+        &state.reader,
+        &state.hot_buffer,
+        spec,
+        tf,
+        closed_end,
+        cutoff_ts,
+        interval,
+    )
+}
+
+fn read_snapshot_window_bars_from(
+    reader: &ColdReader,
+    hot_buffer: &HotStreamBuffer,
+    spec: &InstrumentSpec,
+    tf: &str,
+    closed_end: i64,
+    cutoff_ts: i64,
+    interval: i64,
+) -> Result<WindowedBars, ApiError> {
     let window_start = snapshot_bar_read_start(closed_end, interval).max(0);
-    let cold = state
-        .reader
+    let cold = reader
         .read_revisions(spec, tf, Some(window_start), Some(closed_end))
         .map_err(ApiError::from)?;
-    let hot = state
-        .hot_buffer
-        .revisions(&spec.instrument_id, tf, window_start, Some(closed_end));
+    let hot = hot_buffer.revisions(&spec.instrument_id, tf, window_start, Some(closed_end));
     let visible = range_visible_bars(&cold, &hot, Some(cutoff_ts), false);
     if visible.len() >= SNAPSHOT_HISTORY_TARGET_BARS || window_start == 0 {
         return Ok(WindowedBars { cold, hot, visible });
     }
-    // Bounded window had fewer than target bars (e.g. market holidays or sparse fixtures);
-    // widen to full history only if older generations actually exist before `window_start`.
-    let has_older_cold = state
-        .reader
+    // Bounded window had fewer than target bars (e.g. market holidays, sparse fixtures, or sparse hot data);
+    // widen to full history if older cold generations OR older hot bars exist before `window_start`.
+    let has_older_cold = reader
         .generations(spec, tf)
         .map(|gens| gens.iter().any(|g| g.first_ts < window_start))
         .unwrap_or(false);
-    if !has_older_cold {
+    let has_older_hot = hot_buffer.has_older_than(&spec.instrument_id, tf, window_start);
+    if !has_older_cold && !has_older_hot {
         return Ok(WindowedBars { cold, hot, visible });
     }
-    let full_cold = state
-        .reader
+    let full_cold = reader
         .read_revisions(spec, tf, None, Some(closed_end))
         .map_err(ApiError::from)?;
-    let full_hot = state
-        .hot_buffer
-        .revisions(&spec.instrument_id, tf, 0, Some(closed_end));
+    let full_hot = hot_buffer.revisions(&spec.instrument_id, tf, 0, Some(closed_end));
     let full_visible = range_visible_bars(&full_cold, &full_hot, Some(cutoff_ts), false);
     Ok(WindowedBars {
         cold: full_cold,
@@ -218,25 +238,52 @@ fn read_snapshot_window_bars(
     })
 }
 
-fn is_in_backfill_cooldown(state: &AppState, key: &str, now: i64) -> bool {
+fn get_backfill_cooldown(state: &AppState, key: &str, now: i64) -> Option<BackfillCooldownEntry> {
     if state.fixture_dir.is_some() {
-        return false;
+        return None;
     }
-    state
-        .backfill_cooldown
-        .lock()
-        .ok()
-        .and_then(|map| map.get(key).copied())
-        .is_some_and(|until| now < until)
+    let mut map = state.backfill_cooldown.lock().ok()?;
+    if let Some(entry) = map.get(key) {
+        if now < entry.until_ms {
+            return Some(entry.clone());
+        }
+        map.remove(key);
+    }
+    None
 }
 
-fn mark_backfill_cooldown(state: &AppState, key: String, now: i64) {
+fn mark_backfill_cooldown(
+    state: &AppState,
+    key: String,
+    now: i64,
+    last_error: Option<BackfillCachedError>,
+) {
     if state.fixture_dir.is_some() {
         return;
     }
     if let Ok(mut map) = state.backfill_cooldown.lock() {
-        map.insert(key, now.saturating_add(BACKFILL_COOLDOWN_MS));
+        map.retain(|_, entry| now < entry.until_ms);
+        map.insert(
+            key,
+            BackfillCooldownEntry {
+                until_ms: now.saturating_add(BACKFILL_COOLDOWN_MS),
+                last_error,
+            },
+        );
     }
+}
+
+pub struct FreezeContext<'a> {
+    pub instruments: &'a [InstrumentSpec],
+    pub pack: &'a Arc<dyn MarketPack>,
+    pub reader: &'a ColdReader,
+    pub hot_buffer: &'a Arc<HotStreamBuffer>,
+    pub snapshots: &'a Arc<SnapshotStore>,
+    pub key_levels: &'a Arc<KeyLevelRegistry>,
+    pub structures: &'a Arc<StructureRegistry>,
+    pub supervisor: Option<&'a Arc<FeedSupervisor>>,
+    pub market_data_enabled: bool,
+    pub now_ms: i64,
 }
 
 /// Ensure history via `history_connector` (when enabled) and freeze a deterministic PIT snapshot.
@@ -274,95 +321,137 @@ pub async fn freeze_snapshot(
             let state_c = Arc::clone(&state);
             let spec_c = spec.clone();
             let tf_c = tf.clone();
-            let WindowedBars { cold, hot, visible } = tokio::task::spawn_blocking(move || {
+            let WindowedBars {
+                cold,
+                hot,
+                mut visible,
+            } = tokio::task::spawn_blocking(move || {
                 read_snapshot_window_bars(&state_c, &spec_c, &tf_c, closed_end, cutoff_ts, interval)
             })
             .await
             .map_err(|e| ApiError::internal(e.to_string()))??;
 
             let mut did_publish = false;
-            let bar_cooldown_key = format!("bars:{}:{tf}", spec.instrument_id);
-            if visible.len() < SNAPSHOT_HISTORY_TARGET_BARS
-                && !is_in_backfill_cooldown(&state, &bar_cooldown_key, now)
-            {
-                let end_ts = visible
-                    .first()
-                    .map(|b| b.ts_event.saturating_sub(1))
-                    .unwrap_or(cutoff_ts);
-                let res = backfill_bars(
-                    connector.as_ref(),
-                    &spec.symbol,
-                    tf,
-                    BackfillWindow {
-                        start_ts: None,
-                        end_ts: Some(end_ts),
-                        target_count: SNAPSHOT_HISTORY_TARGET_BARS - visible.len(),
-                        max_pages: 3,
-                        page_limit: 1000,
-                    },
-                )
-                .await;
+            let end_ts = visible
+                .first()
+                .map(|b| b.ts_event.saturating_sub(1))
+                .unwrap_or(cutoff_ts);
+            let cooldown_end = visible
+                .first()
+                .map(|b| b.ts_event.saturating_sub(1))
+                .unwrap_or(closed_end);
+            let bar_cooldown_key = format!("bars:{}:{tf}:{cooldown_end}", spec.instrument_id);
+            let has_sup_bars = state
+                .supervisor
+                .as_ref()
+                .is_some_and(|s| !s.recent_bars(&spec.instrument_id, tf, None, true).is_empty());
 
-                match res {
-                    Ok(fetched) => {
-                        let existing_ts: HashSet<i64> = cold
-                            .iter()
-                            .chain(hot.iter())
-                            .map(|b| b.ts_event)
-                            .collect();
-                        let to_publish: Vec<RawBar> = fetched
-                            .into_iter()
-                            .filter(|b| {
-                                b.confirmed
-                                    && b.ts_available <= cutoff_ts
-                                    && !existing_ts.contains(&b.ts_event)
-                            })
-                            .collect();
-                        if to_publish.is_empty() {
-                            mark_backfill_cooldown(&state, bar_cooldown_key, now);
-                        } else {
-                            did_publish = true;
-                            publish_bars_to_cold_store(
-                                Arc::clone(cold_store),
-                                spec.clone(),
-                                tf.clone(),
-                                to_publish,
-                            )
-                            .await?;
-                        }
+            if visible.len() < SNAPSHOT_HISTORY_TARGET_BARS {
+                if let Some(cooldown) = get_backfill_cooldown(&state, &bar_cooldown_key, now) {
+                    if visible.is_empty()
+                        && !has_sup_bars
+                        && let Some(cached) = cooldown.last_error
+                    {
+                        return Err(ApiError::new(cached.status, cached.code, cached.message));
                     }
-                    Err(err) => {
-                        mark_backfill_cooldown(&state, bar_cooldown_key, now);
-                        let has_sup_bars = state
-                            .supervisor
-                            .as_ref()
-                            .is_some_and(|s| !s.recent_bars(&spec.instrument_id, tf, None, true).is_empty());
-                        if visible.is_empty() && !has_sup_bars {
-                            return Err(ApiError::from(err));
+                } else {
+                    let res = backfill_bars(
+                        connector.as_ref(),
+                        &spec.symbol,
+                        tf,
+                        BackfillWindow {
+                            start_ts: None,
+                            end_ts: Some(end_ts),
+                            target_count: SNAPSHOT_HISTORY_TARGET_BARS - visible.len(),
+                            max_pages: 3,
+                            page_limit: 1000,
+                        },
+                    )
+                    .await;
+
+                    match res {
+                        Ok(fetched) => {
+                            let existing_ts: HashSet<i64> = cold
+                                .iter()
+                                .chain(hot.iter())
+                                .map(|b| b.ts_event)
+                                .collect();
+                            let to_publish: Vec<RawBar> = fetched
+                                .into_iter()
+                                .filter(|b| {
+                                    b.confirmed
+                                        && b.ts_available <= cutoff_ts
+                                        && !existing_ts.contains(&b.ts_event)
+                                })
+                                .collect();
+                            if to_publish.is_empty() {
+                                mark_backfill_cooldown(&state, bar_cooldown_key, now, None);
+                            } else {
+                                did_publish = true;
+                                publish_bars_to_cold_store(
+                                    Arc::clone(cold_store),
+                                    spec.clone(),
+                                    tf.clone(),
+                                    to_publish,
+                                )
+                                .await?;
+                            }
                         }
-                        tracing::warn!(
-                            instrument = %spec.instrument_id,
-                            timeframe = %tf,
-                            error = %err,
-                            "snapshot history backfill failed; continuing with local history"
-                        );
+                        Err(err) => {
+                            let api_err = ApiError::from(err);
+                            mark_backfill_cooldown(
+                                &state,
+                                bar_cooldown_key,
+                                now,
+                                Some(BackfillCachedError {
+                                    status: api_err.status,
+                                    code: api_err.code,
+                                    message: api_err.message.clone(),
+                                }),
+                            );
+                            if visible.is_empty() && !has_sup_bars {
+                                return Err(api_err);
+                            }
+                            tracing::warn!(
+                                instrument = %spec.instrument_id,
+                                timeframe = %tf,
+                                error = %api_err,
+                                "snapshot history backfill failed; continuing with local history"
+                            );
+                        }
                     }
                 }
             }
 
-            if !did_publish {
-                let tail_start = visible.len().saturating_sub(SNAPSHOT_HISTORY_TARGET_BARS);
-                if let Some(first_bar) = visible.get(tail_start) {
-                    earliest_bar_ts = Some(
-                        earliest_bar_ts
-                            .map_or(first_bar.ts_event, |cur| cur.min(first_bar.ts_event)),
-                    );
-                }
-                preloaded_bars.insert(tf.clone(), visible);
+            if did_publish {
+                let state_c = Arc::clone(&state);
+                let spec_c = spec.clone();
+                let tf_c = tf.clone();
+                visible = tokio::task::spawn_blocking(move || {
+                    read_snapshot_window_bars(
+                        &state_c,
+                        &spec_c,
+                        &tf_c,
+                        closed_end,
+                        cutoff_ts,
+                        interval,
+                    )
+                })
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))??
+                .visible;
             }
+
+            let tail_start = visible.len().saturating_sub(SNAPSHOT_HISTORY_TARGET_BARS);
+            if let Some(first_bar) = visible.get(tail_start) {
+                earliest_bar_ts = Some(
+                    earliest_bar_ts.map_or(first_bar.ts_event, |cur| cur.min(first_bar.ts_event)),
+                );
+            }
+            preloaded_bars.insert(tf.clone(), visible);
         }
 
-        // Best-effort derivative backfill for snapshots when local cold derivatives are empty
+        // Best-effort derivative backfill for snapshots when local cold derivatives in window are empty
         let deriv_start = Some(
             earliest_bar_ts
                 .map(|ts| ts.saturating_sub(SNAPSHOT_DERIV_LOOKBACK_PADDING_MS))
@@ -376,11 +465,11 @@ pub async fn freeze_snapshot(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-        let deriv_cooldown_key = format!("derivs:{}", spec.instrument_id);
+        let deriv_cooldown_key = format!("derivs:{}:{}", spec.instrument_id, cutoff_ts / 60_000);
         if funding.is_empty()
             && oi.is_empty()
             && mark.is_empty()
-            && !is_in_backfill_cooldown(&state, &deriv_cooldown_key, now)
+            && get_backfill_cooldown(&state, &deriv_cooldown_key, now).is_none()
         {
             let mut targets: Vec<(DerivativeKind, Option<&str>)> =
                 vec![(DerivativeKind::FundingRate, None)];
@@ -427,46 +516,105 @@ pub async fn freeze_snapshot(
                 }
             }
             if !published_any_deriv {
-                mark_backfill_cooldown(&state, deriv_cooldown_key, now);
-                preloaded_derivs = Some(Vec::new());
+                mark_backfill_cooldown(&state, deriv_cooldown_key, now, None);
             }
-        } else {
-            let mut combined = Vec::with_capacity(mark.len() + funding.len() + oi.len());
-            combined.extend(mark);
-            combined.extend(funding);
-            combined.extend(oi);
-            preloaded_derivs = Some(combined);
         }
+
+        let state_c = Arc::clone(&state);
+        let spec_c = spec.clone();
+        let tfs_c = req.timeframes.clone();
+        preloaded_derivs = Some(
+            tokio::task::spawn_blocking(move || {
+                load_snapshot_derivatives(
+                    &state_c.reader,
+                    &spec_c,
+                    &tfs_c,
+                    earliest_bar_ts,
+                    deriv_start,
+                    cutoff_ts,
+                )
+            })
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?,
+        );
     }
+
+    let mut pinned_req = req;
+    pinned_req.cutoff_ts = Some(cutoff_ts);
 
     let state_c = Arc::clone(&state);
     tokio::task::spawn_blocking(move || {
-        freeze_snapshot_inner(&state_c, &req, Some(preloaded_bars), preloaded_derivs)
+        let instruments = state_c.instruments_snapshot();
+        let ctx = FreezeContext {
+            instruments: &instruments,
+            pack: &state_c.pack,
+            reader: &state_c.reader,
+            hot_buffer: &state_c.hot_buffer,
+            snapshots: &state_c.snapshots,
+            key_levels: &state_c.key_levels,
+            structures: &state_c.structures,
+            supervisor: state_c.supervisor.as_ref(),
+            market_data_enabled: state_c.features.market_data,
+            now_ms: now,
+        };
+        freeze_snapshot_with_context(
+            &ctx,
+            &pinned_req,
+            Some(preloaded_bars),
+            preloaded_derivs,
+            &[],
+            false,
+        )
     })
     .await
     .map_err(|e| ApiError::internal(e.to_string()))?
 }
 
-/// Freeze a deterministic PIT snapshot into `SnapshotStore` and register its `KeyLevelSet`.
+/// Freeze a deterministic PIT snapshot into `SnapshotStore` and register its `KeyLevelSet` and `StructureSet`.
 pub fn freeze_snapshot_sync(
     state: &AppState,
     req: &SnapshotRequest,
 ) -> Result<SnapshotMeta, ApiError> {
-    freeze_snapshot_inner(state, req, None, None)
+    let instruments = state.instruments_snapshot();
+    let ctx = FreezeContext {
+        instruments: &instruments,
+        pack: &state.pack,
+        reader: &state.reader,
+        hot_buffer: &state.hot_buffer,
+        snapshots: &state.snapshots,
+        key_levels: &state.key_levels,
+        structures: &state.structures,
+        supervisor: state.supervisor.as_ref(),
+        market_data_enabled: state.features.market_data,
+        now_ms: state.now_ms(),
+    };
+    freeze_snapshot_with_context(&ctx, req, None, None, &[], false)
 }
 
-fn freeze_snapshot_inner(
-    state: &AppState,
+pub fn freeze_snapshot_with_context(
+    ctx: &FreezeContext<'_>,
     req: &SnapshotRequest,
     mut preloaded_bars: Option<HashMap<String, Vec<RawBar>>>,
     preloaded_derivs: Option<Vec<DerivativePoint>>,
+    extra_derivatives: &[DerivativePoint],
+    allow_empty_bars_with_derivatives: bool,
 ) -> Result<SnapshotMeta, ApiError> {
     if req.mode == SnapshotMode::ObservedReplay {
         return Err(ApiError::not_implemented(
             "OBSERVED_REPLAY snapshots are not enabled on talaria-data yet",
         ));
     }
-    let spec = find_instrument(state, &req.instrument_id)?;
+    let spec = ctx
+        .instruments
+        .iter()
+        .find(|s| s.instrument_id == req.instrument_id)
+        .cloned()
+        .ok_or_else(|| {
+            ApiError::not_found(
+                INSTRUMENT_NOT_FOUND,
+                format!("未知标的：{}", req.instrument_id),
+            )
+        })?;
     if req.timeframes.is_empty() {
         return Err(ApiError::validation("timeframes must not be empty"));
     }
@@ -474,7 +622,7 @@ fn freeze_snapshot_inner(
         let _ = validate_timeframe(tf)?;
     }
 
-    let now = state.now_ms();
+    let now = ctx.now_ms;
     let raw_cutoff = req.cutoff_ts.unwrap_or(now);
     let cutoff_ts = raw_cutoff.min(now);
 
@@ -487,10 +635,16 @@ fn freeze_snapshot_inner(
         let closed_end = last_closed_bar_start(cutoff_ts, interval);
         let mut visible = match preloaded_bars.as_mut().and_then(|m| m.remove(tf)) {
             Some(v) => v,
-            None => {
-                read_snapshot_window_bars(state, &spec, tf, closed_end, cutoff_ts, interval)?
-                    .visible
-            }
+            None => read_snapshot_window_bars_from(
+                ctx.reader,
+                ctx.hot_buffer,
+                &spec,
+                tf,
+                closed_end,
+                cutoff_ts,
+                interval,
+            )?
+            .visible,
         };
         let compact = if !visible.is_empty() {
             let tail_start = visible.len().saturating_sub(SNAPSHOT_HISTORY_TARGET_BARS);
@@ -503,7 +657,7 @@ fn freeze_snapshot_inner(
                 );
             }
             compact_series(&visible, tf, cutoff_ts)?
-        } else if let Some(sup) = &state.supervisor {
+        } else if let Some(sup) = ctx.supervisor {
             sup.recent_bars(&spec.instrument_id, tf, None, true)
                 .into_iter()
                 .filter(|b| b.timestamp <= closed_end && b.ts_available <= cutoff_ts)
@@ -515,28 +669,48 @@ fn freeze_snapshot_inner(
         frames.insert(tf.clone(), compact);
     }
 
-    let total_bars: usize = bar_counts.values().sum();
-    if total_bars == 0 && !state.features.market_data {
-        return Err(ApiError::conflict(
-            talaria_contracts::error_codes::FEED_UNAVAILABLE,
-            "行情采集已关闭，且缺少本地历史",
-        ));
-    }
-
-    let derivatives = match preloaded_derivs {
+    let mut derivatives = match preloaded_derivs {
         Some(pts) => pts,
         None => {
             let deriv_start = earliest_bar_ts
-                .map(|ts| ts.saturating_sub(SNAPSHOT_DERIV_LOOKBACK_PADDING_MS));
-            let (funding, oi, mark) =
-                load_derivative_points_since(state, &spec, deriv_start, cutoff_ts);
-            let mut combined = Vec::with_capacity(mark.len() + funding.len() + oi.len());
-            combined.extend(mark);
-            combined.extend(funding);
-            combined.extend(oi);
-            combined
+                .map(|ts| ts.saturating_sub(SNAPSHOT_DERIV_LOOKBACK_PADDING_MS))
+                .or_else(|| {
+                    allow_empty_bars_with_derivatives
+                        .then(|| cutoff_ts.saturating_sub(SNAPSHOT_DERIV_DEFAULT_WINDOW_MS))
+                });
+            load_snapshot_derivatives(
+                ctx.reader,
+                &spec,
+                &req.timeframes,
+                earliest_bar_ts,
+                deriv_start,
+                cutoff_ts,
+            )
         }
     };
+    if !extra_derivatives.is_empty() {
+        derivatives.extend(
+            extra_derivatives
+                .iter()
+                .filter(|pt| pt.instrument_id == spec.instrument_id && pt.ts_available <= cutoff_ts)
+                .cloned(),
+        );
+        derivatives = latest_visible_derivatives(derivatives, Some(cutoff_ts));
+    }
+
+    let total_bars: usize = bar_counts.values().sum();
+    if total_bars == 0 {
+        if allow_empty_bars_with_derivatives && !derivatives.is_empty() {
+            // Derivative/price alert before first closed bar still produces an auditable evidence snapshot.
+        } else if !ctx.market_data_enabled {
+            return Err(ApiError::conflict(
+                talaria_contracts::error_codes::FEED_UNAVAILABLE,
+                "行情采集已关闭，且缺少本地历史",
+            ));
+        } else if allow_empty_bars_with_derivatives {
+            return Err(ApiError::feed_unavailable("no bars or derivatives for snapshot"));
+        }
+    }
 
     let snapshot_id = format!("snp_{}", Uuid::new_v4().simple());
     let meta = SnapshotMeta {
@@ -554,9 +728,9 @@ fn freeze_snapshot_inner(
         frames: frames.clone(),
         derivatives: derivatives.clone(),
     };
-    state.snapshots.save(&frozen)?;
+    ctx.snapshots.save(&frozen)?;
 
-    let session_profile = state
+    let session_profile = ctx
         .pack
         .traits(&spec.instrument_id)
         .ok()
@@ -564,7 +738,7 @@ fn freeze_snapshot_inner(
 
     for (tf, bars) in &frames {
         if bars.iter().any(|b| b.status != BarStatus::FeedGap) {
-            let _ = state.key_levels.compute_and_register(
+            let _ = ctx.key_levels.compute_and_register(
                 snapshot_id.clone(),
                 &spec.instrument_id,
                 tf,
@@ -575,7 +749,7 @@ fn freeze_snapshot_inner(
                 None,
                 &derivatives,
             );
-            let _ = state.structures.compute_and_register(
+            let _ = ctx.structures.compute_and_register(
                 snapshot_id.clone(),
                 &spec.instrument_id,
                 tf,
@@ -640,33 +814,39 @@ fn load_derivative_points_since(
     start_ts: Option<i64>,
     as_of: i64,
 ) -> (Vec<DerivativePoint>, Vec<DerivativePoint>, Vec<DerivativePoint>) {
-    let funding = state
-        .reader
+    load_derivative_points_since_reader(&state.reader, instrument, start_ts, as_of)
+}
+
+fn load_derivative_points_since_reader(
+    reader: &ColdReader,
+    instrument: &InstrumentSpec,
+    start_ts: Option<i64>,
+    as_of: i64,
+) -> (Vec<DerivativePoint>, Vec<DerivativePoint>, Vec<DerivativePoint>) {
+    let funding = reader
         .read_derivatives(
             instrument,
-            talaria_contracts::derivatives::DerivativeKind::FundingRate,
+            DerivativeKind::FundingRate,
             start_ts,
             Some(as_of),
             Some(as_of),
             false,
         )
         .unwrap_or_default();
-    let oi = state
-        .reader
+    let oi = reader
         .read_derivatives(
             instrument,
-            talaria_contracts::derivatives::DerivativeKind::OpenInterest,
+            DerivativeKind::OpenInterest,
             start_ts,
             Some(as_of),
             Some(as_of),
             false,
         )
         .unwrap_or_default();
-    let mark = state
-        .reader
+    let mark = reader
         .read_derivatives(
             instrument,
-            talaria_contracts::derivatives::DerivativeKind::MarkPrice,
+            DerivativeKind::MarkPrice,
             start_ts,
             Some(as_of),
             Some(as_of),
@@ -674,6 +854,79 @@ fn load_derivative_points_since(
         )
         .unwrap_or_default();
     (funding, oi, mark)
+}
+
+fn load_snapshot_derivatives(
+    reader: &ColdReader,
+    instrument: &InstrumentSpec,
+    timeframes: &[String],
+    earliest_bar_ts: Option<i64>,
+    deriv_start: Option<i64>,
+    cutoff_ts: i64,
+) -> Vec<DerivativePoint> {
+    let (mut funding, mut oi, mut mark) =
+        load_derivative_points_since_reader(reader, instrument, deriv_start, cutoff_ts);
+
+    if let Some(start_ts) = deriv_start {
+        let anchor_ts = earliest_bar_ts.unwrap_or(cutoff_ts);
+        if !funding
+            .iter()
+            .any(|p| p.is_funding_settlement() && p.ts_event <= anchor_ts)
+            && let Ok(Some(prior)) = reader.read_last_visible_derivative_before(
+                instrument,
+                DerivativeKind::FundingRate,
+                start_ts,
+                Some(cutoff_ts),
+                true,
+                None,
+            )
+        {
+            funding.push(prior);
+        }
+
+        let mut seen_oi_tfs: HashSet<Option<&str>> = HashSet::new();
+        let mut seen_mark_tfs: HashSet<&str> = HashSet::new();
+        for tf in timeframes {
+            let oi_tf = oi_timeframe_for(tf);
+            if seen_oi_tfs.insert(oi_tf)
+                && !oi.iter().any(|p| {
+                    p.ts_event <= anchor_ts && p.timeframe.as_deref().is_none_or(|t| Some(t) == oi_tf)
+                })
+                && let Ok(Some(prior)) = reader.read_last_visible_derivative_before(
+                    instrument,
+                    DerivativeKind::OpenInterest,
+                    start_ts,
+                    Some(cutoff_ts),
+                    false,
+                    oi_tf,
+                )
+            {
+                oi.push(prior);
+            }
+            if seen_mark_tfs.insert(tf.as_str())
+                && !mark.iter().any(|p| {
+                    p.ts_event <= anchor_ts
+                        && p.timeframe.as_deref().is_none_or(|t| t == tf.as_str())
+                })
+                && let Ok(Some(prior)) = reader.read_last_visible_derivative_before(
+                    instrument,
+                    DerivativeKind::MarkPrice,
+                    start_ts,
+                    Some(cutoff_ts),
+                    false,
+                    Some(tf.as_str()),
+                )
+            {
+                mark.push(prior);
+            }
+        }
+    }
+
+    let mut combined = Vec::with_capacity(mark.len() + funding.len() + oi.len());
+    combined.extend(mark);
+    combined.extend(funding);
+    combined.extend(oi);
+    latest_visible_derivatives(combined, Some(cutoff_ts))
 }
 
 pub fn parse_indicator_name(raw: &str) -> Result<talaria_contracts::IndicatorName, ApiError> {
@@ -691,4 +944,38 @@ fn _unused_markers(
     _w: BackfillWindow,
 ) {
     let _ = (backfill_bars, SNAPSHOT_NOT_FOUND, VALIDATION_ERROR);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::{ServerConfig, start_server};
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn mark_backfill_cooldown_prunes_expired_entries() {
+        let tmp = TempDir::new().unwrap();
+        let replay_path = tmp.path().join("replay.jsonl");
+        std::fs::write(&replay_path, "{\"offset_ms\":0,\"type\":\"heartbeat\"}\n").unwrap();
+        let mut cfg = ServerConfig::new(tmp.path());
+        cfg.replay_file = Some(replay_path);
+        let srv = start_server(cfg).await.unwrap();
+
+        let t0 = 1_767_225_600_000;
+        mark_backfill_cooldown(&srv.state, "expired-key".to_owned(), t0, None);
+
+        let t_after = t0 + BACKFILL_COOLDOWN_MS;
+        mark_backfill_cooldown(&srv.state, "active-key".to_owned(), t_after, None);
+        mark_backfill_cooldown(&srv.state, "newer-key".to_owned(), t_after + 1, None);
+
+        {
+            let map = srv.state.backfill_cooldown.lock().unwrap();
+            assert!(!map.contains_key("expired-key"));
+            assert!(map.contains_key("active-key"));
+            assert!(map.contains_key("newer-key"));
+            assert_eq!(map.len(), 2);
+        }
+
+        srv.shutdown().await;
+    }
 }

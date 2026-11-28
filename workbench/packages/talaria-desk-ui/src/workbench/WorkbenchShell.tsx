@@ -70,7 +70,7 @@ import { useRuns } from "../features/runs/useRuns";
 import { ScannerPanel } from "../features/scanner/ScannerPanel";
 import { useScanner } from "../features/scanner/useScanner";
 import { WatchlistPanel } from "../features/watchlist/WatchlistPanel";
-import { api } from "../lib/api";
+import { api, getApiDataDir } from "../lib/api";
 import { getLocale, setLocale, t, useLocale } from "../lib/i18n";
 import {
   getTauriShellSettings,
@@ -393,6 +393,7 @@ export function WorkbenchShell({
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [mobileTab, setMobileTab] = useState<RightTabId>("watchlist");
   const [tauriKeepRunning, setTauriKeepRunning] = useState<boolean | null>(null);
+  const [activeDataDir, setActiveDataDir] = useState<string | null>(() => getApiDataDir());
 
   const dockApiRef = useRef<DockviewApi | null>(null);
   const saveTimerRef = useRef<number | null>(null);
@@ -498,8 +499,20 @@ export function WorkbenchShell({
       void getTauriShellSettings().then((settings) => {
         if (active && settings) {
           setTauriKeepRunning(settings.keep_running_in_background);
+          if (settings.data_dir) {
+            setActiveDataDir(settings.data_dir);
+          }
         }
       });
+    } else if (!getApiDataDir()) {
+      void api
+        .deskBootstrap()
+        .then((info) => {
+          if (active && info.data_dir) {
+            setActiveDataDir(info.data_dir);
+          }
+        })
+        .catch(() => undefined);
     }
     return () => {
       active = false;
@@ -943,6 +956,18 @@ export function WorkbenchShell({
                 {popoutConfig
                   ? t("独立弹窗 · 跨窗联动", "Popout Window · BroadcastChannel Sync")
                   : `${telemetry.instrumentId} · ${telemetry.timeframe}`}
+                {!popoutConfig && activeDataDir && (
+                  <>
+                    {" · "}
+                    <span
+                      className="wb-data-dir"
+                      data-testid="workbench-data-dir"
+                      title={activeDataDir}
+                    >
+                      {activeDataDir}
+                    </span>
+                  </>
+                )}
               </span>
             </div>
           </div>

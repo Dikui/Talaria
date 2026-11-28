@@ -13,7 +13,6 @@ from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParam
 from talaria.foundation.margin import MarginValuation
 from talaria.foundation.market import MarketPack
 from talaria.foundation.types import decimal_from_finite_fraction
-from talaria.packs import DEFAULT_PACK, get_market_pack
 
 
 _DEFAULT = AccountRiskConfig()
@@ -95,7 +94,7 @@ class RUnitSizer:
 
 
 def _create(context: PluginContext, params: PluginParams) -> RUnitSizer:
-    return RUnitSizer(get_market_pack(DEFAULT_PACK), context.account_risk)
+    return RUnitSizer(context.resolved_market_pack(), context.account_risk)
 
 
 r_unit = SlotPlugin(Slot.SIZING, (INTERFACE_VERSION,), _create)

@@ -27,7 +27,6 @@ from talaria.foundation.derivatives import DerivativeKind, DerivativePoint, late
 from talaria.foundation.margin import MarginPortfolio, MarginPosition
 from talaria.foundation.market import InstrumentSpec, MarginTrait
 from talaria.foundation.types import ContractModel, decimal_from_finite_fraction as decimal_exact
-from talaria.packs import DEFAULT_PACK, get_market_pack
 
 _MINUTE = 60_000
 _DEFAULT_RISK = AccountRiskConfig()
@@ -242,7 +241,7 @@ class BarSim1m:
         self._params = BarSimParams.model_validate(params)
         self._paper = context.mode == "paper"
         self._now_ms = now_ms
-        self._pack = get_market_pack(DEFAULT_PACK)
+        self._pack = context.resolved_market_pack()
         self._configs: Mapping[str, AccountRiskConfig] = context.account_risk
         self._now = 0
         self._execution_time: int | None = None

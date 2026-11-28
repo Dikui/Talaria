@@ -23,6 +23,7 @@ from talaria.account.contracts import (
     TradingState as AccountTradingState,
 )
 from talaria.foundation.bars import CompactBar
+from talaria.foundation.market import MarketPack
 from talaria.foundation.paper import (
     ConfirmedDraft,
     DraftEvidence,
@@ -341,13 +342,14 @@ class CommandIntake:
         *,
         ledger_events_reader: Callable[[], Sequence[ExecutionEvent]] | None = None,
         ledger_seq_reader: Callable[[], int] | None = None,
+        pack: MarketPack | None = None,
     ) -> None:
         self._gate = gate
         self._fill = fill
         self._record = record
         self._ledger_events_reader = ledger_events_reader
         self._ledger_seq_reader = ledger_seq_reader
-        self._pack = get_market_pack(DEFAULT_PACK)
+        self._pack = pack if pack is not None else get_market_pack(DEFAULT_PACK)
         self._receipts: dict[str, PaperCommandReceipt] = {}
         for event in previous:
             if event.kind == "COMMAND_RESOLVED" and event.reason:

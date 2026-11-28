@@ -24,8 +24,8 @@ from talaria.foundation.strategy_subscription import (
     identified_revisions,
 )
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, last_closed_bar_start, timeframe_ms
-from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdReader
+from talaria.sdk._resolve import default_data_dir, resolve_instrument_spec
 from talaria.service_endpoint import DATA_DIR_HEADER, NOW_MS_HEADER, data_dir_id, read_service_connection
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -113,10 +113,9 @@ def subscribe_derivatives(
 def _recover_derivatives(
     root: Path, instrument: str, kind: DerivativeKind, ready: SubscriptionReady, seen: set[str], *, as_of: int,
 ) -> list[StrategyDerivativeEvent]:
-    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
-    if spec is None:
-        raise InstrumentNotFoundError(f"未知标的：{instrument}")
-    points = ColdReader(root).read_derivative_revisions(spec, kind, end_ts=as_of)
+    reader = ColdReader(root)
+    spec = resolve_instrument_spec(instrument, root=root, offline=True, reader=reader)
+    points = reader.read_derivative_revisions(spec, kind, end_ts=as_of)
     return [
         StrategyDerivativeEvent(epoch=ready.epoch, seq=None, point=point, content_id=identity)
         for identity, point in identified_derivative_revisions(
@@ -151,7 +150,7 @@ async def _subscribe(
 ) -> AsyncGenerator[StrategyBarEvent | StrategyDerivativeEvent]:
     if timeframe not in SUPPORTED_TIMEFRAMES:
         raise InvalidRequestError(f"不支持的周期：{timeframe}")
-    root = Path(data_dir or os.environ.get("TALARIA_DATA_DIR") or ".talaria").expanduser().resolve()
+    root = default_data_dir(data_dir)
     request = SubscriptionRequest(
         instrument=instrument, timeframe=timeframe, owner=uuid4().hex, include_baseline=True, kind=kind, report_replay_through=on_cursor is not None,
     )

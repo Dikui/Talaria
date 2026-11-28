@@ -1,86 +1,95 @@
 # Talaria
 
-Talaria 是交易员的本地分析工作台。Python 底座负责历史回填、快照冻结、实时行情、指标、关键位、预警与扫描。React 工作台提供看盘和标注，DSH 插件提供人机协同会诊与扫描简报。
+Talaria 是交易员的本地分析与研究工作台。主链路采用 **Rust 纯数据常驻服务（`talaria-data`）+ 独立看盘工作台（`workbench/`）**，负责行情接入、历史回填、`decimal128(18, s)` 冷库写入、指标、关键位、市场结构、预警与扫描（[ADR-0023](docs/adr/0023-standalone-workbench-and-rust-data-engine.md)）。Python 研究核（`core/`）通过统一标的规格与 `data_manifest.sqlite` / Arrow IPC 与 Rust 服务零误差互通；DSH 插件（`dsh/`）作为可选协同面板按需连接运行中的 `talaria-data`。
 
 ## 环境
 
+- Rust 1.85+（Cargo workspace：`engine/`）
 - Python 3.14+，[uv](https://docs.astral.sh/uv/)
 - Node.js 26+，pnpm 11+
-- 前端图表锁定 `klinecharts@10.1.1`
+- 独立看盘前端图表：`@luxalgo/vela@0.10.17`（[归属与第三方许可](THIRD_PARTY_NOTICES.md)）
 
-## 启动工作台
+## 快速启动（独立工作台 + Rust 数据引擎）
 
-首次启动前安装依赖并构建前端。
-
-```bash
-uv sync
-pnpm -C dsh install
-pnpm -C dsh build
-```
-
-在 macOS 安装 DeepSeek Harness 桌面应用（基线 0.2.2-rc.5）。首次打开应用，让它初始化 `desktop` profile，然后完全退出应用，再安装工作台插件。从旧的 launchd 作业迁移时，先运行 `uv run talaria service uninstall`。如果旧作业使用自定义数据目录，记下路径并在安装插件时传入 `--data-dir`。
+首次构建前端与 Rust 服务：
 
 ```bash
-uv run talaria dsh-install
-uv run talaria open
+pnpm -C workbench install
+pnpm -C workbench build
+cargo build --manifest-path engine/Cargo.toml --bin talaria-data
 ```
 
-`talaria dsh-install` 构建插件，并将服务启动参数写入 `~/.dsh/profiles/desktop/cordis.patch.yml` 中带标记的 Talaria 段。每次改写前，原文件会备份到 `~/.dsh/profiles-backup/desktop-<时间戳>/`。升级插件后重新运行安装命令即可。需要移除桌面插件时，退出桌面应用并运行 `uv run talaria dsh-uninstall`。
+启动纯数据常驻服务 `talaria-data` 并托管 `/desk`：
 
-日常用 `talaria open` 打开桌面应用，从侧边栏打开 **Talaria**，在工作台内切换图表、预警、扫描、关键位和账户。工作台记住上次使用的标签，界面语言跟随 DSH；会话右栏的独立面板仍可使用。插件随应用启动服务，退出应用时停止服务。应用关闭期间，行情采集、冷库写入、预警和扫描随之停止。用 `talaria service status` 查看应用、插件、数据目录锁和服务写入接口。服务日志位于数据目录下的 `logs/service.out.log` 和 `logs/service.err.log`。
+```bash
+# 默认数据目录 ~/.talaria/data，默认市场包 crypto_perp（可用 --pack okx_perp / crypto_suite 等切换）
+cargo run --manifest-path engine/Cargo.toml --bin talaria-data -- up --pack crypto_perp
+```
 
-未安装桌面应用时，先运行 `talaria up --solo`，再用 `talaria open` 打开服务托管的 `/desk`。独立页面跟随浏览器语言，也可以用 `/desk?lang=en` 或 `/desk?lang=zh` 指定语言；原有 `/desk/chart` 等直达链接继续有效。使用自定义数据目录时，可给相关命令传入同一个 `--data-dir`。省略 `--data-dir` 时，`dsh-install` 与 `open` 的浏览器兜底依次查看 `TALARIA_DATA_DIR`、桌面插件配置、旧作业配置与 `./.talaria`。`service status` 优先查看托管配置所指向的目录。
+也可直接运行独立桌面端（`workbench/`，Tauri v2 自动拉起并监控 `talaria-data` sidecar）：
+
+```bash
+pnpm -C workbench tauri dev
+```
 
 ### 离线确定性样本
 
 ```bash
-# 只启动 Python 看盘守护进程，使用仓库内的 Bybit fixture
-uv run talaria up --solo --pack crypto_perp --fixture-dir tests/fixtures/bybit
+# Bybit 离线样本
+cargo run --manifest-path engine/Cargo.toml --bin talaria-data -- up \
+  --pack crypto_perp --fixture-dir tests/fixtures/bybit
+
+# OKX 永续离线样本
+cargo run --manifest-path engine/Cargo.toml --bin talaria-data -- up \
+  --pack okx_perp --fixture-dir tests/fixtures/okx
 ```
 
-浏览器打开 <http://127.0.0.1:8765/desk>。`/desk` 会把随机会话 token 写入同源的 `talaria_token` cookie；前端读取后放入 `Authorization: Bearer`，所有写操作都必须带这个头。
+浏览器打开服务打印的 `/desk` 地址（默认绑定 `127.0.0.1` 回环地址，并自动写入会话 token 与当前数据目录路径）。`--fixture-dir` 只提供历史行情；查看实时断流与恢复状态可使用 `talaria-data replay --data-dir <隔离目录> --replay-file tests/fixtures/realtime/demo_outage.jsonl`。
 
-`--fixture-dir` 只提供历史行情。单独使用时，`/api/feed/health` 返回 503，顶栏显示“离线样本”。要查看实时更新和断流健康状态，可同时使用下文的本地回放。
+## 统一数据目录与 Python SDK 互通
 
-`talaria up` 与 `talaria evaluate-levels` 都通过 `--pack` 选择已注册的市场包，默认 `crypto_perp`。原始行情目录由市场包的 `raw_archive_id` 决定，`crypto_perp` 继续使用 `bybit_linear`，已有归档可直接复用。
+当未显式传入 `--data-dir` / `data_dir` 且未设置 `TALARIA_DATA_DIR` 时，**独立桌面端、Rust `talaria-data` CLI 与 Python `talaria.sdk` 均默认共用 `~/.talaria/data`**。工作台顶栏会展示当前连接的数据目录；在 Python Notebook 中可从任意工作目录直接读取同一份冷库清单与正在运行的 `talaria-data` 服务：
 
-`talaria up` 优先使用 `--data-dir`，其次是 `TALARIA_DATA_DIR`，默认 `./.talaria`。主要数据路径如下。
+```python
+from talaria import sdk
 
-```text
-<data-dir>/data/raw/<archive_id>/<SYMBOL>/<timeframe>.jsonl            # 历史回填原始柱
-<data-dir>/data/raw_archive/<sha256>.jsonl                            # 冷库批次的哈希归档
-<data-dir>/data/cold/<venue>/<symbol>/<timeframe>/<sha256>.parquet     # 冷库 generation
-<data-dir>/data/data_manifest.sqlite                                 # 冷库清单与游标
-<data-dir>/state/runtime_snapshots.sqlite                            # 快照索引
-<data-dir>/state/hot_snapshots/<snapshot_id>.parquet                  # 冻结快照
-<data-dir>/state/collaboration_state.sqlite                          # 自选、预警、标注与协同状态
+print("当前数据目录:", sdk.data_dir())
+print("当前标的列表:", [s.instrument_id for s in sdk.instruments()])
+
+# 无论服务端使用 crypto_perp、okx_perp、crypto_suite 还是动态添加的标的，
+# SDK 都会自动按清单/服务解析到对应的交易所与交易对
+bars = sdk.bars("BTC-USDT-PERP", "1m", start="2026-11-01T00:00:00Z")
+print(bars.to_frame().head())
 ```
 
-## 常用命令
+若需使用独立目录（例如回测实验或隔离多套数据），可同时传入 `--data-dir <dir>` 与 `sdk.bars(..., data_dir="<dir>")`，或在进程环境中统一设置 `TALARIA_DATA_DIR`。
+
+常用支持市场包（`--pack`）：`crypto_perp`、`okx_perp`、`binance_perp`、`hyperliquid_perp`、`coinbase_spot`、`crypto_suite`、`us_equity`。
+
+## 常用检查与测试命令
 
 ```bash
-# 后端测试（在线冒烟默认跳过）
+# Rust 引擎与服务测试
+cargo test --manifest-path engine/Cargo.toml
+
+# 独立工作台类型检查与测试
+pnpm -C workbench typecheck
+pnpm -C workbench test
+
+# Python 研究核与契约检查（在线冒烟默认跳过）
+uv sync
 uv run pytest
-
-# 契约零漂移检查；--write 用于重新生成
 uv run talaria contract-check
-uv run talaria contract-check --write
-
-# 前端测试、类型检查与构建
-pnpm -C dsh --filter @talaria/desk-ui test
-pnpm -C dsh typecheck
-pnpm -C dsh build
 ```
 
-重新生成确定性 fixture（固定种子，BTCUSDT 1m 900 根原始柱（紧凑序列 905 根，含 5 根缺口）与 1 根零量平盘）：
+## 旧 Python 服务与可选 DSH 协同插件
 
-```bash
-uv run python tests/fixtures/bybit/generate.py
-```
+- **旧 Python/FastAPI 服务（仅兼容过渡与回测/策略调试）**：`uv run talaria up --solo --pack crypto_perp` 启动旧版 FastAPI 服务，不再作为日常看盘主入口。
+- **DSH 插件（`dsh/packages/talaria-dsh-plugin`）**：按 [ADR-0023](docs/adr/0023-standalone-workbench-and-rust-data-engine.md) 仅作为可选 Co-Pilot 协同消费方，通过 `<data-dir>/runtime/service-descriptor.json` 连接独立运行的 `talaria-data`，不再托管 `Resident Service` 启停生命周期；如仍需构建旧 DSH 前端与插件，可运行 `pnpm -C dsh install && pnpm -C dsh build`。
 
 ## 关键位离线评估
 
-`evaluate-levels` 逐时点重放关键位引擎：每次只用 `ts_available <= cutoff` 的柱，统计每个 `kind` 被触及后 `horizon_bars` 根内出现 `atr_multiple × ATR` 反应的比例与平均幅度，并与同窗口、固定种子的随机价位基线对照。ATR 复用 `foundation/operators` 的 ATR（默认周期 14）。
+`evaluate-levels` 逐时点重放关键位引擎并对照随机价位基线：
 
 ```bash
 uv run talaria evaluate-levels \
@@ -95,125 +104,4 @@ uv run talaria evaluate-levels \
   --seed 42
 ```
 
-- `--from` / `--to` 接受毫秒时间戳或 ISO-8601；不带时区的 ISO 按 `Asia/Shanghai` 解释，带 `Z` 或偏移量的按其自身时区。
-- 默认向 stdout 输出 JSON，同时向 stderr 输出可读表格与数据源；`--no-json` 只输出表格。错误以退出码 2 和 stderr JSON `{"error": {"code", "message"}}` 返回。
-- 显式传入 `--fixture-dir` 时从该目录读取。只给 `--data-dir` 时读取市场包的原始存档，`crypto_perp` 对应 `<data-dir>/data/raw/bybit_linear/<SYMBOL>/<timeframe>.jsonl`。两个参数都省略时使用市场包提供的默认 fixture，`crypto_perp` 对应 `tests/fixtures/bybit`。
-- 输出字段：输入参数 `instrument_id`、`timeframe`、`from_ts` / `to_ts`、`atr_period`、`atr_multiple`、`horizon_bars`、`baseline_samples`、`seed`，以及 `method_version`、`reaction_definition`、`skipped`、`baseline_skipped`、`total_sample_count`、`baseline_sample_count` 和 `results[]`。每个 `kind` 含 `sample_count`、`reaction_count`、`reaction_rate`、`mean_reaction_atr`、`skipped_count`、`baseline_sample_count`、`baseline_reaction_count`、`baseline_reaction_rate`、`baseline_mean_reaction_atr`、`baseline_skipped_count`。
-- 样本：同一 `level_id` 跨 cutoff 只计一次，取它在评估窗口内的首次触及；触及指柱的 high/low 包含线价（区间位为区间重叠）。触及之后严格后续 `horizon_bars` 根内，任一 close 相对价位/区间达到阈值即算反应（向上突破与向下反弹都算）；`mean_reaction_atr` 是最大偏离的 ATR 倍数均值。
-- 随机基线：从同窗口收盘价分布抽 `baseline_samples` 个价位，每个 `kind` 用 `sha256(seed:kind)` 派生独立随机流；触及与反应判定和真实关键位完全相同，但不读取引擎的 `level_id`、状态或强度。
-- 首次触及后数据不足（包括 ATR 预热不足）的样本计入 `skipped`（真实关键位）或 `baseline_skipped`（随机基线），不会以 0 代替。
-- 类别由 `KeyLevelKind` 自动枚举，包括成交量位、锚定 VWAP、清算估算等。
-
-## 真实 Bybit（可选）
-
-在可访问 Bybit 的环境中，可运行在线冒烟测试或启动实时看盘。
-
-```bash
-uv run pytest -m online tests/packs/test_online_bybit.py
-uv run talaria up --solo --pack crypto_perp --history-base-url https://api.bybit.com
-```
-
-`--history-base-url` 可覆盖市场包默认的历史接口地址，`--bybit-base-url` 仍可作为兼容别名使用。`talaria up` 只接受回环 IP，工作台端口默认 8765。
-
-开发和自动化测试可先运行 `talaria dsh-install --dsh-profile talaria-desk`，再运行 `talaria up --pack crypto_perp` 启动服务与独立 DSH Web 宿主（默认端口 8766）。用终端打印的宿主地址进入开发工作台。宿主离线时，`/desk` 继续提供本地看盘。
-
-## 实时流与本地回放
-
-实时流的唯一入口是 `MarketEventFeed` 协议（K 线事件、最优一档盘口事件、健康事件），状态机位于 `core/src/talaria/feed/supervisor.py`：
-
-| 状态 | 含义 | 进入条件 | 退出条件 |
-| --- | --- | --- | --- |
-| `LIVE` | 交易时段内持续供流 | 订阅成功或数据恢复 | 12s 内没有任何事件（含心跳） |
-| `STALE` | 断流挂起，禁止基于旧价决策 | 超过 `stale_after_ms`（默认 12000）无活动，或传输层报错 | 传输层重连成功 |
-| `RECOVERING` | 正在重连并回填 | `transport_restored` 收到 REST 回填 | 回填应用完毕 |
-
-状态机把“每一分钟都必须有 K 线”的交易所语义落实为两类合成柱：
-
-- `NO_TRADES`：没有断流，只是该分钟确实没有成交——以前一根收盘价生成平盘零量柱；
-- `FEED_GAP`：发生断流，无法确认该分钟成交——OHLCV 全部置空，前端不进入 `dataList`，指标算子遇到它输出空值。
-
-重连后按断流窗口起点回填 REST 历史；同一 `timestamp` 的多次发布按 `revision` 追加保留、最后一次写入生效（last-write-wins），重复回填是幂等的。
-
-回放脚本为 JSONL，每行至少包含非负且非递减的 `offset_ms` 与 `type`（`kline` / `book` / `heartbeat` / `disconnect` / `reconnect`），K 线与盘口事件内嵌完整的契约对象：
-
-```bash
-# 回放 2026-11-01 的 36 条样本：8.5 秒断流 + 5 根 FEED_GAP 缺口 + 恢复
-uv run talaria up --solo --pack crypto_perp \
-  --fixture-dir tests/fixtures/bybit \
-  --replay-events tests/fixtures/realtime/demo_outage.jsonl
-
-# 0.5 倍速便于观察断流计时
-uv run talaria up --solo --pack crypto_perp \
-  --fixture-dir tests/fixtures/bybit \
-  --replay-events tests/fixtures/realtime/demo_outage.jsonl \
-  --replay-speed 0.5
-```
-
-`--replay-events` 可与 `--fixture-dir` 并用（fixture 只供历史快照）；文件缺失、不是普通文件或 `--replay-speed <= 0` 时命令以退出码 2 结束并输出中文提示。回放到文件末尾后不再产生 K 线，但会持续发送静默心跳，健康状态保持 `LIVE`。
-
-## 快通道协议（`WS /ws/desk`）
-
-前端通过由 `window.location` 推导的单一 WS 连接接收增量，断线后按 0.5s → 8s 指数退避自动重连，并重新订阅当前标的与周期。
-
-服务端 → 客户端：
-
-| `type` | 载荷 | 说明 |
-| --- | --- | --- |
-| `hello` | `{feed_mode, server_ts, live}` | 连接建立后立即推送；`live=false` 表示当前离线样本模式 |
-| `bar` | `{data: KlineEvent}` | `confirmed=false` 为进行中 K 线，同 `timestamp` 以 `revision` 递增更新 |
-| `book` | `{data: OrderBookEvent}` | 最优一档买卖价与量 |
-| `health` | `{data: FeedHealthEvent}` | `LIVE` / `STALE` / `RECOVERING` 迁移与 `stale_since` |
-| `error` | `{code, message}` | 订阅失败等错误 |
-
-客户端 → 服务端：
-
-```json
-{"op": "subscribe", "instrument_id": "BTC-USDT-PERP", "timeframe": "1m"}
-{"op": "unsubscribe", "instrument_id": "BTC-USDT-PERP", "timeframe": "1m"}
-```
-
-每个客户端有独立有界队列（256 条），队列满时丢弃最旧条目，任何慢客户端都不会阻塞其他客户端或行情写入。`GET /api/feed/health` 返回全通道聚合的 `FeedHealthReport`；fixture 模式没有实时流，返回 503 `FEED_UNAVAILABLE`。
-
-## API 摘要
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/health` | `{ok, version, feed_mode}` |
-| GET | `/api/instruments` | 所选市场包的标的，`crypto_perp` 提供四个加密永续标的 |
-| POST | `/api/snapshots` | 创建 `HISTORICAL_PIT` 快照；`OBSERVED_REPLAY` 返回 501 |
-| GET | `/api/snapshots/{id}` | 快照元数据 |
-| GET | `/api/snapshots/{id}/bars?timeframe=&limit=&before_ts=` | 升序 `ChartPage`，`limit` 1..1000，含两个方向的 `has_more_*` |
-| GET | `/api/feed/health` | `FeedHealthReport`；无实时流时 503 |
-| WS | `/ws/desk` | `hello` / `bar` / `book` / `health` / `error` 增量与订阅控制 |
-
-错误统一为 `{code, message}`：401 `UNAUTHORIZED`、404 `SNAPSHOT_NOT_FOUND`/`INSTRUMENT_NOT_FOUND`、422 `VALIDATION_ERROR`、501 `NOT_IMPLEMENTED`、503 `FEED_UNAVAILABLE`。
-
-## 浏览器验收
-
-验收使用 ego-browser，截图放在 `.scratch/tasks/ticket-03/`（已 gitignore）。启动带 `demo_outage.jsonl` 的实例后至少覆盖：
-
-1. 1440×900 浅色：顶栏盘口与“实时”徽标，K 线随回放跳动；
-2. 1440×900 深色：切换主题后图表、徽标与提示条配色同步；
-3. 390×844 窄屏：无横向溢出，控件可换行但不裁切；
-4. 1440×900 断流：徽标变红并显示“断流 N 秒”，断流提示条出现；
-5. 1440×900 恢复：断流提示条消失，徽标回到“实时”，状态栏实时计数继续增长；
-6. 390×844 断流或恢复：窄屏下提示条与计时同样完整可见。
-
-## 架构边界
-
-- `core/src/talaria/foundation`：L0 契约与协议、纯 Python `Decimal` 指标算子和关键位纯函数。
-- `core/src/talaria/perception`：原始柱落盘、缺口紧凑化、快照冻结、冷库发布、预警与扫描引擎。
-- `core/src/talaria/feed`：`MarketEventFeed` 状态机（LIVE / STALE / RECOVERING、NO_TRADES 与 FEED_GAP 合成、重连回填）。
-- `core/src/talaria/replay`：JSONL 确定性回放传输层，支持断流/恢复与可注入时钟。
-- `core/src/talaria/evaluation`：离线关键位质量评估，供 `evaluate-levels` 调用。
-- `core/src/talaria/packs`：市场包注册表。当前 `crypto_perp` 提供 Bybit V5 Linear 行情连接器、标的与领域技能。
-- `core/src/talaria/workbench_api`：FastAPI 网关、运行时组装、领域路由、WS 广播与协同状态库。
-- `dsh/packages/talaria-contracts`：由 Python 生成的 TypeScript 契约。
-- `dsh/packages/talaria-desk-ui`：React 19 + KLineChart v10 看盘页。
-- `dsh/packages/talaria-dsh-plugin`：DSH 工作台插槽、分析工具与会诊桥接。
-
-交易闭环与交易回放规划于 M3，智能体自治与评估、参数寻优、美股市场包规划于 M4。分层与实现位置见[架构规范](docs/architecture.md)。
-
-## 第三方
-
-KLineChart 10.1.1（Apache-2.0）与 `websockets` 15.x（BSD-3-Clause）的许可证归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+完整架构边界与模块职责见[架构规范](docs/architecture.md)与 [ADR-0023](docs/adr/0023-standalone-workbench-and-rust-data-engine.md)。

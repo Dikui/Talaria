@@ -24,7 +24,6 @@ from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParam
 from talaria.foundation.derivatives import DerivativeKind
 from talaria.foundation.margin import MarginValuation
 from talaria.foundation.market import InstrumentSpec, MarketPack, SessionTrait, TraitBundle
-from talaria.packs import DEFAULT_PACK, get_market_pack
 
 _DEFAULT = AccountRiskConfig()
 _HOUR_MS = 3_600_000
@@ -376,7 +375,7 @@ def _session_open(session: SessionTrait, now: int) -> bool:
 
 
 def _create(context: PluginContext, params: PluginParams) -> SevenStepRisk:
-    return SevenStepRisk(get_market_pack(DEFAULT_PACK), context.account_risk, paper=context.mode == "paper")
+    return SevenStepRisk(context.resolved_market_pack(), context.account_risk, paper=context.mode == "paper")
 
 
 seven_step = SlotPlugin(Slot.RISK, (INTERFACE_VERSION,), _create)

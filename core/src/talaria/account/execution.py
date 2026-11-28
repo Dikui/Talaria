@@ -38,6 +38,7 @@ from talaria.account.contracts import (
 from talaria.account.ledger import LedgerError, check_postings
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
 from talaria.foundation.margin import MarginPosition
+from talaria.foundation.market import MarketPack
 from talaria.foundation.types import decimal_from_finite_fraction
 from talaria.packs import DEFAULT_PACK, get_market_pack
 
@@ -110,6 +111,7 @@ class ExecutionGate:
         valuation: MarginValuation | None = None,
         record: Callable[[Sequence[ExecutionEvent]], None] | None = None,
         allow_late_events: bool = False,
+        market_pack: MarketPack | None = None,
     ) -> None:
         self._sizing = sizing
         self._risk = risk
@@ -142,7 +144,7 @@ class ExecutionGate:
         self._drawdown_transition = getattr(risk, "drawdown_transition", None)
         self._start_trading_day = getattr(risk, "start_trading_day", None)
         self._entry_fill_allows = getattr(risk, "entry_fill_allows", None)
-        self._market_pack = get_market_pack(DEFAULT_PACK)
+        self._market_pack = market_pack if market_pack is not None else get_market_pack(DEFAULT_PACK)
 
     def checkpoint(self) -> dict:
         return _GateCheckpoint.capture(self)

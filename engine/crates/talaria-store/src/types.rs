@@ -23,6 +23,10 @@ pub const RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
 pub const RETAINED_MANIFESTS: i64 = 3;
 /// Maximum rows per compacted tick partition file.
 pub const TICK_BATCH_ROWS: usize = 64_000;
+/// Maximum rows per active-month tail segment before leaving it unmerged until month rollover.
+pub const ACTIVE_TAIL_TARGET_ROWS: usize = 64_000;
+/// Minimum same-tier tail files required before merging an active-month bucket.
+pub const ACTIVE_TAIL_MERGE_MIN_FILES: usize = 4;
 
 /// Parquet schema metadata key identifying the numeric format.
 pub const COLD_FORMAT_METADATA: &str = "talaria.cold.format";

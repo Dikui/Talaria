@@ -25,6 +25,18 @@ class ServiceDescriptorError(ValueError):
     """服务接口描述损坏或不符合回环约束。"""
 
 
+def default_data_dir(data_dir: str | Path | None = None) -> Path:
+    """解析数据目录（显式参数 > ``TALARIA_DATA_DIR`` > ``~/.talaria/data``）。"""
+    if data_dir is not None:
+        raw = str(data_dir).strip()
+        if raw:
+            return Path(raw).expanduser().resolve()
+    env_dir = os.environ.get("TALARIA_DATA_DIR", "").strip()
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    return (Path.home() / ".talaria" / "data").expanduser().resolve()
+
+
 def service_descriptor_path(data_dir: str | Path) -> Path:
     return Path(data_dir).resolve() / "runtime" / DESCRIPTOR_NAME
 

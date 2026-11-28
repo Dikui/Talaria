@@ -17,10 +17,11 @@ from talaria.account.scheme import INTERFACE_VERSION, PluginContext, PluginParam
 from talaria.components.runtime import cached_cold_bar_reader, confirmed_bars
 from talaria.foundation.bars import RangeBar
 from talaria.foundation.derivatives import DerivativeKind, DerivativePoint
+from talaria.foundation.market import InstrumentSpec, MarketPack
 from talaria.foundation.ticks import Quote, TickKind, Trade, trade_version
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.foundation.types import ContractModel
-from talaria.packs import DEFAULT_PACK, get_market_pack
+from talaria.packs import DEFAULT_PACK, get_market_pack, resolve_market_pack
 from talaria.perception.cold_store import ColdReader, ColdSnapshot
 
 type Milliseconds = Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
@@ -40,22 +41,29 @@ class ReplayParams(ContractModel):
             raise ValueError("须满足 0 <= history_start <= start <= end")
         if self.timeframe not in SUPPORTED_TIMEFRAMES:
             raise ValueError(f"不支持的周期：{self.timeframe}")
-        if get_market_pack(DEFAULT_PACK).instrument(self.instrument) is None:
-            raise ValueError(f"未知标的：{self.instrument}")
+        if not self.instrument.strip():
+            raise ValueError("标的不能为空")
         return self
 
 
 def capture_replay_snapshot(
-    data_dir: Path, windows: Iterable[ReplayParams], *, tick_instruments: Collection[str] = (),
+    data_dir: Path,
+    windows: Iterable[ReplayParams],
+    *,
+    tick_instruments: Collection[str] = (),
+    market_pack: MarketPack | None = None,
 ) -> ColdSnapshot:
     instruments: dict[str, int] = {}
     for params in windows:
         instruments[params.instrument] = max(instruments.get(params.instrument, 0), params.end)
-    pack = get_market_pack(DEFAULT_PACK)
-    return ColdReader(data_dir).capture_snapshot(
-        ((pack.instrument(instrument), end) for instrument, end in instruments.items()),
-        tick_instruments=tick_instruments,
-    )
+    pack = market_pack or resolve_market_pack(data_dir, offline=True)
+    resolved: list[tuple[InstrumentSpec, int]] = []
+    for instrument, end in instruments.items():
+        spec = pack.instrument(instrument)
+        if spec is None:
+            raise SchemeError(f"未知标的：{instrument}")
+        resolved.append((spec, end))
+    return ColdReader(data_dir).capture_snapshot(resolved, tick_instruments=tick_instruments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,9 +91,23 @@ def tick_market_order(event: MarketEvent) -> tuple[int, int]:
 
 
 class TickReplay:
-    def __init__(self, reader: ColdReader, instrument: str, bars: Iterable[RangeBar]) -> None:
+    def __init__(
+        self,
+        reader: ColdReader,
+        instrument: str,
+        bars: Iterable[RangeBar],
+        *,
+        spec: InstrumentSpec | None = None,
+    ) -> None:
         self._reader = reader
-        self._spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
+        resolved_spec = (
+            spec
+            or reader.resolve_instrument(instrument)
+            or get_market_pack(DEFAULT_PACK).instrument(instrument)
+        )
+        if resolved_spec is None:
+            raise SchemeError(f"未知标的：{instrument}")
+        self._spec = resolved_spec
         self._minute = timeframe_ms("1m")
         self._bars = {
             bar.ts_event: bar for bar in bars
@@ -148,6 +170,11 @@ class ParquetReplay:
         if context.mode != "backtest":
             raise SchemeError("parquet_replay 仅支持回测")
         self._params = ReplayParams.model_validate(params)
+        self._pack = context.resolved_market_pack()
+        spec = self._pack.instrument(self._params.instrument)
+        if spec is None:
+            raise SchemeError(f"未知标的：{self._params.instrument}")
+        self._spec = spec
         self._reader = context.cold_reader or ColdReader(context.data_dir)
         self._reader.check_snapshot_files()
         self._mark_age = max((config.mark_max_age_ms for config in context.account_risk.values()), default=900_000)
@@ -164,7 +191,7 @@ class ParquetReplay:
             if params.timeframe == "1m" else list(self._bars("1m", strategy=False))
         )
         if quote_max_age_ms is not None:
-            replay = TickReplay(self._reader, params.instrument, (event.bar for event in bars))
+            replay = TickReplay(self._reader, params.instrument, (event.bar for event in bars), spec=self._spec)
             ticks = replay.events(
                 params.start, params.end, seed_from=max(0, params.start - max(quote_max_age_ms, timeframe_ms("1m"))),
             )
@@ -261,12 +288,14 @@ class ParquetReplay:
             yield MarketEvent(as_of, params.instrument, timeframe, bar, source=source)
 
     def _derivative_revisions(self, instrument: str, kind: DerivativeKind, end: int) -> list[DerivativePoint]:
-        spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
+        spec = self._pack.instrument(instrument)
+        if spec is None:
+            raise SchemeError(f"未知标的：{instrument}")
         return self._reader.read_derivative_revisions(spec, kind, start_ts=0, end_ts=end)
 
     def _derivatives(self) -> Iterator[MarketEvent]:
         params = self._params
-        spec = get_market_pack(DEFAULT_PACK).instrument(params.instrument)
+        spec = self._spec
         # 逐版重放可获取时间，不能用区间末端的最高版本替代当时已知的值。
         marks = self._reader.read_derivative_revisions(
             spec, DerivativeKind.MARK_PRICE,

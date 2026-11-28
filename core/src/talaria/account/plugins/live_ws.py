@@ -22,7 +22,6 @@ from talaria.sdk._subscription import _range_revisions
 from talaria.service_endpoint import data_dir_id, read_service_connection
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.foundation.types import ContractModel
-from talaria.packs import DEFAULT_PACK, get_market_pack
 
 
 class LiveParams(ContractModel):
@@ -78,8 +77,8 @@ class LiveWS:
         self._recovering = False
         self._subscribe = subscribe
         self._subscribe_derivatives = subscribe_derivatives
-        pack = get_market_pack(DEFAULT_PACK)
-        if pack.instrument(self.params.instrument) is None:
+        self._pack = context.resolved_market_pack()
+        if self._pack.instrument(self.params.instrument) is None:
             raise SchemeError(f"未知标的：{self.params.instrument}")
 
     def checkpoint(self) -> dict:
@@ -104,7 +103,7 @@ class LiveWS:
         instrument = params.instrument
         # 1m 同时作为成交输入和订阅活性探针，慢周期只负责触发策略。
         channels = dict.fromkeys(("1m", params.timeframe), self._subscribe)
-        trait = get_market_pack(DEFAULT_PACK).traits(instrument).derivatives
+        trait = self._pack.traits(instrument).derivatives
         if params.derivatives and trait is not None and trait.realtime:
             channels.update({
                 kind: self._subscribe_derivatives

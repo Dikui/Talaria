@@ -117,6 +117,8 @@ export interface DeskBootstrapInfo {
   token?: string | null;
   base_url?: string | null;
   feed_mode?: string | null;
+  data_dir?: string | null;
+  data_dir_id?: string | null;
 }
 
 export class ApiError extends Error {
@@ -133,13 +135,18 @@ export class ApiError extends Error {
 
 let apiBaseUrl = "";
 let apiToken: string | null = null;
+let apiDataDir: string | null = null;
 
 export function configureApi(config: {
   baseUrl?: string;
   token?: string | null;
+  dataDir?: string | null;
 }): void {
   apiBaseUrl = (config.baseUrl ?? "").replace(/\/$/, "");
   apiToken = config.token ?? null;
+  if (config.dataDir !== undefined) {
+    apiDataDir = config.dataDir ?? null;
+  }
 }
 
 export function getApiBaseUrl(): string {
@@ -148,6 +155,10 @@ export function getApiBaseUrl(): string {
 
 export function getApiToken(): string | null {
   return apiToken ?? (readSessionToken() || null);
+}
+
+export function getApiDataDir(): string | null {
+  return apiDataDir;
 }
 
 function apiPath(path: string): string {
@@ -200,7 +211,7 @@ export async function initializeStandaloneApi(): Promise<void> {
   if (isTauriRuntime()) {
     const conn = await getTauriServiceConnection();
     if (conn?.token) {
-      configureApi({ baseUrl: conn.base_url, token: conn.token });
+      configureApi({ baseUrl: conn.base_url, token: conn.token, dataDir: conn.data_dir });
       return;
     }
   }
@@ -233,6 +244,7 @@ export async function initializeStandaloneApi(): Promise<void> {
         configureApi({
           baseUrl: data.base_url ?? (metaBaseUrl || apiBaseUrl),
           token: data.token,
+          dataDir: data.data_dir ?? null,
         });
         return;
       }
@@ -364,6 +376,10 @@ export const api = {
 
   health(): Promise<HealthStatus> {
     return getJson<HealthStatus>("/api/health");
+  },
+
+  deskBootstrap(): Promise<DeskBootstrapInfo> {
+    return getJson<DeskBootstrapInfo>("/api/desk/bootstrap");
   },
 
   feedHealth(): Promise<FeedHealthReport> {

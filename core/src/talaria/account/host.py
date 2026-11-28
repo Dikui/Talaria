@@ -80,11 +80,13 @@ from talaria.foundation.bars import RangeBar
 from talaria.foundation.collaboration.contracts import Abstain, SetupInsight
 from talaria.foundation.indicators import IndicatorParams
 from talaria.foundation.margin import MARGIN_VALUATION_VERSION
+from talaria.foundation.market import MarketPack
 from talaria.foundation.operators import IndicatorName
 from talaria.foundation.timeframes import SUPPORTED_TIMEFRAMES, timeframe_ms
 from talaria.foundation.types import ContractModel
-from talaria.packs import DEFAULT_PACK, get_market_pack
+from talaria.packs import DEFAULT_PACK, get_market_pack, resolve_market_pack
 from talaria.perception.cold_store import ColdReader, ColdSnapshot
+from talaria.service_endpoint import default_data_dir
 
 
 class RunCompletion(ContractModel):
@@ -309,6 +311,12 @@ class AccountProcess:
     _indicator_defaults: Mapping[IndicatorName, IndicatorParams]
     _ownership: AccountOwnership | None
     _data_dir: Path | None = None
+    _market_pack: MarketPack | None = None
+
+    def _resolved_market_pack(self) -> MarketPack:
+        if self._market_pack is not None:
+            return self._market_pack
+        return get_market_pack(DEFAULT_PACK)
 
     def run(
         self, ledger: AccountLedger, *, valuation: MarginValuation | None = None, inbox: PaperInbox | None = None,
@@ -350,7 +358,7 @@ class AccountProcess:
             risk = plugins.risk
             fill = plugins.fill
             if len(groups) > 1:
-                risk = (SevenStepRisk(get_market_pack(DEFAULT_PACK), self.scheme.account_risk, paper=True)
+                risk = (SevenStepRisk(self._resolved_market_pack(), self.scheme.account_risk, paper=True)
                         if isinstance(risk, SevenStepRisk) else deepcopy(risk))
                 fill = deepcopy(fill)
             process = replace(self, scheme=self.scheme.model_copy(update={"sub_accounts": accounts}),
@@ -451,10 +459,11 @@ class AccountProcess:
         account = accounts[0]
         data = plugins.data
         paper = isinstance(ledger, PaperLedger)
+        market_pack = self._resolved_market_pack()
         default_risk = isinstance(plugins.risk, SevenStepRisk) or isinstance(plugins.sizing, RUnitSizer)
         default_fill = isinstance(plugins.fill, BarSim1m)
         if valuation is None and (default_risk or default_fill):
-            valuation = get_market_pack(DEFAULT_PACK).margin_valuation()
+            valuation = market_pack.margin_valuation()
         if valuation is not None and getattr(valuation, "interface_version", None) != MARGIN_VALUATION_VERSION:
             raise SchemeError(f"保证金估值须兼容接口版本 {MARGIN_VALUATION_VERSION}")
         tick_replay = execution_replay and isinstance(plugins.fill, L1TradeSim)
@@ -470,7 +479,8 @@ class AccountProcess:
                     ledger.record(events)
 
         gate = ExecutionGate(accounts, plugins.sizing, plugins.risk, plugins.fill, balances=ledger.balances,
-                             valuation=valuation, record=record, allow_late_events=default_fill)
+                             valuation=valuation, record=record, allow_late_events=default_fill,
+                             market_pack=market_pack)
         now = 0
         execution_through = 0
         signal_through = -1
@@ -508,7 +518,6 @@ class AccountProcess:
         process_started_ts = time.time_ns() // 1_000_000
         process_pid = os.getpid()
         risk_config = self.scheme.account_risk.get(account) or AccountRiskConfig()
-        market_pack = get_market_pack(DEFAULT_PACK)
         feed_healthy = True
         feed_reduce_reason: str | None = None
         feed_updated_ts: int | None = None
@@ -627,6 +636,7 @@ class AccountProcess:
                 previous,
                 ledger_events_reader=_current_ledger_events,
                 ledger_seq_reader=_current_ledger_seq,
+                pack=market_pack,
             )
             if paper and inbox and callable(getattr(inbox, "claim_command", None))
             else None
@@ -868,10 +878,13 @@ def _open_process(
 ) -> Iterator[AccountProcess]:
     scheme = config.scheme
     clock = _EventClock()
+    cold_reader = ColdReader(config.data_dir, snapshot=config.cold_snapshot)
+    market_pack = resolve_market_pack(config.data_dir, reader=cold_reader, offline=(mode == "backtest"))
     context = PluginContext(
         run.state_dir if run is not None else config.data_dir, mode, scheme.seed, clock.now, scheme.account_risk,
         run_id=run.run_id if run is not None else None,
-        cold_reader=ColdReader(config.data_dir, snapshot=config.cold_snapshot) if run is not None else None,
+        cold_reader=cold_reader if run is not None else None,
+        market_pack=market_pack,
     )
     ownership = hold_sub_accounts(config.data_dir, scheme.sub_accounts) if mode == "paper" else nullcontext()
     if files is None:
@@ -897,7 +910,7 @@ def _open_process(
             except Exception as exc:
                 raise SchemeError(f"{slot} 插槽插件 {path}:{symbol}：{exc}") from exc
         plugins = _assemble(scheme, config.scheme_dir, registry or default_registry(), context, definitions)
-        yield AccountProcess(scheme, plugins, clock, config.indicator_defaults, held, config.data_dir)
+        yield AccountProcess(scheme, plugins, clock, config.indicator_defaults, held, config.data_dir, market_pack)
 
 
 def resolve_run_config(
@@ -959,7 +972,12 @@ def _prepare_new_backtest(config: RunConfig) -> tuple[RunConfig, _FilePlugins]:
         except ValueError as exc:
             raise SchemeError(f"data 插槽插件 parquet_replay：{exc}") from exc
         tick_instruments = (params.instrument,) if config.scheme.slots.selection(Slot.FILL).reference == "l1_trade_sim" else ()
-        snapshot = capture_replay_snapshot(config.data_dir, (params,), tick_instruments=tick_instruments)
+        snapshot = capture_replay_snapshot(
+            config.data_dir,
+            (params,),
+            tick_instruments=tick_instruments,
+            market_pack=resolve_market_pack(config.data_dir, offline=True),
+        )
         config = config.model_copy(update={"cold_snapshot": snapshot})
     files = _prepare_files(config, "backtest")
     return config.model_copy(update={"file_plugins": {slot: code for slot, (code, _, _) in files.items()}}), files
@@ -978,7 +996,7 @@ def run_backtest(
         if data_dir is not None:
             config = config.model_copy(update={"data_dir": data_dir.expanduser().resolve()})
     else:
-        config = resolve_run_config(scheme_path, data_dir if data_dir is not None else Path(".talaria"))
+        config = resolve_run_config(scheme_path, default_data_dir(data_dir))
         config, files = _prepare_new_backtest(config)
     if run_id is None:
         run = RunResult.new(config.data_dir)

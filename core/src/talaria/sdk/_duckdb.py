@@ -14,6 +14,7 @@ import pyarrow as pa
 from talaria.foundation.errors import InvalidRequestError
 from talaria.packs import DEFAULT_PACK, get_market_pack
 from talaria.perception.cold_store import ColdManifest, ColdReader
+from talaria.sdk._resolve import default_data_dir, resolve_instrument_spec
 
 if TYPE_CHECKING:
     from pandas import DataFrame
@@ -53,9 +54,15 @@ def _to_arrow_relation(value: Any) -> Any:
 
 
 def _manifest_table(root: Path) -> pa.Table:
-    specs = get_market_pack(DEFAULT_PACK).instruments()
+    reader = ColdReader(root)
+    by_key: dict[tuple[str, str], object] = {}
+    for spec in reader.list_instrument_specs():
+        by_key.setdefault((spec.venue, spec.symbol), spec)
+    for spec in get_market_pack(DEFAULT_PACK).instruments():
+        by_key.setdefault((spec.venue, spec.symbol), spec)
+    specs = list(by_key.values())
     max_end = 2**63 - 1
-    snapshot = ColdReader(root).capture_snapshot(
+    snapshot = reader.capture_snapshot(
         [(spec, max_end) for spec in specs],
         tick_instruments=[spec.instrument_id for spec in specs],
     )
@@ -109,11 +116,10 @@ def cold_parquet_paths(
     end: int | None = None,
 ) -> tuple[Path, ...]:
     """按 manifest 清单解析当前可见的冷库 Parquet 绝对路径列表。"""
-    root = Path(data_dir or os.environ.get("TALARIA_DATA_DIR") or ".talaria").expanduser().resolve()
-    spec = get_market_pack(DEFAULT_PACK).instrument(instrument)
-    if spec is None:
-        raise InvalidRequestError(f"未知标的：{instrument}")
-    manifest, _ = ColdReader(root).read_manifest_snapshot(
+    root = default_data_dir(data_dir)
+    reader = ColdReader(root)
+    spec = resolve_instrument_spec(instrument, root=root, offline=True, reader=reader)
+    manifest, _ = reader.read_manifest_snapshot(
         spec,
         timeframe,
         start_ts=start,

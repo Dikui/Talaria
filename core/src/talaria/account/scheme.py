@@ -23,6 +23,7 @@ from talaria.foundation.paper import AccountId
 from talaria.foundation.types import ContractModel
 
 if TYPE_CHECKING:
+    from talaria.foundation.market import MarketPack
     from talaria.perception.cold_store import ColdReader
 
 INTERFACE_VERSION = 2
@@ -133,11 +134,21 @@ class PluginContext:
     account_risk: Mapping[str, AccountRiskConfig] = field(default_factory=dict)
     run_id: str | None = None
     cold_reader: ColdReader | None = None
+    market_pack: MarketPack | None = None
 
     @property
     def state_dir(self) -> Path:
         """插件状态目录，回测时为宿主提前创建的 runs/<run_id>/state。"""
         return self.data_dir
+
+    def resolved_market_pack(self) -> MarketPack:
+        if self.market_pack is not None:
+            return self.market_pack
+        from talaria.packs.catalog import resolve_market_pack
+
+        return resolve_market_pack(
+            self.data_dir, reader=self.cold_reader, offline=(self.mode == "backtest"),
+        )
 
 
 @dataclass(frozen=True, slots=True)

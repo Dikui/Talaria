@@ -53,6 +53,14 @@ CREATE TABLE IF NOT EXISTS retired_files (
 );
 CREATE INDEX IF NOT EXISTS generations_series_range
 ON generations (venue, symbol, timeframe, first_ts, last_ts);
+CREATE TABLE IF NOT EXISTS instrument_specs (
+    instrument_id TEXT NOT NULL,
+    venue TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    updated_ts INTEGER NOT NULL,
+    PRIMARY KEY (instrument_id, venue, symbol)
+);
 ";
 
 /// Normalize a manifest DB path so symlinked temp dirs (e.g. `/var` vs `/private/var` on macOS)
@@ -346,12 +354,136 @@ pub fn posix_rel_path(path: &Path) -> String {
         .join("/")
 }
 
+/// Upsert an [`InstrumentSpec`] inside an existing SQLite connection/transaction.
+pub fn upsert_instrument_spec(
+    conn: &Connection,
+    spec: &InstrumentSpec,
+    updated_ts: i64,
+) -> Result<()> {
+    let spec_json = serde_json::to_string(spec)
+        .map_err(|e| StoreError::Store(format!("serialize instrument spec: {e}")))?;
+    conn.execute(
+        "INSERT INTO instrument_specs (instrument_id, venue, symbol, spec_json, updated_ts) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(instrument_id, venue, symbol) DO UPDATE SET \
+             spec_json = excluded.spec_json, \
+             updated_ts = excluded.updated_ts",
+        params![
+            spec.instrument_id,
+            spec.venue,
+            spec.symbol,
+            spec_json,
+            updated_ts
+        ],
+    )?;
+    Ok(())
+}
+
+/// Read persisted [`InstrumentSpec`] records ordered by most recently updated.
+pub fn select_instrument_specs(conn: &Connection) -> Result<Vec<InstrumentSpec>> {
+    let has_table: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'instrument_specs'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if has_table.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT spec_json FROM instrument_specs ORDER BY updated_ts DESC, rowid DESC",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let raw = row?;
+        let spec: InstrumentSpec = serde_json::from_str(&raw)
+            .map_err(|e| StoreError::Integrity(format!("corrupt instrument_specs JSON: {e}")))?;
+        out.push(spec);
+    }
+    Ok(out)
+}
+
+/// Summary of an uncompacted `tail-*` generation row used for compaction readiness checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailGenerationSummary {
+    pub venue: String,
+    pub symbol: String,
+    pub timeframe: String,
+    pub first_ts: i64,
+    pub bars: i64,
+}
+
+/// Return `true` if any active generation in `generations` is an uncompacted `tail-*` file.
+pub fn has_tail_generations(conn: &Connection) -> Result<bool> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM generations \
+             WHERE parquet_path LIKE '%/tail-%' OR parquet_path LIKE 'tail-%' \
+             LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// Return series and row-count summaries for all active uncompacted `tail-*` generations.
+pub fn select_tail_generation_summaries(conn: &Connection) -> Result<Vec<TailGenerationSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT venue, symbol, timeframe, first_ts, bars FROM generations \
+         WHERE parquet_path LIKE '%/tail-%' OR parquet_path LIKE 'tail-%'",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(TailGenerationSummary {
+            venue: row.get(0)?,
+            symbol: row.get(1)?,
+            timeframe: row.get(2)?,
+            first_ts: row.get(3)?,
+            bars: row.get(4)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for item in rows {
+        out.push(item?);
+    }
+    Ok(out)
+}
+
+/// Return `true` if at least one `retired_files` entry satisfies both retention guards.
+pub fn has_prunable_retired(conn: &Connection, now_ms: i64) -> Result<bool> {
+    let cutoff_ts = now_ms - RETENTION_MS;
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM retired_files \
+             WHERE retired_ts <= ?1 \
+               AND manifest_version <= (SELECT version - ?2 FROM manifest_version) \
+             LIMIT 1",
+            params![cutoff_ts, RETAINED_MANIFESTS],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
 /// Execute Stage 4 short WAL transaction updating `manifest_version`, `retired_files`, `generations`, and `cursors`.
 pub fn commit_manifest(
     conn: &mut Connection,
     generation: &ColdGeneration,
     replaced: &[ColdGeneration],
     retired_ts: i64,
+) -> Result<i64> {
+    commit_manifest_with_spec(conn, generation, replaced, retired_ts, None)
+}
+
+/// Execute Stage 4 short WAL transaction and optionally upsert the [`InstrumentSpec`] in the same commit.
+pub fn commit_manifest_with_spec(
+    conn: &mut Connection,
+    generation: &ColdGeneration,
+    replaced: &[ColdGeneration],
+    retired_ts: i64,
+    instrument: Option<&InstrumentSpec>,
 ) -> Result<i64> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = tx.query_row(
@@ -432,6 +564,10 @@ pub fn commit_manifest(
             generation.committed_ts,
         ],
     )?;
+
+    if let Some(spec) = instrument {
+        upsert_instrument_spec(&tx, spec, generation.committed_ts)?;
+    }
 
     tx.commit()?;
     Ok(version)

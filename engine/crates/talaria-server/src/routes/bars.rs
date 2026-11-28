@@ -87,8 +87,12 @@ async fn feed_health(State(state): State<Arc<AppState>>) -> Result<ApiJson<talar
     Ok(ApiJson(sup.health()))
 }
 
-async fn instruments(State(state): State<Arc<AppState>>) -> ApiJson<Vec<InstrumentSpec>> {
-    ApiJson(state.instruments_snapshot())
+async fn instruments(State(state): State<Arc<AppState>>) -> Response {
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&state.security.data_dir_id) {
+        headers.insert(DATA_DIR_HEADER, v);
+    }
+    (StatusCode::OK, headers, ApiJson(state.instruments_snapshot())).into_response()
 }
 
 #[derive(Deserialize)]
@@ -200,6 +204,12 @@ async fn add_instrument(
             .state_store
             .write(move |conn, now| custom_instruments_upsert(conn, &pack_name, &spec_c, now))
             .await?;
+        if let Some(cs) = &state.cold_store {
+            let cs_c = Arc::clone(cs);
+            let spec_c2 = spec.clone();
+            let _ = tokio::task::spawn_blocking(move || cs_c.register_instrument_specs(&[spec_c2]))
+                .await;
+        }
     }
 
     let current = state
