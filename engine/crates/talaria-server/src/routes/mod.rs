@@ -286,6 +286,54 @@ pub struct FreezeContext<'a> {
     pub now_ms: i64,
 }
 
+/// Locate the missing span from the right-most recent gap (or tail behind `closed_end`)
+/// within the snapshot lookback window so snapshots always stay current on the right edge.
+fn find_right_missing_range(
+    visible: &[RawBar],
+    closed_end: i64,
+    interval: i64,
+    is_24x7: bool,
+) -> Option<(i64, i64)> {
+    let last_ts = visible.last()?.ts_event;
+    let recent_floor = closed_end
+        .saturating_sub(
+            interval.saturating_mul((SNAPSHOT_HISTORY_TARGET_BARS as i64).saturating_sub(1)),
+        )
+        .max(0);
+    let tail_gap = (last_ts < closed_end)
+        .then(|| ((last_ts + interval).max(recent_floor), closed_end));
+
+    let internal_gap = if is_24x7 {
+        visible
+            .windows(2)
+            .rev()
+            .take_while(|pair| pair[1].ts_event >= recent_floor)
+            .find_map(|pair| {
+                let diff = pair[1].ts_event - pair[0].ts_event;
+                if diff > interval {
+                    let start = (pair[0].ts_event + interval).max(recent_floor);
+                    let end = pair[1].ts_event - interval;
+                    (start <= end).then_some((start, end))
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
+
+    match (internal_gap, tail_gap) {
+        (Some((g_start, _)), Some((_, t_end))) => {
+            if ((t_end - g_start) / interval + 1) as usize <= SNAPSHOT_HISTORY_TARGET_BARS {
+                Some((g_start, t_end))
+            } else {
+                tail_gap
+            }
+        }
+        _ => tail_gap.or(internal_gap),
+    }
+}
+
 /// Ensure history via `history_connector` (when enabled) and freeze a deterministic PIT snapshot.
 pub async fn freeze_snapshot(
     state: Arc<AppState>,
@@ -314,6 +362,11 @@ pub async fn freeze_snapshot(
         && (state.replay_path.is_none() || state.fixture_dir.is_some())
     {
         let mut earliest_bar_ts: Option<i64> = None;
+        let is_24x7 = state
+            .pack
+            .traits(&spec.instrument_id)
+            .map(|t| t.session.session_kind == "24x7")
+            .unwrap_or(false);
 
         for tf in &req.timeframes {
             let interval = timeframe_ms(tf).map_err(|e| ApiError::validation(e.to_string()))?;
@@ -322,8 +375,8 @@ pub async fn freeze_snapshot(
             let spec_c = spec.clone();
             let tf_c = tf.clone();
             let WindowedBars {
-                cold,
-                hot,
+                mut cold,
+                mut hot,
                 mut visible,
             } = tokio::task::spawn_blocking(move || {
                 read_snapshot_window_bars(&state_c, &spec_c, &tf_c, closed_end, cutoff_ts, interval)
@@ -331,6 +384,107 @@ pub async fn freeze_snapshot(
             .await
             .map_err(|e| ApiError::internal(e.to_string()))??;
 
+            // Phase 1: Fill right-edge tail gap (and recent internal gaps for 24x7 venues)
+            // even when cold store already holds SNAPSHOT_HISTORY_TARGET_BARS older bars.
+            if let Some((missing_start, missing_end)) =
+                find_right_missing_range(&visible, closed_end, interval, is_24x7)
+                && missing_start <= missing_end
+            {
+                let tail_cooldown_key = format!(
+                    "bars-tail:{}:{tf}:{missing_start}:{missing_end}",
+                    spec.instrument_id
+                );
+                if get_backfill_cooldown(&state, &tail_cooldown_key, now).is_none() {
+                    let missing_count = (((missing_end - missing_start) / interval) + 1).max(1) as usize;
+                    let res = backfill_bars(
+                        connector.as_ref(),
+                        &spec.symbol,
+                        tf,
+                        BackfillWindow {
+                            start_ts: Some(missing_start),
+                            end_ts: Some(missing_end),
+                            target_count: missing_count
+                                .saturating_add(1)
+                                .min(SNAPSHOT_HISTORY_TARGET_BARS),
+                            max_pages: 5,
+                            page_limit: 1000,
+                        },
+                    )
+                    .await;
+                    let mut did_tail_publish = false;
+                    match res {
+                        Ok(fetched) => {
+                            let existing_confirmed_ts: HashSet<i64> = cold
+                                .iter()
+                                .chain(hot.iter().filter(|b| b.confirmed && !b.synthetic))
+                                .map(|b| b.ts_event)
+                                .collect();
+                            let to_publish: Vec<RawBar> = fetched
+                                .into_iter()
+                                .filter(|b| {
+                                    b.confirmed
+                                        && !b.synthetic
+                                        && b.ts_available <= cutoff_ts
+                                        && !existing_confirmed_ts.contains(&b.ts_event)
+                                })
+                                .collect();
+                            if to_publish.is_empty() {
+                                mark_backfill_cooldown(&state, tail_cooldown_key, now, None);
+                            } else {
+                                did_tail_publish = true;
+                                publish_bars_to_cold_store(
+                                    Arc::clone(cold_store),
+                                    spec.clone(),
+                                    tf.clone(),
+                                    to_publish,
+                                )
+                                .await?;
+                            }
+                        }
+                        Err(err) => {
+                            let api_err = ApiError::from(err);
+                            mark_backfill_cooldown(
+                                &state,
+                                tail_cooldown_key,
+                                now,
+                                Some(BackfillCachedError {
+                                    status: api_err.status,
+                                    code: api_err.code,
+                                    message: api_err.message.clone(),
+                                }),
+                            );
+                            tracing::warn!(
+                                instrument = %spec.instrument_id,
+                                timeframe = %tf,
+                                error = %api_err,
+                                "snapshot right-tail backfill failed; continuing with local history"
+                            );
+                        }
+                    }
+                    if did_tail_publish {
+                        let state_c = Arc::clone(&state);
+                        let spec_c = spec.clone();
+                        let tf_c = tf.clone();
+                        let reloaded = tokio::task::spawn_blocking(move || {
+                            read_snapshot_window_bars(
+                                &state_c,
+                                &spec_c,
+                                &tf_c,
+                                closed_end,
+                                cutoff_ts,
+                                interval,
+                            )
+                        })
+                        .await
+                        .map_err(|e| ApiError::internal(e.to_string()))??;
+                        cold = reloaded.cold;
+                        hot = reloaded.hot;
+                        visible = reloaded.visible;
+                    }
+                }
+            }
+
+            // Phase 2: Ensure left-edge history depth when total visible bars < target.
             let mut did_publish = false;
             let end_ts = visible
                 .first()
@@ -363,7 +517,7 @@ pub async fn freeze_snapshot(
                             start_ts: None,
                             end_ts: Some(end_ts),
                             target_count: SNAPSHOT_HISTORY_TARGET_BARS - visible.len(),
-                            max_pages: 3,
+                            max_pages: 5,
                             page_limit: 1000,
                         },
                     )
@@ -373,13 +527,14 @@ pub async fn freeze_snapshot(
                         Ok(fetched) => {
                             let existing_ts: HashSet<i64> = cold
                                 .iter()
-                                .chain(hot.iter())
+                                .chain(hot.iter().filter(|b| b.confirmed && !b.synthetic))
                                 .map(|b| b.ts_event)
                                 .collect();
                             let to_publish: Vec<RawBar> = fetched
                                 .into_iter()
                                 .filter(|b| {
                                     b.confirmed
+                                        && !b.synthetic
                                         && b.ts_available <= cutoff_ts
                                         && !existing_ts.contains(&b.ts_event)
                                 })

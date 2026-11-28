@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use talaria_contracts::bars::{BarStatus, CompactBar, RawBar};
 use talaria_contracts::derivatives::{DerivativeKind, DerivativePoint};
-use talaria_contracts::feed::FeedEvent;
+use talaria_contracts::feed::{FeedEvent, ReceivedKlineEvent};
 use talaria_contracts::market::InstrumentSpec;
 use talaria_contracts::ticks::Trade;
 use talaria_feed::BarPublishSink;
@@ -377,71 +377,8 @@ impl ColdWriter {
             guard.insert(spec.instrument_id.clone(), spec);
         }
     }
-}
 
-impl BarPublishSink for ColdWriter {
-    fn on_bar_close(
-        &self,
-        instrument: &InstrumentSpec,
-        timeframe: &str,
-        bar: &CompactBar,
-        received_ts: i64,
-        revision: u64,
-    ) {
-        if bar.status == BarStatus::FeedGap {
-            return;
-        }
-        let (Some(open), Some(high), Some(low), Some(close), Some(volume), Some(turnover)) = (
-            bar.open,
-            bar.high,
-            bar.low,
-            bar.close,
-            bar.volume,
-            bar.turnover,
-        ) else {
-            return;
-        };
-        let now = (self.now_ms)();
-        let raw = RawBar {
-            symbol: instrument.symbol.clone(),
-            timeframe: timeframe.to_owned(),
-            ts_event: bar.timestamp,
-            open,
-            high,
-            low,
-            close,
-            volume,
-            turnover,
-            ts_available: bar.ts_available,
-            ts_ingested: received_ts,
-            ts_committed: now.max(received_ts),
-            precision: bar.precision,
-            revision,
-            confirmed: true,
-            history_only: false,
-            synthetic: false,
-        };
-        if self.cold_store.is_some() {
-            let _ = self.tx.send(ColdCmd::Bar {
-                instrument: instrument.clone(),
-                timeframe: timeframe.to_owned(),
-                bar: raw,
-            });
-        }
-    }
-
-    fn on_recovered_bar(&self, instrument: &InstrumentSpec, bar: &RawBar) {
-        if self.cold_store.is_some() {
-            let _ = self.tx.send(ColdCmd::Bar {
-                instrument: instrument.clone(),
-                timeframe: bar.timeframe.clone(),
-                bar: bar.clone(),
-            });
-        }
-    }
-
-    fn on_event(&self, event: &FeedEvent) {
-        let ingested = self.hot_buffer.ingest(event);
+    fn dispatch_feed_event(&self, event: &FeedEvent, ingested: Option<RawBar>) {
         if let FeedEvent::Kline(k) = event
             && let Some(raw) = &ingested
             && raw.confirmed
@@ -536,6 +473,78 @@ impl BarPublishSink for ColdWriter {
                 ));
             }
         }
+    }
+}
+
+impl BarPublishSink for ColdWriter {
+    fn on_bar_close(
+        &self,
+        instrument: &InstrumentSpec,
+        timeframe: &str,
+        bar: &CompactBar,
+        received_ts: i64,
+        revision: u64,
+    ) {
+        if bar.status == BarStatus::FeedGap {
+            return;
+        }
+        let (Some(open), Some(high), Some(low), Some(close), Some(volume), Some(turnover)) = (
+            bar.open,
+            bar.high,
+            bar.low,
+            bar.close,
+            bar.volume,
+            bar.turnover,
+        ) else {
+            return;
+        };
+        let now = (self.now_ms)();
+        let raw = RawBar {
+            symbol: instrument.symbol.clone(),
+            timeframe: timeframe.to_owned(),
+            ts_event: bar.timestamp,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            turnover,
+            ts_available: bar.ts_available,
+            ts_ingested: received_ts,
+            ts_committed: now.max(received_ts),
+            precision: bar.precision,
+            revision,
+            confirmed: true,
+            history_only: false,
+            synthetic: false,
+        };
+        if self.cold_store.is_some() {
+            let _ = self.tx.send(ColdCmd::Bar {
+                instrument: instrument.clone(),
+                timeframe: timeframe.to_owned(),
+                bar: raw,
+            });
+        }
+    }
+
+    fn on_recovered_bar(&self, instrument: &InstrumentSpec, bar: &RawBar) {
+        if self.cold_store.is_some() {
+            let _ = self.tx.send(ColdCmd::Bar {
+                instrument: instrument.clone(),
+                timeframe: bar.timeframe.clone(),
+                bar: bar.clone(),
+            });
+        }
+    }
+
+    fn on_kline_event(&self, received: &ReceivedKlineEvent) {
+        let ingested = self.hot_buffer.ingest_received_kline(received);
+        self.dispatch_feed_event(&FeedEvent::Kline(received.event.clone()), ingested);
+    }
+
+    fn on_event(&self, event: &FeedEvent) {
+        let ingested = self.hot_buffer.ingest(event);
+        self.dispatch_feed_event(event, ingested);
     }
 
     fn on_received_frame(&self, frame: &TransportFrame) {

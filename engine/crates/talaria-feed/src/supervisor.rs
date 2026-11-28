@@ -8,8 +8,8 @@ use std::time::Duration;
 use rust_decimal::Decimal;
 use talaria_contracts::{
     BarStatus, CompactBar, FeedEvent, FeedHealthEvent, FeedHealthReport, FeedHealthStatus,
-    InstrumentSpec, KlineEvent, PrecisionTier, RawBar, TransportEvent, classify_flat_bar,
-    timeframe_ms, worst_status,
+    InstrumentSpec, KlineEvent, PrecisionTier, RawBar, ReceivedKlineEvent, TransportEvent,
+    classify_flat_bar, timeframe_ms, worst_status,
 };
 use talaria_packs::{
     BackfillWindow, FeedTransport, HistoryConnector, TransportFrame, backfill_bars,
@@ -105,6 +105,7 @@ enum SubscriptionOp {
 
 enum PostNotice {
     Event(FeedEvent),
+    Kline(ReceivedKlineEvent),
     ReceivedFrame(TransportFrame),
     Subscribe {
         instrument: InstrumentSpec,
@@ -222,6 +223,9 @@ impl SupervisorCore {
             return false;
         }
         self.channel_order.retain(|k| k != &key);
+        self.series.remove(&key);
+        self.resume_pending.remove(&key);
+        self.outage_windows.remove(&key);
         true
     }
 
@@ -607,7 +611,12 @@ impl SupervisorCore {
                 confirmed,
                 revision,
             };
-            notices.push(PostNotice::Event(FeedEvent::Kline(kline)));
+            notices.push(PostNotice::Kline(ReceivedKlineEvent {
+                event: kline,
+                ts_ingested: received,
+                history_only: recovered,
+                synthetic: !source,
+            }));
         }
 
         if source_confirmed
@@ -1078,6 +1087,10 @@ impl FeedSupervisor {
                 PostNotice::Event(ev) => {
                     self.sink.on_event(&ev);
                     let _ = self.events_tx.send(ev);
+                }
+                PostNotice::Kline(received) => {
+                    self.sink.on_kline_event(&received);
+                    let _ = self.events_tx.send(FeedEvent::Kline(received.event));
                 }
                 PostNotice::ReceivedFrame(frame) => {
                     self.sink.on_received_frame(&frame);

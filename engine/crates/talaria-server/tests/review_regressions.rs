@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use talaria_contracts::alerts::{AlertCreate, AlertRecord, AlertTriggerRecord};
 use talaria_contracts::bars::{BarStatus, CompactBar, RawBar};
 use talaria_contracts::derivatives::{DerivativeKind, DerivativePoint};
-use talaria_contracts::feed::{DerivativeTickEvent, FeedEvent, KlineEvent};
+use talaria_contracts::feed::{DerivativeTickEvent, FeedEvent, KlineEvent, ReceivedKlineEvent};
 use talaria_contracts::rules::{
     AlertMetric, Rule, RuleComparisonTest, RuleExpression, RuleOperand, RuleTiming, RuleVersion,
 };
@@ -990,5 +990,328 @@ async fn cross_module_2_mark_price_alert_freezes_evidence_before_and_after_bar_c
         dec("110")
     );
 
+    srv.shutdown().await;
+}
+
+fn bybit_mock_kline_router(rows: Arc<Vec<(i64, i64)>>) -> Router {
+    Router::new().route(
+        "/v5/market/kline",
+        get(move |Query(q): Query<BTreeMap<String, String>>| {
+            let rows = Arc::clone(&rows);
+            async move {
+                let end = q.get("end").and_then(|v| v.parse::<i64>().ok());
+                let limit = q
+                    .get("limit")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(1000);
+                let mut filtered: Vec<(i64, i64)> = rows
+                    .iter()
+                    .copied()
+                    .filter(|(ts, _)| end.is_none_or(|e| *ts <= e))
+                    .collect();
+                filtered.sort_by_key(|(ts, _)| *ts);
+                if filtered.len() > limit {
+                    let start = filtered.len() - limit;
+                    filtered = filtered[start..].to_vec();
+                }
+                (StatusCode::OK, bybit_kline_json(&filtered))
+            }
+        }),
+    )
+}
+
+#[tokio::test]
+async fn snapshot_backfills_right_tail_when_cold_already_has_1500_bars() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let fifteen_min = 15 * MINUTE;
+
+    // Pre-populate cold store with 1500 bars (0..1500).
+    let store = ColdStore::open(tmp.path()).unwrap();
+    let cold_bars: Vec<RawBar> = (0..1500)
+        .map(|i| {
+            let mut b = raw_bar(BASE_TS + i * fifteen_min, 50_000 + i, 0);
+            b.timeframe = "15m".to_owned();
+            b.ts_available = b.ts_event + fifteen_min;
+            b
+        })
+        .collect();
+    store.publish_bars(&spec, "15m", &cold_bars).unwrap();
+    store.close().unwrap();
+
+    // Upstream has bars 1499..1505; cutoff is right after bar 1504 closes.
+    let upstream_rows: Arc<Vec<(i64, i64)>> = Arc::new(
+        (1499..1505)
+            .map(|i| (BASE_TS + i * fifteen_min, 50_000 + i))
+            .collect(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = listener.local_addr().unwrap();
+    let mock_handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, bybit_mock_kline_router(upstream_rows)).await;
+    });
+
+    let cutoff = BASE_TS + 1505 * fifteen_min;
+    let mut cfg = ServerConfig::new(tmp.path());
+    cfg.history_base_url = Some(format!("http://{mock_addr}"));
+    cfg.now_ms = Some(Arc::new(move || cutoff));
+    let srv = start_server(cfg).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let auth = format!("Bearer {}", srv.token());
+    let snap: SnapshotMeta = client
+        .post(format!("{}/api/snapshots", srv.base_url()))
+        .header("Authorization", &auth)
+        .json(&SnapshotRequest {
+            instrument_id: BTC.to_owned(),
+            timeframes: vec!["15m".to_owned()],
+            cutoff_ts: Some(cutoff),
+            mode: SnapshotMode::HistoricalPit,
+        })
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(snap.bar_counts.get("15m"), Some(&1500));
+
+    let page: Value = client
+        .get(format!(
+            "{}/api/snapshots/{}/bars?timeframe=15m&limit=20",
+            srv.base_url(),
+            snap.snapshot_id
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tail_ts: Vec<i64> = page["bars"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| b["status"] == "NORMAL")
+        .map(|b| b["timestamp"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        &tail_ts[tail_ts.len() - 5..],
+        &[
+            BASE_TS + 1500 * fifteen_min,
+            BASE_TS + 1501 * fifteen_min,
+            BASE_TS + 1502 * fifteen_min,
+            BASE_TS + 1503 * fifteen_min,
+            BASE_TS + 1504 * fifteen_min,
+        ]
+    );
+
+    mock_handle.abort();
+    srv.shutdown().await;
+}
+
+#[tokio::test]
+async fn snapshot_backfills_recent_internal_gap_after_live_bar_on_24x7() {
+    let tmp = TempDir::new().unwrap();
+    let spec = btc_spec();
+    let fifteen_min = 15 * MINUTE;
+
+    // Cold store has 0..1500 plus live-closed 1505 (leaving internal gap 1500..1505).
+    let store = ColdStore::open(tmp.path()).unwrap();
+    let mut cold_bars: Vec<RawBar> = (0..1500)
+        .map(|i| {
+            let mut b = raw_bar(BASE_TS + i * fifteen_min, 50_000 + i, 0);
+            b.timeframe = "15m".to_owned();
+            b.ts_available = b.ts_event + fifteen_min;
+            b
+        })
+        .collect();
+    let mut latest = raw_bar(BASE_TS + 1505 * fifteen_min, 51_505, 0);
+    latest.timeframe = "15m".to_owned();
+    latest.ts_available = latest.ts_event + fifteen_min;
+    cold_bars.push(latest);
+    store.publish_bars(&spec, "15m", &cold_bars).unwrap();
+    store.close().unwrap();
+
+    let upstream_rows: Arc<Vec<(i64, i64)>> = Arc::new(
+        (1499..=1505)
+            .map(|i| (BASE_TS + i * fifteen_min, 50_000 + i))
+            .collect(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = listener.local_addr().unwrap();
+    let mock_handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, bybit_mock_kline_router(upstream_rows)).await;
+    });
+
+    let cutoff = BASE_TS + 1506 * fifteen_min;
+    let mut cfg = ServerConfig::new(tmp.path());
+    cfg.history_base_url = Some(format!("http://{mock_addr}"));
+    cfg.now_ms = Some(Arc::new(move || cutoff));
+    let srv = start_server(cfg).await.unwrap();
+
+    let client = reqwest::Client::new();
+    let auth = format!("Bearer {}", srv.token());
+    let snap: SnapshotMeta = client
+        .post(format!("{}/api/snapshots", srv.base_url()))
+        .header("Authorization", &auth)
+        .json(&SnapshotRequest {
+            instrument_id: BTC.to_owned(),
+            timeframes: vec!["15m".to_owned()],
+            cutoff_ts: Some(cutoff),
+            mode: SnapshotMode::HistoricalPit,
+        })
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(snap.bar_counts.get("15m"), Some(&1500));
+
+    let page: Value = client
+        .get(format!(
+            "{}/api/snapshots/{}/bars?timeframe=15m&limit=10",
+            srv.base_url(),
+            snap.snapshot_id
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let bars = page["bars"].as_array().unwrap();
+    assert!(bars.iter().all(|b| b["status"] == "NORMAL"));
+    let tail_ts: Vec<i64> = bars
+        .iter()
+        .map(|b| b["timestamp"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        &tail_ts[tail_ts.len() - 6..],
+        &[
+            BASE_TS + 1500 * fifteen_min,
+            BASE_TS + 1501 * fifteen_min,
+            BASE_TS + 1502 * fifteen_min,
+            BASE_TS + 1503 * fifteen_min,
+            BASE_TS + 1504 * fifteen_min,
+            BASE_TS + 1505 * fifteen_min,
+        ]
+    );
+
+    mock_handle.abort();
+    srv.shutdown().await;
+}
+
+#[tokio::test]
+async fn range_bars_publishes_confirmed_backfill_over_unconfirmed_and_synthetic_hot_bars() {
+    let tmp = TempDir::new().unwrap();
+    let fifteen_min = 15 * MINUTE;
+    let ts_open = BASE_TS + 2 * fifteen_min;
+    let ts_synth = BASE_TS + 3 * fifteen_min;
+    let now_ts = BASE_TS + 5 * fifteen_min;
+
+    let upstream_rows: Arc<Vec<(i64, i64)>> = Arc::new(vec![
+        (ts_open, 52_000),
+        (ts_synth, 52_500),
+        (BASE_TS + 4 * fifteen_min, 53_000),
+    ]);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = listener.local_addr().unwrap();
+    let mock_handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, bybit_mock_kline_router(upstream_rows)).await;
+    });
+
+    let mut cfg = ServerConfig::new(tmp.path());
+    cfg.history_base_url = Some(format!("http://{mock_addr}"));
+    cfg.now_ms = Some(Arc::new(move || now_ts));
+    let srv = start_server(cfg).await.unwrap();
+
+    let writer = srv.state.cold_writer.as_ref().unwrap();
+    // 1. Unconfirmed live bar in hot_buffer at ts_open
+    writer.on_kline_event(&ReceivedKlineEvent {
+        event: KlineEvent {
+            instrument_id: BTC.to_owned(),
+            timeframe: "15m".to_owned(),
+            bar: CompactBar {
+                timestamp: ts_open,
+                open: Some(dec("50000")),
+                high: Some(dec("50010")),
+                low: Some(dec("49990")),
+                close: Some(dec("50005")),
+                volume: Some(dec("1")),
+                turnover: Some(dec("50000")),
+                ts_available: ts_open + 1_000,
+                precision: PrecisionTier::SecondVerified,
+                status: BarStatus::Normal,
+            },
+            confirmed: false,
+            revision: 0,
+        },
+        ts_ingested: ts_open + 1_000,
+        history_only: false,
+        synthetic: false,
+    });
+    // 2. Synthesized NO_TRADES bar in hot_buffer at ts_synth
+    writer.on_kline_event(&ReceivedKlineEvent {
+        event: KlineEvent {
+            instrument_id: BTC.to_owned(),
+            timeframe: "15m".to_owned(),
+            bar: CompactBar {
+                timestamp: ts_synth,
+                open: Some(dec("50005")),
+                high: Some(dec("50005")),
+                low: Some(dec("50005")),
+                close: Some(dec("50005")),
+                volume: Some(Decimal::ZERO),
+                turnover: Some(Decimal::ZERO),
+                ts_available: ts_synth + fifteen_min,
+                precision: PrecisionTier::SecondVerified,
+                status: BarStatus::NoTrades,
+            },
+            confirmed: true,
+            revision: 0,
+        },
+        ts_ingested: ts_synth + fifteen_min,
+        history_only: false,
+        synthetic: true,
+    });
+
+    let client = reqwest::Client::new();
+    let resp: Value = client
+        .get(format!(
+            "{}/api/bars?instrument={BTC}&timeframe=15m&start={ts_open}&end={}",
+            srv.base_url(),
+            BASE_TS + 4 * fifteen_min
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let bars = resp["bars"].as_array().unwrap();
+    assert_eq!(bars.len(), 3);
+    assert_eq!(bars[0]["ts_event"], ts_open);
+    assert_eq!(bars[0]["close"], "52000");
+    assert_eq!(bars[0]["confirmed"], true);
+    assert_eq!(bars[1]["ts_event"], ts_synth);
+    assert_eq!(bars[1]["close"], "52500");
+    assert_eq!(bars[1]["confirmed"], true);
+    assert_eq!(bars[2]["ts_event"], BASE_TS + 4 * fifteen_min);
+    assert_eq!(bars[2]["close"], "53000");
+
+    mock_handle.abort();
     srv.shutdown().await;
 }

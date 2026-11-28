@@ -379,13 +379,21 @@ async fn get_range_bars(
             .await;
             match res {
                 Ok(fetched) => {
-                    let existing: HashMap<i64, u64> = cold
+                    let mut existing: HashMap<i64, u64> = HashMap::new();
+                    for b in cold
                         .iter()
-                        .chain(hot.iter())
-                        .map(|b| (b.ts_event, b.revision))
-                        .collect();
+                        .chain(hot.iter().filter(|b| b.confirmed && !b.synthetic))
+                    {
+                        existing
+                            .entry(b.ts_event)
+                            .and_modify(|rev| *rev = (*rev).max(b.revision))
+                            .or_insert(b.revision);
+                    }
                     let mut to_publish = Vec::new();
                     for mut bar in fetched {
+                        if !bar.confirmed || bar.synthetic {
+                            continue;
+                        }
                         if let Some(&prev_rev) = existing.get(&bar.ts_event) {
                             if query.resync_from.is_some() {
                                 bar.revision = prev_rev + 1;

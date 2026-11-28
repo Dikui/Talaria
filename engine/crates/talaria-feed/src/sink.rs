@@ -1,6 +1,6 @@
 //! Decoupled persistence sink trait invoked by `FeedSupervisor` without depending on `talaria-store`.
 
-use talaria_contracts::{CompactBar, FeedEvent, InstrumentSpec, RawBar};
+use talaria_contracts::{CompactBar, FeedEvent, InstrumentSpec, RawBar, ReceivedKlineEvent};
 use talaria_packs::TransportFrame;
 
 /// Sink receiving confirmed bar closes, REST-recovered bars, subscriptions, and raw feed events.
@@ -28,6 +28,12 @@ pub trait BarPublishSink: Send + Sync {
     /// Invoked for each REST-recovered historical bar during outage recovery (`history_only` path).
     fn on_recovered_bar(&self, instrument: &InstrumentSpec, bar: &RawBar) {
         let _ = (instrument, bar);
+    }
+
+    /// Invoked when a kline event is emitted, preserving ingest time and
+    /// `history_only` / `synthetic` flags.
+    fn on_kline_event(&self, received: &ReceivedKlineEvent) {
+        self.on_event(&FeedEvent::Kline(received.event.clone()));
     }
 
     /// Invoked for every emitted [`FeedEvent`] (kline, book, derivatives, trade, health).

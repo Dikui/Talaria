@@ -110,6 +110,7 @@ struct RecordingSink {
     closes: Mutex<Vec<CloseRecord>>,
     recovered: Mutex<Vec<(String, RawBar)>>,
     events: Mutex<Vec<FeedEvent>>,
+    received_klines: Mutex<Vec<ReceivedKlineEvent>>,
 }
 
 impl RecordingSink {
@@ -148,6 +149,10 @@ impl RecordingSink {
             })
             .collect()
     }
+
+    fn received_klines(&self) -> Vec<ReceivedKlineEvent> {
+        self.received_klines.lock().unwrap().clone()
+    }
 }
 
 impl BarPublishSink for RecordingSink {
@@ -181,6 +186,11 @@ impl BarPublishSink for RecordingSink {
             .lock()
             .unwrap()
             .push((instrument.instrument_id.clone(), bar.clone()));
+    }
+
+    fn on_kline_event(&self, received: &ReceivedKlineEvent) {
+        self.received_klines.lock().unwrap().push(received.clone());
+        self.on_event(&FeedEvent::Kline(received.event.clone()));
     }
 
     fn on_event(&self, event: &FeedEvent) {
@@ -980,4 +990,52 @@ async fn stale_watchdog_forces_transport_reconnect_and_recovery() {
     let final_health = sup.channel_health(INSTRUMENT, "1m").unwrap();
     assert_eq!(final_health.status, FeedHealthStatus::Live);
     assert!(final_health.reconnect_count >= 1);
+}
+
+#[test]
+fn unsubscribe_clears_series_and_resubscribe_does_not_synthesize_no_trades() {
+    let (sup, clock, sink) = make_supervisor(BASE + 1_000, false);
+    sup.subscribe(INSTRUMENT, "15m").unwrap();
+
+    // Unconfirmed bar arrives on 15m before switching away.
+    let mut open_15m = kline(ts(0), "59392", false);
+    open_15m.timeframe = "15m".to_owned();
+    open_15m.bar.ts_available = ts(0) + 1_000;
+    sup.ingest(open_15m, Some(clock.now_ms()));
+
+    // Switch away (unsubscribe) and return 5 intervals later.
+    sup.unsubscribe(INSTRUMENT, "15m");
+    clock.set_wall_ms(ts(75) + 1_000);
+    sup.subscribe(INSTRUMENT, "15m").unwrap();
+
+    let mut resumed_15m = kline(ts(75), "59298", false);
+    resumed_15m.timeframe = "15m".to_owned();
+    resumed_15m.bar.ts_available = ts(75) + 1_000;
+    sup.ingest(resumed_15m, Some(clock.now_ms()));
+
+    assert!(
+        sink.klines()
+            .iter()
+            .all(|k| k.bar.status != BarStatus::NoTrades),
+        "resubscribing after unsubscribe must not fabricate NO_TRADES bars across the unsubscribed span"
+    );
+    let recent = sup.recent_bars(INSTRUMENT, "15m", None, false);
+    assert_eq!(recent.len(), 1);
+    assert_eq!(recent[0].timestamp, ts(75));
+}
+
+#[test]
+fn on_kline_event_preserves_synthetic_flag_for_live_gap_no_trades() {
+    let (sup, clock, sink) = make_supervisor(BASE + 1_000, false);
+    sup.subscribe(INSTRUMENT, "1m").unwrap();
+
+    sup.ingest(kline(ts(0), "100", true), Some(clock.set_wall_ms(ts(1) + 500)));
+    sup.ingest(kline(ts(2), "101", false), Some(clock.set_wall_ms(ts(2) + 500)));
+
+    let received = sink.received_klines();
+    let real_bar = received.iter().find(|r| r.event.bar.timestamp == ts(0)).unwrap();
+    let synth_bar = received.iter().find(|r| r.event.bar.timestamp == ts(1)).unwrap();
+    assert!(!real_bar.synthetic);
+    assert!(synth_bar.synthetic);
+    assert_eq!(synth_bar.event.bar.status, BarStatus::NoTrades);
 }
